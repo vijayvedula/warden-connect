@@ -3,6 +3,8 @@
 > Status: design. Target: a control plane plus a thin inline data-plane extension
 > to the shipped Warden proxy. Diagram companion:
 > [warden-connect-logical-architecture.svg](warden-connect-logical-architecture.svg).
+> Implementation companion: [08-lld.md](08-lld.md) — crate layout, module
+> signatures, algorithms, error codes, latency budgets and test suite.
 
 ---
 
@@ -507,6 +509,10 @@ and it is mostly assembled from code Warden already ships.
 ---
 
 ## 7.13 Open questions
+
+> **All seven are now resolved in [08-lld.md §8.17](08-lld.md#817-resolved-hld-open-questions).**
+> They are kept here as the record of what was open at HLD stage, and of the
+> leaning the LLD had to either confirm or overturn.
 
 1. **Contract transport into the mediator.** Pre-distributed (push) versus
    agent-carried (like the session token) versus both. Agent-carried is simpler
