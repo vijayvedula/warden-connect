@@ -1,0 +1,22 @@
+[package]
+name = "wc-control"
+description = "warden-connect control plane: registry, admission, broker, contract issuance, sentinel, evidence."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wc-core = { path = "../wc-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ureq = { workspace = true }
+jsonwebtoken = { workspace = true }
+toml = { workspace = true }
+# For flock(2): the single-writer election primitive. The only unsafe in the
+# crate, wrapped so no caller sees it.
+libc = { workspace = true }
+
+[lints]
+workspace = true
