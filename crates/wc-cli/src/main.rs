@@ -34,6 +34,7 @@ use wc_control::chain::ANCHOR_FILE;
 use wc_control::evidence::{EventKind, Evidence, LifecycleEvent};
 use wc_control::store::{Actor, Store};
 use wc_core::canon::{self, Limits, SurfaceKind};
+use wc_core::contract::{self, Algorithm, IssuerKeys, VerifyOpts};
 use wc_core::error::{Category, Code, Mode, Result, WcError};
 use wc_core::model::{Entity, EntityId, HumanRef, Kind, Lifecycle, Posture, Tier, ZoneId};
 
@@ -89,12 +90,15 @@ fn exit_code(code: Code) -> u8 {
         Code::SCREENING_BLOCKED | Code::DRIFT_MATERIAL => 5,
         Code::QUARANTINE_DUAL_CONTROL_MISSING | Code::APPROVER_ROLE_MISSING => 6,
         Code::CHAIN_BROKEN
-        | Code::SIGNATURE_INVALID
         | Code::PROVENANCE_UNVERIFIABLE
         | Code::CARD_SIGNATURE_INVALID
         | Code::IDENTITY_UNVERIFIABLE => 4,
-        Code::POLICY_DENIED | Code::ENTITY_QUARANTINED | Code::ZONE_PAIR_FORBIDDEN => 3,
+        Code::POLICY_DENIED | Code::ENTITY_QUARANTINED => 3,
         _ => match code.category() {
+            // Every WC-31xx code is a contract that failed to verify — an expired
+            // artifact and a bad signature are the same class of answer, and CI
+            // should not have to distinguish them from an I/O error.
+            Category::Verification => 4,
             // A policy-shaped refusal is a decision, not a malfunction.
             Category::ContractLifecycle => 3,
             _ => 1,
@@ -118,6 +122,7 @@ const COMMANDS: &[&str] = &[
     "audit verify",
     "canon",
     "export",
+    "verify",
     "version",
 ];
 
@@ -170,6 +175,15 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "audit verify" => &["anchor-pub"],
         "export" => &["format", "as-of"],
         "canon" => &["file", "kind", "entity", "document"],
+        "verify" => &[
+            "file",
+            "issuer-pub",
+            "kid",
+            "alg",
+            "mediator-id",
+            "now",
+            "leeway",
+        ],
         _ => &[],
     }
 }
@@ -242,6 +256,7 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "quarantine" => quarantine(args)?,
         "audit verify" => audit_verify(args)?,
         "canon" => canon_cmd(args)?,
+        "verify" => verify_cmd(args)?,
         "export" => export(args)?,
         "version" => println!("connect {}", env!("CARGO_PKG_VERSION")),
         // Unreachable: COMMANDS is checked above, and this match covers it.
@@ -968,6 +983,116 @@ fn canon_cmd(args: &Args) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// verify — the conformance ground truth (§7.4)
+// ---------------------------------------------------------------------------
+
+/// Check a `warden-connection+jws` against a trusted issuer key.
+///
+/// This is what makes the artifact a candidate standard rather than a product
+/// format: any implementation may mint a contract, and a contract is valid iff
+/// this accepts it. Only the artifact checks (1–5) run here — the context checks
+/// need an authenticated peer and a presented surface, which a command-line tool
+/// does not have. The exit code is the verdict.
+fn verify_cmd(args: &Args) -> Result<()> {
+    let path = positional_or_flag(args, "file")?;
+    let jws = std::fs::read_to_string(path)
+        .map_err(|e| {
+            WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+        })?
+        .trim()
+        .to_string();
+
+    let key_path = require(args, "issuer-pub")?;
+    let pem = std::fs::read(key_path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {key_path}")).with_source(e)
+    })?;
+    let kid = require(args, "kid")?;
+
+    let mut keys = IssuerKeys::new();
+    match args.get("alg").unwrap_or("ES256") {
+        "ES256" => keys.add_ec_pem(kid, &pem, Algorithm::ES256)?,
+        "ES384" => keys.add_ec_pem(kid, &pem, Algorithm::ES384)?,
+        "EdDSA" | "Ed25519" => keys.add_ed_pem(kid, &pem)?,
+        other => {
+            return Err(WcError::with_detail(
+                Code::ALG_NOT_ASYMMETRIC,
+                format!("{other:?} is not an accepted contract algorithm"),
+            ))
+        }
+    }
+
+    let mediator = require(args, "mediator-id")?;
+    let at = args.number("now").unwrap_or_else(now);
+    let mut opts = VerifyOpts::new(&keys, mediator, at);
+    opts.leeway = args.number("leeway").unwrap_or(0);
+
+    let verified = contract::verify_artifact(&jws, &opts)?;
+    let p = &verified.payload;
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "verdict": "valid",
+                "cid": p.cid.as_str(),
+                "jti": p.jti.as_str(),
+                "iss": p.iss,
+                "aud": p.aud,
+                "caller": p.caller.id.as_str(),
+                "callee": p.callee.id.as_str(),
+                "surface": { "tools": p.surface.tools, "skills": p.surface.skills,
+                             "resources": p.surface.resources },
+                "surface_digest": p.callee.surface_digest,
+                "exp": p.exp,
+                "remaining_secs": p.exp.saturating_sub(at),
+                "posture": format!("{:?}", p.assurance.posture),
+                "policy_version": p.policy_version,
+                "checked": ["size", "alg", "signature", "schema", "typ", "nbf", "exp", "aud", "revocation"],
+                "not_checked": ["peer identity", "presented surface digest", "zone policy",
+                                "token binding"],
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("valid  {}", p.cid);
+    println!("  issuer     {}", p.iss);
+    println!("  audience   {}", p.aud);
+    println!(
+        "  caller     {} ({}, tier {})",
+        p.caller.id,
+        p.caller.zone,
+        p.caller.tier.as_u8()
+    );
+    println!(
+        "  callee     {} ({}, tier {})",
+        p.callee.id,
+        p.callee.zone,
+        p.callee.tier.as_u8()
+    );
+    println!("  surface    {}", p.surface.items().join(", "));
+    if !p.surface.resources.is_empty() {
+        println!("  resources  {}", p.surface.resources.join(", "));
+    }
+    println!(
+        "  digest     {}",
+        p.callee.surface_digest.as_deref().unwrap_or("-")
+    );
+    println!(
+        "  expires    {} ({}s remaining)",
+        p.exp,
+        p.exp.saturating_sub(at)
+    );
+    println!("  posture    {:?}", p.assurance.posture);
+    println!("  policy     {}", p.policy_version);
+    // Saying what was *not* checked matters: a verdict that overstates its scope
+    // is worse than no verdict.
+    println!("\n  checked: size, alg, signature, schema, typ, nbf/exp, aud, revocation");
+    println!("  not checked here: peer identity, presented surface, zone policy, token binding");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
@@ -1018,6 +1143,8 @@ EVIDENCE
 
 TOOLS
   canon <surface.json> [--kind mcp|a2a] [--entity ID] [--document] [--json]
+  verify <contract.jws> --issuer-pub PEM --kid KID --mediator-id ID
+                        [--alg ES256|ES384|EdDSA] [--now TS] [--leeway N] [--json]
   version
 
 GLOBAL
@@ -1052,6 +1179,27 @@ mod tests {
         assert_eq!(exit_code(Code::QUARANTINE_DUAL_CONTROL_MISSING), 6);
         assert_eq!(exit_code(Code::CHAIN_BROKEN), 4);
         assert_eq!(exit_code(Code::IDENTITY_UNVERIFIABLE), 4);
+        // The whole verification block is one verdict class.
+        for code in [
+            Code::ALG_NOT_ASYMMETRIC,
+            Code::SIGNATURE_INVALID,
+            Code::CONTRACT_EXPIRED,
+            Code::AUDIENCE_MISMATCH,
+            Code::CONTRACT_REVOKED,
+            Code::CALLER_PEER_MISMATCH,
+            Code::PIN_MISMATCH,
+            Code::POSTURE_NOT_ATTESTED,
+            Code::ZONE_PAIR_FORBIDDEN,
+            Code::TOKEN_BINDING_MISMATCH,
+            Code::SCHEMA_UNKNOWN,
+            Code::CONTRACT_OVERSIZE,
+        ] {
+            assert_eq!(
+                exit_code(code),
+                4,
+                "{code} should be a verification failure"
+            );
+        }
         assert_eq!(exit_code(Code::POLICY_DENIED), 3);
         assert_eq!(exit_code(Code::ENTITY_QUARANTINED), 3);
         // A contract-lifecycle refusal is a decision, not a malfunction.

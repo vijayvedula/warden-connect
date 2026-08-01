@@ -1199,7 +1199,9 @@ dependencies = [
 name = "wc-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "hex",
+ "jsonwebtoken",
  "serde",
  "serde_json",
  "sha2",
