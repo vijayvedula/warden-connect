@@ -184,7 +184,6 @@ pub struct Anchor {
     key: EncodingKey,
     path: PathBuf,
     interval: u64,
-    since_last: u64,
 }
 
 impl Anchor {
@@ -198,8 +197,18 @@ impl Anchor {
             key,
             path: path.into(),
             interval: interval.max(1),
-            since_last: 0,
         })
+    }
+
+    /// Whether a given head sequence is due a checkpoint.
+    ///
+    /// Derived from `seq`, not from a counter of appends made by this process. A
+    /// CLI invocation is a whole process life, so a counter would mean an
+    /// interval that never elapses — the anchor file would stay empty and the
+    /// estate would have no external proof at all.
+    #[must_use]
+    pub fn is_due(&self, seq: u64) -> bool {
+        seq > 0 && seq.is_multiple_of(self.interval)
     }
 
     /// Sign and append a checkpoint.
@@ -225,7 +234,6 @@ impl Anchor {
             .map_err(|e| io_err(&self.path, e))?;
         writeln!(file, "{jwt}").map_err(|e| io_err(&self.path, e))?;
         file.sync_data().map_err(|e| io_err(&self.path, e))?;
-        self.since_last = 0;
         Ok(jwt)
     }
 }
@@ -382,8 +390,7 @@ impl Chain {
         self.last_hash = entry.row_hash.clone();
 
         if let Some(anchor) = &mut self.anchor {
-            anchor.since_last += 1;
-            if anchor.since_last >= anchor.interval {
+            if anchor.is_due(entry.seq) {
                 anchor.write(entry.seq, &entry.row_hash, now)?;
             }
         }
@@ -454,6 +461,13 @@ impl Chain {
                     .push(format!("anchor at seq {seq} does not match the chain"));
             }
             report.anchor_mismatches = mismatches;
+            if verified == 0 && !entries.is_empty() {
+                // Not a break, but not proof either: chain-only verification
+                // cannot detect a wholesale rewrite (see the anchor tests).
+                report
+                    .problems
+                    .push("no checkpoints verified: this chain has no external proof".to_string());
+            }
         }
         Ok(report)
     }
@@ -832,6 +846,45 @@ mod tests {
         assert!(report.is_intact(), "{report:?}");
         assert_eq!(report.anchors_verified, 2);
         assert!(report.anchor_mismatches.is_empty());
+    }
+
+    #[test]
+    fn the_interval_survives_process_boundaries() {
+        // Each CLI invocation is one process appending one entry. An interval
+        // counted per process would never elapse.
+        let tmp = TmpDir::new("interval");
+        let anchor_path = tmp.path().join(ANCHOR_FILE);
+        for i in 0..4 {
+            let mut chain = Chain::open(tmp.path())
+                .unwrap()
+                .with_anchor(PRIV, &anchor_path, 2)
+                .unwrap();
+            chain.append(draft("e"), 1_000 + i).unwrap();
+        }
+        let text = std::fs::read_to_string(&anchor_path).unwrap();
+        assert_eq!(text.lines().count(), 2, "seq 2 and seq 4 are due");
+
+        let report = Chain::verify(tmp.path(), Some(PUB)).unwrap();
+        assert!(report.is_intact(), "{report:?}");
+        assert_eq!(report.anchors_verified, 2);
+    }
+
+    #[test]
+    fn a_chain_with_no_checkpoints_is_reported_as_unproven() {
+        let tmp = TmpDir::new("unproven");
+        {
+            let mut chain = Chain::open(tmp.path()).unwrap();
+            chain.append(draft("e"), 1_000).unwrap();
+        }
+        let report = Chain::verify(tmp.path(), Some(PUB)).unwrap();
+        // Intact, but with nothing signed there is no proof against a wholesale
+        // rewrite — so it must not read as a clean bill of health.
+        assert!(report.is_intact());
+        assert_eq!(report.anchors_verified, 0);
+        assert!(report
+            .problems
+            .iter()
+            .any(|p| p.contains("no external proof")));
     }
 
     #[test]

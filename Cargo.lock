@@ -1173,6 +1173,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wc-cli"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wc-control",
+ "wc-core",
+]
+
+[[package]]
 name = "wc-control"
 version = "0.1.0"
 dependencies = [
