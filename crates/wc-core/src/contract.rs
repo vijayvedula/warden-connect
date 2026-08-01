@@ -1033,8 +1033,40 @@ pub struct Admitted {
 }
 
 impl VerifiedContract {
-    /// Context checks 6–11 (§8.6.3), yielding what the mediator installs.
-    pub fn admit(&self, ctx: &AdmitCtx<'_>) -> Result<Admitted> {
+    /// Check 8: the presented surface must hash to the contracted digest.
+    ///
+    /// A separate step because MCP hands over the tool list *after* `initialize`,
+    /// so an inline mediator genuinely cannot run this at connection setup
+    /// (§8.6.1). Callers that do have the surface up front use [`Self::admit`],
+    /// which runs this and the context checks together.
+    ///
+    /// Compared over the contracted subset only, so an additive tool outside the
+    /// contract cannot break the connection — and a change inside it always does.
+    pub fn check_pin(&self, presented: &Pin) -> Result<()> {
+        let expected = self
+            .payload
+            .callee
+            .surface_digest
+            .as_deref()
+            .ok_or_else(|| {
+                WcError::with_detail(Code::PIN_MISMATCH, "contract carries no surface digest")
+            })?;
+        let actual = presented.surface_digest(&self.payload.surface.items())?;
+        if actual != expected {
+            return Err(WcError::with_detail(
+                Code::PIN_MISMATCH,
+                format!("presented surface digest {actual} != contracted {expected}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Context checks 6, 7, 9, 10 and 11 — everything except the pin.
+    ///
+    /// Yields what a mediator installs for the connection's lifetime. A caller
+    /// using this directly **owes a [`Self::check_pin`]** before forwarding any
+    /// call, or check 8 is simply not performed.
+    pub fn admit_context(&self, ctx: &AdmitCtx<'_>) -> Result<Admitted> {
         let p = &self.payload;
         let mut findings: Vec<(Code, String)> = Vec::new();
 
@@ -1060,22 +1092,6 @@ impl VerifiedContract {
             ));
         }
 
-        // 8 · the presented surface must hash to the contracted digest.
-        //
-        // Compared over the contracted subset, so an additive tool outside the
-        // contract cannot break the connection — and a change inside it always
-        // does.
-        let expected = p.callee.surface_digest.as_deref().ok_or_else(|| {
-            WcError::with_detail(Code::PIN_MISMATCH, "contract carries no surface digest")
-        })?;
-        let presented = ctx.presented.surface_digest(&p.surface.items())?;
-        if presented != expected {
-            return Err(WcError::with_detail(
-                Code::PIN_MISMATCH,
-                format!("presented surface digest {presented} != contracted {expected}"),
-            ));
-        }
-
         // 9 · posture.
         if p.assurance.posture != Posture::Attested {
             let detail = format!("counterparty posture is {:?}", p.assurance.posture);
@@ -1097,7 +1113,7 @@ impl VerifiedContract {
         }
 
         // 11 · token binding. When the session token names a connection it must
-        // be this one; when it does not, the pair binding above is what holds.
+        // be this one; when it does not, the authenticated pair is what binds.
         if let Some(wcid) = ctx.token_wcid {
             if wcid != p.cid.as_str() {
                 return Err(WcError::with_detail(
@@ -1116,6 +1132,15 @@ impl VerifiedContract {
             exp: p.exp,
             findings,
         })
+    }
+
+    /// All of checks 6–11 (§8.6.3): the pin, then the context.
+    ///
+    /// The pin goes first because a counterparty whose surface has moved is the
+    /// case where continuing to evaluate is least useful.
+    pub fn admit(&self, ctx: &AdmitCtx<'_>) -> Result<Admitted> {
+        self.check_pin(ctx.presented)?;
+        self.admit_context(ctx)
     }
 }
 
