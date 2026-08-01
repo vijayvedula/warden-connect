@@ -1,0 +1,30 @@
+{
+  "tools": [
+    {
+      "name": "list_transactions",
+      "description": "List recent transactions.\n\nSupports paging.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["account_id"],
+        "properties": {
+          "account_id": { "type": "string", "description": "Ledger account." },
+          "limit": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "name": "get_balance",
+      "description": "Read   an account balance.   ",
+      "inputSchema": {
+        "type": "object",
+        "required": ["currency", "account_id"],
+        "properties": {
+          "account_id": { "type": "string" },
+          "currency": { "type": "string", "enum": ["SGD", "AUD"] }
+        }
+      },
+      "annotations": { "readOnlyHint": true, "title": "Get balance" },
+      "_meta": { "build": "ignored" }
+    }
+  ]
+}

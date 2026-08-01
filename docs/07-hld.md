@@ -64,18 +64,23 @@ working until they expire — which is why TTLs are short and expiry is hard.
 
 ### Component inventory
 
-| Component | Responsibility | Warden core reuse |
+| Component | Responsibility | Relationship to Warden core |
 |---|---|---|
 | **registry** | Entity records for agents and servers; content-addressed cards/manifests; ownership, tier, zone, lifecycle, posture | new |
-| **admission** | Verify identity, provenance, card/manifest signature; screen declared surface; derive tier; pin hashes | new (uses `identity.rs` verification primitives) |
+| **admission** | Verify identity, provenance, card/manifest signature; screen declared surface; derive tier; pin hashes | new |
 | **broker** | Mediated capability discovery; policy-filtered results; anti-enumeration | new |
-| **contract** | Mint / verify / renew / revoke `warden-connection+jws`; approval workflow; policy evaluation | new (JOSE + `policy.rs` condition engine) |
+| **contract** | Mint / verify / renew / revoke `warden-connection+jws`; approval workflow; policy evaluation | new (JOSE direct; condition algebra mirrors `policy.rs`) |
 | **sentinel** | Scheduled re-attestation; drift detection & semantic diff; posture scoring; expiry watch; blast-radius | new |
-| **evidence** | Lifecycle events → tamper-evident chain + anchors; OCSF/CAEP sinks; OSCAL & register exports | **`audit.rs`, `anchor.rs`, `sink.rs`, `ocsf.rs`** |
-| **mediator** *(data plane)* | Peer auth, contract verification, `tools/list` filtering, surface allowlist, ceilings, zone rules, drain | **extends `gateway.rs`, `mcp.rs`, `budget.rs`, `revocation.rs`** |
+| **evidence** | Lifecycle events → tamper-evident chain + anchors; OCSF/CAEP sinks; OSCAL & register exports | same formats as `audit.rs`/`anchor.rs`/`sink.rs`/`ocsf.rs`, wire-compatible by golden vector |
+| **mediator** *(data plane)* | Peer auth, contract verification, `tools/list` filtering, surface allowlist, ceilings, zone rules, drain | **the one component that links core** — an `Upstream` decorator composed with `warden::Gateway`; needs no change to core (LLD §8.6.1). **Optional**: omit it for a control-plane-only deployment |
 
-Seven components; **two are largely existing code**, one is an extension of the
-shipped proxy, four are new.
+Seven components. One — the mediator — composes Warden core's shipped gateway as a
+library and is the only one that links it; the other six stand alone, so the
+connection layer can be adopted with no Warden core deployed at all (LLD §8.3).
+Critically, the mediator requires **no modification to Warden core**: it decorates
+the public `Upstream` trait (LLD §8.6.1), so enforcement ships against the proxy as
+released. `evidence` and `revocation` are reimplemented to core's proven design and
+stay wire-compatible through shared golden vectors rather than shared code.
 
 ---
 
@@ -351,8 +356,9 @@ connect audit verify                   # prove the lifecycle record is untampere
   verified against the pin.
 - **Peer identity**: mTLS with SPIFFE X.509-SVID, or JWT-SVID plus DPoP where
   mTLS is unavailable.
-- **Revocations**: signed event feed polled/pushed to mediators (reuses core's
-  `revocation.rs` format and CAEP ingest).
+- **Revocations**: signed event feed polled/pushed to mediators, in core's
+  `revocation.rs` format (`{kind, sub, ts}` ES256 events) plus CAEP ingest — the
+  same wire format, so one feed serves both planes.
 
 ### Policy-as-code (`connect-policy.toml`, Warden-style, hot-reloadable)
 
@@ -452,8 +458,10 @@ identifier**: the session token, the connection contract, and `cid`.
 
 | Topology | Shape | When | Trade-off |
 |---|---|---|---|
-| **Sidecar** (preferred) | One mediator + Warden proxy per agent runtime | Matches core's MVP; surgical containment | More instances to operate |
+| **Control plane only** | No data-plane component at all. Registry, admission, pins, drift, posture, exports, quarantine *orders* | The P0 wedge; estates that want the register and the evidence before they want enforcement | **Nothing is enforced.** Contracts are issued but unverified, `tools/list` is unfiltered, quarantine notifies rather than cuts. Honest visibility, zero behaviour change |
+| **Sidecar** (preferred) | `connect mediate` — one process composing **unmodified** Warden core's gateway with the connect decorator — per agent runtime | Matches core's MVP; surgical containment; enforcement without changing Warden core | More instances to operate |
 | **Shared gateway** | One mediator fronting many agents | Simpler ops, brownfield | Concentrated trust boundary; containment relies on per-`cid` revocation rather than process isolation |
+| **Third-party enforcement** | Someone else's Envoy filter, API gateway plugin or agent framework runs the eleven checks | An egress proxy already exists and should not be duplicated | Conformance is on them; `connect verify` + `fixtures/contracts/` is the suite they must pass |
 | **Egress mediator** | Dedicated mediator on the org boundary | Partner/public zone crossings | Must not be the only mediator — internal relationships still need governing |
 | **Federated** | CP per org, federated trust anchors | Cross-org A2A | Trust-anchor lifecycle becomes a first-class operational concern |
 | **Air-gapped** | Contracts pre-issued as signed bundles; no CP call | Regulated/offline estates | Expiry is hard; revocation depends on bundle refresh |
@@ -472,7 +480,7 @@ identifier**: the session token, the connection contract, and `cid`.
 | Registry scale | 10⁴ entities, 10⁵ contracts per tenant | Contract graph fits in memory for blast-radius queries |
 | Control-plane availability | 99.9% | DP unaffected to `exp` |
 | Data-plane availability | Inherits the agent runtime | Stateless beyond cache |
-| Evidence durability | Tamper-evident + externally anchored | Reuses core `audit.rs` / `anchor.rs` |
+| Evidence durability | Tamper-evident + externally anchored | Same chain and anchor format as core `audit.rs` / `anchor.rs` |
 | Retention | Contract + lifecycle history ≥ 7 years (configurable) | DORA/CPS 230 horizons |
 | Multi-tenancy | Per-tenant registry, keys, policy, audit chain | Cross-tenant resolution structurally impossible |
 
@@ -497,14 +505,15 @@ identifier**: the session token, the connection contract, and `cid`.
 
 | Phase | Ships | Unlocks | Rough shape |
 |---|---|---|---|
-| **P0 — Observe** | Registry, CLI, entity records, shadow detection from mediator observation, tamper-evident lifecycle chain, OCSF sink | Estate visibility with zero behaviour change; maturity **L1** | Registry + evidence reuse. The wedge. |
+| **P0 — Observe** | Registry, CLI, entity records, shadow detection from mediator observation, tamper-evident lifecycle chain, OCSF sink | Estate visibility with zero behaviour change; maturity **L1** | Registry + evidence. The wedge, standalone. |
 | **P1 — Contract** | Contract mint/verify/renew/revoke, request→approval workflow, standing policy, mediator surface allowlist + `tools/list` filtering | Deny-by-default topology; maturity **L2** | The core loop (UC-04). |
 | **P2 — Assure** | Provenance verification, card/manifest signing, surface screening, pinning, drift detection, re-attestation, posture scoring | Rug-pull and tool-poisoning defence; maturity **L3** | The differentiated security value. |
-| **P3 — Contain** | Estate-wide quarantine with ACKs, CAEP ingest/emit, blast-radius, drain semantics, break-glass | The demo moment; sub-minute MTTC | Heavy reuse of `revocation.rs`. |
+| **P3 — Contain** | Estate-wide quarantine with ACKs, CAEP ingest/emit, blast-radius, drain semantics, break-glass | The demo moment; sub-minute MTTC | `revocation.rs`'s feed format, reimplemented. |
 | **P4 — Govern** | Zone model, cross-org federation, egress control, DORA/CPS 230/OSCAL export, multi-tenancy | Regulated-enterprise close; maturity **L4** | The commercial edge. |
 
 P0 is deliberately the smallest possible thing that is independently valuable —
-and it is mostly assembled from code Warden already ships.
+and it ships without Warden core deployed at all, which is what makes it adoptable
+by a team that has not (or will not) adopt the rest of the family.
 
 ---
 

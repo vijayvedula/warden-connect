@@ -1,0 +1,8 @@
+{
+  "alg": "wcs1",
+  "items": {
+    "get_balance": "sha256:5b44571651ea9831e6cdd4bd525ed2ff8078f767ca19d68da69b96ab5abd01d9",
+    "list_transactions": "sha256:32ddf290631bd7033092c7bb986be498ec85cafdeb6d4b7a83033d86e87e4eb9"
+  },
+  "manifest": "sha256:62f490db3a95e93c57c126a70642edb0024d2547b27bdd3d5239e372ad1d14f0"
+}

@@ -51,7 +51,7 @@
 
 | Capability | Mechanism | Standards | Interface | Point | Failure mode | Status |
 |---|---|---|---|---|---|---|
-| T4.1 Inline mediator | Terminates the agent-side channel, verifies the contract, re-establishes to the callee | **MCP** stdio + Streamable-HTTP; **A2A** transport | co-located with `warden proxy` | DP | Mediator down → no connection (fail-closed) | `[~]` extends `gateway.rs` |
+| T4.1 Inline mediator | Terminates the agent-side channel, verifies the contract, re-establishes to the callee | **MCP** stdio + Streamable-HTTP; **A2A** transport | `connect mediate`, composing an unmodified `warden` gateway | DP | Mediator down → no connection (fail-closed) | `[~]` `Upstream` decorator, no core change |
 | T4.2 Zone-crossing enforcement | Internal / partner / public zone pairs, each with an assurance bar | policy-as-code | `connect-policy.toml` zones | DP | Unclassified pair → treated as most-restrictive | `[ ]` |
 | T4.3 Fan-out & recursion limits | Cap concurrent downstream connections and delegation depth per contract | contract `terms`, `delegation.max_depth` | contract | DP | Limit hit → deny + alert (protects against call storms) | `[ ]` |
 | T4.4 Rate & spend ceilings | Per-connection call-rate and cost ceilings, durable across restarts | Warden budget model | contract `terms` | DP | Ceiling breach → deny, owner notified | `[~]` extends `budget.rs` |
@@ -136,16 +136,39 @@ at the connection layer.
 
 ## 4.10 Build leverage from Warden core
 
-Roughly half the technical surface is already shipped and tested in Warden core:
+warden-connect is built to be **adopted on its own**. A team may run Warden core
+plus `warden-trace` and substitute something else for the connection layer, or take
+`warden-connect` alone for the register and the kill switch. So the family couples
+through **two signed artifacts and one identifier** — the session token, the
+connection contract, and `cid` — and not through a shared library.
 
-| Already exists (reuse) | New build |
+Concretely: only the inline mediator links Warden core, because it compiles *into*
+the shipped proxy so the data plane adds no second hop. Everything else stands
+alone. In particular the contract verifier must: `connect verify` is the
+conformance ground truth for a candidate standard, and a reference verifier that
+requires the vendor's product is not a reference verifier.
+
+The leverage is therefore in **design**, not in linked code — which is the more
+durable kind, and the harder kind to acquire:
+
+| Proven in Warden core, reimplemented here to the same design | Genuinely new |
 |---|---|
-| Tamper-evident audit chain + signed anchors (`audit.rs`, `anchor.rs`) | Registry & content-addressed pinning |
-| CAEP/SSF revocation ingest & emit (`revocation.rs`, `sink.rs`) | Admission pipeline (provenance, card signature, surface screening) |
-| OCSF evidence sinks with blocking/fail-safe delivery (`sink.rs`) | Contract mint / verify / renew (`warden-connection+jws`) |
-| JWT/JWKS verification, asymmetric-only, DPoP (`identity.rs`, `dpop.rs`) | Discovery broker with mediated visibility |
-| Policy engine with RBAC/ABAC/ReBAC and `when` trees (`policy.rs`) | Zone model & zone-crossing rules |
-| Inline MCP proxy with fail-closed dispatch (`gateway.rs`, `mcp.rs`) | Sentinel: drift, re-attestation, posture scoring |
-| Budgets, pause/resume, hot reload (`budget.rs`, `control.rs`) | Regulatory register export; cross-org federation |
+| Tamper-evident hash chain + externally verifiable signed anchors | Registry & content-addressed per-item pinning (`wcs1`) |
+| Signed revocation feed, tailed and applied as a deny-only set | Admission pipeline (provenance, card signature, surface screening) |
+| OCSF/CAEP sinks with blocking vs fail-safe delivery semantics | Contract mint / verify / renew (`warden-connection+jws`) |
+| Asymmetric-only JWS verification, JWKS by `kid`, DPoP binding | Discovery broker with mediated visibility |
+| Policy engine shape: first-match rules, `when` condition trees, lint and dry-run | Zone model & zone-crossing assurance bars |
+| Fail-closed dispatch with a named reason for every denial | Sentinel: drift classification, re-attestation, posture scoring |
+| Durable counters surviving restart; hot reload; twelve-factor config | Regulatory register export; cross-org federation |
 
-That ratio is the reason this is the right next component to build.
+Two things make that reimplementation cheap rather than wasteful. The patterns are
+already validated in production code, so the design risk is gone. And wire
+compatibility — chain format, revocation events, OCSF shapes — is held by **shared
+golden vectors** rather than shared code, so it is *checked* on every build instead
+of assumed. Where a primitive is genuinely trivial and must stay byte-identical
+(canonical JSON, SHA-256 hex), it is vendored with vectors pinning its output; when
+a third family member needs it, it gets extracted into a neutral crate.
+
+The mediator is the deliberate exception, and it is an extension of a shipped
+product rather than a new one — which is still the reason this is the right next
+component to build.

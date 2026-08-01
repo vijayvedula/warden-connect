@@ -21,12 +21,12 @@
 |---|---|
 | 8.2–8.4 | Constraints, crate layout, module inventory |
 | 8.5 | Every control-plane module: types, signatures, behaviour |
-| 8.6 | The data-plane mediator and its three hook points into `gateway.rs` |
+| 8.6 | The data-plane mediator, as an `Upstream` decorator over unmodified Warden core |
 | 8.7 | The nine algorithms that carry the design's weight (pseudocode) |
 | 8.8 | Storage records and sizing |
 | 8.9 | Wire formats — contract, MCP/A2A framing, feeds, bundles |
 | 8.10 | Concurrency, latency budget, and how p99 < 5 ms is actually met |
-| 8.11 | Error taxonomy — 69 codes, each with a fail direction and a metric |
+| 8.11 | Error taxonomy — 70 codes, each with a fail direction and a metric |
 | 8.12 | Key management, crypto choices, input limits |
 | 8.13 | Config and env reference |
 | 8.14 | Observability |
@@ -47,7 +47,7 @@ deployable, and warden-connect does not get to break them.
 
 | Constraint | Consequence for this design |
 |---|---|
-| **Thin dependency tree** (core: `serde`, `serde_json`, `sha2`, `hex`, `toml`, `jsonwebtoken` 10.4 `rust_crypto`, `base64`, `ureq`, `libc`) | No async runtime, no ORM, no graph database, no ML runtime. New deps must be justified per-crate in §8.3. |
+| **Thin dependency tree** — Warden core keeps to `serde`, `serde_json`, `sha2`, `hex`, `toml`, `jsonwebtoken` 10.4 `rust_crypto`, `base64`, `ureq`, `libc`, and so do we | No async runtime, no ORM, no graph database, no ML runtime. New deps must be justified per-crate in §8.3. Today: `wc-core` resolves to 30 crates, `wc-control` to 61. |
 | **No async** — thread-per-request, `Arc<Gateway>` shared state (`http.rs::serve`) | Control plane is a synchronous threaded HTTP server; the sentinel is a worker-thread pool, not a task executor. |
 | **File-backed durable state** — hash-chained JSONL (`audit.rs`), signed feeds (`revocation.rs`), JSON snapshots (`budget.rs`) | The registry and contract store are **append-only event logs with in-memory projections** (§8.8), not a SQL schema. A SQL backend is an optional P4 adapter behind a trait, never the default. |
 | **Asymmetric-only signatures** (`identity.rs` `ASYMMETRIC_ALGS`) | Contracts are ES256/ES384/EdDSA/PS256/RS256. An HMAC-signed contract is rejected before any other check — algorithm confusion is structurally excluded. |
@@ -95,23 +95,52 @@ warden-connect/
 
 | Crate | Depends on | Added third-party |
 |---|---|---|
-| `wc-core` | `warden` (lib), `serde`, `serde_json`, `sha2`, `hex`, `jsonwebtoken`, `base64` | **`unicode-normalization`** (NFC for `wcs1`) — the only new primitive that cannot be hand-rolled safely |
-| `wc-control` | `wc-core`, `warden`, `toml`, `ureq`, `libc` | none |
-| `wc-mediator` | `wc-core`, `warden` | none |
+| `wc-core` | `serde`, `serde_json`, `sha2`, `hex`, `jsonwebtoken`, `base64` | **`unicode-normalization`** (NFC for `wcs1`) — the only new primitive that cannot be hand-rolled safely |
+| `wc-control` | `wc-core`, `toml`, `ureq`, `libc` | none |
+| `wc-mediator` | `wc-core`, **`warden`** | none |
 | `wc-cli` | all of the above | none |
 
-`warden` is consumed as a library (`warden::{audit, anchor, sink, ocsf,
-revocation, identity, dpop, policy, gateway, mcp, jsonrpc, budget, control, obs,
-util, redact}` — all public in `src/lib.rs`). Reuse is by *linking*, not copying;
-a fix in core's audit chain is a fix here.
+### No dependency on Warden core, except where the deployment model demands it
+
+**Only `wc-mediator` links `warden`**, and there the coupling is not a choice: it
+compiles *into* the shipped proxy so the data plane adds no second hop (§8.10). If
+you run the mediator you run Warden core, by construction.
+
+Everywhere else, warden-connect is standalone. Three reasons, in order of weight:
+
+1. **The contract verifier is a conformance implementation.** §7.4 makes
+   `connect verify <contract>` the ground truth for a candidate standard. A
+   reference verifier that requires linking the vendor's product is not a
+   reference verifier — a partner org or a competing platform must be able to
+   check a `warden-connection+jws` with one small crate.
+2. **Adoption is any-subset.** A team may run Warden core plus `warden-trace` and
+   substitute something else for `connect`; another may take `connect` alone for
+   the register and the kill switch. The family's interface is deliberately **two
+   signed artifacts and one identifier** (§7.7), so a code dependency between
+   members would contradict the stated architecture.
+3. **Independent release cadence and a one-crate SBOM** for adopters who only
+   want the connection layer.
+
+The primitives both projects need — canonical JSON and SHA-256 — are ~30 lines,
+vendored into `wc_core::util` and **behaviourally identical on purpose**:
+compatibility is held by shared golden vectors (`fixtures/`), which is checked
+rather than assumed. When a third family member needs the same primitives, extract
+them into a neutral crate then; not before, because duplicating thirty lines twice
+is cheaper than getting a crate boundary wrong across four repositories.
+
+What this costs is **code** leverage, not **design** leverage. The evidence chain,
+sink semantics, revocation feed format and policy idiom are all reimplemented to
+Warden core's proven design, in its idiom, with its operational model — and with
+format compatibility as a tested contract. §8.4 marks which modules link core
+and which do not; doc 04 §4.10 carries the corrected leverage ledger.
 
 ### Binaries and how the mediator ships
 
 | Artifact | What it is |
 |---|---|
 | `connect` | Control-plane CLI + server (`connect serve`). One binary, subcommand tree per §8.5.11. |
-| `warden` (patched) | The shipped proxy, with `wc-mediator` behind cargo feature `connect` and three new flags. **No second process, no second hop** — this is how §8.10's latency budget is met. |
-| `connect mediate` | Standalone mediator for brownfield estates where the proxy cannot be rebuilt; wraps `wc-mediator` around a stdio/HTTP relay. Same code, one extra hop, documented as the slower option. |
+| `connect mediate` | The inline mediator: composes **unmodified** Warden core's `Gateway` with an `Upstream` decorator (§8.6.1). One process, no extra hop — this is how §8.10's latency budget is met, and it requires no change to Warden core. |
+| *(none)* | The mediator is **optional**. A control-plane-only deployment gives the register, pins, drift detection and exports — the P0 wedge — with no data-plane component at all (§7.9). Enforcement is what requires a mediator. |
 
 ---
 
@@ -119,36 +148,37 @@ a fix in core's audit chain is a fix here.
 
 Rough sizes are implementation estimates, for sequencing — not targets.
 
-| Module | Responsibility | LOC | Phase | Core reuse |
+| Module | Responsibility | LOC | Phase | Relationship to Warden core |
 |---|---|---|---|---|
 | `wc-core::model` | `Entity`, `Contract`, `Zone`, `Approval`, `PostureEvent`, ids, serde | 450 | P0 | — |
-| `wc-core::canon` | `wcs1` canonicalisation + pinning (§8.7.1) | 400 | P0 | `util::canonical_json`, `sha256_hex` |
-| `wc-core::contract` | Mint / verify `warden-connection+jws` (§8.7.2) | 550 | P1 | `identity` JWKS + `ASYMMETRIC_ALGS` stance |
+| `wc-core::canon` | `wcs1` canonicalisation + pinning (§8.7.1) | 400 | P0 | vendored primitives, byte-compatible |
+| `wc-core::contract` | Mint / verify `warden-connection+jws` (§8.7.2) | 600 | P1 | `jsonwebtoken` directly; same asymmetric-only stance |
 | `wc-core::zone` | Zone lattice, assurance bars, zone-pair resolution | 220 | P4 (stub P1) | — |
 | `wc-core::error` | `WcError` + the `WC-*` code table (§8.11) | 260 | P0 | — |
-| `wc-control::store` | Append-only logs, projections, single-writer lock, compaction | 600 | P0 | `audit.rs` file-lock pattern |
+| `wc-control::store` | Append-only logs, projections, single-writer lock, compaction | 600 | P0 | same file discipline as `audit.rs` |
 | `wc-control::registry` | Entity CRUD, lifecycle state machine, pins, indexes | 480 | P0 | — |
-| `wc-control::admission` | 7-stage admission pipeline, tier derivation (§8.7.3) | 620 | P0/P2 | `identity`, `dpop` |
+| `wc-control::admission` | 7-stage admission pipeline, tier derivation (§8.7.3) | 900 | P0/P2 | independent |
 | `wc-control::screen` | Declared-surface injection screening (§8.7.4) | 540 | P2 | — |
 | `wc-control::broker` | Capability index, mediated discovery, anti-enumeration | 380 | P1 | — |
-| `wc-control::cpolicy` | `connect-policy.toml`: parse, evaluate, lint, dry-run | 700 | P1 | mirrors `policy.rs`; reuses `Match`/`Cond`/`Op` |
+| `wc-control::cpolicy` | `connect-policy.toml`: parse, evaluate, lint, dry-run | 850 | P1 | condition algebra reimplemented to match `policy.rs` syntax exactly |
 | `wc-control::sentinel` | Re-attest scheduler, drift classify, posture score, blast radius | 780 | P2/P3 | — |
-| `wc-control::evidence` | Lifecycle chain, anchors, OCSF/CAEP sinks | 340 | P0 | **`audit`, `anchor`, `sink`, `ocsf`** |
+| `wc-control::evidence` | Lifecycle chain, anchors, OCSF/CAEP sinks | 850 | P0 | same formats as `audit`/`anchor`/`sink`/`ocsf`, held by golden vectors |
 | `wc-control::export` | DORA / CPS 230 / OSCAL / CSV / CycloneDX registers | 520 | P4 | — |
-| `wc-control::federate` | OpenID-Federation trust chains, partner resolution | 460 | P4 | `identity::discover_jwks_uri` |
-| `wc-control::api` | HTTP/1.1 surface, authn, idempotency, rate limits | 700 | P0→ | `http.rs` server, `authzen.rs` |
+| `wc-control::federate` | OpenID-Federation trust chains, partner resolution | 460 | P4 | OIDC discovery reimplemented |
+| `wc-control::api` | HTTP/1.1 surface, authn, idempotency, rate limits | 900 | P0→ | same shape as `http.rs`/`authzen.rs` |
 | `wc-control::tenant` | Per-tenant roots: store, keys, policy, chain | 240 | P4 | — |
-| `wc-mediator::cache` | Contract snapshot cache, revocation set, COW swap | 320 | P1 | `revocation::RevocationSet` |
-| `wc-mediator::gate` | `ConnectionGate` impl: the 11 verification steps | 420 | P1 | `gateway.rs` hook points |
-| `wc-mediator::filter` | `tools/list` filtering, surface allowlist | 260 | P1 | `mcp.rs` |
-| `wc-mediator::ceiling` | Rate / spend / fan-out / concurrency ceilings | 300 | P1/P3 | **`budget.rs`** |
-| `wc-mediator::peer` | Peer identity from mTLS / SVID / mesh socket | 340 | P1 | `dpop.rs` |
-| `wc-mediator::drain` | Drain vs abort on revocation | 180 | P3 | `control.rs` pause/drain |
+| `wc-mediator::cache` | Contract snapshot cache, revocation set, COW swap | 320 | P1 | **links `revocation::RevocationSet`** |
+| `wc-mediator::gate` | `Upstream` decorator: the 11 verification steps | 420 | P1 | **links `warden::{Gateway, Upstream}`** — no core changes |
+| `wc-mediator::filter` | `tools/list` filtering, surface allowlist | 260 | P1 | **links `mcp.rs`** |
+| `wc-mediator::ceiling` | Rate / spend / fan-out / concurrency ceilings | 300 | P1/P3 | **links `budget.rs`** |
+| `wc-mediator::peer` | Peer identity from mTLS / SVID / mesh socket | 340 | P1 | **links `dpop.rs`** |
+| `wc-mediator::drain` | Drain vs abort on revocation | 180 | P3 | **links `control.rs`** pause/drain |
 | `wc-cli::main` | Command tree, exit codes, output formats | 900 | P0→ | core CLI conventions |
 
-Total ≈ 11.5 kLOC of new Rust, of which the P0 wedge (`model`, `canon`, `error`,
-`store`, `registry`, `admission` stage 1–2 + 6–7, `evidence`, `api` subset, `cli`
-subset) is ≈ 3.4 kLOC.
+Total ≈ 13 kLOC of new Rust, of which the P0 wedge (`model`, `canon`, `error`,
+`util`, `store`, `registry`, `admission`, `evidence`, `api` subset, `cli` subset)
+is ≈ 4.5 kLOC. **Bold** entries are the only ones that link Warden core, and they
+are all in `wc-mediator` — which is compiled into the proxy by design (§8.3).
 
 ---
 
@@ -613,48 +643,95 @@ scraping stderr.
 
 ## 8.6 Data plane — `wc-mediator`
 
-### 8.6.1 The extension point in Warden core
+### 8.6.1 Integration without modifying Warden core
 
-Rather than fork `gateway.rs` (1,117 lines, well tested), add one trait and three
-call sites. This is a small, upstreamable patch to core.
+The mediator needs to see three things on the wire: the `initialize` handshake, the
+`tools/list` response, and each `tools/call`. Warden core already routes all three
+through one public trait, so **no change to Warden core is required**:
 
 ```rust
-// warden/src/gateway.rs — new
-pub trait ConnectionGate: Send + Sync {
-    /// At `initialize`: bind the connection, verify the contract, capture the
-    /// peer's presented surface. Returns the admitted connection or a denial.
-    fn on_initialize(&self, peer: &PeerIdentity, params: &Value)
-        -> Result<Admitted, GateDenial>;
+// warden/src/upstream.rs — already public
+pub trait Upstream {
+    fn request(&mut self, req: &Request) -> Response;
+    fn notify(&mut self, _req: &Request) {}
+}
+```
 
-    /// At `tools/list`: reduce the upstream response to the contracted surface.
-    fn filter_catalog(&self, conn: &Admitted, resp: &mut Value);
+`Gateway::new` takes a `Box<dyn Upstream + Send>`, and `gateway.rs` forwards through
+it at `:348` (`initialize`), `:351` (every non-`tools/call` method, so `tools/list`,
+`resources/list`, `prompts/list`) and `:929` (an allowed `tools/call`). So the
+mediator is an **`Upstream` decorator** wrapping the real upstream:
 
-    /// Before policy: surface allowlist, ceilings, zone rules, revocation.
-    fn authorize_call(&self, conn: &Admitted, tool: &str, args: &Value)
-        -> Result<CallCtx, GateDenial>;
+```rust
+/// Wraps the real upstream so the connection is verified, the catalogue is
+/// filtered, and ceilings are applied — with no change to Warden core.
+pub struct MediatedUpstream {
+    inner: Box<dyn Upstream + Send>,
+    cache: Arc<Cache>,
+    cfg: GateCfg,
+    conn: Option<Admitted>,
 }
 
+impl Upstream for MediatedUpstream {
+    fn request(&mut self, req: &Request) -> Response {
+        match req.method.as_str() {
+            "initialize"    => self.on_initialize(req),     // verify contract, pin presented surface
+            "tools/list"
+            | "resources/list"
+            | "prompts/list" => self.filter_catalog(req),   // reduce to the contracted surface
+            "tools/call"     => self.authorize_call(req),   // allowlist + ceilings
+            _                => self.inner.request(req),
+        }
+    }
+}
+```
+
+`connect mediate` is then a binary that composes Warden's `Gateway` with this
+decorator — one process, no extra hop, no fork, no cargo feature in someone else's
+repository. The dependency direction is one-way (`wc-mediator → warden`), which
+also avoids the circular dependency an in-core trait would have created: core would
+define the trait, `wc-mediator` would implement it, and core's *binary* would then
+need `wc-mediator` to wire it up.
+
+**This is the property that keeps warden-connect off anyone else's critical path.**
+Enforcement ships against unmodified Warden core, today.
+
+#### The one thing the decorator does not get, and the optional patch that would
+
+For `tools/call`, the decorator runs *after* Warden's action policy rather than
+before. The uncontracted call is still blocked — the decorator returns a tool error
+instead of forwarding — but two details are imperfect:
+
+| Imperfection | Consequence |
+|---|---|
+| Denial is attributed at the upstream layer | Core's audit row reads `allow` / forwarded, with the connection denial recorded separately by connect. Reconstructing "why" needs both records rather than one. |
+| Core's per-run budget reserves before forwarding | An uncontracted call consumes a budget unit it never used. |
+
+Neither weakens the security property; both muddy the evidence. So a small
+**optional** upstream patch stays worth proposing to Warden core — but as a P2
+improvement, not a prerequisite:
+
+```rust
+// warden/src/gateway.rs — proposed, optional
+pub trait ConnectionGate: Send + Sync {
+    fn authorize_call(&self, tool: &str, args: &Value) -> Result<CallCtx, GateDenial>;
+}
 impl Gateway {
     pub fn set_connection_gate(&mut self, gate: Box<dyn ConnectionGate>);
 }
 ```
 
-Insertion points, precisely:
+Called in `dispatch` after the revocation check and **before** `policy.evaluate`, it
+buys exactly two things: correct ordering (an uncontracted tool never reaches policy
+evaluation or the budget) and `CallCtx` carrying `cid` + `contract_jti` into
+`audit::Accountability`, so every action row inherits the correlation root in core's
+own hashed chain (T7.7). That second one is what makes `warden-trace` exact rather
+than heuristic, so it is worth having — later, and only if core wants it.
 
-| Core site | Today | Patch |
-|---|---|---|
-| `gateway.rs:345` `handle_request`, `method == "initialize"` | sets `initialized`, forwards | forward first, then `gate.on_initialize(peer, params)` against the **response's** declared surface; on `GateDenial` return a JSON-RPC error and record. The contract is verified against what the callee actually presented, not what it promised. |
-| `gateway.rs:345` `handle_request`, `method != "tools/call"` | blind pass-through | intercept `tools/list` (and `resources/list`, `prompts/list`): forward, then `gate.filter_catalog(&conn, &mut resp)` before the response is returned to the agent |
-| `gateway.rs:675` `dispatch`, after the revocation check and before `policy.evaluate` | policy decides | `gate.authorize_call(...)`; a `GateDenial` denies with a `WC-4xxx` reason and audits with `cid`. Ordering is deliberate: the connection ceiling is checked *before* the action policy, so an uncontracted tool never reaches policy evaluation at all. |
-
-`CallCtx` carries `cid` and `contract_jti` into `audit::Accountability`, which is
-how every action row inherits the correlation root (T7.7) — and how `warden-trace`
-later reconstructs a multi-agent transaction exactly rather than heuristically.
-
-Fail-closed default: **if the `connect` feature is compiled in and a contract
-source is configured but no gate can be constructed, the proxy refuses to
-start.** A mediator that silently degrades to pass-through is worse than no
-mediator, because the estate believes it is protected.
+Fail-closed default, in both designs: **if a contract source is configured but no
+gate can be constructed, the mediator refuses to start.** A mediator that silently
+degrades to pass-through is worse than no mediator, because the estate believes it
+is protected.
 
 ### 8.6.2 `wc-mediator::cache` — copy-on-write snapshots
 
@@ -1336,6 +1413,7 @@ so they are additive-only — never renumbered, never reused.
 | WC-2002 | Duplicate entity id | — | 409 |
 | WC-2003 | Illegal lifecycle transition | closed | 409 |
 | WC-2004 | Entity quarantined | closed | 403 |
+| WC-2005 | Malformed identifier (entity id, cid, jti, owner, zone) | closed | 422 |
 | WC-2011 | Unknown zone pair → most restrictive | closed | 403 |
 | WC-2020 | Discovery throttled (anti-enumeration) | — | 200 truncated |
 | WC-2021 | Asker not registered/attested | closed | 200 empty |
@@ -1520,10 +1598,10 @@ contracts = "7y"
 discovery = "90d"
 ```
 
-Mediator flags on the patched proxy:
+Mediator flags (`connect mediate`, composing unmodified Warden core):
 
 ```sh
-warden proxy --upstream … --policy warden.policy.toml \
+connect mediate --upstream … --policy warden.policy.toml \
   --connect-contracts    https://connect.internal/v1/mediators/apac-ops-1 \
   --connect-issuer-jwks  /keys/connect.jwks.json \
   --mediator-id          warden:mediator:apac-ops \
@@ -1588,7 +1666,7 @@ policy_version, decision, reason, duration_us}`. OTel span attributes carry
 | Contract payload | Additive optional claims only within `schema:1`. A new **required** claim bumps `schema`; verifiers reject unknown `schema` (`WC-3120`) rather than guessing. |
 | `wcs1` | Frozen. Changes ship as `wcs2` with the shadow-re-pin migration (§8.7.1). |
 | State events | New `kind`s must be ignorable by `Projection::apply` (counted as `unapplied`), so an older replica can replay a newer log without corrupting state. |
-| Core `audit::Entry` | Adding `cid`/`contract_jti`/`policy_version` to the hashed row **breaks chain continuity by construction**. Mitigation: a `schema:2` marker row is appended at upgrade; `connect audit verify` and `warden audit verify` both verify across the boundary by switching hash inputs at that row. Shipped as one atomic core change with vectors for both schemas. |
+| Core `audit::Entry` | **Optional (P2), not a prerequisite.** warden-connect keeps its own chain (§8.8.1), so nothing here depends on core changing. *If* core adopts `cid`/`contract_jti`/`policy_version` in the hashed row — worth it, because it makes `warden-trace` exact rather than heuristic — that **breaks chain continuity by construction**, so it ships with a `schema:2` marker row and verifiers that switch hash inputs at that row, plus vectors for both schemas. |
 | `WC-*` codes | Additive only; never renumbered or reused. |
 | API | `/v1` stable; breaking changes go to `/v2` with both served through a deprecation window. |
 
@@ -1677,15 +1755,16 @@ the exit gates.
 | Phase | Modules delivered | Acceptance criteria |
 |---|---|---|
 | **P0 · Observe** | `model`, `canon`, `error`, `store`, `registry`, `admission` (stages 1–2, 6–7), `evidence`, `api` (entities/posture/export-csv), `cli` (register/posture/audit/canon), mediator in observe-only (shadow detection) | 10⁴ entities registered from CI; `connect audit verify` green; shadow report non-empty on a real estate; **zero behaviour change** measured on the proxy path |
-| **P1 · Contract** | `contract`, `cpolicy`, `broker`, `wc-mediator` (`cache`, `gate`, `filter`, `peer`), API connections + approvals, distribution loop | Conformance vectors 100% pass; `tools/list` filtering verified end to end; `connect policy dry-run` accurate; verify p99 ≤ 1.5 ms in CI |
-| **P2 · Assure** | `admission` (stages 3–5), `screen`, `sentinel` (re-attest, drift, posture) | Screening precision ≥ 0.98 on the labelled corpus; material drift detected ≤ tier-1 interval; drift suspension exercised in e2e |
+| **P1 · Contract** | `contract`, `cpolicy`, `broker`, `wc-mediator` (`cache`, `gate`, `filter`, `peer`) as an `Upstream` decorator, API connections + approvals, distribution loop | Conformance vectors 100% pass; `tools/list` filtering verified end to end **against unmodified Warden core**; `connect policy dry-run` accurate; verify p99 ≤ 1.5 ms in CI |
+| **P2 · Assure** | `admission` (stages 3–5), `screen`, `sentinel` (re-attest, drift, posture); *optionally* propose core's `ConnectionGate` + hashed `cid` (§8.6.1) | Screening precision ≥ 0.98 on the labelled corpus; material drift detected ≤ tier-1 interval; drift suspension exercised in e2e |
 | **P3 · Contain** | quarantine fan-out, ACK tracking, `drain`, CAEP ingest/emit, `blast_radius`, break-glass, `ceiling` (durable spend) | 200-mediator quarantine < 60 s with ACKs; unconfirmed reported; quarterly drill script in the repo |
 | **P4 · Govern** | `zone` (full lattice), `federate`, `export` (DORA/CPS 230/OSCAL), `tenant`, SQL `Store` adapter, air-gapped bundles | Partner federation e2e against a second control plane; DORA register generated in < 1 h at 10⁵ contracts; cross-tenant reference returns `WC-8002` |
 
 Dependency order that cannot be reshuffled: `canon` before `admission` (no pin, no
 admission) · `contract` before `mediator` · per-item pins before `sentinel` (drift
 classification depends on them) · `evidence` before everything (P0 ships it first
-so no later phase has to retrofit a record).
+so no later phase has to retrofit a record). Nothing in this order depends on a
+change to Warden core, or to any other family member.
 
 ---
 
