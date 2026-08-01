@@ -1,0 +1,89 @@
+{
+  "keys": {
+    "wc-test-ed25519": "fixtures/keys/test_issuer_ed25519_pub.pem",
+    "wc-test-es256": "fixtures/keys/test_issuer_es256_pub.pem"
+  },
+  "media_type": "warden-connection+jws",
+  "mediator_id": "warden:mediator:apac-ops",
+  "note": "`expect` is the WC-* code a conforming verifier must produce; null means the contract must be admitted.",
+  "now": 1785312500,
+  "schema": 1,
+  "vectors": {
+    "alg-confusion-ed-for-es.jws": {
+      "description": "EdDSA signature under a kid registered for ES256",
+      "expect": "WC-3101"
+    },
+    "alg-none.jws": {
+      "description": "unsigned, claiming alg=none",
+      "expect": "WC-3101"
+    },
+    "aud-other-mediator.jws": {
+      "description": "addressed to a different mediator; replay must fail",
+      "expect": "WC-3104"
+    },
+    "expired.jws": {
+      "description": "exp in the past; no grace period",
+      "expect": "WC-3103"
+    },
+    "hmac-hs256.jws": {
+      "description": "HMAC: anyone who can verify could also mint",
+      "expect": "WC-3101"
+    },
+    "nbf-future.jws": {
+      "description": "not valid yet",
+      "expect": "WC-3103"
+    },
+    "no-kid.jws": {
+      "description": "no kid, so no key can be resolved",
+      "expect": "WC-3102"
+    },
+    "oversize.jws": {
+      "description": "beyond the 64 KiB artifact ceiling",
+      "expect": "WC-3121"
+    },
+    "posture-unattested.jws": {
+      "description": "artifact is valid; admission denies on posture in enforce mode",
+      "expect": "WC-3109"
+    },
+    "revoked-jti.jws": {
+      "description": "artifact id on the revocation feed",
+      "expect": "WC-3105"
+    },
+    "schema-99.jws": {
+      "description": "a newer payload schema; reject rather than guess",
+      "expect": "WC-3120"
+    },
+    "surface-superset.jws": {
+      "description": "surface widened and re-signed; the digest no longer matches",
+      "expect": "WC-3108"
+    },
+    "tampered-payload.jws": {
+      "description": "surface widened after signing",
+      "expect": "WC-3102"
+    },
+    "unknown-claim.jws": {
+      "description": "an unrecognised claim a verifier must not ignore",
+      "expect": "WC-3120"
+    },
+    "unknown-kid.jws": {
+      "description": "signed by a key the verifier does not trust",
+      "expect": "WC-3102"
+    },
+    "valid-ed25519.jws": {
+      "description": "the same contract signed with EdDSA",
+      "expect": null
+    },
+    "valid-es256.jws": {
+      "description": "a well-formed ES256 contract",
+      "expect": null
+    },
+    "wrong-typ.jws": {
+      "description": "a JWT that is not a connection contract",
+      "expect": "WC-3120"
+    },
+    "zone-crossing.jws": {
+      "description": "internal to partner without an explicit rule",
+      "expect": "WC-3110"
+    }
+  }
+}
