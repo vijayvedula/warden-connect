@@ -1,0 +1,212 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1300" viewBox="0 0 2000 1300">
+  <defs>
+    <style>
+      .title { font: 800 36px 'Segoe UI', Arial, sans-serif; fill:#16243f; }
+      .sub   { font: 400 16px 'Segoe UI', Arial, sans-serif; fill:#51607a; }
+      .sec   { font: 700 13px 'Segoe UI', Arial, sans-serif; fill:#51607a; letter-spacing:1.5px; }
+      .h2    { font: 700 15px 'Segoe UI', Arial, sans-serif; fill:#16243f; }
+      .mod   { font: 700 14px 'Segoe UI', Arial, sans-serif; fill:#16243f; }
+      .body  { font: 400 12.5px 'Segoe UI', Arial, sans-serif; fill:#28384f; }
+      .small { font: 400 11.5px 'Segoe UI', Arial, sans-serif; fill:#46566e; }
+      .mono  { font: 400 11.5px 'Consolas', monospace; fill:#5a3a12; }
+      .monod { font: 400 11.5px 'Consolas', monospace; fill:#cdd6ee; }
+      .stepn { font: 800 13px 'Segoe UI', Arial, sans-serif; fill:#ffffff; }
+      .c { text-anchor:middle; dominant-baseline:middle; }
+      .agent { fill:#cfe3b4; stroke:#7f9b66; stroke-width:1.6; }
+      .ext   { fill:#eef2f8; stroke:#9aa7bd; stroke-width:1.5; }
+      .core  { fill:#dfe4f3; stroke:#2d3a5e; stroke-width:1.8; }
+      .step  { fill:#2d3a5e; stroke:#1c2747; stroke-width:1.4; }
+      .crypto{ fill:#e7f1da; stroke:#5f7d3f; stroke-width:1.6; }
+      .io    { fill:#dde7f3; stroke:#41586b; stroke-width:1.6; }
+      .store { fill:#fbe9cf; stroke:#9a6b1e; stroke-width:1.5; }
+      .note  { fill:#fdf6e6; stroke:#b8912f; stroke-width:1.5; }
+      .boundary { fill:none; stroke:#6b7891; stroke-width:1.8; stroke-dasharray:9 7; }
+      .flow { stroke:#16243f; stroke-width:2; fill:none; }
+      .thin { stroke:#7d8aa1; stroke-width:1.4; fill:none; }
+    </style>
+    <marker id="a" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L10,4 L0,8 z" fill="#16243f"/></marker>
+    <marker id="at" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,3.5 L0,7 z" fill="#7d8aa1"/></marker>
+  </defs>
+  <rect width="2000" height="1300" fill="#ffffff"/>
+
+  <text x="55" y="52" class="title">warden-connect — Logical Architecture</text>
+  <text x="57" y="80" class="sub">The connection control plane for AI agents · control plane off the hot path · inline mediator co-located with the Warden proxy · fail-closed everywhere</text>
+
+  <!-- ============ ACTORS ============ -->
+  <text x="60" y="118" class="sec">ACTORS / EXTERNAL</text>
+  <rect x="60"   y="128" width="286" height="64" rx="8" class="ext"/><text x="203"  y="152" class="h2 c">Agent Developer / CI</text><text x="203"  y="174" class="small c">register · discover · request</text>
+  <rect x="362"  y="128" width="286" height="64" rx="8" class="ext"/><text x="505"  y="152" class="h2 c">Security Architect</text><text x="505"  y="174" class="small c">approves the relationship, not each call</text>
+  <rect x="664"  y="128" width="250" height="64" rx="8" class="ext"/><text x="789"  y="152" class="h2 c">SecOps</text><text x="789"  y="174" class="small c">quarantine · blast radius</text>
+  <rect x="930"  y="128" width="286" height="64" rx="8" class="ext"/><text x="1073" y="152" class="h2 c">Risk &amp; Compliance</text><text x="1073" y="174" class="small c">register &amp; evidence export</text>
+  <rect x="1232" y="128" width="306" height="64" rx="8" class="ext"/><text x="1385" y="152" class="h2 c">IdP · SPIRE · Sigstore</text><text x="1385" y="174" class="small c">workload identity · build provenance</text>
+
+  <rect x="1600" y="128" width="340" height="64" rx="8" class="note"/>
+  <text x="1770" y="150" class="mono c">warden-connection+jws</text>
+  <text x="1770" y="172" class="small c">the one coupling point — signed, time-boxed</text>
+
+  <!-- ============ CONTROL PLANE ============ -->
+  <rect x="40" y="214" width="1520" height="446" rx="10" class="boundary"/>
+  <text x="58" y="238" class="sec">warden-connect CONTROL PLANE   (per tenant · replicated · NOT on the hot path)</text>
+
+  <!-- registry -->
+  <rect x="62" y="252" width="476" height="168" rx="8" class="io"/>
+  <text x="78" y="278" class="mod">registry — the agent &amp; tool estate</text>
+  <text x="78" y="304" class="body">entity records: agent · MCP server · A2A agent</text>
+  <text x="78" y="324" class="body">owner (required) · business service · tier · zone · lifecycle</text>
+  <text x="78" y="344" class="body">content-addressed card / manifest hash  ←  the PIN</text>
+  <text x="78" y="364" class="body">posture: attested | degraded | unattested | quarantined</text>
+  <text x="78" y="392" class="mono">the inventory that does not exist today  ·  UC-01 / 02 / 08</text>
+
+  <!-- admission -->
+  <rect x="562" y="252" width="476" height="168" rx="8" class="crypto"/>
+  <text x="578" y="278" class="mod">admission — nothing joins unproven</text>
+  <text x="578" y="304" class="body">verify workload identity (SPIFFE SVID / trust bundle)</text>
+  <text x="578" y="324" class="body">verify agent-card signature · MCP initialize + tools/list</text>
+  <text x="578" y="344" class="body">verify build provenance (SLSA · in-toto · Sigstore)</text>
+  <text x="578" y="364" class="body">SCREEN the declared surface for injection patterns · tier it</text>
+  <text x="578" y="392" class="mono">fail-closed: no attestation → no admission  ·  UC-01 / 02</text>
+
+  <!-- broker -->
+  <rect x="1062" y="252" width="476" height="168" rx="8" class="io"/>
+  <text x="1078" y="278" class="mod">broker — mediated discovery</text>
+  <text x="1078" y="304" class="body">answers a capability question, never a catalogue query</text>
+  <text x="1078" y="324" class="body">results filtered to what the asker may actually connect to</text>
+  <text x="1078" y="344" class="body">no enumeration · throttled · empty ≠ "does not exist"</text>
+  <text x="1078" y="364" class="body">federated resolve: partner agents, no catalogue exchange</text>
+  <text x="1078" y="392" class="mono">denies the attacker's first move  ·  UC-03 / 05</text>
+
+  <!-- contract -->
+  <rect x="62" y="432" width="476" height="168" rx="8" class="crypto"/>
+  <text x="78" y="458" class="mod">contract — mint · verify · renew · revoke</text>
+  <text x="78" y="484" class="body">cid · caller · callee · surface · terms · assurance · approval</text>
+  <text x="78" y="504" class="body">policy: zone pair · tier · surface ⊆ declared · data class</text>
+  <text x="78" y="524" class="body">standing-policy auto-approve  |  signed human approval</text>
+  <text x="78" y="544" class="body">time-boxed: exp ≤ zone.ttl_max · silence terminates</text>
+  <text x="78" y="572" class="mono">connect verify &lt;contract&gt;  =  conformance ground truth</text>
+
+  <!-- sentinel -->
+  <rect x="562" y="432" width="476" height="168" rx="8" class="io"/>
+  <text x="578" y="458" class="mod">sentinel — trust decays, re-earn it</text>
+  <text x="578" y="484" class="body">scheduled re-attestation on assurance.reattest_every</text>
+  <text x="578" y="504" class="body">drift: re-hash the surface, semantic diff, re-screen</text>
+  <text x="578" y="524" class="body">material drift → suspend every contract on that pin</text>
+  <text x="578" y="544" class="body">posture scoring · expiry watch · blast-radius graph</text>
+  <text x="578" y="572" class="mono">catches the rug-pull  ·  UC-06 / 09  ·  feeds quarantine</text>
+
+  <!-- evidence -->
+  <rect x="1062" y="432" width="476" height="168" rx="8" class="crypto"/>
+  <text x="1078" y="458" class="mod">evidence — reuses Warden core</text>
+  <text x="1078" y="484" class="body">lifecycle → SHA-256 hash chain + ES256 signed anchors</text>
+  <text x="1078" y="504" class="body">OCSF → SIEM · CAEP signed SET → IdP and partners</text>
+  <text x="1078" y="524" class="body">register export: DORA · CPS 230 · OSCAL · point-in-time</text>
+  <text x="1078" y="544" class="body">blocking delivery: no connection without a recorded trail</text>
+  <text x="1078" y="572" class="mono">audit.rs · anchor.rs · sink.rs · ocsf.rs  ·  UC-07 / 10</text>
+
+  <!-- store bar -->
+  <rect x="62" y="612" width="1476" height="38" rx="8" class="store"/>
+  <text x="78" y="636" class="mono">stores · config:   entities + surface pins  ·  contracts.jsonl  ·  connect-policy.toml (hot-reload)  ·  audit.jsonl + anchor.jsonl  ·  revocations feed  ·  issuer &amp; approver keys</text>
+
+  <!-- ============ RIGHT COLUMN: evidence consumers & federation ============ -->
+  <text x="1600" y="238" class="sec">EVIDENCE &amp; FEDERATION</text>
+  <rect x="1600" y="252" width="340" height="96" rx="8" class="ext"/>
+  <text x="1770" y="284" class="h2 c">SIEM · Security Lake</text><text x="1770" y="308" class="small c">OCSF activity + finding events</text><text x="1770" y="330" class="small c">shadow-endpoint findings, drift, denials</text>
+  <rect x="1600" y="364" width="340" height="96" rx="8" class="ext"/>
+  <text x="1770" y="396" class="h2 c">GRC · Internal Audit</text><text x="1770" y="420" class="small c">OSCAL control evidence</text><text x="1770" y="442" class="small c">DORA RoI · CPS 230 register · as-of query</text>
+  <rect x="1600" y="476" width="340" height="80" rx="8" class="ext"/>
+  <text x="1770" y="504" class="h2 c">Transparency log</text><text x="1770" y="528" class="small c">signed anchor checkpoints (rollback-proof)</text>
+  <rect x="1600" y="572" width="340" height="88" rx="8" class="ext"/>
+  <text x="1770" y="600" class="h2 c">Partner org registry</text><text x="1770" y="624" class="small c">OpenID Federation trust chain</text><text x="1770" y="646" class="small c">resolve one agent — never a catalogue</text>
+
+  <!-- ============ DATA PLANE ============ -->
+  <rect x="40" y="684" width="1900" height="390" rx="10" class="boundary"/>
+  <text x="58" y="708" class="sec">DATA PLANE   (inline · co-located with the Warden proxy · p99 &lt; 5 ms added · no network call on the hot path)</text>
+
+  <rect x="62" y="780" width="250" height="110" rx="8" class="agent"/>
+  <text x="187" y="812" class="h2 c">Agent / MCP client</text>
+  <text x="187" y="838" class="small c">carries the session token</text>
+  <text x="187" y="860" class="small c">connection referenced by cid</text>
+
+  <rect x="340" y="724" width="620" height="328" rx="10" class="core"/>
+  <text x="650" y="748" class="h2 c">mediator  —  the connection PEP</text>
+  <text x="650" y="767" class="small c">ordered · fail-closed at every step · extends gateway.rs / mcp.rs</text>
+
+  <rect x="360" y="780" width="580" height="38" rx="6" class="step"/><circle cx="382" cy="799" r="11" fill="#fff"/><text x="382" y="800" class="c" font-weight="800" fill="#2d3a5e" font-size="12">1</text><text x="406" y="795" class="stepn">peer auth</text><text x="406" y="812" class="monod">mTLS / SPIFFE SVID — authenticated, never claimed</text>
+  <rect x="360" y="824" width="580" height="38" rx="6" class="step"/><circle cx="382" cy="843" r="11" fill="#fff"/><text x="382" y="844" class="c" font-weight="800" fill="#2d3a5e" font-size="12">2</text><text x="406" y="839" class="stepn">verify contract</text><text x="406" y="856" class="monod">sig · asym-only alg · aud · nbf/exp · revocation set</text>
+  <rect x="360" y="868" width="580" height="38" rx="6" class="step"/><circle cx="382" cy="887" r="11" fill="#fff"/><text x="382" y="888" class="c" font-weight="800" fill="#2d3a5e" font-size="12">3</text><text x="406" y="883" class="stepn">pin check</text><text x="406" y="900" class="monod">presented manifest hash == registry pin, else DRIFT</text>
+  <rect x="360" y="912" width="580" height="38" rx="6" class="step"/><circle cx="382" cy="931" r="11" fill="#fff"/><text x="382" y="932" class="c" font-weight="800" fill="#2d3a5e" font-size="12">4</text><text x="406" y="927" class="stepn">zone + posture gate</text><text x="406" y="944" class="monod">quarantined is never admitted, in any mode</text>
+  <rect x="360" y="956" width="580" height="38" rx="6" class="step"/><circle cx="382" cy="975" r="11" fill="#fff"/><text x="382" y="976" class="c" font-weight="800" fill="#2d3a5e" font-size="12">5</text><text x="406" y="971" class="stepn">tools/list FILTER</text><text x="406" y="988" class="monod">uncontracted tools never enter model context</text>
+  <rect x="360" y="1000" width="580" height="38" rx="6" class="step"/><circle cx="382" cy="1019" r="11" fill="#fff"/><text x="382" y="1020" class="c" font-weight="800" fill="#2d3a5e" font-size="12">6</text><text x="406" y="1015" class="stepn">ceilings</text><text x="406" y="1032" class="monod">rate · spend · concurrency · fan-out · delegation depth</text>
+
+  <rect x="990" y="724" width="430" height="328" rx="10" class="crypto"/>
+  <text x="1205" y="748" class="h2 c">Warden core — per-action enforcement</text>
+  <text x="1205" y="767" class="small c">unchanged; receives surface + terms as an outer bound</text>
+  <text x="1006" y="800" class="body">gateway.rs dispatch: reload · pause · revoke · freshness</text>
+  <text x="1006" y="824" class="body">policy.evaluate: scope → RBAC → ReBAC → ABAC → budget</text>
+  <text x="1006" y="848" class="body">decision: allow · deny · require_approval (human hold)</text>
+  <text x="1006" y="872" class="body">audit.append + anchor · obs.record</text>
+  <rect x="1006" y="898" width="398" height="62" rx="6" class="note"/>
+  <text x="1205" y="920" class="mono c">effective = contract.surface ∩ token.scope ∩ policy</text>
+  <text x="1205" y="944" class="small c">a contract is a CEILING — it can never widen a core decision</text>
+  <text x="1006" y="990" class="body">audit rows gain  cid  +  contract_jti,  folded into row_hash</text>
+  <text x="1006" y="1014" class="mono">→ the record proves which relationship authorised the act</text>
+
+  <rect x="1450" y="780" width="470" height="110" rx="8" class="ext"/>
+  <text x="1685" y="812" class="h2 c">Tool server (MCP) · callee agent (A2A)</text>
+  <text x="1685" y="838" class="small c">reachable only through a contracted surface</text>
+  <text x="1685" y="860" class="small c">manifest / agent card pinned at admission</text>
+
+  <!-- ============ FAMILY HANDOFF ============ -->
+  <text x="60" y="1092" class="sec">HANDOFF TO THE REST OF THE FAMILY   —   two artifacts and one identifier</text>
+  <rect x="62"   y="1100" width="600" height="76" rx="8" class="io"/>
+  <text x="78" y="1124" class="mod">→ Warden core   (action boundary)</text>
+  <text x="78" y="1148" class="body">surface + terms as the outer bound for every tools/call;</text>
+  <text x="78" y="1166" class="body">audit entries carry cid and contract_jti in the hash chain</text>
+  <rect x="686"  y="1100" width="600" height="76" rx="8" class="io"/>
+  <text x="702" y="1124" class="mod">→ warden-delegate   (authority boundary)</text>
+  <text x="702" y="1148" class="body">terms.delegation { max_depth, attenuation: monotonic }</text>
+  <text x="702" y="1166" class="body">is the envelope authority may shrink within — never grow</text>
+  <rect x="1310" y="1100" width="610" height="76" rx="8" class="io"/>
+  <text x="1326" y="1124" class="mod">→ warden-trace   (evidence boundary)</text>
+  <text x="1326" y="1148" class="body">cid is the correlation root stamped on every action, hop</text>
+  <text x="1326" y="1166" class="body">and evidence row — exact multi-agent lineage, not heuristic</text>
+
+  <!-- ============ ARROWS ============ -->
+  <path d="M203 192 L203 214" class="flow" marker-end="url(#a)"/><text x="211" y="209" class="small">register · request</text>
+  <path d="M505 192 L505 214" class="flow" marker-end="url(#a)"/><text x="513" y="209" class="small">signed approval</text>
+  <path d="M789 192 L789 214" class="flow" marker-end="url(#a)"/><text x="797" y="209" class="small">quarantine</text>
+  <path d="M1073 192 L1073 214" class="flow" marker-end="url(#a)"/><text x="1081" y="209" class="small">export</text>
+  <path d="M1385 192 L1385 214" class="flow" marker-end="url(#a)"/><text x="1393" y="209" class="small">identity · provenance</text>
+
+  <!-- evidence out to the right column (orthogonal trunk at x=1572) -->
+  <path d="M1538 470 L1572 470 L1572 300 L1600 300" class="thin" marker-end="url(#at)"/>
+  <path d="M1538 500 L1572 500 L1572 412 L1600 412" class="thin" marker-end="url(#at)"/>
+  <path d="M1538 530 L1600 530" class="thin" marker-end="url(#at)"/>
+  <!-- partner registry in to the broker (trunk at x=1556) -->
+  <path d="M1600 616 L1556 616 L1556 390 L1538 390" class="thin" marker-end="url(#at)"/>
+  <text x="1548" y="510" class="small c" transform="rotate(-90 1548 510)">federation</text>
+
+  <!-- control plane down to data plane -->
+  <path d="M650 660 L650 724" class="flow" marker-end="url(#a)"/>
+  <text x="658" y="676" class="small">signed contracts + revocations</text>
+  <!-- data plane evidence up -->
+  <path d="M1300 724 L1300 660" class="flow" marker-end="url(#a)"/>
+  <text x="1308" y="676" class="small">per-action + lifecycle evidence (cid)</text>
+
+  <!-- horizontal path -->
+  <path d="M312 835 L340 835" class="flow" marker-end="url(#a)"/><text x="316" y="770" class="small">MCP / A2A</text>
+  <path d="M960 835 L990 835" class="flow" marker-end="url(#a)"/><text x="900" y="770" class="small">surface + terms</text>
+  <path d="M1420 835 L1450 835" class="flow" marker-end="url(#a)"/><text x="1400" y="770" class="small">allowed call</text>
+
+  <!-- ============ LEGEND ============ -->
+  <rect x="40" y="1200" width="1900" height="82" rx="8" fill="#fff" stroke="#cdd8e8" stroke-width="1.4"/>
+  <text x="58" y="1224" class="sec">LEGEND</text>
+  <rect x="58" y="1234" width="24" height="24" class="agent"/><text x="90" y="1248" class="body">Agent</text>
+  <rect x="170" y="1234" width="24" height="24" class="ext"/><text x="202" y="1248" class="body">External actor / system</text>
+  <rect x="380" y="1234" width="24" height="24" class="core"/><text x="412" y="1248" class="body">Data-plane PEP</text>
+  <rect x="560" y="1234" width="24" height="24" class="crypto"/><text x="592" y="1248" class="body">Crypto / security component</text>
+  <rect x="800" y="1234" width="24" height="24" class="io"/><text x="832" y="1248" class="body">Control-plane component</text>
+  <rect x="1030" y="1234" width="24" height="24" class="store"/><text x="1062" y="1248" class="body">Persistent store (file)</text>
+  <line x1="1240" y1="1246" x2="1290" y2="1246" class="flow" marker-end="url(#a)"/><text x="1300" y="1250" class="body">request / data flow</text>
+  <line x1="1490" y1="1246" x2="1540" y2="1246" class="thin" marker-end="url(#at)"/><text x="1550" y="1250" class="body">evidence / federation link</text>
+  <text x="58" y="1272" class="small">Reachability is a grant, not a default  ·  identity before introduction  ·  the surface is pinned, not described  ·  trust is time-boxed  ·  disconnection is a first-class verb  ·  fail closed everywhere.</text>
+</svg>
