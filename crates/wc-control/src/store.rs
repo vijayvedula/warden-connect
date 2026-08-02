@@ -455,6 +455,50 @@ pub enum Event {
         /// New score.
         score: u8,
     },
+    /// A connection was requested.
+    #[serde(rename = "contract.request")]
+    ContractRequest {
+        /// The pending request.
+        request: Box<crate::issuance::PendingRequest>,
+        /// Who asked.
+        actor: Actor,
+    },
+    /// A human approved a request.
+    #[serde(rename = "contract.approve")]
+    ContractApprove {
+        /// Request id.
+        request: String,
+        /// The distinct approvers.
+        approvers: Vec<HumanRef>,
+        /// Policy version they approved under.
+        policy_version: String,
+        /// Who recorded it.
+        actor: Actor,
+    },
+    /// A human refused a request.
+    #[serde(rename = "contract.deny")]
+    ContractDeny {
+        /// Request id.
+        request: String,
+        /// Why.
+        reason: String,
+        /// Who refused.
+        actor: Actor,
+    },
+    /// A request ran out of time. Silence terminates; it never approves.
+    #[serde(rename = "contract.lapse")]
+    ContractLapse {
+        /// Request id.
+        request: String,
+    },
+    /// A request produced a contract.
+    #[serde(rename = "contract.issued")]
+    ContractIssued {
+        /// Request id.
+        request: String,
+        /// The connection it became.
+        cid: Cid,
+    },
     /// A contract was minted.
     #[serde(rename = "contract.mint")]
     ContractMint {
@@ -533,6 +577,8 @@ pub struct Projection {
     /// Callee manifest hash → contracts pinned to it. Turns material drift into
     /// an O(1) fan-out instead of a scan.
     pub by_pin: HashMap<String, HashSet<Cid>>,
+    /// Pending and settled connection requests, by id.
+    pub requests: HashMap<String, crate::issuance::PendingRequest>,
     /// Expiry queue, soonest first.
     pub expiring: BinaryHeap<Reverse<(u64, Cid)>>,
     /// Highest sequence applied.
@@ -605,6 +651,41 @@ impl Projection {
                     framed.seq
                 )),
             },
+            Event::ContractRequest { request, .. } => {
+                self.requests
+                    .insert(request.id.clone(), (**request).clone());
+                report.applied += 1;
+            }
+            Event::ContractApprove { request, .. } | Event::ContractIssued { request, .. } => {
+                // Both settle the request; `contract.issued` is what links it to the
+                // connection it became.
+                match self.requests.get_mut(request) {
+                    Some(pending) => {
+                        pending.status = crate::issuance::RequestStatus::Minted;
+                        report.applied += 1;
+                    }
+                    None => report.inconsistent.push(format!(
+                        "seq {}: decision for unknown request {request}",
+                        framed.seq
+                    )),
+                }
+            }
+            Event::ContractDeny { request, .. } => {
+                self.settle_request(
+                    request,
+                    crate::issuance::RequestStatus::Denied,
+                    framed.seq,
+                    report,
+                );
+            }
+            Event::ContractLapse { request } => {
+                self.settle_request(
+                    request,
+                    crate::issuance::RequestStatus::Lapsed,
+                    framed.seq,
+                    report,
+                );
+            }
             Event::ContractMint { record } => {
                 self.index_contract(record);
                 self.contracts
@@ -655,6 +736,24 @@ impl Projection {
                 )),
             },
             Event::Unknown => report.unknown += 1,
+        }
+    }
+
+    fn settle_request(
+        &mut self,
+        id: &str,
+        status: crate::issuance::RequestStatus,
+        seq: u64,
+        report: &mut RebuildReport,
+    ) {
+        match self.requests.get_mut(id) {
+            Some(pending) => {
+                pending.status = status;
+                report.applied += 1;
+            }
+            None => report
+                .inconsistent
+                .push(format!("seq {seq}: decision for unknown request {id}")),
         }
     }
 
@@ -783,6 +882,7 @@ impl Projection {
             seq: self.seq,
             entities: self.entities.values().cloned().collect(),
             contracts: self.contracts.values().cloned().collect(),
+            requests: self.requests.values().cloned().collect(),
         };
         let path = dir.join(format!("snapshot-{:06}.json", self.seq));
         let text = serde_json::to_string(&snapshot).map_err(|e| {
@@ -804,6 +904,8 @@ struct Snapshot {
     seq: u64,
     entities: Vec<Entity>,
     contracts: Vec<ContractRecord>,
+    #[serde(default)]
+    requests: Vec<crate::issuance::PendingRequest>,
 }
 
 impl Snapshot {
@@ -858,6 +960,9 @@ impl Snapshot {
         for contract in self.contracts {
             projection.index_contract(&contract);
             projection.contracts.insert(contract.cid.clone(), contract);
+        }
+        for request in self.requests {
+            projection.requests.insert(request.id.clone(), request);
         }
         projection
     }

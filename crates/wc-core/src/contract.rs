@@ -15,6 +15,7 @@ use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 // Re-exported because it appears in this module's public signatures: a caller
 // cannot name `IssuerKeys::add_ec_pem`'s argument otherwise.
 pub use jsonwebtoken::Algorithm;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Code, Mode, Result, WcError};
@@ -707,6 +708,60 @@ pub fn mint(payload: &ContractPayload, signer: &IssuerKey) -> Result<String> {
         ));
     }
     Ok(jws)
+}
+
+// ---------------------------------------------------------------------------
+// Detached signatures
+// ---------------------------------------------------------------------------
+
+/// Sign an arbitrary claim set with an issuer or approver key.
+///
+/// Used for approvals (§8.5.10): an approval is a signed artifact, not a database
+/// row, so an operator with write access to the store cannot forge one. Same
+/// asymmetric-only stance as a contract.
+pub fn sign_detached<T: Serialize>(claims: &T, signer: &IssuerKey) -> Result<String> {
+    let mut header = Header::new(signer.alg);
+    header.kid = Some(signer.kid.clone());
+    jsonwebtoken::encode(&header, claims, &signer.key).map_err(|e| {
+        WcError::with_detail(Code::APPROVAL_SIGNATURE_INVALID, "cannot sign").with_source(e)
+    })
+}
+
+/// Verify a detached signature against the key registered under `kid`.
+///
+/// The `kid` is supplied by the caller rather than read from the header: a verifier
+/// that trusts the header to name its own key lets an attacker choose which key
+/// verifies their signature.
+pub fn verify_detached<T: DeserializeOwned>(jws: &str, kid: &str, keys: &IssuerKeys) -> Result<T> {
+    let alg_name = header_alg(jws)?;
+    if !ACCEPTED_ALG_NAMES.contains(&alg_name.as_str()) {
+        return Err(WcError::with_detail(
+            Code::ALG_NOT_ASYMMETRIC,
+            format!("{alg_name:?} is not an accepted algorithm"),
+        ));
+    }
+    let (expected_alg, key) = keys.get(kid).ok_or_else(|| {
+        WcError::with_detail(
+            Code::APPROVAL_SIGNATURE_INVALID,
+            format!("no registered key for {kid:?}"),
+        )
+    })?;
+
+    let mut validation = Validation::new(*expected_alg);
+    validation.required_spec_claims.clear();
+    validation.validate_exp = false;
+    validation.validate_nbf = false;
+    validation.validate_aud = false;
+
+    jsonwebtoken::decode::<T>(jws, key, &validation)
+        .map(|data| data.claims)
+        .map_err(|e| {
+            WcError::with_detail(
+                Code::APPROVAL_SIGNATURE_INVALID,
+                "signature verification failed",
+            )
+            .with_source(e)
+        })
 }
 
 // ---------------------------------------------------------------------------

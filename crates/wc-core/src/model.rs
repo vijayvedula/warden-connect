@@ -75,7 +75,10 @@ macro_rules! id_type {
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&self.0)
+                // `pad`, not `write_str`: width and alignment specifiers are
+                // ignored by `write_str`, so `{:<18}` on an id would silently do
+                // nothing and every operator-facing table would lose its columns.
+                f.pad(&self.0)
             }
         }
 
@@ -862,6 +865,15 @@ mod tests {
 
         let bad_zone: std::result::Result<ZoneId, _> = serde_json::from_str("\"prod.payments\"");
         assert!(bad_zone.is_err());
+    }
+
+    #[test]
+    fn ids_honour_format_width() {
+        let id = Cid::new("conn_7f3a91c4").unwrap();
+        assert_eq!(format!("[{id:<18}]"), "[conn_7f3a91c4     ]");
+        assert_eq!(format!("[{id:>18}]"), "[     conn_7f3a91c4]");
+        // Without this, every column in `connect contracts` collapses.
+        assert_eq!(format!("{id}"), "conn_7f3a91c4");
     }
 
     #[test]

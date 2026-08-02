@@ -31,11 +31,17 @@ use wc_control::admission::{
     self, AdmissionRequest, Declared, InlineSurface, McpHttpSurface, SurfaceSource,
 };
 use wc_control::chain::ANCHOR_FILE;
-use wc_control::cpolicy::{ConnectPolicy, StandingState};
+use wc_control::cpolicy::{self as cpolicy, ConnectPolicy, StandingState};
 use wc_control::evidence::{EventKind, Evidence, LifecycleEvent};
+use wc_control::issuance::{
+    self as issuance, ApprovalProof, ApproverRegistry, Issued, Issuer, Outcome, PendingRequest,
+    RequestInput, RequestStatus,
+};
 use wc_control::store::{Actor, Store};
 use wc_core::canon::{self, Limits, SurfaceKind};
-use wc_core::contract::{self, Algorithm, ApprovalMode, IssuerKeys, VerifyOpts};
+use wc_core::contract::{
+    self, Algorithm, ApprovalMode, IssuerKey, IssuerKeys, Surface, Terms, VerifyOpts,
+};
 use wc_core::error::{Category, Code, Mode, Result, WcError};
 use wc_core::model::{Entity, EntityId, HumanRef, Kind, Lifecycle, Posture, Tier, ZoneId};
 
@@ -134,6 +140,11 @@ const COMMANDS: &[&str] = &[
     "policy lint",
     "policy dry-run",
     "policy show",
+    "request",
+    "approve",
+    "deny",
+    "requests",
+    "contracts",
     "version",
 ];
 
@@ -197,6 +208,41 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         ],
         "policy lint" | "policy show" => &["policy"],
         "policy dry-run" => &["policy", "now"],
+        "request" => &[
+            "enforce",
+            "from",
+            "to",
+            "tools",
+            "skills",
+            "resources",
+            "justify",
+            "ttl",
+            "mediator",
+            "data-classes",
+            "jurisdictions",
+            "policy",
+            "issuer-key",
+            "kid",
+            "iss",
+            "out",
+        ],
+        "approve" => &[
+            "enforce",
+            "id",
+            "approvers",
+            "approver-key",
+            "second-key",
+            "second",
+            "ticket",
+            "policy",
+            "issuer-key",
+            "kid",
+            "iss",
+            "out",
+        ],
+        "deny" => &["id", "reason", "policy"],
+        "requests" => &["all"],
+        "contracts" => &["cid"],
         _ => &[],
     }
 }
@@ -273,6 +319,11 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "policy lint" => policy_lint(args)?,
         "policy dry-run" => policy_dry_run(args)?,
         "policy show" => policy_show(args)?,
+        "request" => request_cmd(args)?,
+        "approve" => approve_cmd(args)?,
+        "deny" => deny_cmd(args)?,
+        "requests" => requests_cmd(args)?,
+        "contracts" => contracts_cmd(args)?,
         "export" => export(args)?,
         "version" => println!("connect {}", env!("CARGO_PKG_VERSION")),
         // Unreachable: COMMANDS is checked above, and this match covers it.
@@ -1109,6 +1160,463 @@ fn verify_cmd(args: &Args) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// issuance — the core loop (UC-04)
+// ---------------------------------------------------------------------------
+
+/// The accountable human behind a request.
+fn requesting_human(args: &Args) -> Result<HumanRef> {
+    let raw = args
+        .get("by")
+        .map(str::to_string)
+        .or_else(|| std::env::var("WARDEN_CONNECT_ACTOR").ok())
+        .ok_or_else(|| {
+            WcError::with_detail(
+                Code::OWNER_UNRESOLVABLE,
+                "a request needs an accountable human: pass --by human:you or set \
+                 WARDEN_CONNECT_ACTOR",
+            )
+        })?;
+    HumanRef::new(raw)
+}
+
+/// The issuer signing key, and the `kid` stamped into every artifact.
+fn issuer_key(args: &Args) -> Result<IssuerKey> {
+    let path = require(args, "issuer-key")?;
+    let kid = require(args, "kid")?;
+    let pem = std::fs::read(path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+    })?;
+    IssuerKey::ec_pem(kid, &pem, Algorithm::ES256)
+}
+
+/// Where artifacts are written. One file per mediator, because one contract is
+/// addressed to one mediator.
+fn write_artifacts(args: &Args, issued: &Issued) -> Result<Vec<String>> {
+    let dir = args.get("out").unwrap_or(".");
+    std::fs::create_dir_all(dir).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot create {dir}")).with_source(e)
+    })?;
+
+    let mut written = Vec::new();
+    for (aud, jws) in &issued.artifacts {
+        let safe: String = aud
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let path = std::path::Path::new(dir).join(format!("{}.{safe}.jws", issued.record.cid));
+        std::fs::write(&path, format!("{jws}\n")).map_err(|e| {
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!("cannot write {}", path.display()),
+            )
+            .with_source(e)
+        })?;
+        written.push(path.display().to_string());
+    }
+    Ok(written)
+}
+
+fn print_issued(args: &Args, issued: &Issued, paths: &[String]) -> Result<()> {
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "cid": issued.record.cid.as_str(),
+                "jti": issued.record.jti.as_str(),
+                "caller": issued.record.caller.as_str(),
+                "callee": issued.record.callee.as_str(),
+                "surface": issued.record.surface.items(),
+                "surface_digest": issued.record.surface_digest,
+                "aud": issued.record.aud,
+                "exp": issued.record.exp,
+                "approval_mode": format!("{:?}", issued.record.approval.mode),
+                "policy_version": issued.record.policy_version,
+                "evidence_seq": issued.evidence_seq,
+                "artifacts": paths,
+            }))?
+        );
+        return Ok(());
+    }
+
+    let r = &issued.record;
+    println!("issued {}", r.cid);
+    println!("  caller     {}", r.caller);
+    println!("  callee     {} (tier {})", r.callee, r.callee_tier.as_u8());
+    println!("  surface    {}", r.surface.items().join(", "));
+    println!("  digest     {}", r.surface_digest);
+    println!("  expires    {} ({}d)", r.exp, (r.exp - r.iat) / 86_400);
+    println!("  approval   {:?}", r.approval.mode);
+    if let Some(by) = &r.approval.by {
+        println!("  approved   {by}");
+    }
+    if let Some(second) = &r.approval.second {
+        println!("  second     {second}");
+    }
+    if let Some(ticket) = &r.approval.ticket {
+        println!("  ticket     {ticket}");
+    }
+    println!("  policy     {}", r.policy_version);
+    println!("  evidence   seq {}", issued.evidence_seq);
+    for path in paths {
+        println!("  artifact   {path}");
+    }
+    Ok(())
+}
+
+/// Build the issuance context: store, chain, policy and signing key together.
+fn with_issuer<T>(args: &Args, f: impl FnOnce(&mut Issuer<'_>) -> Result<T>) -> Result<T> {
+    let policy = load_policy(args)?;
+    let key = issuer_key(args)?;
+    let mut store = open_store(args)?;
+    let mut evidence = open_evidence(args)?;
+    let iss = args
+        .get("iss")
+        .unwrap_or("https://connect.internal")
+        .to_string();
+
+    let mut issuer = Issuer::new(
+        &mut store,
+        &mut evidence,
+        &policy,
+        &key,
+        &iss,
+        now(),
+        actor(args)?,
+    );
+    // Observe unless told otherwise, the same default `register` uses: P0 is a
+    // visibility wedge, and an estate with no attestation verifiers configured must
+    // still be able to issue and record contracts.
+    issuer.mode = mode(args);
+    f(&mut issuer)
+}
+
+fn request_cmd(args: &Args) -> Result<()> {
+    let input = RequestInput {
+        caller: EntityId::new(require(args, "from")?)?,
+        callee: EntityId::new(require(args, "to")?)?,
+        surface: Surface {
+            tools: args.list("tools"),
+            skills: args.list("skills"),
+            resources: args.list("resources"),
+        },
+        terms: Terms {
+            data_classes: args.list("data-classes"),
+            jurisdictions: args.list("jurisdictions"),
+            ..Default::default()
+        },
+        ttl_secs: args
+            .get("ttl")
+            .and_then(cpolicy::parse_duration)
+            .unwrap_or(30 * 86_400),
+        justification: require(args, "justify")?.to_string(),
+        // A request needs an accountable human, full stop. Falling back to an
+        // anonymous placeholder is exactly what invariant 1 exists to prevent.
+        requester: requesting_human(args)?,
+        mediators: {
+            let m = args.list("mediator");
+            if m.is_empty() {
+                vec!["warden:mediator:default".to_string()]
+            } else {
+                m
+            }
+        },
+    };
+
+    let outcome = with_issuer(args, |issuer| issuer.request(&input))?;
+
+    match outcome {
+        Outcome::Issued(issued) => {
+            let paths = write_artifacts(args, &issued)?;
+            print_issued(args, &issued, &paths)
+        }
+        Outcome::AwaitingApproval(pending) => {
+            if args.has("json") {
+                println!(
+                    "{}",
+                    pretty(&json!({
+                        "request": pending.id,
+                        "status": "awaiting_approval",
+                        "digest": pending.digest(),
+                        "approver_role": pending.approver_role,
+                        "dual_control": pending.dual_control,
+                        "expires_at": pending.expires_at,
+                        "ttl_secs": pending.ttl_secs,
+                        "policy_version": pending.policy_version,
+                        "reason": pending.policy_reason,
+                        "trace": pending.policy_trace,
+                    }))?
+                );
+            } else {
+                println!("awaiting approval  {}", pending.id);
+                println!("  surface     {}", pending.surface.items().join(", "));
+                println!("  ttl         {}d", pending.ttl_secs / 86_400);
+                println!(
+                    "  approver    {}{}",
+                    pending.approver_role.as_deref().unwrap_or("any"),
+                    if pending.dual_control {
+                        " (two distinct approvers)"
+                    } else {
+                        ""
+                    }
+                );
+                println!("  digest      {}", pending.digest());
+                println!("  lapses at   {}", pending.expires_at);
+                println!("  why         {}", pending.policy_reason);
+                println!("  trace       {}", pending.policy_trace);
+            }
+            // Exit 6: approval required and not granted. CI can act on this.
+            Err(WcError::with_detail(
+                Code::APPROVER_ROLE_MISSING,
+                format!("request {} needs a human", pending.id),
+            ))
+        }
+        Outcome::Denied { reason, trace } => {
+            println!("denied");
+            println!("  why    {reason}");
+            println!("  trace  {trace}");
+            Err(WcError::with_detail(Code::POLICY_DENIED, reason))
+        }
+    }
+}
+
+/// Approve a pending request: sign as the approver, verify, then mint.
+///
+/// In production the signing happens in the approver's own client and only the
+/// signature reaches the control plane. Doing both here keeps the demo honest —
+/// the same verification runs either way.
+fn approve_cmd(args: &Args) -> Result<()> {
+    let request_id = positional_or_flag(args, "id")?.to_string();
+    let registry = load_approvers(args)?;
+
+    let approver = HumanRef::new(require(args, "by")?)?;
+    let key_path = require(args, "approver-key")?;
+    let signing = approver_signing_key(&approver, key_path)?;
+
+    let second = match (args.get("second"), args.get("second-key")) {
+        (Some(id), Some(path)) => {
+            let who = HumanRef::new(id)?;
+            Some((approver_signing_key(&who, path)?, who))
+        }
+        (None, None) => None,
+        _ => {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "--second and --second-key must be given together",
+            ))
+        }
+    };
+    let ticket = args.get("ticket").map(str::to_string);
+
+    let issued = with_issuer(args, move |issuer| {
+        let pending = issuer.pending_request(&request_id)?;
+        let mut proofs = vec![ApprovalProof {
+            by: approver.clone(),
+            jws: issuance::sign_approval(&pending, &signing, ticket.as_deref(), issuer.now)?,
+        }];
+        if let Some((key, who)) = &second {
+            proofs.push(ApprovalProof {
+                by: who.clone(),
+                jws: issuance::sign_approval(&pending, key, ticket.as_deref(), issuer.now)?,
+            });
+        }
+        issuer.approve(&request_id, &proofs, &registry)
+    })?;
+
+    let paths = write_artifacts(args, &issued)?;
+    print_issued(args, &issued, &paths)
+}
+
+fn deny_cmd(args: &Args) -> Result<()> {
+    let request_id = positional_or_flag(args, "id")?.to_string();
+    let reason = require(args, "reason")?.to_string();
+    with_issuer(args, |issuer| issuer.deny(&request_id, &reason))?;
+    println!("denied {request_id}");
+    Ok(())
+}
+
+fn requests_cmd(args: &Args) -> Result<()> {
+    let mut store = open_store(args)?;
+    let show_all = args.has("all");
+    let mut rows: Vec<&PendingRequest> = store
+        .projection
+        .requests
+        .values()
+        .filter(|r| show_all || r.status == RequestStatus::Pending)
+        .collect();
+    rows.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+
+    if args.has("json") {
+        let out: Vec<Value> = rows
+            .iter()
+            .map(|r| {
+                json!({
+                    "id": r.id, "status": format!("{:?}", r.status),
+                    "caller": r.caller.as_str(), "callee": r.callee.as_str(),
+                    "surface": r.surface.items(), "ttl_secs": r.ttl_secs,
+                    "approver_role": r.approver_role, "dual_control": r.dual_control,
+                    "expires_at": r.expires_at, "digest": r.digest(),
+                })
+            })
+            .collect();
+        println!("{}", pretty(&Value::Array(out))?);
+        return Ok(());
+    }
+
+    if rows.is_empty() {
+        println!(
+            "{}",
+            if show_all {
+                "no requests"
+            } else {
+                "no pending requests"
+            }
+        );
+        return Ok(());
+    }
+    println!(
+        "{:<18} {:<10} {:<28} {:<22} SURFACE",
+        "REQUEST", "STATUS", "CALLER", "CALLEE"
+    );
+    for r in rows {
+        println!(
+            "{:<18} {:<10} {:<28} {:<22} {}",
+            r.id,
+            format!("{:?}", r.status),
+            truncate(r.caller.as_str(), 28),
+            truncate(r.callee.as_str(), 22),
+            r.surface.items().join(", ")
+        );
+    }
+    let _ = &mut store;
+    Ok(())
+}
+
+fn contracts_cmd(args: &Args) -> Result<()> {
+    let store = open_store(args)?;
+
+    if let Some(cid) = args
+        .get("cid")
+        .or_else(|| args.verbs.get(1).map(String::as_str))
+    {
+        let record = store
+            .projection
+            .contracts
+            .values()
+            .find(|c| c.cid.as_str() == cid)
+            .ok_or_else(|| {
+                WcError::with_detail(Code::CONTRACT_NOT_FOUND, format!("no contract {cid}"))
+            })?;
+        if args.has("json") {
+            println!(
+                "{}",
+                pretty(&serde_json::to_value(record).unwrap_or_default())?
+            );
+        } else {
+            println!("{}", record.cid);
+            println!("  status     {:?}", record.status);
+            println!("  caller     {}", record.caller);
+            println!(
+                "  callee     {} (tier {})",
+                record.callee,
+                record.callee_tier.as_u8()
+            );
+            println!("  surface    {}", record.surface.items().join(", "));
+            println!("  digest     {}", record.surface_digest);
+            println!("  aud        {}", record.aud.join(", "));
+            println!("  expires    {}", record.exp);
+            println!("  approval   {:?}", record.approval.mode);
+            println!("  policy     {}", record.policy_version);
+        }
+        return Ok(());
+    }
+
+    let mut rows: Vec<_> = store.projection.contracts.values().collect();
+    rows.sort_by(|a, b| a.cid.as_str().cmp(b.cid.as_str()));
+    if rows.is_empty() {
+        println!("no contracts");
+        return Ok(());
+    }
+    println!(
+        "{:<18} {:<10} {:<28} {:<22} EXPIRES",
+        "CID", "STATUS", "CALLER", "CALLEE"
+    );
+    for r in rows {
+        println!(
+            "{:<18} {:<10} {:<28} {:<22} {}",
+            r.cid,
+            format!("{:?}", r.status),
+            truncate(r.caller.as_str(), 28),
+            truncate(r.callee.as_str(), 22),
+            r.exp
+        );
+    }
+    Ok(())
+}
+
+/// Load the approver registry from TOML.
+fn load_approvers(args: &Args) -> Result<ApproverRegistry> {
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        id: String,
+        #[serde(default)]
+        roles: Vec<String>,
+        key: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct File {
+        #[serde(default)]
+        approver: Vec<Entry>,
+    }
+
+    let path = args.get("approvers").unwrap_or("approvers.toml");
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+    })?;
+    let parsed: File = toml_from_str(&text, path)?;
+
+    let mut registry = ApproverRegistry::new();
+    for entry in parsed.approver {
+        let id = HumanRef::new(&entry.id)?;
+        let pem = std::fs::read(&entry.key).map_err(|e| {
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!("cannot read approver key {}", entry.key),
+            )
+            .with_source(e)
+        })?;
+        let roles: Vec<&str> = entry.roles.iter().map(String::as_str).collect();
+        registry.add_ec(&id, &pem, Algorithm::ES256, &roles)?;
+    }
+    if registry.is_empty() {
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!("{path} registers no approvers"),
+        ));
+    }
+    Ok(registry)
+}
+
+fn toml_from_str<T: serde::de::DeserializeOwned>(text: &str, path: &str) -> Result<T> {
+    toml::from_str(text).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot parse {path}: {e}"))
+    })
+}
+
+/// An approver's private key, for signing in this process.
+fn approver_signing_key(who: &HumanRef, path: &str) -> Result<IssuerKey> {
+    let pem = std::fs::read(path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+    })?;
+    IssuerKey::ec_pem(who.as_str(), &pem, Algorithm::ES256)
+}
+
+// ---------------------------------------------------------------------------
 // policy
 // ---------------------------------------------------------------------------
 
@@ -1382,6 +1890,16 @@ REGISTER
                   [--data-classes a,b] [--jurisdictions SG,AU] [--enforce]
   register agent  --card FILE --owner human:x --zone internal.y [--id ID]
 
+CONNECT  (the core loop)
+  request --from ID --to ID --tools a,b --justify TEXT [--ttl 30d]
+          [--mediator ID] [--data-classes a,b] [--jurisdictions SG,AU]
+          --issuer-key PEM --kid KID [--out DIR]
+  approve <req-id> --by human:x --approver-key PEM [--second human:y --second-key PEM]
+          [--ticket RISK-1] --issuer-key PEM --kid KID [--out DIR]
+  deny    <req-id> --reason TEXT
+  requests [--all]
+  contracts [<cid>]
+
 ESTATE
   activate <id> [--why REASON]
   entities [--json]
@@ -1409,6 +1927,7 @@ GLOBAL
   --tenant NAME      tenant (default: default)
   --by human:x       the accountable operator (env WARDEN_CONNECT_ACTOR)
   --anchor-key PEM   sign evidence checkpoints as they are written
+  --approvers FILE   approver registry (default: approvers.toml)
   --json             machine-readable output
 
 EXIT CODES
