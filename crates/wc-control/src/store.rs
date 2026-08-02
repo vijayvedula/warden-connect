@@ -350,6 +350,23 @@ fn segments(dir: &Path, name: &str) -> Result<Vec<(u32, PathBuf)>> {
     Ok(out)
 }
 
+/// A filesystem-safe artifact name. An audience is a `warden:mediator:x` style id,
+/// so its colons cannot go straight into a path.
+#[must_use]
+pub fn artifact_name(cid: &str, audience: &str) -> String {
+    let safe: String = audience
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{cid}.{safe}.jws")
+}
+
 fn io_err(code: Code, path: &Path, e: std::io::Error) -> WcError {
     WcError::with_detail(code, format!("{}: {}", path.display(), e)).with_source(e)
 }
@@ -1008,6 +1025,7 @@ pub struct Store {
     /// The append-only log.
     pub log: StateLog,
     dir: PathBuf,
+    artifacts: PathBuf,
     anomalies: Vec<String>,
 }
 
@@ -1018,10 +1036,12 @@ impl Store {
         let dir = dir.as_ref().to_path_buf();
         let (projection, report) = Projection::rebuild(&dir, STATE_LOG_NAME)?;
         let log = StateLog::open(&dir, STATE_LOG_NAME)?;
+        let artifacts = dir.join("contracts");
         Ok((
             Store {
                 projection,
                 log,
+                artifacts,
                 dir,
                 anomalies: Vec::new(),
             },
@@ -1033,6 +1053,42 @@ impl Store {
     #[must_use]
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Put the issued artifacts somewhere other than `<state>/contracts`.
+    #[must_use]
+    pub fn with_artifacts(mut self, dir: impl Into<PathBuf>) -> Store {
+        self.artifacts = dir.into();
+        self
+    }
+
+    /// Where issued artifacts live.
+    #[must_use]
+    pub fn artifacts_dir(&self) -> &Path {
+        &self.artifacts
+    }
+
+    /// Persist an issued artifact (§8.8.1).
+    ///
+    /// The state log records only `jws_sha256`, to stay compact — so the artifact
+    /// itself has to be kept here, or a mediator could never be handed the signed
+    /// document it is supposed to verify. One file per audience, because one
+    /// contract is addressed to one mediator.
+    pub fn write_artifact(&self, cid: &str, audience: &str, jws: &str) -> Result<PathBuf> {
+        std::fs::create_dir_all(&self.artifacts)
+            .map_err(|e| io_err(Code::CHAIN_APPEND_FAILED, &self.artifacts, e))?;
+        let path = self.artifacts.join(artifact_name(cid, audience));
+        std::fs::write(&path, format!("{jws}\n"))
+            .map_err(|e| io_err(Code::CHAIN_APPEND_FAILED, &path, e))?;
+        Ok(path)
+    }
+
+    /// Read a persisted artifact back.
+    #[must_use]
+    pub fn read_artifact(&self, cid: &str, audience: &str) -> Option<String> {
+        std::fs::read_to_string(self.artifacts.join(artifact_name(cid, audience)))
+            .ok()
+            .map(|t| t.trim().to_string())
     }
 
     /// Append an event and apply it to the projection, in that order: if the
