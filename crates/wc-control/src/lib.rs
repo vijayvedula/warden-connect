@@ -17,6 +17,7 @@ pub mod admission;
 pub mod chain;
 pub mod cpolicy;
 pub mod evidence;
+pub mod issuance;
 pub mod lock;
 pub mod registry;
 pub mod sink;
