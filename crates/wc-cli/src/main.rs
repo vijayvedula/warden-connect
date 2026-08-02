@@ -31,10 +31,11 @@ use wc_control::admission::{
     self, AdmissionRequest, Declared, InlineSurface, McpHttpSurface, SurfaceSource,
 };
 use wc_control::chain::ANCHOR_FILE;
+use wc_control::cpolicy::{ConnectPolicy, StandingState};
 use wc_control::evidence::{EventKind, Evidence, LifecycleEvent};
 use wc_control::store::{Actor, Store};
 use wc_core::canon::{self, Limits, SurfaceKind};
-use wc_core::contract::{self, Algorithm, IssuerKeys, VerifyOpts};
+use wc_core::contract::{self, Algorithm, ApprovalMode, IssuerKeys, VerifyOpts};
 use wc_core::error::{Category, Code, Mode, Result, WcError};
 use wc_core::model::{Entity, EntityId, HumanRef, Kind, Lifecycle, Posture, Tier, ZoneId};
 
@@ -108,7 +109,14 @@ fn exit_code(code: Code) -> u8 {
 
 /// Commands that take two words, so a trailing positional id is never mistaken
 /// for part of the command.
-const TWO_WORD: &[&str] = &["register server", "register agent", "audit verify"];
+const TWO_WORD: &[&str] = &[
+    "register server",
+    "register agent",
+    "audit verify",
+    "policy lint",
+    "policy dry-run",
+    "policy show",
+];
 
 /// Every dispatchable command.
 const COMMANDS: &[&str] = &[
@@ -123,6 +131,9 @@ const COMMANDS: &[&str] = &[
     "canon",
     "export",
     "verify",
+    "policy lint",
+    "policy dry-run",
+    "policy show",
     "version",
 ];
 
@@ -184,6 +195,8 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "now",
             "leeway",
         ],
+        "policy lint" | "policy show" => &["policy"],
+        "policy dry-run" => &["policy", "now"],
         _ => &[],
     }
 }
@@ -257,6 +270,9 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "audit verify" => audit_verify(args)?,
         "canon" => canon_cmd(args)?,
         "verify" => verify_cmd(args)?,
+        "policy lint" => policy_lint(args)?,
+        "policy dry-run" => policy_dry_run(args)?,
+        "policy show" => policy_show(args)?,
         "export" => export(args)?,
         "version" => println!("connect {}", env!("CARGO_PKG_VERSION")),
         // Unreachable: COMMANDS is checked above, and this match covers it.
@@ -1093,6 +1109,242 @@ fn verify_cmd(args: &Args) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// policy
+// ---------------------------------------------------------------------------
+
+/// The default policy file name, alongside the binary's working directory.
+const DEFAULT_POLICY: &str = "connect-policy.toml";
+
+fn load_policy(args: &Args) -> Result<ConnectPolicy> {
+    ConnectPolicy::load(args.get("policy").unwrap_or(DEFAULT_POLICY))
+}
+
+/// Static checks. Exits 3 on an error, 0 with warnings — a warning is advice, an
+/// error means the policy would not load.
+fn policy_lint(args: &Args) -> Result<()> {
+    let policy = load_policy(args)?;
+    let report = policy.lint();
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "version": policy.version,
+                "usable": report.is_usable(),
+                "errors": report.errors,
+                "warnings": report.warnings,
+            }))?
+        );
+    } else {
+        println!(
+            "policy   {}",
+            if policy.version.trim().is_empty() {
+                "(unset)"
+            } else {
+                &policy.version
+            }
+        );
+        println!("zones    {}", policy.zones.len());
+        println!("rules    {}", policy.rules.len());
+        println!("default  {}", policy.default.as_str());
+        if !report.errors.is_empty() || !report.warnings.is_empty() {
+            println!();
+        }
+        for e in &report.errors {
+            println!("  error   {e}");
+        }
+        for w in &report.warnings {
+            println!("  warning {w}");
+        }
+        println!(
+            "\n{}",
+            if report.is_usable() {
+                format!("usable · {} warning(s)", report.warnings.len())
+            } else {
+                format!("NOT USABLE · {} error(s)", report.errors.len())
+            }
+        );
+    }
+
+    if report.is_usable() {
+        Ok(())
+    } else {
+        Err(WcError::with_detail(
+            Code::POLICY_INVALID,
+            format!("{} error(s)", report.errors.len()),
+        ))
+    }
+}
+
+/// Replay every live contract against a candidate policy.
+///
+/// A policy change is the likeliest cause of a self-inflicted outage, so this
+/// answers "what breaks if I ship this" before it ships.
+fn policy_dry_run(args: &Args) -> Result<()> {
+    let policy = load_policy(args)?;
+    let store = open_store(args)?;
+    let ts = args.number("now").unwrap_or_else(now);
+
+    let standing = standing_state(&store);
+    let report = policy.dry_run(&store.projection, &standing, ts);
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "policy": policy.version,
+                "evaluated": report.rows.len(),
+                "neutral": report.is_neutral(),
+                "would_deny": report.would_deny,
+                "would_escalate": report.would_escalate,
+                "unevaluable": report.unevaluable.iter()
+                    .map(|(cid, why)| json!({"cid": cid, "why": why}))
+                    .collect::<Vec<_>>(),
+                "rows": report.rows.iter().map(|r| json!({
+                    "cid": r.cid, "decision": r.decision,
+                    "still_issuable": r.still_issuable, "reason": r.reason,
+                })).collect::<Vec<_>>(),
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("candidate  {}", policy.version);
+    println!("evaluated  {} live contract(s)", report.rows.len());
+    if report.rows.is_empty() && report.unevaluable.is_empty() {
+        println!("\nno live contracts to re-evaluate");
+        return Ok(());
+    }
+
+    println!();
+    println!("{:<18} {:<18} WHY", "CID", "WOULD BE");
+    for row in &report.rows {
+        println!(
+            "{:<18} {:<18} {}",
+            truncate(&row.cid, 18),
+            row.decision,
+            row.reason
+        );
+    }
+
+    if !report.unevaluable.is_empty() {
+        // Never silently omitted: an answer that leaves out part of the estate is
+        // worse than no answer.
+        println!("\nunevaluable:");
+        for (cid, why) in &report.unevaluable {
+            println!("  {cid}  {why}");
+        }
+    }
+
+    println!(
+        "\n{}",
+        if report.is_neutral() {
+            "no live contract changes decision".to_string()
+        } else {
+            format!(
+                "{} would be denied · {} would need a human",
+                report.would_deny.len(),
+                report.would_escalate.len()
+            )
+        }
+    );
+    Ok(())
+}
+
+/// Print the resolved zone bars — what a rule actually inherits, rather than what
+/// the file literally says.
+fn policy_show(args: &Args) -> Result<()> {
+    let policy = load_policy(args)?;
+
+    if args.has("json") {
+        let zones: Vec<Value> = policy
+            .zones
+            .iter()
+            .map(|z| {
+                let bar = ZoneId::new(&z.id).ok().map(|id| policy.bar_for(&id));
+                json!({
+                    "id": z.id,
+                    "trust": format!("{:?}", z.trust).to_lowercase(),
+                    "resolved": bar.map(|b| json!({
+                        "identity": format!("{:?}", b.identity).to_lowercase(),
+                        "provenance": format!("{:?}", b.provenance).to_lowercase(),
+                        "approval": format!("{:?}", b.approval).to_lowercase(),
+                        "oversight": format!("{:?}", b.oversight).to_lowercase(),
+                        "ttl_secs": b.ttl_secs(),
+                        "max_delegation_depth": b.max_delegation_depth,
+                    })),
+                })
+            })
+            .collect();
+        println!("{}", pretty(&Value::Array(zones))?);
+        return Ok(());
+    }
+
+    println!("policy   {}", policy.version);
+    println!("default  {}", policy.default.as_str());
+    println!("\nresolved zone bars (declaration combined with the trust-level floor):");
+    println!(
+        "\n{:<24} {:<9} {:<10} {:<12} {:<10} DEPTH",
+        "ZONE", "TRUST", "IDENTITY", "APPROVAL", "TTL"
+    );
+    for zone in &policy.zones {
+        let Ok(id) = ZoneId::new(&zone.id) else {
+            continue;
+        };
+        let bar = policy.bar_for(&id);
+        println!(
+            "{:<24} {:<9} {:<10} {:<12} {:<10} {}",
+            truncate(&zone.id, 24),
+            format!("{:?}", zone.trust).to_lowercase(),
+            format!("{:?}", bar.identity).to_lowercase(),
+            format!("{:?}", bar.approval).to_lowercase(),
+            bar.ttl_secs()
+                .map_or("-".to_string(), |s| format!("{}d", s / 86_400)),
+            bar.max_delegation_depth
+                .map_or("-".to_string(), |d| d.to_string())
+        );
+    }
+
+    println!("\nstanding policy:");
+    let s = &policy.standing;
+    println!("  max share          {:.0}%", s.max_share * 100.0);
+    println!("  max per window     {} per {}", s.max_per_window, s.window);
+    println!("  min callee tier    {}", s.min_callee_tier);
+    println!("  write allowed      {}", s.allow_write);
+    println!("  max items          {}", s.max_tools);
+    println!(
+        "  reviewed           {}",
+        if s.reviewed_at == 0 {
+            "never — every request escalates to a human".to_string()
+        } else {
+            format!("at {} (every {})", s.reviewed_at, s.review_every)
+        }
+    );
+    Ok(())
+}
+
+/// Standing-issuance counters as of now, from the projection.
+fn standing_state(store: &Store) -> StandingState {
+    let active: Vec<_> = store
+        .projection
+        .contracts
+        .values()
+        .filter(|c| c.status == wc_core::contract::ContractStatus::Active)
+        .collect();
+    let standing = active
+        .iter()
+        .filter(|c| c.approval.mode == ApprovalMode::StandingPolicy)
+        .count();
+    StandingState {
+        active_contracts: active.len(),
+        standing_contracts: standing,
+        // Windowed issuance needs the state log; until the issuance workflow lands
+        // this is the conservative zero rather than a guess.
+        issued_in_window: 0,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
@@ -1140,6 +1392,11 @@ ESTATE
 EVIDENCE
   audit verify [--anchor-pub PEM] [--json]
   export --format csv|json
+
+POLICY
+  policy lint    [--policy FILE] [--json]
+  policy show    [--policy FILE] [--json]      resolved zone bars + standing caps
+  policy dry-run [--policy FILE] [--json]      what a change does to live contracts
 
 TOOLS
   canon <surface.json> [--kind mcp|a2a] [--entity ID] [--document] [--json]
@@ -1284,13 +1541,14 @@ mod tests {
     #[test]
     fn every_command_declares_its_flags() {
         // A command with no entry would silently accept anything, which is the
-        // failure `check_flags` exists to prevent.
+        // failure `check_flags` exists to prevent. Only these two legitimately take
+        // nothing beyond the global flags.
+        const NO_OWN_FLAGS: &[&str] = &["entities", "version"];
         for command in COMMANDS {
             let declared = accepted_flags(command);
-            let expected_empty = matches!(*command, "entities" | "version");
             assert_eq!(
                 declared.is_empty(),
-                expected_empty,
+                NO_OWN_FLAGS.contains(command),
                 "{command} flag list looks wrong"
             );
         }

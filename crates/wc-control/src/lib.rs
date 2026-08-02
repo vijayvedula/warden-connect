@@ -15,6 +15,7 @@
 
 pub mod admission;
 pub mod chain;
+pub mod cpolicy;
 pub mod evidence;
 pub mod lock;
 pub mod registry;
