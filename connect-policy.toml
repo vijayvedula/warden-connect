@@ -59,6 +59,9 @@ assurance = { identity = "required", provenance = "required", ttl_max = "7d", ap
 
 [standing]
 max_share = 0.6           # at most 60% of active contracts may be standing-issued
+share_min_sample = 20     # ...but only once there are this many; a percentage of a
+                          # tiny denominator is noise, and would otherwise escalate
+                          # every request after the very first one
 max_per_window = 50       # per window, below
 window = "24h"
 min_callee_tier = 3       # tier 1 and 2 callees always need a human
