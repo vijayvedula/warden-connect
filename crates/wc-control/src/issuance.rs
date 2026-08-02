@@ -871,6 +871,12 @@ impl<'a> Issuer<'a> {
             Durability::Durable,
         )?;
 
+        // Persist the artifacts, or a mediator could never be handed the signed
+        // document it is meant to verify (§8.8.1).
+        for (audience, jws) in &artifacts {
+            self.store.write_artifact(cid.as_str(), audience, jws)?;
+        }
+
         Ok(Issued {
             record,
             artifacts,

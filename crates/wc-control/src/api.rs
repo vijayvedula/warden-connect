@@ -962,6 +962,10 @@ fn contract_set(cp: &Arc<ControlPlane>, mediator: &str, req: &Request) -> Result
                 "surface": c.surface.items(),
                 "exp": c.exp,
                 "jws_sha256": c.jws_sha256,
+                // The artifact itself, not just its digest: a mediator verifies the
+                // signed document, and a set that only described it would be
+                // unusable.
+                "jws": store.read_artifact(c.cid.as_str(), mediator),
             })).collect::<Vec<_>>(),
             "removed": removed,
         })
