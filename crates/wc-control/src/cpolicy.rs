@@ -703,6 +703,13 @@ impl ConnRule {
 pub struct StandingLimits {
     /// Maximum share of active contracts that may be standing-issued.
     pub max_share: f64,
+    /// Active contracts below which the share cap does not apply.
+    ///
+    /// A percentage of a tiny denominator is noise: with one active contract, one
+    /// standing issuance is 100% and the cap would escalate every request forever,
+    /// so an estate could never get past its first contract. Below this many, the
+    /// per-window count is the meaningful bound.
+    pub share_min_sample: usize,
     /// Maximum standing issuances per window.
     pub max_per_window: u32,
     /// Window length, as a duration string.
@@ -724,6 +731,7 @@ impl Default for StandingLimits {
     fn default() -> Self {
         StandingLimits {
             max_share: 0.6,
+            share_min_sample: 20,
             max_per_window: 50,
             window: "24h".to_string(),
             min_callee_tier: 3,
@@ -780,12 +788,13 @@ impl StandingLimits {
                 state.issued_in_window, self.max_per_window
             ));
         }
-        if state.active_contracts > 0 {
+        if state.active_contracts >= self.share_min_sample {
             let share = state.standing_contracts as f64 / state.active_contracts as f64;
             if share >= self.max_share {
                 return Some(format!(
-                    "{:.0}% of active contracts are standing-issued, cap is {:.0}%",
+                    "{:.0}% of {} active contracts are standing-issued, cap is {:.0}%",
                     share * 100.0,
+                    state.active_contracts,
                     self.max_share * 100.0
                 ));
             }
@@ -947,6 +956,14 @@ impl ConnectPolicy {
         now: u64,
     ) -> Result<ConnEval> {
         // --- 1 · structural preconditions, which no rule may override ---
+        if caller.id == callee.id {
+            // A contract from a party to itself grants nothing and means nothing;
+            // it is always a mistake in the request rather than a policy question.
+            return Err(WcError::with_detail(
+                Code::MINT_PRECONDITION_FAILED,
+                format!("{} cannot be both ends of a connection", caller.id),
+            ));
+        }
         assert_party_connectable(caller, "caller")?;
         assert_party_connectable(callee, "callee")?;
         assert_surface_declared(req, callee)?;
@@ -1624,6 +1641,17 @@ decision = "allow"
     }
 
     #[test]
+    fn a_party_cannot_connect_to_itself() {
+        let p = policy();
+        let same = callee(Tier::THREE);
+        let err = p
+            .evaluate(&request(&["get_balance"]), &same, &same, &state(), NOW)
+            .unwrap_err();
+        assert_eq!(err.code(), Code::MINT_PRECONDITION_FAILED);
+        assert!(err.detail().contains("both ends"));
+    }
+
+    #[test]
     fn a_quarantined_party_cannot_be_either_end() {
         let p = policy();
         for quarantine_callee in [false, true] {
@@ -1780,6 +1808,51 @@ decision = "allow"
             );
             assert!(eval.trace.contains("standing-cap"), "{}", eval.trace);
         }
+    }
+
+    #[test]
+    fn a_small_estate_is_not_strangled_by_the_share_cap() {
+        // The bug this exists to prevent: with one active contract, one standing
+        // issuance is 100% and the cap escalates every request forever, so an
+        // estate can never get past its first contract.
+        let p = policy();
+        for (active, standing) in [(0, 0), (1, 1), (5, 5), (19, 19)] {
+            let eval = p
+                .evaluate(
+                    &request(&["get_balance"]),
+                    &caller(),
+                    &callee(Tier::THREE),
+                    &StandingState {
+                        active_contracts: active,
+                        standing_contracts: standing,
+                        issued_in_window: 0,
+                    },
+                    NOW,
+                )
+                .unwrap();
+            assert_eq!(
+                eval.decision,
+                ConnDecision::Allow,
+                "an estate of {active} must still bootstrap"
+            );
+        }
+
+        // At the sample floor the cap starts to mean something and applies.
+        let eval = p
+            .evaluate(
+                &request(&["get_balance"]),
+                &caller(),
+                &callee(Tier::THREE),
+                &StandingState {
+                    active_contracts: 20,
+                    standing_contracts: 20,
+                    issued_in_window: 0,
+                },
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(eval.decision, ConnDecision::RequireApproval);
+        assert!(eval.reason.contains("cap is 60%"));
     }
 
     #[test]

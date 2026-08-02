@@ -14,9 +14,11 @@
 #![warn(missing_docs)]
 
 pub mod admission;
+pub mod api;
 pub mod chain;
 pub mod cpolicy;
 pub mod evidence;
+pub mod http;
 pub mod issuance;
 pub mod lock;
 pub mod registry;

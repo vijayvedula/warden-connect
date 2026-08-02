@@ -27,12 +27,16 @@ use std::process::ExitCode;
 
 use serde_json::{json, Value};
 
+use std::sync::Arc;
 use wc_control::admission::{
     self, AdmissionRequest, Declared, InlineSurface, McpHttpSurface, SurfaceSource,
 };
 use wc_control::chain::ANCHOR_FILE;
+
+use wc_control::api::{Api, ControlPlane};
 use wc_control::cpolicy::{self as cpolicy, ConnectPolicy, StandingState};
 use wc_control::evidence::{EventKind, Evidence, LifecycleEvent};
+use wc_control::http::{self, Shutdown};
 use wc_control::issuance::{
     self as issuance, ApprovalProof, ApproverRegistry, Issued, Issuer, Outcome, PendingRequest,
     RequestInput, RequestStatus,
@@ -145,6 +149,7 @@ const COMMANDS: &[&str] = &[
     "deny",
     "requests",
     "contracts",
+    "serve",
     "version",
 ];
 
@@ -241,6 +246,17 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "out",
         ],
         "deny" => &["id", "reason", "policy"],
+        "serve" => &[
+            "listen",
+            "policy",
+            "issuer-key",
+            "kid",
+            "iss",
+            "jwks",
+            "tokens",
+            "approvers",
+            "enforce",
+        ],
         "requests" => &["all"],
         "contracts" => &["cid"],
         _ => &[],
@@ -322,6 +338,7 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "request" => request_cmd(args)?,
         "approve" => approve_cmd(args)?,
         "deny" => deny_cmd(args)?,
+        "serve" => serve_cmd(args)?,
         "requests" => requests_cmd(args)?,
         "contracts" => contracts_cmd(args)?,
         "export" => export(args)?,
@@ -1617,6 +1634,128 @@ fn approver_signing_key(who: &HumanRef, path: &str) -> Result<IssuerKey> {
 }
 
 // ---------------------------------------------------------------------------
+// serve
+// ---------------------------------------------------------------------------
+
+/// Run the control-plane HTTP surface.
+///
+/// The store holds an exclusive writer lock for the process lifetime, so `serve`
+/// and the other subcommands cannot run against the same tenant at once — by
+/// design (§8.5.2). Use the API while it is up.
+fn serve_cmd(args: &Args) -> Result<()> {
+    let listen = args.get("listen").unwrap_or("127.0.0.1:8787").to_string();
+    let policy = load_policy(args)?;
+    let report = policy.lint();
+    if !report.is_usable() {
+        // Refuse to start rather than serve under a policy that will not load
+        // (§8.13): a control plane that boots with a broken policy believes it is
+        // enforcing something it is not.
+        for e in &report.errors {
+            eprintln!("connect: policy error: {e}");
+        }
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!(
+                "policy has {} error(s); refusing to start",
+                report.errors.len()
+            ),
+        ));
+    }
+    for w in &report.warnings {
+        eprintln!("connect: policy warning: {w}");
+    }
+
+    let signer = issuer_key(args)?;
+    let store = open_store(args)?;
+    let evidence = open_evidence(args)?;
+    let iss = args
+        .get("iss")
+        .unwrap_or("https://connect.internal")
+        .to_string();
+
+    let mut cp =
+        ControlPlane::new(store, evidence, policy, signer, &iss, now).with_mode(mode(args));
+
+    if let Some(path) = args.get("jwks") {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+        })?;
+        cp = cp.with_jwks(&text);
+    }
+    if args.get("approvers").is_some() || std::path::Path::new("approvers.toml").exists() {
+        cp = cp.with_approvers(load_approvers(args)?);
+    }
+
+    let tokens = load_tokens(args)?;
+    for (token, token_roles) in &tokens {
+        let as_refs: Vec<&str> = token_roles.iter().map(String::as_str).collect();
+        cp = cp.with_token(token, &as_refs);
+    }
+
+    let api = Arc::new(Api(Arc::new(cp)));
+    let shutdown = Arc::new(Shutdown::default());
+
+    println!("connect serve  {listen}");
+    println!("  tenant   {}", args.get("tenant").unwrap_or("default"));
+    println!("  policy   {}", load_policy(args)?.version);
+    println!("  mode     {:?}", mode(args));
+    println!("  tokens   {}", tokens.len());
+    println!("\n  GET  /healthz /readyz /metrics /v1/jwks.json");
+    println!("  GET  /v1/entities /v1/posture /v1/connections /v1/requests /v1/mediators");
+    println!("  POST /v1/connections /v1/requests/<id>/approve|deny /v1/quarantine");
+    println!("  GET  /v1/mediators/<id>/contracts    POST /v1/mediators/<id>/ack");
+
+    http::serve(&listen, api, shutdown, |addr| {
+        if listen.ends_with(":0") {
+            println!("  bound    {addr}");
+        }
+    })
+    .map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot serve on {listen}"))
+            .with_source(e)
+    })
+}
+
+/// Bearer tokens and their roles.
+///
+/// A file rather than flags, so a token never lands in a shell history or a process
+/// listing.
+fn load_tokens(args: &Args) -> Result<Vec<(String, Vec<String>)>> {
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        token: String,
+        #[serde(default)]
+        roles: Vec<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct File {
+        #[serde(default)]
+        client: Vec<Entry>,
+    }
+
+    let path = args.get("tokens").unwrap_or("tokens.toml");
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!("cannot read {path}; the api needs at least one client token"),
+        )
+        .with_source(e)
+    })?;
+    let parsed: File = toml_from_str(&text, path)?;
+    if parsed.client.is_empty() {
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!("{path} registers no clients, so nothing could authenticate"),
+        ));
+    }
+    Ok(parsed
+        .client
+        .into_iter()
+        .map(|c| (c.token, c.roles))
+        .collect())
+}
+
+// ---------------------------------------------------------------------------
 // policy
 // ---------------------------------------------------------------------------
 
@@ -1921,6 +2060,10 @@ TOOLS
   verify <contract.jws> --issuer-pub PEM --kid KID --mediator-id ID
                         [--alg ES256|ES384|EdDSA] [--now TS] [--leeway N] [--json]
   version
+
+SERVE
+  serve [--listen 127.0.0.1:8787] --issuer-key PEM --kid KID
+        [--tokens tokens.toml] [--approvers approvers.toml] [--jwks FILE]
 
 GLOBAL
   --root PATH        state and evidence root (env WARDEN_CONNECT_ROOT, default {DEFAULT_ROOT})
