@@ -160,7 +160,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::admission` | 7-stage admission pipeline, tier derivation (§8.7.3) | 900 | P0/P2 | independent |
 | `wc-control::screen` | Declared-surface injection screening (§8.7.4) | 540 | P2 | — |
 | `wc-control::broker` | Capability index, mediated discovery, anti-enumeration | 380 | P1 | — |
-| `wc-control::cpolicy` | `connect-policy.toml`: parse, evaluate, lint, dry-run | 850 | P1 | condition algebra reimplemented to match `policy.rs` syntax exactly |
+| `wc-control::cpolicy` | `connect-policy.toml`: parse, evaluate, lint, dry-run | 1100 | P1 | condition algebra reimplemented to match `policy.rs` syntax exactly |
 | `wc-control::sentinel` | Re-attest scheduler, drift classify, posture score, blast radius | 780 | P2/P3 | — |
 | `wc-control::evidence` | Lifecycle chain, anchors, OCSF/CAEP sinks | 850 | P0 | same formats as `audit`/`anchor`/`sink`/`ocsf`, held by golden vectors |
 | `wc-control::export` | DORA / CPS 230 / OSCAL / CSV / CycloneDX registers | 520 | P4 | — |
@@ -368,10 +368,19 @@ trust" (UC-02 A3). Every other stage degrades; the pin cannot.
 
 ### 8.5.5 `wc-control::cpolicy` — connection policy
 
-Reuses core's condition algebra rather than inventing one: `warden::policy::{Match,
-Cond, Op, PolicyValue}` are imported directly, so `when = [...]`, `{all=[]}`,
-`{any=[]}`, `{not=…}` behave identically to Warden policy — the same syntax the
-operator already knows, already fuzzed by `fuzz_targets/parse_policy.rs`.
+Mirrors core's condition algebra rather than inventing one: `when = [...]`,
+`{all=[]}`, `{any=[]}`, `{not=…}` and the same four operators behave identically to
+Warden policy, so an operator writes one stanza style for both planes. It is
+**reimplemented, not imported** — `wc-control` links no Warden core (§8.3) — and
+`syntax_matches_warden_core_policy` pins the four shapes so they cannot drift apart.
+
+Two things the spec below leaves out and the implementation had to decide. Zone
+bars **combine with their trust level's floor**, so a `trust = "partner"` zone
+cannot declare its way below a human approver, a 7-day ceiling and delegation depth
+1, whatever its stanza says. And glob semantics follow core exactly — `prefix*`
+matches any value beginning with `prefix`, *including* `prefix` itself — which is
+why `internal.*` does not match bare `internal` (it does not begin with
+`internal.`) while `public*` does match bare `public`.
 
 ```rust
 #[derive(Deserialize)]

@@ -1,0 +1,129 @@
+# Connection policy — who may connect to whom, on what terms, for how long.
+#
+#   connect policy lint                     static checks
+#   connect policy dry-run                  what would change for live contracts
+#
+# Decisions: "allow" | "deny" | "require_approval". Evaluation order is fixed:
+#
+#   1  structural preconditions   both parties active, neither quarantined, and
+#                                 the requested surface a subset of what the
+#                                 callee declared. No rule can override these.
+#   2  zone bar                   a floor on assurance, a ceiling on TTL
+#   3  first matching [[rules]]   top to bottom
+#   4  default                    if nothing matched
+#   5  standing caps              may only downgrade allow -> require_approval
+#
+# Terms from every source intersect. A rule can never raise a ceiling a zone bar
+# set, and a request can never raise either.
+
+default = "require_approval"
+version = "connect-policy@v1"
+
+
+# --- zones -------------------------------------------------------------------
+#
+# Three trust levels over an extensible dotted namespace. A zone that declares no
+# bar inherits its trust level's, and a zone can never declare its way *below*
+# that floor — `trust = "partner"` always means at least a human approver, a 7-day
+# ceiling and delegation depth 1, whatever the stanza says.
+
+[[zone]]
+id = "internal.apac-ops"
+trust = "internal"
+
+[[zone]]
+id = "internal.payments"
+trust = "internal"
+# Money movement lives here, so tighten past the internal default.
+assurance = { identity = "required", provenance = "required", ttl_max = "14d" }
+
+[[zone]]
+id = "internal.ledger"
+trust = "internal"
+
+[[zone]]
+id = "partner.acme"
+trust = "partner"
+assurance = { identity = "required", provenance = "required", ttl_max = "7d", approval = "human", oversight = "required", max_delegation_depth = 1 }
+
+
+# --- standing policy ---------------------------------------------------------
+#
+# Auto-approval is what makes the register adoptable, and simultaneously the
+# widest policy surface in the system. So it is bounded here, in the engine, and
+# every breach escalates to a human — never the reverse.
+#
+# `reviewed_at` is load-bearing: leave it unset and every request escalates,
+# which is the correct default for a control nobody has signed off yet. Set it to
+# the unix time of the review that approved these limits.
+
+[standing]
+max_share = 0.6           # at most 60% of active contracts may be standing-issued
+max_per_window = 50       # per window, below
+window = "24h"
+min_callee_tier = 3       # tier 1 and 2 callees always need a human
+allow_write = false       # a write-capable surface always needs a human
+max_tools = 8             # more than eight items is not "low risk"
+review_every = "90d"
+reviewed_at = 0           # UNSET — set this after the first review
+
+
+# --- rules -------------------------------------------------------------------
+# First match wins. Order matters; `connect policy lint` flags unreachable rules.
+
+# The low-risk majority: internal, read-only, an unremarkable callee. This is the
+# rule that keeps humans out of the loop for the traffic that does not need them —
+# and the standing caps above are what stop it from swallowing the estate.
+[[rules]]
+caller_zone = "internal.*"
+callee_zone = "internal.*"
+callee_tier = { op = "gt", value = 2 }
+surface = { write = false, max_tools = 8 }
+decision = "allow"
+ttl_max = "30d"
+terms = { max_calls_per_hour = 500, max_concurrent = 8, evidence_sink = "ocsf://siem", evidence_delivery = "fail-safe" }
+
+# A sensitive callee is a human decision, whatever else is true.
+[[rules]]
+callee_tier = { op = "lt", value = 3 }
+decision = "require_approval"
+approver_role = "security.architect"
+ttl_max = "14d"
+reason = "a tier 1 or 2 callee needs a security architect to sign for it"
+
+# Money movement: a human, a shorter life, an oversight threshold, and evidence
+# that must be durable before the contract exists at all.
+[[rules]]
+callee_zone = "internal.payments"
+surface = { write = true }
+decision = "require_approval"
+approver_role = "payments.controller"
+ttl_max = "7d"
+terms = { max_spend_usd_per_day = 250000.0, human_oversight = "required_above:10000_usd", max_calls_per_hour = 100, evidence_sink = "ocsf://siem", evidence_delivery = "blocking" }
+reason = "write access to the payments zone is a controller decision"
+
+# Cross-border: the partner zone's bar already forces a human and a 7-day TTL;
+# this narrows the terms further and pins delegation to one hop.
+[[rules]]
+caller_zone = "internal.*"
+callee_zone = "partner.*"
+decision = "require_approval"
+approver_role = "thirdparty.risk"
+terms = { max_delegation_depth = 1, human_oversight = "required_above:10000_usd", evidence_delivery = "blocking" }
+reason = "a partner connection needs third-party risk sign-off and a tested exit"
+
+# Public egress is not a connection decision, it is an onboarding decision.
+# Note this rule names a zone no [[zone]] declares — deliberately. It is the
+# explicit refusal for a zone we have not onboarded.
+[[rules]]
+callee_zone = "public*"
+decision = "deny"
+reason = "public-zone egress requires partner onboarding first"
+
+# An agent asking for more than a handful of tools is asking for a review, not a
+# contract. Reaching this rule means none of the shapes above fit.
+[[rules]]
+when = { field = "surface:count", op = "gt", value = 12 }
+decision = "require_approval"
+approver_role = "security.architect"
+reason = "an unusually broad surface needs a human to look at it"
