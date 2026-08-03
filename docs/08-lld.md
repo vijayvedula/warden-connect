@@ -162,7 +162,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::screen` | Declared-surface injection screening (§8.7.4) | 1540 | P2 | — |
 | `wc-control::broker` | Capability index, mediated discovery, anti-enumeration | 380 | P1 | — |
 | `wc-control::cpolicy` | `connect-policy.toml`: parse, evaluate, lint, dry-run | 1100 | P1 | condition algebra reimplemented to match `policy.rs` syntax exactly |
-| `wc-control::assurance` | Re-attest scheduler, drift classify, posture score, blast radius | 780 | P2/P3 | — |
+| `wc-control::assurance` | Re-attest scheduler, drift classify, posture score, blast radius | 1100 | P2/P3 | — |
 | `wc-control::evidence` | Lifecycle chain, anchors, OCSF/CAEP sinks | 850 | P0 | same formats as `audit`/`anchor`/`sink`/`ocsf`, held by golden vectors |
 | `wc-control::export` | DORA / CPS 230 / OSCAL / CSV / CycloneDX registers | 520 | P4 | — |
 | `wc-control::federate` | OpenID-Federation trust chains, partner resolution | 460 | P4 | OIDC discovery reimplemented |
@@ -527,9 +527,25 @@ impl Assurance {
 Scheduling detail that matters operationally: `due_at` carries **±10% jitter**
 seeded from `sha256(entity_id)` so 10⁴ entities admitted by the same CI run do not
 re-attest in the same second. Tier 1 interval is 1 h (NFR); tier 4 is 7 d.
-Re-attestation is rate-limited per callee endpoint (max 1 concurrent, 4/min) so the
-assurance cannot become a denial-of-service against a tool server it is
-supposedly protecting.
+Re-attestation is rate-limited per callee endpoint (4/min) so assurance cannot
+become a denial-of-service against a tool server it is supposedly protecting.
+
+Four properties the implementation adds, each closing a way the loop could look
+healthy while doing nothing:
+
+- **Deferrals are returned, not dropped.** `TickReport.deferred` carries every due
+  task the rate limit or the tick budget held back, and the task stays queued. A
+  scheduler that discards throttled work and reports only what it ran looks fine
+  while one endpoint's parties go unchecked indefinitely.
+- **Overdue parties queue at `now`.** Something already late must not be pushed a
+  further interval away by the act of noticing it.
+- **Jitter is deterministic**, seeded from the entity id rather than random: a
+  restart must not reshuffle the estate back into one bucket, and a test has to be
+  able to assert the spread. Halving on repeated benign drift is floored at 60 s,
+  so the feedback loop cannot walk into the rate limiter.
+- **A configuration that disables the loop is refused**, not accepted: `workers =
+  0`, `per_endpoint_per_minute = 0` and `attested_at = 0` each parse fine and each
+  silently stops the thing from working.
 
 ### 8.5.8 `wc-control::evidence` — the reuse showpiece
 
@@ -1153,6 +1169,17 @@ Repeated benign drift is itself a signal: > 3 benign drifts in 7 days shortens
 constantly changes shape is a party to watch, even when each individual change is
 harmless.
 
+`contracted` is a `Known(set) | Unknown` rather than a plain set, and the
+distinction is load-bearing: **"nothing is contracted" and "we could not resolve
+what is contracted" must not produce the same verdict.** The first makes every
+change benign; the second makes every change unproven, and an unproven change to a
+surface somebody may be depending on is material. `Unknown` with an unchanged
+surface is still `None` — failing closed must not mean crying wolf.
+
+Symmetrically, an attestation signal of `None` means *not checked*, not *failed*.
+Treating a stage that never ran as a failure would make every observe-mode estate
+look like it was under attack.
+
 ### 8.7.6 A6 · Posture score
 
 ```
@@ -1228,6 +1255,17 @@ blast_radius(id, max_depth, proj) -> BlastReport
 Reported both as JSON and as a service-level summary, because the SecOps analyst
 about to quarantine something needs "these 3 business services stop" more than a
 list of 400 entity ids (UC-07 A2).
+
+Two reporting rules, because a radius that understates itself is worse than no
+radius:
+
+- **`truncated` is part of the report**, the CLI exits non-zero on it, and no node
+  beyond `max_depth` is emitted. A depth-limited traversal that emits one hop past
+  its bound reads as having explored further than it did. `depth = 0` is floored to
+  1 rather than reporting an empty radius for a party with fifty contracts.
+- **`dangling` lists parties named by a contract but absent from the registry.**
+  The edge is real, so the radius is real; silently omitting the node understates
+  the impact of the cut.
 
 ### 8.7.9 A9 · Contract set distribution
 
@@ -1618,9 +1656,14 @@ mode = "flag"                       # observe | flag | enforce
 rules = "screen-rules.toml"
 
 [assurance]
-workers = 8
-reattest_default = "24h"
-reattest_tier1   = "1h"
+workers                = 8
+jitter                 = 0.10      # +/- fraction of the interval, seeded per entity
+per_endpoint_per_minute = 4        # 0 would defer every re-attestation forever => refused
+benign_burst           = 3         # more than this in the window halves the interval
+benign_window          = 604800
+attested_at            = 85        # score at or above which a party is Attested
+expiry_warnings        = [2592000, 604800, 86400]
+reattest_every         = { 1 = 3600, 4 = 604800 }   # per tier; absent => the tier's own
 
 [evidence]
 chain  = "evidence/chain.jsonl"
