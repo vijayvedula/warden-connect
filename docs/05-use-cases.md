@@ -192,13 +192,13 @@ The use case that most clearly cannot be served at the action layer.
 
 | Field | Detail |
 |---|---|
-| **Primary actor** | Sentinel (automated) |
+| **Primary actor** | Assurance loop (automated) |
 | **Supporting** | AppSec Engineer, agent owner |
 | **Trigger** | Scheduled re-attestation, or a hash mismatch at connect time |
 | **Preconditions** | A pinned card/manifest hash exists |
 
 **Main flow**
-1. Sentinel re-fetches the callee's declared surface on its interval.
+1. The assurance loop re-fetches the callee's declared surface on its interval.
 2. Canonicalise and hash; compare against the pin.
 3. On mismatch, compute a **semantic diff**: tools added/removed, descriptions changed, parameters changed, endpoints changed.
 4. Re-run injection screening against the new text.
@@ -256,7 +256,7 @@ The use case that most clearly cannot be served at the action layer.
 
 | Field | Detail |
 |---|---|
-| **Primary actor** | Sentinel (automated) |
+| **Primary actor** | Assurance loop (automated) |
 | **Supporting** | CISO, agent owner, Platform Operator |
 | **Trigger** | An observed connection attempt whose caller, callee or both are unregistered |
 | **Preconditions** | Mediators deployed on the paths in scope (may be observe-only) |
@@ -286,12 +286,12 @@ The use case that most clearly cannot be served at the action layer.
 | Field | Detail |
 |---|---|
 | **Primary actor** | Business service owner / agent owner |
-| **Supporting** | Sentinel, Security Architect |
+| **Supporting** | Assurance loop, Security Architect |
 | **Trigger** | Contract approaching `exp`; periodic access review; agent decommissioned; owner departs |
 | **Preconditions** | An active contract exists |
 
 **Main flow**
-1. Sentinel notifies the owner ahead of expiry with **actual usage** for the period: tools actually called, volume, spend, denied attempts.
+1. The assurance loop notifies the owner ahead of expiry with **actual usage** for the period: tools actually called, volume, spend, denied attempts.
 2. Owner elects renew / renew-with-reduced-surface / terminate.
 3. Renewal re-runs admission checks — identity, provenance, pin, screening. It is a re-decision, not an extension.
 4. Usage-informed **surface reduction** is proposed automatically: tools granted but never called are dropped by default.

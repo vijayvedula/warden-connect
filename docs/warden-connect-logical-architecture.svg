@@ -84,9 +84,9 @@
   <text x="78" y="544" class="body">time-boxed: exp ≤ zone.ttl_max · silence terminates</text>
   <text x="78" y="572" class="mono">connect verify &lt;contract&gt;  =  conformance ground truth</text>
 
-  <!-- sentinel -->
+  <!-- assurance -->
   <rect x="562" y="432" width="476" height="168" rx="8" class="io"/>
-  <text x="578" y="458" class="mod">sentinel — trust decays, re-earn it</text>
+  <text x="578" y="458" class="mod">assurance — trust decays, re-earn it</text>
   <text x="578" y="484" class="body">scheduled re-attestation on assurance.reattest_every</text>
   <text x="578" y="504" class="body">drift: re-hash the surface, semantic diff, re-screen</text>
   <text x="578" y="524" class="body">material drift → suspend every contract on that pin</text>

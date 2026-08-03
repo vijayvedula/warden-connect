@@ -1,6 +1,6 @@
 [package]
 name = "wc-control"
-description = "warden-connect control plane: registry, admission, broker, contract issuance, sentinel, evidence."
+description = "warden-connect control plane: registry, admission, broker, contract issuance, assurance, evidence."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

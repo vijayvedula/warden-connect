@@ -29,7 +29,7 @@ channel (mesh/TLS termination — composed with, not replaced).
                                    │                                       │
                         ┌──────────▼───────────────────────────────────────▼─────────┐
                         │              warden-connect CONTROL PLANE                  │
-                        │  registry · admission · broker · contract · sentinel · evd │
+                        │ registry · admission · broker · contract · assurance · evd │
                         └──────────┬───────────────────────────────┬─────────────────┘
         signed contracts + revocations │                           │ evidence (OCSF/CAEP/OSCAL)
                                    ┌───▼────┐                  ┌───▼────┐
@@ -70,7 +70,7 @@ working until they expire — which is why TTLs are short and expiry is hard.
 | **admission** | Verify identity, provenance, card/manifest signature; screen declared surface; derive tier; pin hashes | new |
 | **broker** | Mediated capability discovery; policy-filtered results; anti-enumeration | new |
 | **contract** | Mint / verify / renew / revoke `warden-connection+jws`; approval workflow; policy evaluation | new (JOSE direct; condition algebra mirrors `policy.rs`) |
-| **sentinel** | Scheduled re-attestation; drift detection & semantic diff; posture scoring; expiry watch; blast-radius | new |
+| **assurance** | Scheduled re-attestation; drift detection & semantic diff; posture scoring; expiry watch; blast-radius | new |
 | **evidence** | Lifecycle events → tamper-evident chain + anchors; OCSF/CAEP sinks; OSCAL & register exports | same formats as `audit.rs`/`anchor.rs`/`sink.rs`/`ocsf.rs`, wire-compatible by golden vector |
 | **mediator** *(data plane)* | Peer auth, contract verification, `tools/list` filtering, surface allowlist, ceilings, zone rules, drain | **the one component that links core** — an `Upstream` decorator composed with `warden::Gateway`; needs no change to core (LLD §8.6.1). **Optional**: omit it for a control-plane-only deployment |
 
@@ -265,7 +265,7 @@ induce a call to it. The control is structural, not probabilistic.
 ### F3 · Drift detection (UC-06)
 
 ```
-sentinel ──(schedule | connect-time mismatch)──▶ re-fetch surface
+assurance ─(schedule | connect-time mismatch)──▶ re-fetch surface
                                                    │ canonicalise + hash
                                                    │ compare to pin ── equal ──▶ record reattest, done
                                                    │ differ
@@ -288,7 +288,7 @@ secops ──quarantine(party, reason)──▶ registry: posture=quarantined (t
                                         ├─▶ push signed revocation events to every mediator
                                         │      mediator: refuse new · drain|abort in-flight · ACK
                                         ├─▶ emit CAEP SET  (downstream + federated partners)
-                                        ├─▶ sentinel: blast-radius report as of the cut
+                                        ├─▶ assurance: blast-radius report as of the cut
                                         └─▶ evidence: order, revocations, ACKs, non-ACKs → chain + SIEM
 ```
 

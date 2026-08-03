@@ -83,7 +83,7 @@ impl Registry<'_> {
         out
     }
 
-    /// Entities whose re-attestation interval has lapsed — the sentinel's work
+    /// Entities whose re-attestation interval has lapsed — the assurance loop's work
     /// queue (§8.5.7).
     #[must_use]
     pub fn reattest_due(&self, now: u64) -> Vec<EntityId> {

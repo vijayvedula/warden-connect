@@ -389,8 +389,15 @@ pub enum Actor {
         /// Service identifier.
         id: String,
     },
-    /// The control plane's own scheduler.
-    Sentinel,
+    /// The control plane's own continuous-assurance loop: re-attestation, drift
+    /// detection, expiry watch.
+    ///
+    /// Serialises as `"assurance"`. A stored event log written before the rename
+    /// carries `"sentinel"`, so that spelling is still accepted on read — an
+    /// append-only log cannot be rewritten, and a rebuild that silently dropped
+    /// those rows would lose exactly the automated actions nobody was watching.
+    #[serde(alias = "sentinel")]
+    Assurance,
 }
 
 /// Why a pin was replaced.
@@ -1168,6 +1175,25 @@ mod tests {
 
     fn actor() -> Actor {
         Actor::Human { id: human() }
+    }
+
+    #[test]
+    fn the_assurance_actor_still_reads_logs_written_as_sentinel() {
+        // The component was renamed sentinel -> assurance. The event log is
+        // append-only, so rows already on disk keep the old spelling and a rebuild
+        // that dropped them would lose precisely the automated actions no human
+        // was watching.
+        let old: Actor = serde_json::from_str(r#"{"type":"sentinel"}"#).unwrap();
+        assert_eq!(old, Actor::Assurance);
+
+        let current: Actor = serde_json::from_str(r#"{"type":"assurance"}"#).unwrap();
+        assert_eq!(current, Actor::Assurance);
+
+        // New rows are written with the new spelling.
+        assert_eq!(
+            serde_json::to_string(&Actor::Assurance).unwrap(),
+            r#"{"type":"assurance"}"#
+        );
     }
 
     fn agent_id() -> EntityId {

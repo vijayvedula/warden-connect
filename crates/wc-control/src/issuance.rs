@@ -889,7 +889,7 @@ fn actor_id(actor: &Actor) -> String {
     match actor {
         Actor::Human { id } => id.as_str().to_string(),
         Actor::Service { id } => format!("service:{id}"),
-        Actor::Sentinel => "sentinel".to_string(),
+        Actor::Assurance => "assurance".to_string(),
     }
 }
 
@@ -1704,7 +1704,7 @@ reason = "a sensitive callee needs a security architect"
             &key,
             "https://connect.internal",
             NOW + DEFAULT_REQUEST_TTL_SECS + 1,
-            Actor::Sentinel,
+            Actor::Assurance,
         );
         let lapsed = issuer.expire_lapsed().unwrap();
         assert_eq!(lapsed.len(), 2);
