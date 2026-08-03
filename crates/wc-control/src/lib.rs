@@ -15,6 +15,7 @@
 
 pub mod admission;
 pub mod api;
+pub mod attest;
 pub mod chain;
 pub mod cpolicy;
 pub mod evidence;
