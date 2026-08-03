@@ -20,7 +20,7 @@
 //!
 //! [`WCS1_VERSION`] is embedded in the canonical document and the algorithm name
 //! is recorded in [`crate::model::Pin::alg`]. A future `wcs2` does not
-//! retroactively create drift: the sentinel computes both and performs a silent
+//! retroactively create drift: the assurance loop computes both and performs a silent
 //! shadow re-pin where `wcs1` matched.
 
 use std::collections::BTreeMap;

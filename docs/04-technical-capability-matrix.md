@@ -158,7 +158,7 @@ durable kind, and the harder kind to acquire:
 | OCSF/CAEP sinks with blocking vs fail-safe delivery semantics | Contract mint / verify / renew (`warden-connection+jws`) |
 | Asymmetric-only JWS verification, JWKS by `kid`, DPoP binding | Discovery broker with mediated visibility |
 | Policy engine shape: first-match rules, `when` condition trees, lint and dry-run | Zone model & zone-crossing assurance bars |
-| Fail-closed dispatch with a named reason for every denial | Sentinel: drift classification, re-attestation, posture scoring |
+| Fail-closed dispatch with a named reason for every denial | Assurance: drift classification, re-attestation, posture scoring |
 | Durable counters surviving restart; hot reload; twelve-factor config | Regulatory register export; cross-org federation |
 
 Two things make that reimplementation cheap rather than wasteful. The patterns are

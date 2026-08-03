@@ -836,7 +836,7 @@ mod tests {
             .unwrap()
             .contains_key("https://schemas.openid.net/secevent/caep/event-type/session-revoked"));
 
-        let drift = LifecycleEvent::new(EventKind::DriftMaterial, "sentinel");
+        let drift = LifecycleEvent::new(EventKind::DriftMaterial, "assurance");
         assert!(drift.to_caep(1)["events"]
             .as_object()
             .unwrap()

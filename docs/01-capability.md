@@ -185,7 +185,7 @@ locally-derived inputs may only narrow, never widen.
 
 ```
                         warden-connect  (control plane)
-                     registry · admission · broker · contract · sentinel
+                    registry · admission · broker · contract · assurance
                                         │
                        signed connection contract (cid, surface, terms)
                                         │
@@ -213,7 +213,7 @@ locally-derived inputs may only narrow, never widen.
 | **Discovery broker** | Control plane, per query | Mediated visibility; no enumeration |
 | **Contract minting** | Control plane, per request | Policy, approvals, terms, TTL |
 | **Channel mediator** | **Data plane**, in the connection path (co-located with the Warden proxy) | mTLS/SPIFFE, contract verification, surface filtering of `tools/list`, fan-out & rate ceilings, zone rules |
-| **Sentinel** | Control plane, continuous | Re-attestation, drift, expiry, CAEP-driven quarantine |
+| **Assurance** | Control plane, continuous | Re-attestation, drift, expiry, CAEP-driven quarantine |
 
 The data-plane component is deliberately thin and sits exactly where Warden's
 proxy already sits — which is why this is an extension of a shipped product

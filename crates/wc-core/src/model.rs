@@ -380,7 +380,7 @@ impl fmt::Display for Tier {
 }
 
 /// Continuous-assurance state. Distinct from [`Lifecycle`]: lifecycle is what
-/// an operator did, posture is what the sentinel found.
+/// an operator did, posture is what continuous assurance found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Posture {

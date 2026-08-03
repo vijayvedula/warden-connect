@@ -48,7 +48,7 @@ deployable, and warden-connect does not get to break them.
 | Constraint | Consequence for this design |
 |---|---|
 | **Thin dependency tree** — Warden core keeps to `serde`, `serde_json`, `sha2`, `hex`, `toml`, `jsonwebtoken` 10.4 `rust_crypto`, `base64`, `ureq`, `libc`, and so do we | No async runtime, no ORM, no graph database, no ML runtime. New deps must be justified per-crate in §8.3. Today: `wc-core` resolves to 30 crates, `wc-control` to 61. |
-| **No async** — thread-per-request, `Arc<Gateway>` shared state (`http.rs::serve`) | Control plane is a synchronous threaded HTTP server; the sentinel is a worker-thread pool, not a task executor. |
+| **No async** — thread-per-request, `Arc<Gateway>` shared state (`http.rs::serve`) | Control plane is a synchronous threaded HTTP server; the assurance loop is a worker-thread pool, not a task executor. |
 | **File-backed durable state** — hash-chained JSONL (`audit.rs`), signed feeds (`revocation.rs`), JSON snapshots (`budget.rs`) | The registry and contract store are **append-only event logs with in-memory projections** (§8.8), not a SQL schema. A SQL backend is an optional P4 adapter behind a trait, never the default. |
 | **Asymmetric-only signatures** (`identity.rs` `ASYMMETRIC_ALGS`) | Contracts are ES256/ES384/EdDSA/PS256/RS256. An HMAC-signed contract is rejected before any other check — algorithm confusion is structurally excluded. |
 | **Fail closed with a named reason** | Every rejection path returns a `WC-*` code (§8.11); no boolean-only failures, no silent allow. |
@@ -76,7 +76,7 @@ warden-connect/
 │  │  └─ src/{lib,model,canon,contract,zone,error,util}.rs
 │  ├─ wc-control/              # the control plane (lib)
 │  │  └─ src/{lib,store,registry,admission,screen,broker,cpolicy,
-│  │           sentinel,evidence,export,federate,api,tenant}.rs
+│  │           assurance,evidence,export,federate,api,tenant}.rs
 │  ├─ wc-mediator/             # the data plane (lib, linked into warden proxy)
 │  │  └─ src/{lib,cache,gate,filter,ceiling,peer,drain}.rs
 │  └─ wc-cli/                  # the `connect` binary
@@ -162,7 +162,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::screen` | Declared-surface injection screening (§8.7.4) | 1540 | P2 | — |
 | `wc-control::broker` | Capability index, mediated discovery, anti-enumeration | 380 | P1 | — |
 | `wc-control::cpolicy` | `connect-policy.toml`: parse, evaluate, lint, dry-run | 1100 | P1 | condition algebra reimplemented to match `policy.rs` syntax exactly |
-| `wc-control::sentinel` | Re-attest scheduler, drift classify, posture score, blast radius | 780 | P2/P3 | — |
+| `wc-control::assurance` | Re-attest scheduler, drift classify, posture score, blast radius | 780 | P2/P3 | — |
 | `wc-control::evidence` | Lifecycle chain, anchors, OCSF/CAEP sinks | 850 | P0 | same formats as `audit`/`anchor`/`sink`/`ocsf`, held by golden vectors |
 | `wc-control::export` | DORA / CPS 230 / OSCAL / CSV / CycloneDX registers | 520 | P4 | — |
 | `wc-control::federate` | OpenID-Federation trust chains, partner resolution | 460 | P4 | OIDC discovery reimplemented |
@@ -277,7 +277,7 @@ pub struct Projection {
     pub by_callee: HashMap<EntityId, HashSet<Cid>>,   // blast radius, reverse
     pub by_pin: HashMap<String, HashSet<Cid>>,        // drift fan-out, O(1)
     pub capabilities: CapabilityIndex,                // broker
-    pub expiring: BinaryHeap<Reverse<(u64, Cid)>>,    // sentinel expiry watch
+    pub expiring: BinaryHeap<Reverse<(u64, Cid)>>,    // assurance expiry watch
 }
 
 impl Projection {
@@ -503,18 +503,18 @@ Anti-enumeration is four concrete mechanics, not an aspiration:
 capability tags via a deterministic normalisation (lowercase, dot-segmented,
 stop-words removed). It is a search key, never an authority key.
 
-### 8.5.7 `wc-control::sentinel` — scheduler, drift, posture, blast radius
+### 8.5.7 `wc-control::assurance` — scheduler, drift, posture, blast radius
 
 ```rust
-pub struct Sentinel {
+pub struct Assurance {
     workers: usize,                       // default: min(8, cores)
     queue: Mutex<BinaryHeap<Reverse<Task>>>,   // (due_at, kind, target)
-    cfg: SentinelCfg,
+    cfg: AssuranceCfg,
 }
 
 pub enum TaskKind { Reattest, ExpiryWarn(u32), CredExpiry, PostureRescore, FederationRefresh }
 
-impl Sentinel {
+impl Assurance {
     pub fn tick(&self, now: u64, ctx: &mut Ctx) -> TickReport;      // pull due tasks, run
     pub fn reattest(&self, id: &EntityId, ctx: &mut Ctx) -> Result<Reattestation, WcError>;
     pub fn classify_drift(&self, old: &Pin, new: &Pin, contracts: &[ContractRecord])
@@ -528,7 +528,7 @@ Scheduling detail that matters operationally: `due_at` carries **±10% jitter**
 seeded from `sha256(entity_id)` so 10⁴ entities admitted by the same CI run do not
 re-attest in the same second. Tier 1 interval is 1 h (NFR); tier 4 is 7 d.
 Re-attestation is rate-limited per callee endpoint (max 1 concurrent, 4/min) so the
-sentinel cannot become a denial-of-service against a tool server it is
+assurance cannot become a denial-of-service against a tool server it is
 supposedly protecting.
 
 ### 8.5.8 `wc-control::evidence` — the reuse showpiece
@@ -546,7 +546,7 @@ pub struct LifecycleEvent {
     pub cid: Option<Cid>,
     pub contract_jti: Option<Jti>,
     pub entities: Vec<EntityId>,
-    pub actor: Actor,          // Human | Service | Sentinel
+    pub actor: Actor,          // Human | Service | Assurance
     pub decision: &'static str,
     pub reason: String,
     pub policy_version: String,
@@ -986,7 +986,7 @@ Two decisions inside step 3 deserve their reasoning:
   some of the control's credibility; the ones that fire must mean something.
 
 **Algorithm versioning.** The pin carries `alg: "wcs1"`. A future `wcs2` does not
-retroactively create drift: on upgrade the sentinel computes both, and if `wcs1`
+retroactively create drift: on upgrade the assurance loop computes both, and if `wcs1`
 matches while `wcs2` differs it performs a **silent shadow re-pin** and records a
 `repin{cause: AlgUpgrade}` event with no suspension. Migration noise is a design
 problem, and the design solves it once rather than in each operator's runbook.
@@ -1375,7 +1375,7 @@ and compared to the pin. Skills are filtered exactly as tools are.
 | Component | Model |
 |---|---|
 | `connect serve` | thread-per-request (core's `http.rs`), `Arc<ControlPlane>`; writes serialised behind one `Mutex<Writer>`; reads from an `Arc<Projection>` swapped copy-on-write |
-| Sentinel | `min(8, cores)` workers pulling a due-time heap; per-endpoint concurrency 1 |
+| Assurance | `min(8, cores)` workers pulling a due-time heap; per-endpoint concurrency 1 |
 | Distribution | 8 workers, bounded queue 4096, drop-oldest with a counter (never unbounded — a slow mediator must not exhaust control-plane memory) |
 | Mediator | inherits the proxy's thread-per-request; one background refresh thread; readers take `Arc<Snapshot>` clones and never block on refresh |
 
@@ -1617,7 +1617,7 @@ rekor = "https://rekor.sigstore.dev"
 mode = "flag"                       # observe | flag | enforce
 rules = "screen-rules.toml"
 
-[sentinel]
+[assurance]
 workers = 8
 reattest_default = "24h"
 reattest_tier1   = "1h"
@@ -1724,7 +1724,7 @@ policy_version, decision, reason, duration_us}`. OTel span attributes carry
 | `cpolicy` | first-match determinism · rules cannot raise a zone bar · `dry_run` diff is exact |
 | `filter` | **∀ upstream response, ∀ contract: visible ⊆ contract.surface.tools** |
 | `store` | `apply` totality · rebuild(snapshot+tail) == rebuild(full log) · unknown kinds counted, never dropped |
-| `sentinel` | drift classification decision table exhaustively · posture score monotonicity in each signal |
+| `assurance` | drift classification decision table exhaustively · posture score monotonicity in each signal |
 | `screen` | no block-class finding on the clean corpus (precision gate) |
 
 ### 8.15.2 Fuzz targets (mirroring `warden/fuzz`)
@@ -1797,12 +1797,12 @@ the exit gates.
 |---|---|---|
 | **P0 · Observe** | `model`, `canon`, `error`, `store`, `registry`, `admission` (stages 1–2, 6–7), `evidence`, `api` (entities/posture/export-csv), `cli` (register/posture/audit/canon), mediator in observe-only (shadow detection) | 10⁴ entities registered from CI; `connect audit verify` green; shadow report non-empty on a real estate; **zero behaviour change** measured on the proxy path |
 | **P1 · Contract** | `contract`, `cpolicy`, `broker`, `wc-mediator` (`cache`, `gate`, `filter`, `peer`) as an `Upstream` decorator, API connections + approvals, distribution loop | Conformance vectors 100% pass; `tools/list` filtering verified end to end **against unmodified Warden core**; `connect policy dry-run` accurate; verify p99 ≤ 1.5 ms in CI |
-| **P2 · Assure** | `admission` (stages 3–5), `screen`, `sentinel` (re-attest, drift, posture); *optionally* propose core's `ConnectionGate` + hashed `cid` (§8.6.1) | Screening precision ≥ 0.98 on the labelled corpus; material drift detected ≤ tier-1 interval; drift suspension exercised in e2e |
+| **P2 · Assure** | `admission` (stages 3–5), `screen`, `assurance` (re-attest, drift, posture); *optionally* propose core's `ConnectionGate` + hashed `cid` (§8.6.1) | Screening precision ≥ 0.98 on the labelled corpus; material drift detected ≤ tier-1 interval; drift suspension exercised in e2e |
 | **P3 · Contain** | quarantine fan-out, ACK tracking, `drain`, CAEP ingest/emit, `blast_radius`, break-glass, `ceiling` (durable spend) | 200-mediator quarantine < 60 s with ACKs; unconfirmed reported; quarterly drill script in the repo |
 | **P4 · Govern** | `zone` (full lattice), `federate`, `export` (DORA/CPS 230/OSCAL), `tenant`, SQL `Store` adapter, air-gapped bundles | Partner federation e2e against a second control plane; DORA register generated in < 1 h at 10⁵ contracts; cross-tenant reference returns `WC-8002` |
 
 Dependency order that cannot be reshuffled: `canon` before `admission` (no pin, no
-admission) · `contract` before `mediator` · per-item pins before `sentinel` (drift
+admission) · `contract` before `mediator` · per-item pins before `assurance` (drift
 classification depends on them) · `evidence` before everything (P0 ships it first
 so no later phase has to retrofit a record). Nothing in this order depends on a
 change to Warden core, or to any other family member.
@@ -1838,7 +1838,7 @@ annotations in the source, so it cannot drift from the code.
 | T2.2 surface pinning | `canon::pin`, `Pin::surface_digest` | `canon::props::*`, `fixtures/surfaces/*` |
 | T2.3 mediated discovery | `broker::discover` | `e2e::uc03_discovery` |
 | T2.4 anti-enumeration | `broker` token bucket + uniform latency | `broker::tests::empty_indistinguishable` |
-| T2.5 shadow detection | `mediator::gate` observe path → `sentinel` | `e2e::uc08_shadow` |
+| T2.5 shadow detection | `mediator::gate` observe path → `assurance` | `e2e::uc08_shadow` |
 | T3.1 mint | `contract::mint` | `contract::props::mint_verify_roundtrip` |
 | T3.2 verify | `mediator::gate::verify` | **all** `fixtures/contracts/*` |
 | T3.4 `tools/list` filtering | `mediator::filter::filter_tools_list` | `filter::props::visible_subset_of_surface` |
@@ -1846,10 +1846,10 @@ annotations in the source, so it cannot drift from the code.
 | T3.8 standing policy | `cpolicy::StandingLimits` | `cpolicy::tests::cap_downgrades_to_human` |
 | T4.4 ceilings | `mediator::ceiling::reserve` | `ceiling::tests::durable_across_restart` |
 | T4.7 latency | `gate::verify` warm path | `bench::gate_verify` (CI gate) |
-| T5.1 drift | `sentinel::classify_drift` | `sentinel::tests::decision_table` |
+| T5.1 drift | `assurance::classify_drift` | `assurance::tests::decision_table` |
 | T5.2 screening | `screen::surface` | `screen::corpus::precision_gate` |
-| T5.4 posture | `sentinel::score` | `sentinel::props::monotonic` |
-| T5.6 blast radius | `sentinel::blast_radius` | `bench::blast_radius_1e5` |
+| T5.4 posture | `assurance::score` | `assurance::props::monotonic` |
+| T5.6 blast radius | `assurance::blast_radius` | `bench::blast_radius_1e5` |
 | T6.1/6.2 revocation & quarantine | `evidence` + `revocation` kinds `cid`/`party` | `e2e::uc07_quarantine` |
 | T6.5 drain | `mediator::drain` | `drain::tests::ambiguous_config_aborts` |
 | T7.1 lifecycle audit | `evidence::append` (core `audit.rs`) | `evidence::tests::chain_across_schema_boundary` |
