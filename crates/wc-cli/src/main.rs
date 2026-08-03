@@ -41,6 +41,7 @@ use wc_control::issuance::{
     self as issuance, ApprovalProof, ApproverRegistry, Issued, Issuer, Outcome, PendingRequest,
     RequestInput, RequestStatus,
 };
+use wc_control::attest;
 use wc_control::screen;
 use wc_control::store::{Actor, Store};
 use wc_core::canon::{self, Limits, SurfaceKind};
@@ -186,6 +187,17 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "screen-rules",
             "acceptances",
             "screen-mode",
+            "svid",
+            "trust-key",
+            "aud",
+            "leeway",
+            "card-key",
+            "require-card-signature",
+            "attest",
+            "prov-key",
+            "artifact-digest",
+            "bind-surface",
+            "builder",
         ],
         "register agent" => &[
             "card",
@@ -201,6 +213,17 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "screen-rules",
             "acceptances",
             "screen-mode",
+            "svid",
+            "trust-key",
+            "aud",
+            "leeway",
+            "card-key",
+            "require-card-signature",
+            "attest",
+            "prov-key",
+            "artifact-digest",
+            "bind-surface",
+            "builder",
         ],
         "activate" => &["id", "why"],
         "quarantine" => &["id", "reason", "approver"],
@@ -570,6 +593,49 @@ fn register_agent(args: &Args) -> Result<()> {
     admit_and_record(args, &request, &source)
 }
 
+/// Load a set of trusted public keys from repeated `KID=PATH[:ALG]` arguments.
+///
+/// Empty is returned as empty rather than as an error: the caller decides whether
+/// an unconfigured trust set means "skip this stage" or "refuse". What is never
+/// allowed is a key that fails to load being quietly dropped.
+fn key_set(args: &Args, flag: &str) -> Result<IssuerKeys> {
+    let mut keys = IssuerKeys::new();
+    for spec in args.list(flag) {
+        let (kid, rest) = spec.split_once('=').ok_or_else(|| {
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!("--{flag} expects KID=PATH[:ALG], got {spec:?}"),
+            )
+        })?;
+        // Split the algorithm off the right, so a Windows-style path or a colon in
+        // a directory name cannot be mistaken for one.
+        let (path, alg) = match rest.rsplit_once(':') {
+            Some((p, a)) if matches!(a, "ES256" | "ES384" | "EdDSA" | "Ed25519") => (p, a),
+            _ => (rest, "ES256"),
+        };
+        let pem = std::fs::read(path).map_err(|e| {
+            WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+        })?;
+        match alg {
+            "ES256" => keys.add_ec_pem(kid, &pem, Algorithm::ES256)?,
+            "ES384" => keys.add_ec_pem(kid, &pem, Algorithm::ES384)?,
+            "EdDSA" | "Ed25519" => keys.add_ed_pem(kid, &pem)?,
+            other => {
+                return Err(WcError::with_detail(
+                    Code::ALG_NOT_ASYMMETRIC,
+                    format!("{other:?} is not an accepted algorithm"),
+                ))
+            }
+        }
+    }
+    Ok(keys)
+}
+
+/// Read the DSSE envelopes named by `--attest`.
+fn attestation_envelopes(args: &Args) -> Result<Vec<serde_json::Value>> {
+    args.list("attest").iter().map(|p| read_json(p)).collect()
+}
+
 /// Tool names already registered in this estate, keyed to their owner.
 ///
 /// This is what makes S2's collision half and S6's cross-entity half real at
@@ -625,6 +691,89 @@ fn admit_and_record(
 
     let mut ctx = admission::observe_ctx(source, ts);
     ctx.screener = &screener;
+
+    // --- stages 1, 3 and 4: real verifiers when material is supplied ---------
+    //
+    // Each stage stays on its P0 stand-in unless the operator supplied what it
+    // needs. The stand-ins report `Skipped`, which keeps the party
+    // `Unattested` — so an unconfigured stage is visible in `connect posture`
+    // rather than passing by omission.
+
+    let trust_keys = key_set(args, "trust-key")?;
+    let card_keys = key_set(args, "card-key")?;
+    let prov_keys = key_set(args, "prov-key")?;
+    let envelopes = attestation_envelopes(args)?;
+
+    let svid_identity = match args.get("svid") {
+        Some(path) => {
+            let token = std::fs::read_to_string(path)
+                .map_err(|e| {
+                    WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}"))
+                        .with_source(e)
+                })?
+                .trim()
+                .to_string();
+            Some(attest::JwtSvidIdentity {
+                keys: &trust_keys,
+                // No default: an unset audience would make the check vacuous, so
+                // the verifier refuses rather than accepting a token minted for
+                // anyone.
+                audience: args.get("aud").unwrap_or_default().to_string(),
+                token,
+                leeway: args.number("leeway").unwrap_or(60),
+            })
+        }
+        None => None,
+    };
+    if let Some(v) = &svid_identity {
+        ctx.identity = v;
+    }
+
+    let card_verifier = if card_keys.is_empty() {
+        None
+    } else {
+        Some(attest::JwksCardVerifier {
+            keys: &card_keys,
+            require_signature: args.has("require-card-signature"),
+        })
+    };
+    if let Some(v) = &card_verifier {
+        ctx.card = v;
+    }
+
+    // Provenance is bound to something concrete or it is not provenance. Either
+    // the operator names the artifact digest, or `--bind-surface` binds it to the
+    // surface manifest being pinned — which is the honest option for a party with
+    // no container digest to hand.
+    let artifact_digest = match args.get("artifact-digest") {
+        Some(d) => Some(d.to_string()),
+        None if args.has("bind-surface") => {
+            let fetched = source.fetch_surface(request)?;
+            let subject = request
+                .id
+                .clone()
+                .unwrap_or_else(|| EntityId::new(screen::SCREENING_SUBJECT).unwrap_or_else(|_| unreachable!()));
+            Some(attest::surface_artifact_digest(
+                fetched.kind,
+                &subject,
+                &fetched.raw,
+            )?)
+        }
+        None => None,
+    };
+    let prov_verifier = if envelopes.is_empty() && prov_keys.is_empty() {
+        None
+    } else {
+        Some(attest::DsseProvenanceVerifier {
+            keys: &prov_keys,
+            envelopes,
+            artifact_digest,
+            allowed_builders: args.list("builder").into_iter().collect(),
+        })
+    };
+    if let Some(v) = &prov_verifier {
+        ctx.provenance = v;
+    }
     let outcome = match admission::admit(request, &ctx) {
         Ok(o) => o,
         Err(e) => {
@@ -2272,6 +2421,13 @@ REGISTER
                   [--surface FILE] [--tier N] [--service S]
                   [--data-classes a,b] [--jurisdictions SG,AU] [--enforce]
   register agent  --card FILE --owner human:x --zone internal.y [--id ID]
+
+  ATTESTATION (any subset; each stage stays skipped without its material)
+    --svid FILE --trust-key KID=PEM[:ALG] --aud NAME [--leeway N]   stage 1
+    --card-key KID=PEM[:ALG] [--require-card-signature]             stage 3
+    --attest FILE --prov-key KID=PEM[:ALG] --builder ID             stage 4
+      and one of --artifact-digest sha256:... | --bind-surface
+    --screen-rules FILE --screen-mode observe|flag|enforce          stage 5
 
 CONNECT  (the core loop)
   request --from ID --to ID --tools a,b --justify TEXT [--ttl 30d]

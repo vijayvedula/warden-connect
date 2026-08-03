@@ -158,6 +158,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::store` | Append-only logs, projections, single-writer lock, compaction | 600 | P0 | same file discipline as `audit.rs` |
 | `wc-control::registry` | Entity CRUD, lifecycle state machine, pins, indexes | 480 | P0 | — |
 | `wc-control::admission` | 7-stage admission pipeline, tier derivation (§8.7.3) | 900 | P0/P2 | independent |
+| `wc-control::attest` | Real stage 1/3/4 verifiers: JWT-SVID, card JWS, DSSE/SLSA | 800 | P2 | independent; `jsonwebtoken::crypto` for raw verification |
 | `wc-control::screen` | Declared-surface injection screening (§8.7.4) | 1540 | P2 | — |
 | `wc-control::broker` | Capability index, mediated discovery, anti-enumeration | 380 | P1 | — |
 | `wc-control::cpolicy` | `connect-policy.toml`: parse, evaluate, lint, dry-run | 1100 | P1 | condition algebra reimplemented to match `policy.rs` syntax exactly |
@@ -355,16 +356,34 @@ pub fn admit(req: AdmissionRequest, ctx: &AdmissionCtx)
 
 | Stage | Function | Fails with | Observe-mode behaviour |
 |---|---|---|---|
-| 1 · Identity | `verify_workload_identity` — X.509-SVID against trust bundle, or JWT-SVID via `identity::verify_token_str` with `VerifyOpts{ jwks, aud, leeway }` | `WC-1001` | admit, `posture: Unattested` |
+| 1 · Identity | `verify_workload_identity` — X.509-SVID against trust bundle, or JWT-SVID with `{ trust bundle, aud, leeway }`. **The token must authenticate the id being registered**; a valid token for another workload is `WC-1001`, not a pass | `WC-1001` | admit, `posture: Unattested` |
 | 2 · Surface acquisition | `fetch_surface`: MCP `initialize` + `tools/list` over `ureq` (timeout 10 s, ≤ 4 MiB, ≤ 512 tools), or card fetch | `WC-1002` | **hard fail in both modes** — nothing is pinned on trust |
-| 3 · Card signature | `verify_card_jws` — detached JWS, key from operator JWKS or federation chain | `WC-1003` | admit + finding |
-| 4 · Provenance | `verify_provenance` — Sigstore bundle offline verification, SLSA predicate subject digest == artifact digest, Rekor inclusion proof if `--rekor` | `WC-1004` | admit + finding |
+| 3 · Card signature | `verify_card_jws` — detached JWS over the **wcs1-canonical card with `signatures` removed**, key from the operator's card JWKS (never a bundle the party controls). An empty `signatures` list is a failure, not an absent claim | `WC-1003` | admit + finding |
+| 4 · Provenance | `verify_provenance` — DSSE (PAE, so `payloadType` is inside the signed bytes) → in-toto statement → SLSA predicate. **Three bindings, all required for a pass**: signature under a trusted keyid, `subject[].digest.sha256` == the artifact digest being admitted, and `builder.id` in the allowlist. A valid signature over a statement about a different artifact is `verified: false` with the reason, never a pass | `WC-1004` | admit + finding |
 | 5 · Screening | `screen::surface(&Surface, tier_hint)` (§8.7.4) | `WC-1005` (block class) | admit + findings |
 | 6 · Tier | `derive_tier` (§8.7.3) | `WC-1006` (tier > requested ceiling) | same |
 | 7 · Pin | `canon::pin(&Surface)` → `Pin`; write entity; append evidence | `WC-1007` | same |
 
 Stage 2 being unforgiving in both modes is the sharp edge of "no register on
 trust" (UC-02 A3). Every other stage degrades; the pin cannot.
+
+### What P2's verifiers do not yet do
+
+Named here rather than left to be discovered, because each is a gap an operator
+would otherwise assume was covered:
+
+- **Rekor inclusion is not verified.** Offline DSSE verification proves a trusted
+  key signed the statement; it does not prove the statement was logged. Every
+  provenance method string ends `rekor inclusion not checked`.
+- **X.509-SVID is not implemented.** Stage 1 is JWT-SVID only. mTLS-derived
+  identity is the mediator's concern (§8.6.6) and needs a certificate parser the
+  control plane does not yet carry.
+- **Sigstore bundles** (certificate-carrying, Fulcio-issued) are not consumed —
+  only DSSE envelopes verified against pre-registered keys. That means no
+  keyless verification and no certificate-identity policy yet.
+- **An empty builder allowlist withholds the pass** rather than accepting any
+  signer. "No allowlist configured" is a gap, so it reports as `unrestricted`
+  and leaves the party unattested.
 
 ### 8.5.5 `wc-control::cpolicy` — connection policy
 

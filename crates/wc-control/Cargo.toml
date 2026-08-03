@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# For DSSE envelopes and JOSE segments in `attest`. DSSE uses standard base64
+# while JOSE uses base64url, and conflating them silently verifies the wrong
+# bytes, so both engines are used explicitly.
+base64 = { workspace = true }
 wc-core = { path = "../wc-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
