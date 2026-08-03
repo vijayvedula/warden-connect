@@ -22,5 +22,6 @@ pub mod http;
 pub mod issuance;
 pub mod lock;
 pub mod registry;
+pub mod screen;
 pub mod sink;
 pub mod store;

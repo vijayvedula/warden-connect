@@ -41,6 +41,7 @@ use wc_control::issuance::{
     self as issuance, ApprovalProof, ApproverRegistry, Issued, Issuer, Outcome, PendingRequest,
     RequestInput, RequestStatus,
 };
+use wc_control::screen;
 use wc_control::store::{Actor, Store};
 use wc_core::canon::{self, Limits, SurfaceKind};
 use wc_core::contract::{
@@ -139,6 +140,7 @@ const COMMANDS: &[&str] = &[
     "quarantine",
     "audit verify",
     "canon",
+    "screen",
     "export",
     "verify",
     "policy lint",
@@ -181,6 +183,9 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "data-classes",
             "jurisdictions",
             "enforce",
+            "screen-rules",
+            "acceptances",
+            "screen-mode",
         ],
         "register agent" => &[
             "card",
@@ -193,6 +198,9 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "data-classes",
             "jurisdictions",
             "enforce",
+            "screen-rules",
+            "acceptances",
+            "screen-mode",
         ],
         "activate" => &["id", "why"],
         "quarantine" => &["id", "reason", "approver"],
@@ -202,6 +210,16 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "audit verify" => &["anchor-pub"],
         "export" => &["format", "as-of"],
         "canon" => &["file", "kind", "entity", "document"],
+        "screen" => &[
+            "file",
+            "kind",
+            "entity",
+            "rules",
+            "acceptances",
+            "mode",
+            "tier",
+            "estate",
+        ],
         "verify" => &[
             "file",
             "issuer-pub",
@@ -331,6 +349,7 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "quarantine" => quarantine(args)?,
         "audit verify" => audit_verify(args)?,
         "canon" => canon_cmd(args)?,
+        "screen" => screen_cmd(args)?,
         "verify" => verify_cmd(args)?,
         "policy lint" => policy_lint(args)?,
         "policy dry-run" => policy_dry_run(args)?,
@@ -551,6 +570,29 @@ fn register_agent(args: &Args) -> Result<()> {
     admit_and_record(args, &request, &source)
 }
 
+/// Tool names already registered in this estate, keyed to their owner.
+///
+/// This is what makes S2's collision half and S6's cross-entity half real at
+/// admission: without it a typosquat on another server's tool name cannot be
+/// detected, because there is nothing to collide with. Built from the pins the
+/// registry already holds, so it costs one projection read.
+fn estate_names(args: &Args) -> Result<screen::NameIndex> {
+    let mut index = screen::NameIndex::empty();
+    let store = match open_store(args) {
+        Ok(s) => s,
+        // A first registration into an empty root has no estate to compare
+        // against. That is not an error, but the screening report must say the
+        // collision half did not run — which it does, from an empty index.
+        Err(_) => return Ok(index),
+    };
+    for (id, entity) in &store.projection.entities {
+        for tool in entity.pin.items.keys() {
+            index.insert(tool, id.clone());
+        }
+    }
+    Ok(index)
+}
+
 /// Run admission, write the entity, and record what happened — including every
 /// stage that was skipped.
 fn admit_and_record(
@@ -559,7 +601,30 @@ fn admit_and_record(
     source: &dyn SurfaceSource,
 ) -> Result<()> {
     let ts = now();
-    let ctx = admission::observe_ctx(source, ts);
+
+    // Screening is on by default with the built-in ruleset. It ships
+    // uncalibrated, so it cannot block anything — but the alternative is that
+    // most registrations are never screened at all, and a control that is
+    // available rather than active protects nobody.
+    let rules = match args.get("screen-rules") {
+        Some(p) => screen::ScreenRules::load(std::path::Path::new(p))?,
+        None => screen::ScreenRules::default(),
+    };
+    let acceptances = match args.get("acceptances") {
+        Some(p) => screen::Acceptances::load(std::path::Path::new(p))?,
+        None => screen::Acceptances::default(),
+    };
+    let names = estate_names(args)?;
+    let screener = screen::RulesetScreener {
+        rules: &rules,
+        acceptances: &acceptances,
+        names: &names,
+        mode: screen::ScreenMode::parse(args.get("screen-mode").unwrap_or("flag"))?,
+        limits: Limits::default(),
+    };
+
+    let mut ctx = admission::observe_ctx(source, ts);
+    ctx.screener = &screener;
     let outcome = match admission::admit(request, &ctx) {
         Ok(o) => o,
         Err(e) => {
@@ -597,6 +662,14 @@ fn admit_and_record(
                     "stage": format!("{:?}", s.stage),
                     "verdict": format!("{:?}", s.verdict),
                 })).collect::<Vec<_>>(),
+                // Findings belong in the record, not only on the terminal: an
+                // admission that raised a screening hit and stored no trace of it
+                // cannot be reviewed later.
+                "findings": outcome.findings.iter().map(|f| json!({
+                    "code": f.code.to_string(),
+                    "severity": format!("{:?}", f.severity),
+                    "detail": f.detail,
+                })).collect::<Vec<_>>(),
             })),
         ts,
     )?;
@@ -627,6 +700,16 @@ fn admit_and_record(
         entity.lifecycle
     );
     println!("  why       {}", outcome.tier_rationale);
+
+    // A finding that nobody is shown is a control nobody has. Screening runs on
+    // every registration, so if this is silent the whole stage may as well not
+    // exist.
+    if !outcome.findings.is_empty() {
+        println!("\n  findings");
+        for f in &outcome.findings {
+            println!("    {:<9} {:<8} {}", f.code.to_string(), format!("{:?}", f.severity), f.detail);
+        }
+    }
 
     let skipped = outcome.skipped();
     if !skipped.is_empty() {
@@ -1025,19 +1108,22 @@ fn export(args: &Args) -> Result<()> {
 // canon
 // ---------------------------------------------------------------------------
 
+/// Parse a surface-kind name.
+fn surface_kind(name: &str) -> Result<SurfaceKind> {
+    match name {
+        "mcp" | "mcp_tools" => Ok(SurfaceKind::McpTools),
+        "a2a" | "a2a_card" => Ok(SurfaceKind::A2aCard),
+        other => Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!("unknown surface kind {other:?}; try mcp or a2a"),
+        )),
+    }
+}
+
 fn canon_cmd(args: &Args) -> Result<()> {
     let path = positional_or_flag(args, "file")?;
     let raw = read_json(path)?;
-    let kind = match args.get("kind").unwrap_or("mcp") {
-        "mcp" | "mcp_tools" => SurfaceKind::McpTools,
-        "a2a" | "a2a_card" => SurfaceKind::A2aCard,
-        other => {
-            return Err(WcError::with_detail(
-                Code::CONFIG_INVALID,
-                format!("unknown surface kind {other:?}; try mcp or a2a"),
-            ))
-        }
-    };
+    let kind = surface_kind(args.get("kind").unwrap_or("mcp"))?;
     let entity = EntityId::new(args.get("entity").unwrap_or("urn:wc:canon"))?;
     let surface = canon::canonicalise(kind, &entity, &raw, &Limits::default())?;
     let pin = surface.to_pin(now());
@@ -1062,6 +1148,164 @@ fn canon_cmd(args: &Args) -> Result<()> {
     println!("manifest {}", pin.manifest);
     for (name, hash) in &pin.items {
         println!("  {name:<32} {hash}");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// screen — declared-surface injection screening (§8.7.4)
+// ---------------------------------------------------------------------------
+
+/// Screen a declared surface and report what the detectors found.
+///
+/// Exit 5 on a block, so this is usable as a CI gate on a vendored tool
+/// manifest: a supplier who changes a description into an exfiltration
+/// instruction fails the build rather than reaching admission.
+///
+/// The report always prints which detectors ran and which did not. A screening
+/// pass that says "clean" without saying what executed is indistinguishable from
+/// no screening at all.
+fn screen_cmd(args: &Args) -> Result<()> {
+    let path = positional_or_flag(args, "file")?;
+    let raw = read_json(path)?;
+    let kind = surface_kind(args.get("kind").unwrap_or("mcp"))?;
+    let entity = EntityId::new(args.get("entity").unwrap_or(screen::SCREENING_SUBJECT))?;
+
+    let rules = match args.get("rules") {
+        Some(p) => screen::ScreenRules::load(std::path::Path::new(p))?,
+        None => screen::ScreenRules::default(),
+    };
+    let acceptances = match args.get("acceptances") {
+        Some(p) => screen::Acceptances::load(std::path::Path::new(p))?,
+        None => screen::Acceptances::default(),
+    };
+    let mode = screen::ScreenMode::parse(args.get("mode").unwrap_or("flag"))?;
+    let tier = match args.get("tier") {
+        Some(t) => Tier::new(t.parse::<u8>().map_err(|e| {
+            WcError::with_detail(Code::CONFIG_INVALID, format!("tier must be 1..=4, got {t:?}"))
+                .with_source(e)
+        })?)?,
+        None => Tier::FOUR,
+    };
+
+    // The estate's other tool names, for S2's collision half and S6. Without
+    // them those halves cannot fire, and the report says so rather than
+    // reporting a clean surface.
+    let mut names = screen::NameIndex::empty();
+    if let Some(estate) = args.get("estate") {
+        let doc = read_json(estate)?;
+        let map = doc.as_object().ok_or_else(|| {
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "estate file must be an object of tool-name -> entity-id",
+            )
+        })?;
+        for (tool, owner) in map {
+            let owner = owner.as_str().ok_or_else(|| {
+                WcError::with_detail(
+                    Code::CONFIG_INVALID,
+                    format!("estate entry {tool:?} must map to an entity id string"),
+                )
+            })?;
+            names.insert(tool, EntityId::new(owner)?);
+        }
+    }
+
+    let surface = canon::canonicalise(kind, &entity, &raw, &Limits::default())?;
+    let ctx = screen::ScreenCtx {
+        rules: &rules,
+        acceptances: &acceptances,
+        names: &names,
+        entity: &entity,
+        mode,
+    };
+    let report = screen::screen(&surface, tier, &ctx);
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "ruleset": report.ruleset,
+                "mode": report.mode.as_str(),
+                "calibrated": report.calibrated,
+                "verdict": report.verdict.as_str(),
+                "score": report.score,
+                "max_item_score": report.max_item_score,
+                "softened": report.softened,
+                "ran": report.ran.iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+                "skipped": report.skipped.iter()
+                    .map(|(d, why)| json!({ "detector": d.as_str(), "reason": why }))
+                    .collect::<Vec<_>>(),
+                "item_scores": report.item_scores,
+                "hits": report.hits.iter().map(|h| json!({
+                    "detector": h.detector.as_str(),
+                    "class": if h.detector.is_blocking() { "block" } else { "flag" },
+                    "item": h.item,
+                    "field": h.field,
+                    "detail": h.detail,
+                    "accepted": h.accepted,
+                })).collect::<Vec<_>>(),
+            }))?
+        );
+    } else {
+        println!("ruleset  {}", report.ruleset);
+        println!(
+            "mode     {}{}",
+            report.mode.as_str(),
+            if report.calibrated {
+                ""
+            } else {
+                "  (ruleset uncalibrated: blocking detectors report only)"
+            }
+        );
+        println!(
+            "verdict  {}   score {} (max item {})",
+            report.verdict.as_str(),
+            report.score,
+            report.max_item_score
+        );
+        if let Some(why) = &report.softened {
+            println!("softened {why}");
+        }
+        println!(
+            "ran      {}",
+            report
+                .ran
+                .iter()
+                .map(|d| d.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        for (d, why) in &report.skipped {
+            println!("not run  {} — {}", d.as_str(), why);
+        }
+        if report.hits.is_empty() {
+            println!("\nno findings");
+        } else {
+            println!();
+            for h in &report.hits {
+                println!(
+                    "{:<3} {:<6} {:<24} {:<28} {}{}",
+                    h.detector.as_str(),
+                    if h.detector.is_blocking() { "block" } else { "flag" },
+                    h.item,
+                    h.field,
+                    h.detail,
+                    if h.accepted { "  (accepted)" } else { "" }
+                );
+            }
+        }
+    }
+
+    if report.blocked() {
+        return Err(WcError::with_detail(
+            Code::SCREENING_BLOCKED,
+            format!(
+                "{} blocking finding(s) under ruleset {}",
+                report.blocking_hits().len(),
+                report.ruleset
+            ),
+        ));
     }
     Ok(())
 }
@@ -2057,6 +2301,9 @@ POLICY
 
 TOOLS
   canon <surface.json> [--kind mcp|a2a] [--entity ID] [--document] [--json]
+  screen <surface.json> [--kind mcp|a2a] [--mode observe|flag|enforce] [--tier N]
+                        [--rules screen-rules.toml] [--acceptances FILE]
+                        [--estate names.json] [--json]      exit 5 on block
   verify <contract.jws> --issuer-pub PEM --kid KID --mediator-id ID
                         [--alg ES256|ES384|EdDSA] [--now TS] [--leeway N] [--json]
   version
@@ -2086,7 +2333,7 @@ EXIT CODES
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
     use std::path::Path;
@@ -2189,6 +2436,45 @@ mod tests {
         let wrong_command = Args::parse(["--reason", "SOC-1"].iter().map(|s| (*s).to_string()));
         assert!(check_flags("quarantine", &wrong_command).is_ok());
         assert!(check_flags("activate", &wrong_command).is_err());
+    }
+
+    #[test]
+    fn screening_flags_are_checked_on_screen_and_register() {
+        let typo = Args::parse(["--screen-mod", "enforce"].iter().map(|s| (*s).to_string()));
+        assert!(check_flags("screen", &typo).is_err());
+        assert!(check_flags("register server", &typo).is_err());
+
+        let ok = Args::parse(
+            ["--mode", "enforce", "--rules", "screen-rules.toml", "--tier", "2"]
+                .iter()
+                .map(|s| (*s).to_string()),
+        );
+        assert!(check_flags("screen", &ok).is_ok());
+
+        // Registration takes the ruleset under a namespaced flag, because `--mode`
+        // there would collide with the admission mode.
+        let reg = Args::parse(
+            ["--screen-rules", "screen-rules.toml", "--screen-mode", "flag"]
+                .iter()
+                .map(|s| (*s).to_string()),
+        );
+        assert!(check_flags("register server", &reg).is_ok());
+        assert!(check_flags("register agent", &reg).is_ok());
+        assert!(check_flags("screen", &reg).is_err());
+    }
+
+    #[test]
+    fn the_shipped_screen_ruleset_parses_and_is_uncalibrated() {
+        // The file operators are handed must load, and must not claim a
+        // calibration nobody performed.
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../screen-rules.toml"),
+        )
+        .expect("screen-rules.toml is readable");
+        let rules = screen::ScreenRules::parse(&text).expect("shipped ruleset parses");
+        assert!(!rules.calibrated, "the shipped ruleset must not claim calibration");
+        assert!(rules.disabled.is_empty());
+        assert_eq!(rules.escalate_at, 60);
     }
 
     #[test]
