@@ -41,6 +41,7 @@ use wc_control::issuance::{
     self as issuance, ApprovalProof, ApproverRegistry, Issued, Issuer, Outcome, PendingRequest,
     RequestInput, RequestStatus,
 };
+use wc_control::assurance;
 use wc_control::attest;
 use wc_control::screen;
 use wc_control::store::{Actor, Store};
@@ -138,6 +139,7 @@ const COMMANDS: &[&str] = &[
     "entities",
     "show",
     "posture",
+    "blast-radius",
     "quarantine",
     "audit verify",
     "canon",
@@ -229,7 +231,8 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "quarantine" => &["id", "reason", "approver"],
         "show" => &["id"],
         "entities" => &[],
-        "posture" => &["unattested", "expiring", "drift"],
+        "posture" => &["unattested", "expiring", "drift", "score", "id"],
+        "blast-radius" => &["id", "depth", "services"],
         "audit verify" => &["anchor-pub"],
         "export" => &["format", "as-of"],
         "canon" => &["file", "kind", "entity", "document"],
@@ -369,6 +372,7 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "entities" => entities(args)?,
         "show" => show(args)?,
         "posture" => posture(args)?,
+        "blast-radius" => blast_radius_cmd(args)?,
         "quarantine" => quarantine(args)?,
         "audit verify" => audit_verify(args)?,
         "canon" => canon_cmd(args)?,
@@ -1099,6 +1103,23 @@ fn posture(args: &Args) -> Result<()> {
     println!("quarantined      {}", quarantined.len());
     println!("reattest overdue {}", overdue.len());
 
+    if args.has("score") {
+        // The score is shown with its deductions, never on its own. A number
+        // nobody can explain gets argued with rather than acted on.
+        let cfg = assurance::AssuranceCfg::default();
+        println!();
+        for e in &all {
+            let signals = observed_signals(e, ts);
+            let scored = assurance::score(e, &signals, &cfg);
+            println!("  {:<48} {:>3}  {:<11} {}",
+                e.id, scored.score, format!("{:?}", scored.state), scored.rationale());
+        }
+        println!();
+        println!("note: identity and provenance signals are read from the stored");
+        println!("      posture, so a party that was never attested scores as such.");
+        println!("      Degradation is automatic; quarantine is never.");
+    }
+
     if args.has("unattested") {
         println!();
         for e in &unattested {
@@ -1110,6 +1131,118 @@ fn posture(args: &Args) -> Result<()> {
         for id in &overdue {
             println!("  {id}");
         }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// assurance — posture signals and blast radius (§8.7.6, §8.7.8)
+// ---------------------------------------------------------------------------
+
+/// The signals this deployment can actually observe today.
+///
+/// Everything not yet collected stays `None` or zero, which reads as *absent*
+/// rather than *healthy* — the scoring function treats `None` identity as
+/// "never verified" and deducts for it. Filling these in is what later phases do;
+/// pretending they are satisfied is what this must never do.
+fn observed_signals(entity: &Entity, now: u64) -> assurance::Signals {
+    let attested = entity.posture == Posture::Attested;
+    // `reattested_at == 0` means never attested, not "overdue since the epoch".
+    // Counting that as overdue double-charges the party for the same fact and
+    // makes the rationale say the wrong thing — the reason is "never verified",
+    // which the identity and provenance signals already carry.
+    let intervals = if entity.reattest_every == 0 || entity.reattested_at == 0 {
+        0
+    } else {
+        (now.saturating_sub(entity.reattested_at) / u64::from(entity.reattest_every))
+            .saturating_sub(1)
+            .min(u64::from(u32::MAX)) as u32
+    };
+    assurance::Signals {
+        // Admission recorded the outcome as a posture, which is the only identity
+        // and provenance evidence the registry holds between re-attestations.
+        identity_ok: if attested { Some(true) } else { None },
+        provenance_ok: if attested { Some(true) } else { None },
+        intervals_overdue: intervals,
+        // Not yet collected: drift history, owner directory, credential expiry,
+        // denied-action feedback, open screening findings.
+        ..assurance::Signals::default()
+    }
+}
+
+/// What stops if this party is cut.
+fn blast_radius_cmd(args: &Args) -> Result<()> {
+    let raw = positional_or_flag(args, "id")?;
+    let subject = EntityId::new(raw)?;
+    let depth = args
+        .number("depth")
+        .unwrap_or(u64::from(assurance::DEFAULT_BLAST_DEPTH))
+        .min(255) as u8;
+
+    let store = open_store(args)?;
+    if !store.projection.entities.contains_key(&subject) {
+        return Err(WcError::with_detail(
+            Code::ENTITY_NOT_FOUND,
+            format!("{subject} is not registered"),
+        ));
+    }
+    let report = assurance::blast_radius(&subject, depth, &store.projection);
+
+    if args.has("json") {
+        let value = serde_json::to_value(&report).map_err(|e| {
+            WcError::with_detail(Code::CONFIG_INVALID, "cannot serialise the report").with_source(e)
+        })?;
+        println!("{}", pretty(&value)?);
+    } else if args.has("services") {
+        // What the change manager asks for. "These 3 business services stop" beats
+        // a list of 400 entity ids.
+        for s in &report.impacted_services {
+            println!("{s}");
+        }
+    } else {
+        println!("subject   {}", report.subject);
+        println!("depth     {}", report.max_depth);
+        println!("summary   {}", report.summary());
+        if !report.impacted_services.is_empty() {
+            println!("services  {}", report.impacted_services.join(", "));
+        }
+        // `forward` is who this party can reach; `reverse` is who reaches it.
+        // Labelling these the wrong way round tells an operator deciding a cut the
+        // opposite of the truth about which direction the dependency runs.
+        for (label, nodes) in [("reaches", &report.forward), ("reached by", &report.reverse)] {
+            if nodes.is_empty() {
+                continue;
+            }
+            println!("\n{label}");
+            for n in nodes {
+                println!(
+                    "  d{} tier{} {:<44} {:<20} {}",
+                    n.depth,
+                    n.tier,
+                    n.id,
+                    n.service.as_deref().unwrap_or("-"),
+                    n.owner
+                );
+            }
+        }
+        if !report.cut_set.is_empty() {
+            println!("\ncut set   {}", report.cut_set.join(" "));
+        }
+        if !report.dangling.is_empty() {
+            // The edge is real, so the radius is real. Never silently omitted.
+            println!("\ndangling  {}", report.dangling.join(" "));
+            println!("          named by a contract but absent from the registry");
+        }
+    }
+
+    if report.truncated {
+        return Err(WcError::with_detail(
+            Code::BLAST_DEPTH_TRUNCATED,
+            format!(
+                "traversal stopped at depth {}; the real radius is wider",
+                report.max_depth
+            ),
+        ));
     }
     Ok(())
 }
@@ -2443,7 +2576,8 @@ ESTATE
   activate <id> [--why REASON]
   entities [--json]
   show <id> [--json]
-  posture [--unattested] [--expiring] [--json]
+  posture [--unattested] [--expiring] [--score] [--json]
+  blast-radius <id> [--depth 3] [--services] [--json]   exit 1 if truncated
   quarantine <id> --reason R [--approver human:a --approver human:b]
 
 EVIDENCE
@@ -2631,6 +2765,34 @@ mod tests {
         assert!(!rules.calibrated, "the shipped ruleset must not claim calibration");
         assert!(rules.disabled.is_empty());
         assert_eq!(rules.escalate_at, 60);
+    }
+
+    #[test]
+    fn a_never_attested_party_is_not_also_counted_as_overdue() {
+        // Found by running `posture --score` on a fresh registration: the
+        // rationale claimed "overdue by more than three intervals" for a party
+        // that had simply never been attested, charging it twice for one fact and
+        // naming the wrong reason.
+        let mut e = Entity::pending(
+            EntityId::new("spiffe://org/ns/x/sa/fresh").unwrap(),
+            wc_core::model::Kind::McpServer,
+            HumanRef::new("human:priya@org").unwrap(),
+            ZoneId::new("internal.apac-ops").unwrap(),
+            wc_core::model::Tier::THREE,
+            1_000,
+        );
+        assert_eq!(e.reattested_at, 0);
+        let s = observed_signals(&e, 2_000_000_000);
+        assert_eq!(s.intervals_overdue, 0);
+        assert_eq!(s.identity_ok, None, "the real reason is carried here");
+
+        // Once attested, overdue means what it says.
+        e.posture = Posture::Attested;
+        e.reattested_at = 1_000;
+        e.reattest_every = 3_600;
+        let s = observed_signals(&e, 1_000 + 4 * 3_600);
+        assert_eq!(s.intervals_overdue, 3);
+        assert_eq!(s.identity_ok, Some(true));
     }
 
     #[test]
