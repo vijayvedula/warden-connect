@@ -1229,6 +1229,8 @@ dependencies = [
 name = "wc-mediator"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "jsonwebtoken",
  "serde",
  "serde_json",
  "ureq",

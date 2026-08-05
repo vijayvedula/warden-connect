@@ -173,7 +173,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-mediator::gate` | `Upstream` decorator: the 11 verification steps | 420 | P1 | **links `warden::{Gateway, Upstream}`** — no core changes |
 | `wc-mediator::filter` | `tools/list` filtering, surface allowlist | 260 | P1 | **links `mcp.rs`** |
 | `wc-mediator::ceiling` | Rate / spend / fan-out / concurrency ceilings | 300 | P1/P3 | **links `budget.rs`** |
-| `wc-mediator::peer` | Peer identity from mTLS / SVID / mesh socket | 340 | P1 | **links `dpop.rs`** |
+| `wc-mediator::peer` | Peer identity from mTLS / SVID / mesh socket | 1000 | P1 | independent |
 | `wc-mediator::drain` | Drain vs abort on revocation | 340 | P3 | independent; core's pause/drain model reimplemented |
 | `wc-cli::main` | Command tree, exit codes, output formats | 900 | P0→ | core CLI conventions |
 
@@ -1163,6 +1163,32 @@ In `mesh` mode the header is honoured only from `127.0.0.1`/UDS with a
 `--mesh-socket` match; from any other origin it is ignored and logged as a
 spoofing attempt (`WC-4020`). Header-based identity that is trusted from anywhere
 is not identity.
+
+#### What the implementation settled
+
+- **`Configured` is a named mode, not an absence.** The stdio sidecar takes both
+  identities from flags, which is honest for one agent and one upstream — so it
+  carries `verified: false` and says *"configured by the operator; not
+  authenticated"* in the audit row. Nothing downstream can mistake it for a
+  handshake, and `connect-mediate` prints the caveat at startup.
+- **A mode this transport cannot honour is refused, not downgraded.** Asking
+  `connect-mediate` for `mesh` errors rather than silently falling back to
+  `configured`, which would report success while authenticating nothing. A
+  mistyped mode is `WC-8004: refuse to start`.
+- **`is_local` parses the address, never prefix-matches it.** `starts_with("127.")`
+  accepts the *hostname* `127.0.0.1.evil.example`, which resolves wherever its
+  owner likes. Caught by this module's own test while writing it.
+- **An unconfigured `MeshTrust` accepts nothing.** A default that trusted loopback
+  would let every co-located process on the host assert any identity, and "we
+  forgot to configure it" would look identical to "it is configured".
+- **XFCC with more than one element is refused.** Each element is only as
+  trustworthy as the hop that wrote it, and with several there is no way to tell
+  which is the peer that authenticated to the sidecar in front of us. Guessing is
+  how a multi-hop path becomes an identity-spoofing path. The splitter is
+  quote-aware, so a certificate subject containing a comma is still one element.
+- **`URI=` is read; `By=` is not.** `By` is the *proxy's* own identity, and reading
+  it authenticates the sidecar as the caller — which always succeeds, and always
+  with the wrong answer.
 
 ### 8.6.7 `wc-mediator::drain`
 
