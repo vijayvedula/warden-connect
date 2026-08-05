@@ -153,7 +153,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-core::model` | `Entity`, `Contract`, `Zone`, `Approval`, `PostureEvent`, ids, serde | 450 | P0 | — |
 | `wc-core::canon` | `wcs1` canonicalisation + pinning (§8.7.1) | 400 | P0 | vendored primitives, byte-compatible |
 | `wc-core::contract` | Mint / verify `warden-connection+jws` (§8.7.2) | 600 | P1 | `jsonwebtoken` directly; same asymmetric-only stance |
-| `wc-core::zone` | Zone lattice, assurance bars, zone-pair resolution | 220 | P4 (stub P1) | — |
+| `wc-core::zone` | Zone lattice: containment, outwardness, crossing classification, pair resolution | 620 | P4 | — |
 | `wc-core::error` | `WcError` + the `WC-*` code table (§8.11) | 260 | P0 | — |
 | `wc-control::store` | Append-only logs, projections, single-writer lock, compaction | 600 | P0 | same file discipline as `audit.rs` |
 | `wc-control::registry` | Entity CRUD, lifecycle state machine, pins, indexes | 480 | P0 | — |
@@ -385,6 +385,76 @@ would otherwise assume was covered:
 - **An empty builder allowlist withholds the pass** rather than accepting any
   signer. "No allowlist configured" is a gap, so it reports as `unrestricted`
   and leaves the party unattested.
+
+### 8.5.4b `wc-core::zone` — the lattice
+
+Two orderings run through a zone id, and keeping them apart is what makes the
+model usable:
+
+* **Containment**, along the dots. `internal` ⊃ `internal.apac` ⊃
+  `internal.apac.payments`. A forest, one tree per trust level.
+* **Outwardness**, across trust levels: `Internal < Partner < Public`, named in
+  code rather than derived from the enum's declaration order — reordering the enum
+  must not silently invert every egress decision.
+
+```rust
+pub fn ancestors(&ZoneId) -> Vec<ZoneId>;      // outermost first, inclusive
+pub fn contains(outer, inner) -> bool;         // reflexive, segment-aligned
+pub fn meet(a, b) -> Option<ZoneId>;           // nearest common ancestor
+pub fn classify(caller, callee) -> Crossing;   // 7 cases
+pub struct ZoneLattice { … }                   // impl ZoneRule, with reasons
+```
+
+| Crossing | Meaning |
+|---|---|
+| `same` / `descend` / `ascend` / `lateral` | inside one trust level — permitted, since zones organise the estate rather than separate it |
+| `egress` | internal → partner: data leaving |
+| `ingress` | partner → internal: a counterparty reaching in |
+| `public` | either end public; decided before the ordering, so no same-level or egress rule can open it |
+
+**Egress and ingress are separate cases on purpose.** A rule that cannot tell
+"data leaving" from "a counterparty reaching in" cannot express egress control at
+all, and a declared crossing is directional: permitting egress to a partner does
+not permit that partner to reach back.
+
+#### The defect the lattice closes
+
+`ConnectPolicy::bar_for` previously took the bar from the **most specific**
+declaration. Most-specific-wins is the right rule for *finding* a declaration and
+the wrong rule for *applying* one:
+
+```toml
+[[zone]] id = "internal"          assurance = { ttl_max = "1d" }
+[[zone]] id = "internal.payments" assurance = { ttl_max = "30d" }   # widens the parent
+```
+
+That reads, in the file, as tightening a subtree. It was widening it 30-fold. The
+bar is now the strictest of **every ancestor's** declaration plus the trust
+level's floor.
+
+#### Two mechanisms, one intent
+
+`[[rules]]` already express crossings through `caller_zone` / `callee_zone` globs,
+so making the lattice a second mandatory gate would demand every estate say the
+same thing twice — and forgetting the second place would deny traffic they
+believed they had allowed. So `strict_crossings` defaults **off**, and
+`connect policy lint` derives the `[[crossing]]` stanzas the existing rules imply:
+
+```
+these rules cross a trust boundary. To enforce the lattice, set
+strict_crossings = true and declare them:
+  [[crossing]] crossing = "egress", from = "internal.payments", to = "partner.acme"
+```
+
+The shipped `connect-policy.toml` turns it on and declares its three egress
+crossings, with no `ingress` and no `public` stanza — both denials then hold
+whatever the rules say, one layer before any rule is consulted.
+
+**`ZoneDef` gained `deny_unknown_fields`,** and that is load-bearing rather than
+tidy: TOML binds a bare key written after an array-of-tables stanza to *that*
+table, so `strict_crossings = true` placed below `[[zone]]` parses cleanly, lands
+inside the zone, and is ignored. Found exactly that way while writing the shipped
+policy — the lint printed `lattice advisory` on a file that said `true`.
 
 ### 8.5.5 `wc-control::cpolicy` — connection policy
 
