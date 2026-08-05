@@ -943,7 +943,7 @@ pub fn blast_radius(subject: &EntityId, max_depth: u8, proj: &Projection) -> Bla
     let max_depth = max_depth.max(1);
     let mut forward = Vec::new();
     let mut reverse = Vec::new();
-    let mut cut: BTreeSet<String> = BTreeSet::new();
+    let mut cut: HashSet<&str> = HashSet::new();
     let mut services: BTreeSet<String> = BTreeSet::new();
     let mut dangling: BTreeSet<String> = BTreeSet::new();
     let mut truncated = false;
@@ -985,35 +985,47 @@ pub fn blast_radius(subject: &EntityId, max_depth: u8, proj: &Projection) -> Bla
         max_depth,
         forward,
         reverse,
-        cut_set: cut.into_iter().collect(),
+        cut_set: {
+            // Sorted once at the end rather than kept ordered through 10^5
+            // inserts: the report needs a stable order, not an ordered index.
+            let mut ids: Vec<String> = cut.into_iter().map(str::to_string).collect();
+            ids.sort_unstable();
+            ids
+        },
         impacted_services: services.into_iter().collect(),
         truncated,
         dangling: dangling.into_iter().collect(),
     }
 }
 
+/// Traverse one direction.
+///
+/// `seen` and `cut` borrow from the projection rather than owning clones. At the
+/// NFR scale of 10⁵ edges the owned version spent most of its time allocating and
+/// comparing strings — the gate in §8.10.3 caught it sitting on its 40 ms
+/// threshold, which is what a gate is for.
 #[allow(clippy::too_many_arguments)]
-fn traverse(
-    subject: &EntityId,
+fn traverse<'a>(
+    subject: &'a EntityId,
     max_depth: u8,
-    proj: &Projection,
+    proj: &'a Projection,
     outward: bool,
     out: &mut Vec<BlastNode>,
-    cut: &mut BTreeSet<String>,
+    cut: &mut HashSet<&'a str>,
     services: &mut BTreeSet<String>,
     dangling: &mut BTreeSet<String>,
     truncated: &mut bool,
 ) {
-    let mut seen: HashSet<EntityId> = HashSet::new();
-    seen.insert(subject.clone());
-    let mut queue: VecDeque<(EntityId, u8)> = VecDeque::new();
-    queue.push_back((subject.clone(), 0));
+    let mut seen: HashSet<&'a EntityId> = HashSet::new();
+    seen.insert(subject);
+    let mut queue: VecDeque<(&'a EntityId, u8)> = VecDeque::new();
+    queue.push_back((subject, 0));
 
     while let Some((current, depth)) = queue.pop_front() {
         let index = if outward {
-            proj.by_caller.get(&current)
+            proj.by_caller.get(current)
         } else {
-            proj.by_callee.get(&current)
+            proj.by_callee.get(current)
         };
         let Some(cids) = index else { continue };
 
@@ -1022,7 +1034,7 @@ fn traverse(
                 dangling.insert(cid.to_string());
                 continue;
             };
-            cut.insert(record.cid.to_string());
+            cut.insert(record.cid.as_str());
             let next = if outward {
                 &record.callee
             } else {
@@ -1037,7 +1049,7 @@ fn traverse(
                 *truncated = true;
                 continue;
             }
-            if !seen.insert(next.clone()) {
+            if !seen.insert(next) {
                 continue;
             }
             match proj.entities.get(next) {
@@ -1062,7 +1074,7 @@ fn traverse(
                 }
             }
             if next_depth < max_depth {
-                queue.push_back((next.clone(), next_depth));
+                queue.push_back((next, next_depth));
             } else if has_further_edges(next, proj, outward) {
                 *truncated = true;
             }

@@ -296,7 +296,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "mediator", "keyring", "signing-key", "kid", "ttl", "out", "contracts",
         ],
         "bundle verify" => &["file", "envelope-pub", "issuer-pub", "kid", "mediator", "now"],
-        "bench" => &["iterations", "gate"],
+        "bench" => &["iterations", "gate", "signing-key", "verify-pub", "kid", "scale"],
         "show" => &["id"],
         "entities" => &[],
         "posture" => &["unattested", "expiring", "drift", "score", "id"],
@@ -1900,13 +1900,146 @@ fn bench_cmd(args: &Args) -> Result<()> {
     use wc_control::bench::{measure, thresholds, Report};
 
     let iterations = args.number("iterations").unwrap_or(500).min(100_000) as usize;
+    let scale = args.number("scale").unwrap_or(100_000).min(1_000_000) as usize;
     let only = args.get("gate");
     let wanted = |name: &str| only.is_none_or(|g| name.contains(g));
 
     let mut report = Report::default();
+    let ts = now();
+
+    // --- the §8.10.3 gates -------------------------------------------------
+    //
+    // `gate::verify` and `contract::mint` need a signing key, because there is no
+    // honest way to benchmark signing without one. Absent, they are recorded as
+    // *not deliberate* skips, which fails the run — a CI job that quietly measured
+    // three of six gates and exited green is the failure this harness exists to
+    // prevent.
+    let signer = match (args.get("signing-key"), args.get("kid")) {
+        (Some(path), Some(kid)) => Some(load_issuer_key(path, kid, args.get("alg"))?),
+        _ => None,
+    };
+
+    for name in ["contract::mint", "gate::verify warm", "gate::verify cold"] {
+        if !wanted(name) {
+            report.skip(name, "not selected by --gate", true);
+        } else if signer.is_none() {
+            report.skip(
+                name,
+                "needs --signing-key PEM --kid KID; signing cannot be benchmarked without a key",
+                false,
+            );
+        }
+    }
+
+    if let Some(key) = &signer {
+        let payload = bench_payload(ts)?;
+
+        if wanted("contract::mint") {
+            report.gates.push(measure(
+                "contract::mint",
+                "one artifact, ES256",
+                thresholds::MINT,
+                iterations.min(200),
+                5,
+                || {
+                    let _ = contract::mint(&payload, key);
+                },
+            ));
+        }
+
+        let jws = contract::mint(&payload, key)?;
+        // Verification needs the public half, and asking for it beats deriving it:
+        // `IssuerKeys` takes an SPKI PEM, and quietly handing it a private key
+        // would skip the gate for a reason that reads like a bug.
+        let pem = match args.get("verify-pub") {
+            Some(path) => Some(std::fs::read(path).map_err(|e| {
+                WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}"))
+                    .with_source(e)
+            })?),
+            None => None,
+        };
+
+        if wanted("gate::verify warm") {
+            let mut keys = IssuerKeys::new();
+            let ok = pem.as_ref().is_some_and(|pem| {
+                keys.add_ec_pem(args.get("kid").unwrap_or("k1"), pem, Algorithm::ES256)
+                    .is_ok()
+            });
+            if !ok {
+                report.skip(
+                    "gate::verify warm",
+                    "needs --verify-pub PEM: verification takes the public half",
+                    false,
+                );
+            } else {
+                let opts = contract::VerifyOpts::new(&keys, MEDIATOR_FOR_BENCH, ts);
+                report.gates.push(measure(
+                    "gate::verify warm",
+                    "steady state, key already parsed",
+                    thresholds::VERIFY_WARM,
+                    iterations,
+                    20,
+                    || {
+                        let _ = contract::verify_artifact(&jws, &opts);
+                    },
+                ));
+            }
+        }
+
+        if wanted("gate::verify cold") {
+            let kid = args.get("kid").unwrap_or("k1").to_string();
+            let mut probe = IssuerKeys::new();
+            let ok = pem
+                .as_ref()
+                .is_some_and(|pem| probe.add_ec_pem(&kid, pem, Algorithm::ES256).is_ok());
+            if !ok {
+                report.skip(
+                    "gate::verify cold",
+                    "needs --verify-pub PEM: verification takes the public half",
+                    false,
+                );
+            } else {
+                let pem = pem.clone().unwrap_or_default();
+                // Cold means the key set is rebuilt each time, which is what a
+                // mediator pays on its first verification after a refresh.
+                report.gates.push(measure(
+                    "gate::verify cold",
+                    "key set rebuilt per verification",
+                    thresholds::VERIFY_COLD,
+                    iterations.min(200),
+                    5,
+                    || {
+                        let mut keys = IssuerKeys::new();
+                        if keys.add_ec_pem(&kid, &pem, Algorithm::ES256).is_ok() {
+                            let opts = contract::VerifyOpts::new(&keys, MEDIATOR_FOR_BENCH, ts);
+                            let _ = contract::verify_artifact(&jws, &opts);
+                        }
+                    },
+                ));
+            }
+        }
+    }
+
+    // Blast radius at the NFR scale, not a token one.
+    if wanted("assurance::blast_radius") {
+        let projection = bench_estate(scale)?;
+        let subject = EntityId::new("urn:wc:bench:n0")?;
+        report.gates.push(measure(
+            "assurance::blast_radius",
+            &format!("{scale} contracts, depth 3"),
+            thresholds::BLAST_RADIUS,
+            iterations.min(50),
+            2,
+            || {
+                let _ = assurance::blast_radius(&subject, 3, &projection);
+            },
+        ));
+    } else {
+        report.skip("assurance::blast_radius", "not selected by --gate", true);
+    }
 
     // wcs1 canonicalisation of a 256-tool surface — the pin path.
-    if wanted("canon") {
+    if wanted("canon::wcs1") {
         let tools: Vec<Value> = (0..256)
             .map(|i| {
                 json!({
@@ -1928,6 +2061,8 @@ fn bench_cmd(args: &Args) -> Result<()> {
                 let _ = canon::canonicalise(SurfaceKind::McpTools, &entity, &raw, &Limits::default());
             },
         ));
+    } else {
+        report.skip("canon::wcs1 (256 tools)", "not selected by --gate", true);
     }
 
     // Screening the same surface — the admission path.
@@ -1964,27 +2099,22 @@ fn bench_cmd(args: &Args) -> Result<()> {
             iterations.min(100),
             3,
             || {
-                let _ = screen::screen(&surface, wc_core::model::Tier::THREE, &ctx);
+                let _ = screen::screen(&surface, Tier::THREE, &ctx);
             },
         ));
+    } else {
+        report.skip("screen (256 tools)", "not selected by --gate", true);
     }
 
-    // Blast radius over a wide estate — the containment path.
-    if wanted("blast") {
-        let mut projection = wc_control::store::Projection::default();
-        seed_blast_estate(&mut projection, 300)?;
-        let subject = EntityId::new("urn:wc:bench:n0")?;
-        report.gates.push(measure(
-            "assurance::blast_radius",
-            "300 parties, depth 3",
-            thresholds::BLAST_RADIUS,
-            iterations.min(200),
-            3,
-            || {
-                let _ = assurance::blast_radius(&subject, 3, &projection);
-            },
-        ));
-    }
+    // The one gate this binary cannot run, stated rather than omitted: measuring
+    // it needs `wc-mediator`, and the CLI deliberately does not link it (§8.3) so
+    // that a control-plane-only deployment never pulls in Warden core.
+    report.skip(
+        "filter_tools_list (256 tools)",
+        "lives in wc-mediator, which the CLI does not link by design; run \
+         `cargo test -p wc-mediator --release gate_filter`",
+        true,
+    );
 
     if args.has("json") {
         println!(
@@ -2000,6 +2130,17 @@ fn bench_cmd(args: &Args) -> Result<()> {
         for gate in &report.gates {
             println!("  {}", gate.line());
         }
+        if !report.skipped.is_empty() {
+            println!();
+            for skip in &report.skipped {
+                println!(
+                    "  {:<28} {}  ({})",
+                    skip.name,
+                    if skip.deliberate { "skipped" } else { "NOT RUN" },
+                    skip.reason
+                );
+            }
+        }
         if !report.marginal().is_empty() {
             println!();
             println!("  marginal gates hold today and are the ones that start failing for");
@@ -2013,6 +2154,17 @@ fn bench_cmd(args: &Args) -> Result<()> {
             if report.gates.is_empty() {
                 // A run that measured nothing must not exit zero.
                 "no gates ran; `--gate` matched nothing".to_string()
+            } else if !report.incomplete().is_empty() {
+                format!(
+                    "{} gate(s) could not run: {}",
+                    report.incomplete().len(),
+                    report
+                        .incomplete()
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             } else {
                 format!(
                     "{} gate(s) regressed: {}",
@@ -2030,20 +2182,116 @@ fn bench_cmd(args: &Args) -> Result<()> {
     Ok(())
 }
 
-/// A wide estate for the blast-radius gate.
-fn seed_blast_estate(projection: &mut wc_control::store::Projection, parties: u32) -> Result<()> {
-    use wc_core::model::{Entity, HumanRef, Kind, Tier, ZoneId};
+/// The mediator id the benchmark artifacts are addressed to.
+const MEDIATOR_FOR_BENCH: &str = "warden:mediator:bench";
 
+/// A contract payload for the mint and verify gates.
+fn bench_payload(now: u64) -> Result<contract::ContractPayload> {
+    use wc_core::contract::Party;
+    use wc_core::model::{Cid, Jti};
+
+    let party = |name: &str| -> Result<Party> {
+        Ok(Party {
+            id: EntityId::new(format!("urn:wc:bench:{name}"))?,
+            zone: ZoneId::new("internal.bench")?,
+            tier: Tier::THREE,
+            card: None,
+            manifest: Some("sha256:m".to_string()),
+            surface_digest: Some("sha256:s".to_string()),
+        })
+    };
+    let mut payload = contract::ContractPayload::new(
+        Cid::new("conn_beac0001")?,
+        Jti::new("jti_beac000000000001")?,
+        "https://connect.bench",
+        MEDIATOR_FOR_BENCH,
+        party("caller")?,
+        party("callee")?,
+    );
+    payload.iat = now;
+    payload.nbf = now;
+    payload.exp = now + 86_400;
+    payload.surface = Surface {
+        tools: (0..8).map(|i| format!("tool_{i}")).collect(),
+        ..Default::default()
+    };
+    Ok(payload)
+}
+
+/// An estate of `contracts` edges for the blast-radius gate.
+///
+/// Built as a wide star rather than a chain: a chain of 10⁵ would exceed the depth
+/// bound after three hops and measure almost nothing, which is a benchmark that
+/// passes by not doing the work.
+fn bench_estate(contracts: usize) -> Result<wc_control::store::Projection> {
+    use wc_control::store::Projection;
+    use wc_core::contract::{ApprovalRef, ContractRecord, ContractStatus, Terms, CONTRACT_SCHEMA};
+    use wc_core::model::{Cid, Entity, HumanRef, Jti, Kind, Lifecycle};
+
+    let mut projection = Projection::default();
     let owner = HumanRef::new("human:bench")?;
     let zone = ZoneId::new("internal.bench")?;
+
+    // A hub, a middle ring, and leaves — three hops, so depth 3 traverses all of
+    // it and the gate measures the traversal rather than the bound.
+    let ring = (contracts / 100).max(2);
+    let parties = ring + contracts / ring + 2;
     for i in 0..parties {
         let id = EntityId::new(format!("urn:wc:bench:n{i}"))?;
-        let mut e = Entity::pending(id.clone(), Kind::McpServer, owner.clone(), zone.clone(), Tier::THREE, 0);
-        e.lifecycle = wc_core::model::Lifecycle::Active;
+        let mut e = Entity::pending(
+            id.clone(),
+            Kind::McpServer,
+            owner.clone(),
+            zone.clone(),
+            Tier::THREE,
+            0,
+        );
+        e.lifecycle = Lifecycle::Active;
         e.service = Some(format!("svc-{}", i % 20));
         projection.entities.insert(id, e);
     }
-    Ok(())
+
+    for i in 0..contracts {
+        let caller = if i < ring { 0 } else { 1 + (i % ring) };
+        let callee = (i % (parties - 1)) + 1;
+        if caller == callee {
+            continue;
+        }
+        let cid = Cid::new(format!("conn_{i:08x}"))?;
+        let record = ContractRecord {
+            cid: cid.clone(),
+            jti: Jti::new("jti_beac000000000001")?,
+            caller: EntityId::new(format!("urn:wc:bench:n{caller}"))?,
+            callee: EntityId::new(format!("urn:wc:bench:n{callee}"))?,
+            caller_zone: zone.clone(),
+            callee_zone: zone.clone(),
+            callee_tier: Tier::THREE,
+            callee_manifest: "sha256:m".to_string(),
+            surface_digest: "sha256:s".to_string(),
+            surface: Surface::default(),
+            terms: Terms::default(),
+            aud: vec![MEDIATOR_FOR_BENCH.to_string()],
+            jws_sha256: "sha256:a".to_string(),
+            status: ContractStatus::Active,
+            approval: ApprovalRef::standing(),
+            policy_version: "bench@v1".to_string(),
+            iat: 0,
+            exp: u64::MAX,
+            schema: CONTRACT_SCHEMA,
+        };
+        projection
+            .by_caller
+            .entry(record.caller.clone())
+            .or_default()
+            .insert(cid.clone());
+        projection
+            .by_callee
+            .entry(record.callee.clone())
+            .or_default()
+            .insert(cid.clone());
+        projection.contracts.insert(cid, record);
+    }
+    Ok(projection)
 }
 
 // ---------------------------------------------------------------------------
@@ -4083,7 +4331,10 @@ AIR-GAPPED
                   [--issuer-pub PEM]              exit 4 if it does not verify
 
 CI
-  bench           [--iterations N] [--gate NAME] [--json]   exit 1 on regression
+  bench           [--iterations N] [--gate NAME] [--scale N] [--json]
+                  --signing-key PEM --verify-pub PEM --kid KID
+                                                needed by the mint/verify gates
+                  exit 1 on regression, or on a gate that could not run
   federate <chain.json> --anchors anchors.toml [--now TS] [--json]
                   resolve a partner trust chain
                   exit 4 if it does not verify · 3 if the anchor is stale
