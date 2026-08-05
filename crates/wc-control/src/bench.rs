@@ -103,14 +103,49 @@ pub fn fmt_ns(ns: u64) -> String {
     }
 }
 
+/// A gate that did not run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Skipped {
+    /// Which gate.
+    pub name: String,
+    /// Why.
+    pub reason: String,
+    /// Whether the operator asked for this subset, or the run was simply
+    /// incomplete.
+    ///
+    /// The distinction is the whole reason this type exists. `--gate mint` is a
+    /// deliberate subset and should exit zero; a gate that could not run for want
+    /// of a key is an incomplete CI run reporting green, which is the failure this
+    /// codebase keeps designing against.
+    pub deliberate: bool,
+}
+
 /// The result of a gate run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Report {
     /// Every gate measured.
     pub gates: Vec<Gate>,
+    /// Gates that did not run, and why.
+    #[serde(default)]
+    pub skipped: Vec<Skipped>,
 }
 
 impl Report {
+    /// Record a gate that could not run.
+    pub fn skip(&mut self, name: &str, reason: &str, deliberate: bool) {
+        self.skipped.push(Skipped {
+            name: name.to_string(),
+            reason: reason.to_string(),
+            deliberate,
+        });
+    }
+
+    /// Gates that were skipped for want of configuration rather than by request.
+    #[must_use]
+    pub fn incomplete(&self) -> Vec<&Skipped> {
+        self.skipped.iter().filter(|s| !s.deliberate).collect()
+    }
+
     /// Gates that failed.
     #[must_use]
     pub fn failed(&self) -> Vec<&Gate> {
@@ -123,13 +158,14 @@ impl Report {
         self.gates.iter().filter(|g| g.is_marginal()).collect()
     }
 
-    /// Whether every gate held.
+    /// Whether every gate held **and** every gate ran.
     #[must_use]
     pub fn passed(&self) -> bool {
         // An empty report is not a pass. A run that measured nothing and exited
         // zero is exactly the "control that reports success without checking"
-        // this project keeps having to design against.
-        !self.gates.is_empty() && self.failed().is_empty()
+        // this project keeps having to design against — and so is a run that
+        // silently skipped half its gates for want of a key.
+        !self.gates.is_empty() && self.failed().is_empty() && self.incomplete().is_empty()
     }
 }
 
@@ -252,14 +288,37 @@ mod tests {
 
         let one = Report {
             gates: vec![gate(1, 1_000)],
+            ..Report::default()
         };
         assert!(one.passed());
+    }
+
+    #[test]
+    fn a_gate_skipped_for_want_of_configuration_fails_the_run() {
+        // `--gate mint` is a deliberate subset and exits zero. A gate that could
+        // not run for want of a key is an incomplete CI run reporting green.
+        let mut deliberate = Report {
+            gates: vec![gate(1, 1_000)],
+            ..Report::default()
+        };
+        deliberate.skip("mint", "not selected", true);
+        assert!(deliberate.passed());
+        assert!(deliberate.incomplete().is_empty());
+
+        let mut incomplete = Report {
+            gates: vec![gate(1, 1_000)],
+            ..Report::default()
+        };
+        incomplete.skip("mint", "no --signing-key", false);
+        assert!(!incomplete.passed(), "an incomplete run must not read as green");
+        assert_eq!(incomplete.incomplete().len(), 1);
     }
 
     #[test]
     fn a_report_separates_failures_from_marginals() {
         let r = Report {
             gates: vec![gate(500, 1_000), gate(990, 1_000), gate(2_000, 1_000)],
+            ..Report::default()
         };
         assert_eq!(r.failed().len(), 1);
         assert_eq!(r.marginal().len(), 1, "the failure is not also marginal");

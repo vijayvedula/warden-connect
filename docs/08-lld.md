@@ -1866,6 +1866,30 @@ the harness:
   reports honest failures rather than recalibrating, because a gate that adjusts
   to the hardware measures nothing.
 
+**A gate skipped for want of configuration fails the run.** `--gate mint` is a
+deliberate subset and exits zero; a gate that could not run because no signing key
+was supplied is an incomplete CI job reporting green, which is the same failure in
+a different costume. The two are separate fields on the report.
+
+`filter_tools_list` is the one gate `connect bench` cannot run: measuring it needs
+`wc-mediator`, and the CLI deliberately does not link it (§8.3) so a
+control-plane-only deployment never pulls in Warden core. It is **listed as
+skipped with that reason** rather than omitted, and runs as
+`cargo test -p wc-mediator --release gate_filter`.
+
+#### What the gates found on first run
+
+`assurance::blast_radius` at 10⁵ edges sat on its 40 ms ceiling — p50 37 ms, p99
+oscillating between 39.5 and 40.5 ms across runs, so the same commit both passed
+and failed. The threshold was **not** loosened; the traversal was fixed. `seen`
+and the cut set now borrow from the projection instead of owning `EntityId` and
+`String` clones, and the cut set is sorted once at the end rather than kept
+ordered through 10⁵ inserts. p50 fell to 27 ms, giving real headroom rather than
+a gate that flickers.
+
+That is the whole argument for gating rather than benchmarking: nobody was going
+to notice a 37 ms traversal by reading the code.
+
 Percentiles are nearest-rank, so a reported p99 is a measurement that actually
 happened rather than an interpolation between two that did. Warmup samples are
 discarded: the first call through any of these paths pays for lazily-built caches
