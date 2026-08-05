@@ -1055,7 +1055,7 @@ impl ZoneRule for AnyZone {
 
 /// The authenticated identities of both ends. Never claimed — taken from the
 /// completed mTLS handshake or a local SVID socket (§8.6.6).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerIdentity {
     /// Authenticated caller.
     pub caller: EntityId,

@@ -112,9 +112,14 @@ CONNECT
   --refresh N             seconds between pulls (default: 5)
   --observe               record findings instead of denying
   --any-zone              permit any zone pair (observe deployments only)
+  --peer-mode MODE        configured|mtls|mesh|jwt-svid (default: configured)
+                          only `configured` applies to this stdio sidecar; the
+                          others need a listening transport (§8.6.6)
 
 Peer identity is supplied by configuration here, which is correct for a sidecar
-owning one agent and one upstream. mTLS and mesh-provided identity are §8.6.6.
+owning one agent and one upstream — and is recorded as configuration, not as a
+handshake. mTLS, mesh and JWT-SVID modes live in `wc_mediator::peer` for the
+shared-gateway topology, where a flag is not an identity.
 ";
 
 fn run() -> Result<(), String> {
@@ -259,15 +264,49 @@ fn run() -> Result<(), String> {
         });
     }
 
-    // --- the decorator ---
-    let mut cfg = GateCfg::new(
-        &mediator_id,
-        PeerIdentity {
+    // --- peer identity (§8.6.6) ---
+    //
+    // Everything the mediator enforces rests on checks 6 and 7 comparing the
+    // contract against *authenticated* peers. In this stdio sidecar the identities
+    // come from configuration, which is honest for one agent and one upstream —
+    // and `Peer::verified` records that it was configuration rather than a
+    // handshake, so nothing downstream can mistake the two.
+    let peer_mode = wc_mediator::peer::PeerSource::parse_mode(
+        flag(&args, "peer-mode").as_deref().unwrap_or("configured"),
+    )
+    .map_err(|e| e.to_string())?;
+    let source = match peer_mode {
+        "configured" => wc_mediator::peer::PeerSource::Configured {
             caller: caller.clone(),
             callee: callee.clone(),
         },
-        now,
-    );
+        // The other modes need a transport this binary does not terminate: it
+        // speaks stdio to one agent. Refused rather than silently downgraded to
+        // `configured`, which would report success while authenticating nothing.
+        other => {
+            return Err(format!(
+                "--peer-mode {other} needs a listening transport; `connect-mediate` \
+                 speaks stdio to one agent, so only `configured` applies here. \
+                 The other modes are for a shared gateway (§7.9)."
+            ))
+        }
+    };
+    let peer = source
+        .resolve(&wc_mediator::peer::Presented {
+            origin: Some(wc_mediator::peer::Origin::Stdio),
+            ..Default::default()
+        })
+        .map_err(|e| e.to_string())?;
+    if !peer.verified {
+        eprintln!(
+            "connect-mediate: peer identity is {} — correct for a sidecar owning one agent, \
+             not for a shared gateway",
+            peer.method
+        );
+    }
+
+    // --- the decorator ---
+    let mut cfg = GateCfg::new(&mediator_id, peer.identity.clone(), now);
     if present(&args, "observe") {
         cfg.mode = Mode::Observe;
     }

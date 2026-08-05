@@ -12,6 +12,9 @@ name = "connect-mediate"
 path = "src/bin/connect-mediate.rs"
 
 [dependencies]
+# For JWT-SVID verification and XFCC header decoding in `peer`.
+base64 = { workspace = true }
+jsonwebtoken = { workspace = true }
 wc-core = { path = "../wc-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
