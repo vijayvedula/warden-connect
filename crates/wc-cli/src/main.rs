@@ -37,6 +37,7 @@ use wc_control::api::{Api, ControlPlane};
 use wc_control::contain;
 use wc_control::cpolicy::{self as cpolicy, ConnectPolicy, StandingState};
 use wc_control::evidence::{EventKind, Evidence, LifecycleEvent};
+use wc_control::export;
 use wc_control::http::{self, Shutdown};
 use wc_control::issuance::{
     self as issuance, ApprovalProof, ApproverRegistry, Issued, Issuer, Outcome, PendingRequest,
@@ -247,7 +248,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "posture" => &["unattested", "expiring", "drift", "score", "id"],
         "blast-radius" => &["id", "depth", "services"],
         "audit verify" => &["anchor-pub"],
-        "export" => &["format", "as-of"],
+        "export" => &["format", "as-of", "id", "anchor-pub", "out"],
         "canon" => &["file", "kind", "entity", "document"],
         "screen" => &[
             "file",
@@ -1569,70 +1570,145 @@ fn audit_verify(args: &Args) -> Result<()> {
 fn export(args: &Args) -> Result<()> {
     let format = args.get("format").unwrap_or("csv");
     let p = paths(args);
-    let mut store = open_store(args)?;
-    let reg = store.registry(actor(args)?, now());
-    let all = reg.enumerate_for_operator();
+    let as_of = args.number("as-of").unwrap_or_else(now);
 
     // An export references the chain head, so it is verifiable rather than merely
-    // asserted (§8.5.9).
-    let head = Evidence::verify(&p.evidence, None)?;
+    // asserted (§8.5.9). The anchor key is optional and its absence is reported in
+    // the export itself, never quietly.
+    let anchor_pem = match args.get("anchor-pub") {
+        Some(path) => Some(std::fs::read(path).map_err(|e| {
+            WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+        })?),
+        None => None,
+    };
+    let head = Evidence::verify(&p.evidence, anchor_pem.as_deref())?;
 
-    match format {
-        "csv" => {
-            println!(
-                "id,kind,owner,service,tier,zone,trust_level,posture,lifecycle,data_classes,jurisdictions,pin"
-            );
-            for e in &all {
-                println!(
-                    "{},{:?},{},{},{},{},{:?},{:?},{:?},{},{},{}",
-                    e.id,
-                    e.kind,
-                    e.owner,
-                    e.service.as_deref().unwrap_or(""),
-                    e.tier.as_u8(),
-                    e.zone,
-                    e.zone.trust_level(),
-                    e.posture,
-                    e.lifecycle,
-                    e.data_classes.join("|"),
-                    e.jurisdictions.join("|"),
-                    e.pin.manifest
-                );
-            }
-            eprintln!(
-                "# as_of chain head seq {} hash {}",
-                head.head_seq, head.head_hash
-            );
+    // Point-in-time: replay the log to `as_of` rather than reading the live
+    // projection, so "as of 30 June" means what it says.
+    let (projection, replay) =
+        wc_control::store::Projection::as_of(&p.state, wc_control::store::STATE_LOG_NAME, as_of)?;
+    let provenance = export::Provenance {
+        as_of,
+        chain_head_seq: head.head_seq,
+        chain_head_hash: head.head_hash.clone(),
+        // Only a checkpoint that actually verified counts as one.
+        anchor_ref: (head.anchors_verified > 0 && head.anchor_mismatches.is_empty())
+            .then(|| format!("anchor:{}:{}", head.anchors_verified, head.head_seq)),
+        replay_complete: replay.is_clean() && head.broken_at.is_none(),
+    };
+
+    let rendered = match format {
+        "dora" => render_register(args, &export::dora_register(&projection, provenance.clone())?)?,
+        "cps230" => render_register(args, &export::cps230_register(&projection, provenance.clone())?)?,
+        "oscal" => pretty(&export::oscal_component(&projection, &provenance)?)?,
+        "bom" => {
+            let raw = positional_or_flag(args, "id")?;
+            let id = EntityId::new(raw)?;
+            let entity = projection.entities.get(&id).ok_or_else(|| {
+                WcError::with_detail(
+                    Code::ENTITY_NOT_FOUND,
+                    format!("{id} is not registered as of {as_of}"),
+                )
+            })?;
+            pretty(&export::cyclonedx_bom(entity, as_of)?)?
         }
-        "json" => {
-            // Gaps are declared, never silently omitted (UC-10 A1).
-            let exceptions: Vec<Value> = all
-                .iter()
-                .filter(|e| e.posture != Posture::Attested)
-                .map(|e| {
-                    json!({"id": e.id.as_str(), "posture": format!("{:?}", e.posture),
-                           "why": "not fully attested; see registration stages"})
-                })
-                .collect();
-            println!(
-                "{}",
-                pretty(&json!({
-                    "as_of": now(),
-                    "chain_head_seq": head.head_seq,
-                    "chain_head_hash": head.head_hash,
-                    "entities": all.iter().map(|e| entity_json(e)).collect::<Vec<_>>(),
-                    "exceptions": exceptions,
-                }))?
-            );
-        }
+        "csv" | "json" => legacy_export(args, format, &projection, &provenance)?,
         other => {
             return Err(WcError::with_detail(
                 Code::EXPORT_FAILED,
-                format!("unknown export format {other:?}; try csv or json"),
+                format!("unknown export format {other:?}; try csv, json, dora, cps230, oscal or bom"),
             ))
         }
+    };
+
+    match args.get("out") {
+        Some(path) => {
+            std::fs::write(path, &rendered).map_err(|e| {
+                WcError::with_detail(Code::EXPORT_FAILED, format!("cannot write {path}"))
+                    .with_source(e)
+            })?;
+            println!("wrote {} ({} bytes)", path, rendered.len());
+        }
+        None => print!("{rendered}"),
+    }
+
+    // The caveat goes to stderr as well as into the document, because the one
+    // place it must not be missable is the terminal of the person about to file it.
+    if !provenance.is_verifiable() {
+        eprintln!("connect: warning: {}", provenance.caveat());
     }
     Ok(())
+}
+
+/// A regulatory register, as CSV or as JSON.
+fn render_register(args: &Args, register: &export::Register) -> Result<String> {
+    if args.has("json") {
+        let value = serde_json::to_value(register).map_err(|e| {
+            WcError::with_detail(Code::EXPORT_FAILED, "cannot serialise the register").with_source(e)
+        })?;
+        Ok(format!("{}\n", pretty(&value)?))
+    } else {
+        Ok(register.to_csv())
+    }
+}
+
+/// The original flat entity dump, kept because CI pipelines consume it.
+fn legacy_export(
+    args: &Args,
+    format: &str,
+    projection: &wc_control::store::Projection,
+    provenance: &export::Provenance,
+) -> Result<String> {
+    let mut all: Vec<&Entity> = projection.entities.values().collect();
+    all.sort_by_key(|e| e.id.as_str());
+
+    if format == "csv" {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "# as_of={} chain_head_seq={} chain_head_hash={}\n# {}\n",
+            provenance.as_of,
+            provenance.chain_head_seq,
+            provenance.chain_head_hash,
+            provenance.caveat()
+        ));
+        out.push_str(
+            "id,kind,owner,service,tier,zone,trust_level,posture,lifecycle,data_classes,jurisdictions,pin\n",
+        );
+        for e in &all {
+            out.push_str(&format!(
+                "{},{:?},{},{},{},{},{:?},{:?},{:?},{},{},{}\n",
+                e.id,
+                e.kind,
+                e.owner,
+                e.service.as_deref().unwrap_or(""),
+                e.tier.as_u8(),
+                e.zone,
+                e.zone.trust_level(),
+                e.posture,
+                e.lifecycle,
+                e.data_classes.join("|"),
+                e.jurisdictions.join("|"),
+                e.pin.manifest
+            ));
+        }
+        return Ok(out);
+    }
+
+    let _ = args;
+    Ok(format!(
+        "{}\n",
+        pretty(&json!({
+            "as_of": provenance.as_of,
+            "chain_head_seq": provenance.chain_head_seq,
+            "chain_head_hash": provenance.chain_head_hash,
+            "anchor_ref": provenance.anchor_ref,
+            "verifiable": provenance.is_verifiable(),
+            "caveat": provenance.caveat(),
+            "entities": all.iter().map(|e| entity_json(e)).collect::<Vec<_>>(),
+            // Gaps are declared, never silently omitted (UC-10 A1).
+            "exceptions": export::gaps(projection, provenance.as_of),
+        }))?
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2974,7 +3050,8 @@ ESTATE
 
 EVIDENCE
   audit verify [--anchor-pub PEM] [--json]
-  export --format csv|json
+  export --format csv|json|dora|cps230|oscal|bom [--as-of TS]
+         [--anchor-pub PEM] [--id ID for bom] [--out FILE]
 
 POLICY
   policy lint    [--policy FILE] [--json]
