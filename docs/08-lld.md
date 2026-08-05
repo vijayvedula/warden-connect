@@ -656,6 +656,8 @@ connect register agent   --card … --attest … --owner … [--observe]
 connect register server  --endpoint … --tier … --zone … [--insecure-skip-provenance]
 connect discover         --capability … --as … [--jurisdiction …]
 connect request | approve | deny | contracts {list,show,renew,revoke}
+connect breakglass       --from … --to … --tools … --incident … --justify … --ttl …
+                         --by … --approver-key … --second … --second-key …
 connect quarantine <party> --reason … [--drain|--abort] [--confirm-blast-radius]
 connect posture          [--drift|--expiring|--unattested|--shadow] [--json]
 connect blast-radius <id> [--depth N]
@@ -1294,6 +1296,54 @@ un-revoke everything the delta happened not to mention. A gap in the delta stops
 application *and does not advance the cursor*, so the next ACK cannot tell the
 control plane this mediator is current when it has missed a cut.
 
+### 8.7.7b Break-glass (T6.6)
+
+The emergency path, bounded so it cannot become the normal one. An estate with no
+break-glass grows an unofficial one — usually a shared credential and a Slack
+thread — so the goal is not to make this hard, it is to make it **bounded,
+attributable, and impossible to leave running.**
+
+```
+breakglass(input, proofs, approvers, limits) -> Issued
+  refuse unless: incident reference present
+                 justification >= 12 chars
+                 1 <= ttl <= limits.max_ttl_secs                  (default 1h)
+                 breakglass contracts in window < max_per_window   (default 3/24h)
+                 >= 2 distinct verified approvers                  (always)
+                 neither party Quarantined                         (no override)
+                 caller != callee
+  overrides used are named on the record, then mint() as normal
+```
+
+| Bypasses | Never bypasses |
+|---|---|
+| policy evaluation entirely — zone bar, standing caps, approver-role routing | **`Posture::Quarantined`** |
+| `Posture::Unattested` / `Degraded` — the usual state when this is needed | the callee's declared surface |
+| `Lifecycle::Suspended` | dual control, the TTL ceiling, the window budget |
+
+Four decisions worth recording:
+
+- **Quarantine has no override.** It is terminal until a full re-admission, and a
+  bypass that reaches into a contained party makes containment advisory. Every
+  other refusal here has an escape hatch; this one does not.
+- **Never renewable.** `ApprovalRef::is_renewable()` returns `false` for
+  `BreakGlass`, so the renew path cannot extend one. Expiry is the whole
+  mechanism: an emergency grant that can be extended is a permanent grant that
+  started in an emergency. Extending means a fresh request under policy.
+- **The budget is counted from issued contracts**, not from a counter, so it
+  survives a restart and cannot be reset by one.
+- **`mint_unchecked` is a separate function**, not `mint(skip_checks: bool)`. A
+  boolean that disables preconditions is the kind of argument that eventually gets
+  passed `true` by accident. Break-glass refuses the quarantined party itself and
+  then goes through the same minting code as everything else — an emergency path
+  with its own minting code is an emergency path with its own bugs.
+
+What this cannot enforce: **key custody.** It verifies two distinct registered
+identities with valid signatures over the same digest; it cannot tell whether one
+person holds both keys. `breakglass_pending()` is public precisely so two
+approvers can compute the identical digest independently on separate terminals,
+but the envelope-and-safe half belongs to the runbook.
+
 ### 8.7.8 A8 · Blast radius
 
 ```
@@ -1730,6 +1780,11 @@ transport = "webhook"
 endpoint = "https://collector.internal/ocsf"
 filter = "all"
 delivery = "fail-safe"
+
+[breakglass]
+max_ttl_secs   = 3600      # hard ceiling; > 24h is refused as a standing grant
+max_per_window = 3         # an unbounded emergency path is just a normal path
+window_secs    = 86400
 
 [retention]
 contracts = "7y"

@@ -26,7 +26,7 @@ use wc_core::contract::{
     IssuerKey, IssuerKeys, Party, Surface, Terms, CONTRACT_SCHEMA,
 };
 use wc_core::error::{Code, Mode, Result, WcError};
-use wc_core::model::{Cid, Entity, EntityId, HumanRef, Jti};
+use wc_core::model::{Cid, Entity, EntityId, HumanRef, Jti, Lifecycle, Posture};
 use wc_core::util::{canonical_json, sha256_hex};
 
 use crate::cpolicy::{ConnDecision, ConnEval, ConnRequest, ConnectPolicy, StandingState};
@@ -294,6 +294,124 @@ pub struct RequestInput {
     pub requester: HumanRef,
     /// Mediators the contract must be addressed to. One artifact per mediator.
     pub mediators: Vec<String>,
+}
+
+/// A break-glass request.
+#[derive(Debug, Clone)]
+pub struct BreakGlassInput {
+    /// Calling party.
+    pub caller: EntityId,
+    /// Called party.
+    pub callee: EntityId,
+    /// Requested surface. Still bounded by what the callee declared.
+    pub surface: Surface,
+    /// Terms. Not widened by the emergency.
+    pub terms: Terms,
+    /// Lifetime in seconds, bounded by [`BreakGlassLimits::max_ttl_secs`].
+    pub ttl_secs: u64,
+    /// The incident this is for. Mandatory.
+    pub incident: String,
+    /// Why, in enough words for a reviewer.
+    pub justification: String,
+    /// Who is asking.
+    pub requester: HumanRef,
+    /// Mediators the contract must be addressed to.
+    pub mediators: Vec<String>,
+}
+
+/// Bounds on the emergency path.
+///
+/// These are what stop break-glass from becoming the normal path. Every one of
+/// them is a refusal an operator will meet during an incident, which is
+/// uncomfortable and correct: the alternative is an unbounded bypass that nobody
+/// notices has become routine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BreakGlassLimits {
+    /// Hardest permitted lifetime. One hour by default — long enough to work
+    /// through an incident, short enough that nobody plans around it.
+    #[serde(default = "default_bg_ttl")]
+    pub max_ttl_secs: u64,
+    /// How many may be issued per window.
+    #[serde(default = "default_bg_per_window")]
+    pub max_per_window: u32,
+    /// The window, in seconds.
+    #[serde(default = "default_bg_window")]
+    pub window_secs: u64,
+}
+
+fn default_bg_ttl() -> u64 {
+    3_600
+}
+fn default_bg_per_window() -> u32 {
+    3
+}
+fn default_bg_window() -> u64 {
+    86_400
+}
+
+impl Default for BreakGlassLimits {
+    fn default() -> Self {
+        BreakGlassLimits {
+            max_ttl_secs: default_bg_ttl(),
+            max_per_window: default_bg_per_window(),
+            window_secs: default_bg_window(),
+        }
+    }
+}
+
+impl BreakGlassLimits {
+    /// Validate, refusing the shapes that quietly remove the bound.
+    pub fn validate(&self) -> Result<()> {
+        if self.max_ttl_secs == 0 {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "breakglass.max_ttl_secs = 0 would refuse every emergency contract",
+            ));
+        }
+        if self.max_ttl_secs > 86_400 {
+            // A break-glass contract that can outlive the incident is a permanent
+            // grant with an exciting name.
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!(
+                    "breakglass.max_ttl_secs = {} exceeds 24h; that is a standing grant, not an emergency",
+                    self.max_ttl_secs
+                ),
+            ));
+        }
+        if self.max_per_window == 0 {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "breakglass.max_per_window = 0 would refuse every emergency contract",
+            ));
+        }
+        if self.window_secs == 0 {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "breakglass.window_secs = 0 would make the budget unbounded",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A deterministic id for a break-glass request, so the digest two approvers sign
+/// is the same digest on both terminals.
+#[must_use]
+fn breakglass_id(input: &BreakGlassInput, now: u64) -> String {
+    let mut items = input.surface.items();
+    items.sort();
+    let seed = format!(
+        "bg|{}|{}|{}|{}|{}|{}",
+        input.caller,
+        input.callee,
+        items.join(","),
+        input.ttl_secs,
+        input.incident,
+        now
+    );
+    format!("bg_{}", &wc_core::util::sha256_hex(&seed)[..12])
 }
 
 /// A minted contract and its artifacts.
@@ -575,6 +693,230 @@ impl<'a> Issuer<'a> {
         self.mint(&pending, approval, &caller, &callee)
     }
 
+    // -----------------------------------------------------------------------
+    // Break-glass
+    // -----------------------------------------------------------------------
+
+    /// Issue a time-boxed emergency contract, bypassing policy evaluation
+    /// (T6.6).
+    ///
+    /// Break-glass exists because incidents do not wait for a zone bar to be
+    /// re-cut, and an estate with no emergency path grows an unofficial one —
+    /// usually a shared credential and a Slack thread. So the design goal is not
+    /// to make this hard, it is to make it **bounded, attributable, and impossible
+    /// to leave running.**
+    ///
+    /// What it bypasses:
+    ///
+    /// * policy evaluation entirely — no zone bar, no standing caps, no approver
+    ///   role routing;
+    /// * `Posture::Unattested` and `Posture::Degraded`, which is the state a party
+    ///   is usually in precisely when you need this;
+    /// * `Lifecycle::Suspended`, so an operator's earlier pause can be reached
+    ///   past in an emergency.
+    ///
+    /// What it can never bypass:
+    ///
+    /// * **`Posture::Quarantined`.** Quarantine is terminal until a full
+    ///   re-admission, and a bypass that reaches into a contained party makes
+    ///   containment advisory. This is the one refusal that has no override.
+    /// * the callee's declared surface — a contract is a ceiling, never a grant,
+    ///   and an emergency does not conjure capability the callee never offered;
+    /// * dual control, the TTL ceiling, or the per-window budget below.
+    ///
+    /// Every override actually used is recorded on the evidence record by name, so
+    /// the post-incident question "what did we switch off at 03:14" has an answer
+    /// that is not a guess.
+    ///
+    /// Custody caveat worth stating plainly: this enforces two *distinct
+    /// registered identities* with valid signatures over the same digest. It
+    /// cannot tell whether one person holds both keys. That is a key-custody
+    /// control, not a code one.
+    pub fn breakglass(
+        &mut self,
+        input: &BreakGlassInput,
+        proofs: &[ApprovalProof],
+        approvers: &ApproverRegistry,
+        limits: &BreakGlassLimits,
+    ) -> Result<Issued> {
+        if input.mediators.is_empty() {
+            return Err(WcError::with_detail(
+                Code::MINT_PRECONDITION_FAILED,
+                "a break-glass contract must name at least one mediator; there is nowhere to enforce it",
+            ));
+        }
+        // Maximally logged means the incident reference is mandatory. An emergency
+        // contract nobody can tie to an incident is just an unreviewed contract.
+        if input.incident.trim().is_empty() {
+            return Err(WcError::with_detail(
+                Code::BREAKGLASS_OUTSIDE_POLICY,
+                "break-glass requires an incident reference",
+            ));
+        }
+        if input.justification.trim().len() < 12 {
+            return Err(WcError::with_detail(
+                Code::BREAKGLASS_OUTSIDE_POLICY,
+                "break-glass requires a justification a reviewer can read",
+            ));
+        }
+        if input.ttl_secs == 0 || input.ttl_secs > limits.max_ttl_secs {
+            return Err(WcError::with_detail(
+                Code::BREAKGLASS_OUTSIDE_POLICY,
+                format!(
+                    "break-glass ttl must be 1..={}s, got {}s",
+                    limits.max_ttl_secs, input.ttl_secs
+                ),
+            ));
+        }
+
+        // An unbounded emergency path is just a normal path with worse review. The
+        // budget is counted from issued contracts rather than from a counter, so it
+        // survives a restart and cannot be reset by one.
+        let used = self.breakglass_in_window(limits.window_secs);
+        if used >= limits.max_per_window {
+            return Err(WcError::with_detail(
+                Code::BREAKGLASS_OUTSIDE_POLICY,
+                format!(
+                    "{used} break-glass contract(s) already issued in the last {}s, budget is {}",
+                    limits.window_secs, limits.max_per_window
+                ),
+            ));
+        }
+
+        let caller = self.entity(&input.caller)?;
+        let callee = self.entity(&input.callee)?;
+
+        // The one refusal with no override.
+        for party in [&caller, &callee] {
+            if party.posture == Posture::Quarantined {
+                return Err(WcError::with_detail(
+                    Code::ENTITY_QUARANTINED,
+                    format!(
+                        "{} is quarantined; break-glass cannot reach a contained party",
+                        party.id
+                    ),
+                ));
+            }
+        }
+        if caller.id == callee.id {
+            return Err(WcError::with_detail(
+                Code::MINT_PRECONDITION_FAILED,
+                "a party cannot break-glass to itself",
+            ));
+        }
+
+        // The overrides actually exercised, named for the record.
+        let mut overrides: Vec<String> = Vec::new();
+        for party in [&caller, &callee] {
+            if party.lifecycle != Lifecycle::Active {
+                overrides.push(format!("{} lifecycle {:?}", party.id, party.lifecycle));
+            }
+            if !party.posture.may_connect(self.mode) {
+                overrides.push(format!("{} posture {:?}", party.id, party.posture));
+            }
+        }
+        overrides.push("policy evaluation skipped".to_string());
+
+        let pending = self.breakglass_pending(input);
+
+        let mut verified: Vec<HumanRef> = Vec::new();
+        for proof in proofs {
+            verify_approval(proof, &pending, approvers, &self.policy.version)?;
+            verified.push(proof.by.clone());
+        }
+        verified.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+        verified.dedup();
+        if verified.len() < 2 {
+            return Err(WcError::with_detail(
+                Code::DUAL_CONTROL_MISSING,
+                format!(
+                    "break-glass always needs two distinct approvers, got {}",
+                    verified.len()
+                ),
+            ));
+        }
+
+        let approval = ApprovalRef {
+            by: Some(verified[0].clone()),
+            jti: None,
+            ticket: Some(input.incident.clone()),
+            mode: ApprovalMode::BreakGlass,
+            second: Some(verified[1].clone()),
+        };
+
+        self.evidence.record(
+            &LifecycleEvent::new(EventKind::BreakGlass, actor_id(&self.actor))
+                .with_entities([input.caller.as_str(), input.callee.as_str()])
+                .with_reason(format!(
+                    "break-glass for {}: {}",
+                    input.incident, input.justification
+                ))
+                .with_policy_version(self.policy.version.clone())
+                .with_detail(serde_json::json!({
+                    "incident": input.incident,
+                    "approvers": verified.iter().map(|h| h.as_str()).collect::<Vec<_>>(),
+                    "surface": pending.surface.items(),
+                    "ttl_secs": input.ttl_secs,
+                    "expires_at": self.now.saturating_add(input.ttl_secs),
+                    "digest": pending.digest(),
+                    "overrides": overrides,
+                    "budget_used_before": used,
+                    "budget": limits.max_per_window,
+                    "window_secs": limits.window_secs,
+                    "renewable": false,
+                })),
+            self.now,
+        )?;
+
+        // `mint` re-asserts the surface subset and every artifact invariant. It is
+        // deliberately the same mint every other contract goes through: an
+        // emergency path with its own minting code is an emergency path with its
+        // own bugs.
+        self.mint_unchecked(&pending, approval, &caller, &callee)
+    }
+
+    /// The request two approvers sign over for a break-glass issuance.
+    ///
+    /// It is never committed — there is no queue to wait in — but reusing the
+    /// [`PendingRequest`] shape means the digest and the signature checks are the
+    /// same code that guards every other contract. Public so both approvers can
+    /// compute the identical digest independently, on separate terminals, without
+    /// one of them being trusted to hand it to the other.
+    #[must_use]
+    pub fn breakglass_pending(&self, input: &BreakGlassInput) -> PendingRequest {
+        PendingRequest {
+            id: breakglass_id(input, self.now),
+            caller: input.caller.clone(),
+            callee: input.callee.clone(),
+            surface: input.surface.clone(),
+            terms: input.terms.clone(),
+            ttl_secs: input.ttl_secs,
+            justification: input.justification.clone(),
+            requester: input.requester.clone(),
+            mediators: input.mediators.clone(),
+            approver_role: None,
+            dual_control: true,
+            policy_version: self.policy.version.clone(),
+            policy_reason: format!("break-glass: {}", input.incident),
+            policy_trace: "break-glass — policy not evaluated".to_string(),
+            created_at: self.now,
+            expires_at: self.now.saturating_add(self.request_ttl_secs),
+            status: RequestStatus::Pending,
+        }
+    }
+
+    /// Break-glass contracts issued inside `window` seconds of now.
+    fn breakglass_in_window(&self, window: u64) -> u32 {
+        let floor = self.now.saturating_sub(window);
+        self.store
+            .projection
+            .contracts
+            .values()
+            .filter(|c| c.approval.mode == ApprovalMode::BreakGlass && c.iat >= floor)
+            .count()
+            .min(u32::MAX as usize) as u32
+    }
+
     /// A pending request by id, for a client that needs to sign over it.
     pub fn pending_request(&self, id: &str) -> Result<PendingRequest> {
         self.pending(id)
@@ -745,7 +1087,22 @@ impl<'a> Issuer<'a> {
         // a party may have been quarantined or suspended while a human deliberated.
         caller.assert_connectable(self.mode)?;
         callee.assert_connectable(self.mode)?;
+        self.mint_unchecked(pending, approval, caller, callee)
+    }
 
+    /// Mint without the connectability assertion.
+    ///
+    /// Only break-glass calls this, and only after refusing a quarantined party
+    /// itself. Split out rather than parameterised with a `skip_checks` flag,
+    /// because a boolean that disables preconditions is the kind of argument that
+    /// eventually gets passed `true` by accident.
+    fn mint_unchecked(
+        &mut self,
+        pending: &PendingRequest,
+        approval: ApprovalRef,
+        caller: &Entity,
+        callee: &Entity,
+    ) -> Result<Issued> {
         let items = pending.surface.items();
         let surface_digest = callee.pin.surface_digest(&items)?;
 
@@ -1150,6 +1507,284 @@ reason = "a sensitive callee needs a security architect"
             Actor::Human { id: priya() },
         );
         f(&mut issuer)
+    }
+
+    // --- break-glass -------------------------------------------------------
+
+    fn bg(tools: &[&str], ttl: u64) -> BreakGlassInput {
+        BreakGlassInput {
+            caller: agent_id(),
+            callee: server_id(),
+            surface: Surface {
+                tools: tools.iter().map(|t| (*t).to_string()).collect(),
+                skills: Vec::new(),
+                resources: Vec::new(),
+            },
+            terms: Terms::default(),
+            ttl_secs: ttl,
+            incident: "SOC-4471".to_string(),
+            justification: "settlement halted, need balance reads to triage".to_string(),
+            requester: priya(),
+            mediators: vec![MEDIATOR.to_string()],
+        }
+    }
+
+    /// Two distinct approvers, both signing the digest break-glass will compute.
+    fn bg_proofs_from(pending: &PendingRequest, who: &[HumanRef], now: u64) -> Vec<ApprovalProof> {
+        who.iter()
+            .map(|h| ApprovalProof {
+                by: h.clone(),
+                jws: sign_approval(pending, &approver_key(h.as_str()), None, now).unwrap(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn break_glass_mints_a_short_dual_controlled_contract() {
+        let tmp = TmpDir::new("bg-ok");
+        let pol = policy();
+        let input = bg(&["get_balance"], 900);
+        let issued = with_issuer(&tmp, Tier::ONE, &pol, NOW, |issuer| {
+            let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
+            issuer
+                .breakglass(&input, &proofs, &approvers(), &BreakGlassLimits::default())
+                .expect("break-glass issues")
+        });
+
+        assert_eq!(issued.record.approval.mode, ApprovalMode::BreakGlass);
+        assert_eq!(issued.record.approval.ticket.as_deref(), Some("SOC-4471"));
+        assert!(issued.record.approval.second.is_some(), "dual control recorded");
+        assert_eq!(issued.record.exp - issued.record.iat, 900);
+        assert_eq!(issued.artifacts.len(), 1);
+    }
+
+    #[test]
+    fn break_glass_needs_two_distinct_approvers() {
+        // One approver signing twice is one approver.
+        let tmp = TmpDir::new("bg-dual");
+        let pol = policy();
+        let input = bg(&["get_balance"], 900);
+        let err = with_issuer(&tmp, Tier::THREE, &pol, NOW, |issuer| {
+            let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), cecil()], NOW);
+            issuer
+                .breakglass(&input, &proofs, &approvers(), &BreakGlassLimits::default())
+                .unwrap_err()
+        });
+        assert_eq!(err.code(), Code::DUAL_CONTROL_MISSING);
+    }
+
+    #[test]
+    fn break_glass_can_never_reach_a_quarantined_party() {
+        // The one refusal with no override. A bypass that reaches into a contained
+        // party makes containment advisory.
+        let tmp = TmpDir::new("bg-quarantined");
+        let pol = policy();
+        let input = bg(&["get_balance"], 900);
+
+        let mut store = seeded(&tmp, Tier::THREE);
+        store
+            .registry(Actor::Human { id: priya() }, NOW - 100)
+            .quarantine(&server_id(), "SOC-1", &[])
+            .unwrap();
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let mut issuer = Issuer::new(
+            &mut store,
+            &mut evidence,
+            &pol,
+            &key,
+            "https://connect.internal/t/apac",
+            NOW,
+            Actor::Human { id: priya() },
+        );
+        let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
+        let err = issuer
+            .breakglass(&input, &proofs, &approvers(), &BreakGlassLimits::default())
+            .unwrap_err();
+        assert_eq!(err.code(), Code::ENTITY_QUARANTINED);
+        assert!(err.to_string().contains("cannot reach a contained party"));
+    }
+
+    #[test]
+    fn break_glass_still_cannot_exceed_the_declared_surface() {
+        // A contract is a ceiling, never a grant. An emergency does not conjure
+        // capability the callee never offered.
+        let tmp = TmpDir::new("bg-surface");
+        let pol = policy();
+        let input = bg(&["get_balance", "not_a_real_tool"], 900);
+        let err = with_issuer(&tmp, Tier::THREE, &pol, NOW, |issuer| {
+            let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
+            issuer
+                .breakglass(&input, &proofs, &approvers(), &BreakGlassLimits::default())
+                .unwrap_err()
+        });
+        assert_ne!(err.code(), Code::BREAKGLASS_OUTSIDE_POLICY, "not a policy refusal");
+        assert!(
+            err.to_string().contains("not_a_real_tool")
+                || err.to_string().contains("surface"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn break_glass_overrides_posture_and_a_suspended_lifecycle() {
+        // This is the state a party is usually in exactly when break-glass is
+        // needed, so refusing here would make the feature useless.
+        let tmp = TmpDir::new("bg-override");
+        let pol = policy();
+        let input = bg(&["get_balance"], 600);
+
+        let mut store = seeded(&tmp, Tier::THREE);
+        {
+            let mut reg = store.registry(Actor::Human { id: priya() }, NOW - 100);
+            reg.set_posture(&server_id(), Posture::Unattested, 20).unwrap();
+            reg.transition(&server_id(), Lifecycle::Suspended, "drift").unwrap();
+        }
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let issued = {
+            let mut issuer = Issuer::new(
+                &mut store,
+                &mut evidence,
+                &pol,
+                &key,
+                "https://connect.internal/t/apac",
+                NOW,
+                Actor::Human { id: priya() },
+            );
+            let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
+            issuer
+                .breakglass(&input, &proofs, &approvers(), &BreakGlassLimits::default())
+                .expect("break-glass overrides posture and suspension")
+        };
+        assert_eq!(issued.record.approval.mode, ApprovalMode::BreakGlass);
+
+        // And it says which overrides it used, by name.
+        let chain = std::fs::read_to_string(tmp.evidence().join("chain.jsonl")).unwrap();
+        assert!(chain.contains("contract.breakglass"));
+        assert!(chain.contains("policy evaluation skipped"), "{chain}");
+        assert!(chain.contains("Unattested"));
+        assert!(chain.contains("Suspended"));
+    }
+
+    #[test]
+    fn break_glass_refuses_the_shapes_that_would_make_it_the_normal_path() {
+        let pol = policy();
+        let limits = BreakGlassLimits::default();
+
+        for (i, (label, mut input)) in [
+            ("no incident", bg(&["get_balance"], 900)),
+            ("thin justification", bg(&["get_balance"], 900)),
+            ("ttl over the ceiling", bg(&["get_balance"], 7_200)),
+            ("zero ttl", bg(&["get_balance"], 0)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // A fresh root per case: `seeded` registers entities, and re-registering
+            // into a live store is drift, not a fixture.
+            let tmp = TmpDir::new(&format!("bg-bounds-{i}"));
+            match label {
+                "no incident" => input.incident = "  ".to_string(),
+                "thin justification" => input.justification = "urgent".to_string(),
+                _ => {}
+            }
+            let err = with_issuer(&tmp, Tier::THREE, &pol, NOW, |issuer| {
+                let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
+                issuer
+                    .breakglass(&input, &proofs, &approvers(), &limits)
+                    .unwrap_err()
+            });
+            assert_eq!(
+                err.code(),
+                Code::BREAKGLASS_OUTSIDE_POLICY,
+                "{label} should be refused as outside policy"
+            );
+        }
+    }
+
+    #[test]
+    fn the_break_glass_budget_is_counted_from_issued_contracts() {
+        // Counted from the contracts themselves rather than a counter, so it
+        // survives a restart and cannot be reset by one.
+        let tmp = TmpDir::new("bg-budget");
+        let pol = policy();
+        let limits = BreakGlassLimits {
+            max_per_window: 2,
+            ..BreakGlassLimits::default()
+        };
+
+        let mut store = seeded(&tmp, Tier::THREE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let mut issuer = Issuer::new(
+            &mut store,
+            &mut evidence,
+            &pol,
+            &key,
+            "https://connect.internal/t/apac",
+            NOW,
+            Actor::Human { id: priya() },
+        );
+
+        for i in 0..2u64 {
+            // Distinct incidents so the ids differ.
+            let mut input = bg(&["get_balance"], 600);
+            input.incident = format!("SOC-{i}");
+            let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
+            issuer
+                .breakglass(&input, &proofs, &approvers(), &limits)
+                .unwrap_or_else(|e| panic!("issue {i} failed: {e}"));
+        }
+
+        let mut third = bg(&["get_balance"], 600);
+        third.incident = "SOC-9".to_string();
+        let proofs = bg_proofs_from(&issuer.breakglass_pending(&third), &[cecil(), dana()], NOW);
+        let err = issuer
+            .breakglass(&third, &proofs, &approvers(), &limits)
+            .unwrap_err();
+        assert_eq!(err.code(), Code::BREAKGLASS_OUTSIDE_POLICY);
+        assert!(err.to_string().contains("budget is 2"), "{err}");
+    }
+
+    #[test]
+    fn break_glass_limits_reject_a_configuration_that_removes_the_bound() {
+        for bad in [
+            BreakGlassLimits {
+                max_ttl_secs: 0,
+                ..Default::default()
+            },
+            BreakGlassLimits {
+                // A break-glass contract that can outlive the incident is a
+                // permanent grant with an exciting name.
+                max_ttl_secs: 30 * 86_400,
+                ..Default::default()
+            },
+            BreakGlassLimits {
+                max_per_window: 0,
+                ..Default::default()
+            },
+            BreakGlassLimits {
+                window_secs: 0,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(bad.validate().unwrap_err().code(), Code::CONFIG_INVALID);
+        }
+        assert!(BreakGlassLimits::default().validate().is_ok());
+    }
+
+    #[test]
+    fn a_break_glass_approval_is_not_renewable() {
+        assert!(!ApprovalRef {
+            by: Some(cecil()),
+            jti: None,
+            ticket: Some("SOC-1".to_string()),
+            mode: ApprovalMode::BreakGlass,
+            second: Some(dana()),
+        }
+        .is_renewable());
+        assert!(ApprovalRef::standing().is_renewable());
     }
 
     // --- the standing path ---
