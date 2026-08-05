@@ -34,7 +34,7 @@ use warden::jsonrpc::Request;
 use warden::policy::PolicyConfig;
 use warden::upstream::StdioUpstream;
 
-use wc_core::contract::{Algorithm, IssuerKeys, PeerIdentity};
+use wc_core::contract::{Algorithm, IssuerKeys};
 use wc_core::error::Mode;
 use wc_core::model::EntityId;
 use wc_mediator::cache::Cache;
