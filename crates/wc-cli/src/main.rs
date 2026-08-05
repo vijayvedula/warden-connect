@@ -38,6 +38,7 @@ use wc_control::contain;
 use wc_control::cpolicy::{self as cpolicy, ConnectPolicy, StandingState};
 use wc_control::evidence::{EventKind, Evidence, LifecycleEvent};
 use wc_control::export;
+use wc_control::federate;
 use wc_control::http::{self, Shutdown};
 use wc_control::issuance::{
     self as issuance, ApprovalProof, ApproverRegistry, Issued, Issuer, Outcome, PendingRequest,
@@ -104,6 +105,16 @@ impl From<WcError> for Failure {
 fn exit_code(code: Code) -> u8 {
     match code {
         Code::SCREENING_BLOCKED | Code::DRIFT_MATERIAL => 5,
+        // A trust chain that does not verify is an untrustworthy artifact, which
+        // is what exit 4 means everywhere else. A CI gate on a partner onboarding
+        // bundle needs to tell that apart from "the file was unreadable".
+        Code::FEDERATION_ANCHOR_UNKNOWN
+        | Code::FEDERATION_CHAIN_INVALID
+        | Code::FEDERATION_STATEMENT_EXPIRED
+        | Code::FEDERATION_METADATA_WIDENED => 4,
+        // Overdue re-verification is not an invalid chain — it is a refusal to
+        // issue against a valid one, which is a policy-shaped decision.
+        Code::FEDERATION_ANCHOR_STALE => 3,
         Code::QUARANTINE_DUAL_CONTROL_MISSING | Code::APPROVER_ROLE_MISSING => 6,
         Code::CHAIN_BROKEN
         | Code::PROVENANCE_UNVERIFIABLE
@@ -144,6 +155,7 @@ const COMMANDS: &[&str] = &[
     "blast-radius",
     "quarantine",
     "mediators",
+    "federate",
     "audit verify",
     "canon",
     "screen",
@@ -239,10 +251,12 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "revocation-key",
             "kid",
             "mediators",
+    "federate",
             "ack-deadline",
             "push-token",
         ],
         "mediators" => &["mediators", "revocation-pub", "kid"],
+        "federate" => &["anchors", "chain", "now", "leeway"],
         "show" => &["id"],
         "entities" => &[],
         "posture" => &["unattested", "expiring", "drift", "score", "id"],
@@ -410,6 +424,7 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "blast-radius" => blast_radius_cmd(args)?,
         "quarantine" => quarantine(args)?,
         "mediators" => mediators_cmd(args)?,
+        "federate" => federate_cmd(args)?,
         "audit verify" => audit_verify(args)?,
         "canon" => canon_cmd(args)?,
         "screen" => screen_cmd(args)?,
@@ -1494,6 +1509,102 @@ fn blast_radius_cmd(args: &Args) -> Result<()> {
             ),
         ));
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// federate — resolve a partner trust chain (UC-05)
+// ---------------------------------------------------------------------------
+
+/// Verify a federation trust chain against the configured anchors.
+///
+/// The chain file is a JSON array of compact JWS strings, **leaf first**. Exit 4
+/// on any verification failure, so this works as a CI gate on a partner
+/// onboarding bundle before anybody registers anything.
+fn federate_cmd(args: &Args) -> Result<()> {
+    let chain_path = positional_or_flag(args, "chain")?;
+    let raw = read_json(chain_path)?;
+    let chain: Vec<String> = serde_json::from_value(raw).map_err(|e| {
+        WcError::with_detail(
+            Code::FEDERATION_CHAIN_INVALID,
+            format!("{chain_path}: expected a JSON array of compact JWS strings, leaf first"),
+        )
+        .with_source(e)
+    })?;
+
+    let anchors = federate::AnchorSet::load(std::path::Path::new(require(args, "anchors")?))?;
+    let at = args.number("now").unwrap_or_else(now);
+    let leeway = args.number("leeway").unwrap_or(60);
+
+    let resolved = federate::resolve(&chain, &anchors, at, leeway)?;
+    let terms = resolved.partner_terms();
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "subject": resolved.subject,
+                "anchor": resolved.anchor,
+                "chain_len": resolved.chain_len,
+                "expires_at": resolved.expires_at,
+                "anchor_stale": resolved.anchor_stale,
+                "may_issue": resolved.may_issue(at),
+                "keys": resolved.jwks.keys().collect::<Vec<_>>(),
+                "zone": terms.zone.as_str(),
+                "max_ttl_secs": terms.max_ttl_secs,
+                "max_delegation_depth": terms.max_delegation_depth,
+                "jurisdictions": terms.jurisdictions,
+                "data_classes": terms.data_classes,
+                "capabilities": resolved.metadata.capabilities,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("resolved   {}", resolved.subject);
+    println!("anchor     {}", resolved.anchor);
+    println!("chain      {} statement(s)", resolved.chain_len);
+    println!("keys       {}", resolved.jwks.keys().cloned().collect::<Vec<_>>().join(", "));
+    println!("expires    {} (in {})", resolved.expires_at, human_duration(resolved.expires_at.saturating_sub(at)));
+    println!();
+    println!("  zone            {}  ({:?})", terms.zone, terms.zone.trust_level());
+    println!(
+        "  ttl ceiling     {}",
+        terms.max_ttl_secs.map_or_else(|| "-".to_string(), human_duration)
+    );
+    println!(
+        "  delegation      max depth {}",
+        terms
+            .max_delegation_depth
+            .map_or_else(|| "-".to_string(), |d| d.to_string())
+    );
+    println!("  jurisdictions   {}", terms.jurisdictions.join(", "));
+    println!("  data classes    {}", terms.data_classes.join(", "));
+    println!(
+        "  capabilities    {}",
+        resolved
+            .metadata
+            .capabilities
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    if resolved.anchor_stale {
+        // UC-05 A2: a degrade, not a refusal.
+        println!();
+        println!("  ANCHOR STALE — this anchor is overdue for out-of-band re-verification.");
+        println!("  Existing contracts run to their expiry; no new ones may be issued until");
+        println!("  the anchor is re-confirmed and `verified_at` updated.");
+        return Err(WcError::with_detail(
+            Code::FEDERATION_ANCHOR_STALE,
+            format!("anchor {} is overdue for re-verification", resolved.anchor),
+        ));
+    }
+    println!();
+    println!("  Federation sets a ceiling. It never names a tool — that is still the");
+    println!("  contract's job, and local policy applies its own bar on top.");
     Ok(())
 }
 
@@ -3083,6 +3194,9 @@ ESTATE
                   [--revocation-key PEM --kid KID] [--mediators FILE]
                   [--ack-deadline 60] [--push-token TOKEN]
   mediators       [--mediators FILE] [--revocation-pub PEM --kid KID] [--json]
+  federate <chain.json> --anchors anchors.toml [--now TS] [--json]
+                  resolve a partner trust chain
+                  exit 4 if it does not verify · 3 if the anchor is stale
 
 EVIDENCE
   audit verify [--anchor-pub PEM] [--json]
@@ -3135,6 +3249,12 @@ mod tests {
 
     #[test]
     fn exit_codes_separate_the_cases() {
+        // A failed trust chain is an untrustworthy artifact, not an I/O problem.
+        assert_eq!(exit_code(Code::FEDERATION_ANCHOR_UNKNOWN), 4);
+        assert_eq!(exit_code(Code::FEDERATION_CHAIN_INVALID), 4);
+        assert_eq!(exit_code(Code::FEDERATION_METADATA_WIDENED), 4);
+        // A stale anchor is a valid chain we decline to issue against.
+        assert_eq!(exit_code(Code::FEDERATION_ANCHOR_STALE), 3);
         assert_eq!(exit_code(Code::SCREENING_BLOCKED), 5);
         assert_eq!(exit_code(Code::DRIFT_MATERIAL), 5);
         assert_eq!(exit_code(Code::QUARANTINE_DUAL_CONTROL_MISSING), 6);

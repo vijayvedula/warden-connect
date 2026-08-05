@@ -22,6 +22,7 @@ pub mod contain;
 pub mod cpolicy;
 pub mod evidence;
 pub mod export;
+pub mod federate;
 pub mod http;
 pub mod issuance;
 pub mod lock;
