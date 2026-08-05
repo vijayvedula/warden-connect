@@ -156,6 +156,7 @@ const COMMANDS: &[&str] = &[
     "deny",
     "requests",
     "contracts",
+    "breakglass",
     "serve",
     "version",
 ];
@@ -313,6 +314,27 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "approvers",
             "enforce",
         ],
+        "breakglass" => &[
+            "from",
+            "to",
+            "tools",
+            "skills",
+            "resources",
+            "ttl",
+            "incident",
+            "justify",
+            "mediator",
+            "by",
+            "approver-key",
+            "second",
+            "second-key",
+            "issuer-key",
+            "kid",
+            "out",
+            "max-ttl",
+            "budget",
+            "window",
+        ],
         "requests" => &["all"],
         "contracts" => &["cid"],
         _ => &[],
@@ -398,6 +420,7 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "approve" => approve_cmd(args)?,
         "deny" => deny_cmd(args)?,
         "serve" => serve_cmd(args)?,
+        "breakglass" => breakglass_cmd(args)?,
         "requests" => requests_cmd(args)?,
         "contracts" => contracts_cmd(args)?,
         "export" => export(args)?,
@@ -2039,7 +2062,11 @@ fn print_issued(args: &Args, issued: &Issued, paths: &[String]) -> Result<()> {
     println!("  callee     {} (tier {})", r.callee, r.callee_tier.as_u8());
     println!("  surface    {}", r.surface.items().join(", "));
     println!("  digest     {}", r.surface_digest);
-    println!("  expires    {} ({}d)", r.exp, (r.exp - r.iat) / 86_400);
+    println!(
+        "  expires    {} (in {})",
+        r.exp,
+        human_duration(r.exp.saturating_sub(r.iat))
+    );
     println!("  approval   {:?}", r.approval.mode);
     if let Some(by) = &r.approval.by {
         println!("  approved   {by}");
@@ -2144,7 +2171,7 @@ fn request_cmd(args: &Args) -> Result<()> {
             } else {
                 println!("awaiting approval  {}", pending.id);
                 println!("  surface     {}", pending.surface.items().join(", "));
-                println!("  ttl         {}d", pending.ttl_secs / 86_400);
+                println!("  ttl         {}", human_duration(pending.ttl_secs));
                 println!(
                     "  approver    {}{}",
                     pending.approver_role.as_deref().unwrap_or("any"),
@@ -2219,6 +2246,118 @@ fn approve_cmd(args: &Args) -> Result<()> {
 
     let paths = write_artifacts(args, &issued)?;
     print_issued(args, &issued, &paths)
+}
+
+/// Issue a time-boxed emergency contract (T6.6).
+///
+/// Two distinct approvers are mandatory and the TTL is bounded. What this command
+/// cannot check is key custody: it verifies two registered identities with valid
+/// signatures over the same digest, not that two people were present. That is an
+/// envelope-and-safe control, and the runbook has to carry it.
+fn breakglass_cmd(args: &Args) -> Result<()> {
+    let registry = load_approvers(args)?;
+
+    let first = HumanRef::new(require(args, "by")?)?;
+    let first_key = approver_signing_key(&first, require(args, "approver-key")?)?;
+    let second = HumanRef::new(require(args, "second")?)?;
+    let second_key = approver_signing_key(&second, require(args, "second-key")?)?;
+    if first == second {
+        // Caught here as well as in the issuer, so the operator hears it before
+        // typing a second passphrase.
+        return Err(WcError::with_detail(
+            Code::DUAL_CONTROL_MISSING,
+            "break-glass needs two distinct approvers",
+        ));
+    }
+
+    let limits = issuance::BreakGlassLimits {
+        max_ttl_secs: args
+            .get("max-ttl")
+            .and_then(cpolicy::parse_duration)
+            .unwrap_or(issuance::BreakGlassLimits::default().max_ttl_secs),
+        max_per_window: args
+            .number("budget")
+            .unwrap_or(u64::from(issuance::BreakGlassLimits::default().max_per_window))
+            .min(u64::from(u32::MAX)) as u32,
+        window_secs: args
+            .get("window")
+            .and_then(cpolicy::parse_duration)
+            .unwrap_or(issuance::BreakGlassLimits::default().window_secs),
+    };
+    limits.validate()?;
+
+    let input = issuance::BreakGlassInput {
+        caller: EntityId::new(require(args, "from")?)?,
+        callee: EntityId::new(require(args, "to")?)?,
+        surface: Surface {
+            tools: args.list("tools"),
+            skills: args.list("skills"),
+            resources: args.list("resources"),
+        },
+        terms: Terms::default(),
+        // Default 15 minutes: long enough to triage, short enough that nobody
+        // builds a process on it.
+        ttl_secs: args
+            .get("ttl")
+            .and_then(cpolicy::parse_duration)
+            .unwrap_or(900),
+        incident: require(args, "incident")?.to_string(),
+        justification: require(args, "justify")?.to_string(),
+        requester: requesting_human(args)?,
+        mediators: {
+            let m = args.list("mediator");
+            if m.is_empty() {
+                vec!["warden:mediator:default".to_string()]
+            } else {
+                m
+            }
+        },
+    };
+
+    let issued = with_issuer(args, move |issuer| {
+        let pending = issuer.breakglass_pending(&input);
+        let proofs = vec![
+            ApprovalProof {
+                by: first.clone(),
+                jws: issuance::sign_approval(&pending, &first_key, None, issuer.now)?,
+            },
+            ApprovalProof {
+                by: second.clone(),
+                jws: issuance::sign_approval(&pending, &second_key, None, issuer.now)?,
+            },
+        ];
+        issuer.breakglass(&input, &proofs, &registry, &limits)
+    })?;
+
+    let paths = write_artifacts(args, &issued)?;
+    print_issued(args, &issued, &paths)?;
+    if !args.has("json") {
+        // The two things an operator must leave this command knowing.
+        println!();
+        println!(
+            "  BREAK-GLASS — expires at {} and cannot be renewed. Extending it means",
+            issued.record.exp
+        );
+        println!("  a fresh request under policy. Recorded as contract.breakglass with both");
+        println!("  approvers, the incident, and every override it used.");
+    }
+    Ok(())
+}
+
+/// A duration a human can read at a glance.
+///
+/// Integer days is wrong for anything short: a 15-minute break-glass contract
+/// rendered as `0d` tells an operator nothing during the incident it was issued
+/// for, which is the only time they will read it.
+fn human_duration(secs: u64) -> String {
+    match secs {
+        0 => "0s".to_string(),
+        s if s < 60 => format!("{s}s"),
+        s if s < 3_600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h{}m", s / 3_600, (s % 3_600) / 60),
+        s if s % 86_400 == 0 => format!("{}d", s / 86_400),
+        s => format!("{}d{}h", s / 86_400, (s % 86_400) / 3_600),
+    }
 }
 
 fn deny_cmd(args: &Args) -> Result<()> {
@@ -2718,7 +2857,7 @@ fn policy_show(args: &Args) -> Result<()> {
             format!("{:?}", bar.identity).to_lowercase(),
             format!("{:?}", bar.approval).to_lowercase(),
             bar.ttl_secs()
-                .map_or("-".to_string(), |s| format!("{}d", s / 86_400)),
+                .map_or_else(|| "-".to_string(), human_duration),
             bar.max_delegation_depth
                 .map_or("-".to_string(), |d| d.to_string())
         );
@@ -2815,6 +2954,10 @@ CONNECT  (the core loop)
   approve <req-id> --by human:x --approver-key PEM [--second human:y --second-key PEM]
           [--ticket RISK-1] --issuer-key PEM --kid KID [--out DIR]
   deny    <req-id> --reason TEXT
+  breakglass --from ID --to ID --tools a,b --incident SOC-1 --justify TEXT
+             --ttl 15m --by human:a --approver-key PEM
+             --second human:b --second-key PEM --issuer-key PEM --kid KID
+             [--max-ttl 1h] [--budget 3] [--window 24h]
   requests [--all]
   contracts [<cid>]
 
@@ -3042,6 +3185,20 @@ mod tests {
         let s = observed_signals(&e, 1_000 + 4 * 3_600);
         assert_eq!(s.intervals_overdue, 3);
         assert_eq!(s.identity_ok, Some(true));
+    }
+
+    #[test]
+    fn durations_read_correctly_at_every_scale() {
+        // A 15-minute break-glass contract rendered as "0d" is the only reading an
+        // operator gets during the incident it was issued for.
+        assert_eq!(human_duration(0), "0s");
+        assert_eq!(human_duration(45), "45s");
+        assert_eq!(human_duration(900), "15m");
+        assert_eq!(human_duration(3_600), "1h0m");
+        assert_eq!(human_duration(5_400), "1h30m");
+        assert_eq!(human_duration(86_400), "1d");
+        assert_eq!(human_duration(30 * 86_400), "30d");
+        assert_eq!(human_duration(90_000), "1d1h");
     }
 
     #[test]

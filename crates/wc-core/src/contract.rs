@@ -243,6 +243,17 @@ pub struct ApprovalRef {
 }
 
 impl ApprovalRef {
+    /// Whether a contract approved this way may be extended.
+    ///
+    /// A break-glass contract is never renewable (T6.6). Expiry is the whole
+    /// mechanism: an emergency grant that can be extended is a permanent grant
+    /// that started in an emergency. Renewal must re-run the normal path, which
+    /// means a fresh request under policy.
+    #[must_use]
+    pub fn is_renewable(&self) -> bool {
+        self.mode != ApprovalMode::BreakGlass
+    }
+
     /// Standing-policy issuance: no human, by design.
     #[must_use]
     pub fn standing() -> Self {
