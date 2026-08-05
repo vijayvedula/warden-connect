@@ -82,6 +82,46 @@ pub enum Delivery {
     Blocking,
 }
 
+/// A destination for lifecycle events.
+///
+/// The built-in [`Sink`] (file or webhook, OCSF or CAEP) implements this, and it
+/// is the paved road. The trait exists because **warden-connect deliberately does
+/// not ship a database adapter**: an embedded store would add an operational
+/// dependency — backups, migrations, connection pools, a second thing to make
+/// highly available — in exchange for no capability the append-only log and its
+/// tamper-evident chain do not already provide.
+///
+/// So persistence beyond the chain is an *integration*, not a feature. An estate
+/// that wants its events in Postgres, Kafka, Splunk or an internal bus implements
+/// this trait and pushes the result into [`crate::evidence::Evidence::with_sinks`].
+/// No fork, no patch to an enum.
+///
+/// # What an implementation owes the caller
+///
+/// * [`EventSink::delivery`] is a contract, not a hint. Returning
+///   [`Delivery::Blocking`] means the operation the caller was about to perform is
+///   refused when `ship` fails — so a blocking sink must not be something that is
+///   routinely unavailable.
+/// * `ship` must be idempotent under retry, because a fail-safe sink that errors
+///   after a partial write will be called again for the next event and never for
+///   the one it dropped.
+/// * The **chain is authoritative, not the sink.** A sink is where evidence goes
+///   to be useful; it is never where evidence goes to be true. Nothing here may
+///   assume it is the only copy.
+pub trait EventSink: std::fmt::Debug + Send + Sync {
+    /// Operator-facing name, used in metrics, warnings and alarms.
+    fn name(&self) -> &str;
+
+    /// Whether this event is in scope for this destination.
+    fn accepts(&self, event: &LifecycleEvent) -> bool;
+
+    /// Deliver one event.
+    fn ship(&self, event: &LifecycleEvent, now: u64) -> Result<()>;
+
+    /// Whether the caller waits, and is refused on failure.
+    fn delivery(&self) -> Delivery;
+}
+
 /// One configured destination.
 #[derive(Debug, Clone)]
 pub struct Sink {
@@ -371,6 +411,24 @@ pub fn partition(sinks: &[Sink]) -> (Vec<&Sink>, Vec<&Sink>) {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+impl EventSink for Sink {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn accepts(&self, event: &LifecycleEvent) -> bool {
+        Sink::accepts(self, event)
+    }
+
+    fn ship(&self, event: &LifecycleEvent, now: u64) -> Result<()> {
+        Sink::ship(self, event, now)
+    }
+
+    fn delivery(&self) -> Delivery {
+        self.delivery
+    }
+}
 
 #[cfg(test)]
 mod tests {
