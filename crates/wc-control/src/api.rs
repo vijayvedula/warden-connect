@@ -137,6 +137,13 @@ pub struct ControlPlane {
     pub jwks: String,
     /// Mediator acknowledgements.
     pub acks: Mutex<HashMap<String, MediatorAck>>,
+    /// The signed revocation feed, served to mediators at `/v1/revocations`.
+    ///
+    /// Optional because a control plane can run without one — and when it does,
+    /// the endpoint says so rather than serving an empty feed. An empty feed and
+    /// no feed are different answers: the first means "nothing is revoked", the
+    /// second means "this control plane cannot tell you".
+    pub revocations: Option<Mutex<crate::contain::RevocationFeed>>,
     /// Counters.
     pub metrics: Metrics,
     /// Idempotency records: key → (expiry, body hash, response body).
@@ -165,6 +172,7 @@ impl ControlPlane {
         now: fn() -> u64,
     ) -> ControlPlane {
         ControlPlane {
+            revocations: None,
             store: Mutex::new(store),
             evidence: Mutex::new(evidence),
             policy: RwLock::new(Arc::new(policy)),
@@ -362,6 +370,10 @@ fn route(cp: &Arc<ControlPlane>, caller: &Caller, req: &Request) -> Result<Respo
         ("GET", ["v1", "mediators"]) => {
             require_role(cp, caller, roles::READ)?;
             mediator_status(cp)
+        }
+        ("GET", ["v1", "revocations"]) => {
+            require_role(cp, caller, roles::MEDIATOR)?;
+            revocation_feed(cp, req)
         }
 
         // --- evidence ---
@@ -985,6 +997,46 @@ fn record_ack(cp: &Arc<ControlPlane>, mediator: &str, req: &Request) -> Result<R
     };
     lock(&cp.acks).insert(mediator.to_string(), ack);
     Ok(Response::empty(204))
+}
+
+/// Serve the signed revocation feed from `since`.
+///
+/// Every entry carries its own signature, so a mediator verifies each one against
+/// the revocation key it was configured with. That is what makes a compromised
+/// control plane unable to forge a cut — and equally unable to hide one, because
+/// the sequence is contiguous and a gap is visible to the puller.
+fn revocation_feed(cp: &Arc<ControlPlane>, req: &Request) -> Result<Response> {
+    let Some(feed) = &cp.revocations else {
+        // Not an empty feed. A mediator must be able to tell "nothing is revoked"
+        // from "this control plane has no feed", because the second one means it
+        // should not treat the absence of revocations as reassurance.
+        return Err(WcError::with_detail(
+            Code::REVOCATION_FEED_UNWRITABLE,
+            "this control plane serves no revocation feed",
+        ));
+    };
+    let since = req
+        .query
+        .get("since")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let feed = lock(feed);
+    let events: Vec<Value> = feed
+        .since(since)
+        .into_iter()
+        .map(|e| json!({ "event": e.event, "jws": e.jws, "kid": e.kid }))
+        .collect();
+    Ok(Response::json(
+        200,
+        json!({
+            "since": since,
+            "head_seq": feed.next_seq() - 1,
+            "head_digest": feed.head_digest(),
+            "events": events,
+        })
+        .to_string(),
+    ))
 }
 
 /// Which mediators have confirmed, and which have not.
