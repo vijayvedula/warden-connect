@@ -168,6 +168,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::export` | DORA / CPS 230 / OSCAL / CSV / CycloneDX registers | 1180 | P4 | independent; no date crate — `iso8601` is 20 lines |
 | `wc-control::federate` | OpenID-Federation-shaped trust chains, partner resolution | 1080 | P4 | independent; no OIDC discovery — anchors are configured, never fetched |
 | `wc-control::api` | HTTP/1.1 surface, authn, idempotency, rate limits | 900 | P0→ | same shape as `http.rs`/`authzen.rs` |
+| `wc-control::keys` | Issuer keyring, rotation lifecycle, retirement guard, JWKS | 800 | P4 | — |
 | `wc-control::tenant` | Validated tenant ids, per-tenant roots, binding and isolation | 620 | P4 | — |
 | `wc-mediator::cache` | Contract snapshot cache, revocation set, COW swap | 320 | P1 | **links `revocation::RevocationSet`** |
 | `wc-mediator::gate` | `Upstream` decorator: the 11 verification steps | 420 | P1 | **links `warden::{Gateway, Upstream}`** — no core changes |
@@ -895,7 +896,7 @@ connect audit verify     [--export <file>]
 connect canon            <surface.json>          # print the wcs1 doc + pin
 connect screen           <surface.json>          # screening report, exit 5 on block
 connect policy           lint | dry-run | show
-connect keys             init | rotate | jwks
+connect keys             list | new | add | rotate | note | retire | jwks
 connect bundle           export --mediator … --out bundle.wcb   # air-gapped
 connect bench            [--verify|--filter|--mint]              # perf gates
 ```
@@ -1943,6 +1944,43 @@ keys through the overlap; a contract signed by a retired `kid` remains verifiabl
 until `exp`. Compromise response is a **JWKS removal plus a bulk revocation by
 `kid`** (`connect revoke --by-kid`), which is why revocation supports a
 non-`cid` subject.
+
+### The retirement guard
+
+Rotation is the easy half. **Retirement is the dangerous one**, and it is the
+reason `wc-control::keys` exists as a module rather than a config file.
+
+Retiring a key while a contract it signed is still live does not fail loudly. It
+fails at the mediator, on the next `tools/call`, for every agent holding such a
+contract — as `WC-3102 signature or issuer chain invalid`, which reads like an
+attack rather than an operations mistake. So `Keyring::retire` refuses unless the
+ring knows the latest `exp` that key signed, and refuses again until that moment
+plus a margin has passed:
+
+```
+$ connect keys retire --kid k-2026-01
+WC-8004: kid "k-2026-01" signed a contract expiring at 1788523917; it may be
+retired at 1789128717 (in 3196800s), and retiring now would break verification
+for every holder
+```
+
+Three consequences worth stating:
+
+- **The overlap is not a fixed 7 days.** It is *the longest-lived contract that key
+  signed, plus a margin*. A 30-day contract minted an hour before rotation keeps
+  its key alive for 30 days, and no policy change shortens that after the fact.
+  The margin covers clock skew and the mediator's own poll interval, because
+  "expired" is not simultaneous everywhere.
+- **An unknown expiry blocks retirement rather than assuming none.** "Nobody told
+  us" and "nothing was signed" are different, and guessing would be guessing about
+  other people's live traffic. `connect keys note` is how the ring is told.
+- **`note` is monotonic.** A short contract recorded after a long one cannot
+  shorten the key's required life.
+
+Generation is deliberately absent: `connect keys new` prints the `openssl`
+invocation. Rolling a keygen into a control plane means owning an entropy and
+PKCS#8 bug surface for no gain, and PKCS#11 or a KMS URI is the production
+answer anyway — `--private-ref` records wherever it lives without ever reading it.
 
 Key separation matters: an attacker who steals the issuer key can mint contracts,
 but cannot forge the evidence chain that would show they did — the anchor key is

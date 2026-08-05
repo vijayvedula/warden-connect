@@ -147,6 +147,13 @@ const TWO_WORD: &[&str] = &[
     "policy lint",
     "policy dry-run",
     "policy show",
+    "keys list",
+    "keys new",
+    "keys add",
+    "keys rotate",
+    "keys retire",
+    "keys jwks",
+    "keys note",
 ];
 
 /// Every dispatchable command.
@@ -162,6 +169,13 @@ const COMMANDS: &[&str] = &[
     "quarantine",
     "mediators",
     "federate",
+    "keys list",
+    "keys new",
+    "keys add",
+    "keys rotate",
+    "keys retire",
+    "keys jwks",
+    "keys note",
     "tenants",
     "audit verify",
     "canon",
@@ -266,6 +280,13 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "mediators" => &["mediators", "revocation-pub", "kid"],
         "federate" => &["anchors", "chain", "now", "leeway"],
         "tenants" => &["registry"],
+        "keys list" => &["keyring"],
+        "keys new" => &["keyring", "kid", "alg", "out"],
+        "keys add" => &["keyring", "kid", "alg", "public", "private-ref"],
+        "keys rotate" => &["keyring", "kid"],
+        "keys retire" => &["keyring", "kid"],
+        "keys jwks" => &["keyring", "out"],
+        "keys note" => &["keyring", "kid", "exp"],
         "show" => &["id"],
         "entities" => &[],
         "posture" => &["unattested", "expiring", "drift", "score", "id"],
@@ -426,6 +447,9 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
                 "`register` needs a subject: `register server` or `register agent`".to_string()
             }
             "audit" => "`audit` needs a subject: `audit verify`".to_string(),
+            "keys" => {
+                "`keys` needs a subject: list, new, add, rotate, retire or jwks".to_string()
+            }
             other => format!("unknown command {other:?}"),
         }));
     }
@@ -447,6 +471,13 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "mediators" => mediators_cmd(args)?,
         "federate" => federate_cmd(args)?,
         "tenants" => tenants_cmd(args)?,
+        "keys list" => keys_list(args)?,
+        "keys new" => keys_new(args)?,
+        "keys add" => keys_add(args)?,
+        "keys rotate" => keys_rotate(args)?,
+        "keys retire" => keys_retire(args)?,
+        "keys jwks" => keys_jwks(args)?,
+        "keys note" => keys_note(args)?,
         "audit verify" => audit_verify(args)?,
         "canon" => canon_cmd(args)?,
         "screen" => screen_cmd(args)?,
@@ -1673,6 +1704,233 @@ fn blast_radius_cmd(args: &Args) -> Result<()> {
                 report.max_depth
             ),
         ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// keys — the issuer keyring and its rotation lifecycle (§8.12.1)
+// ---------------------------------------------------------------------------
+
+fn keyring_path(args: &Args) -> PathBuf {
+    PathBuf::from(args.get("keyring").unwrap_or("keys.toml"))
+}
+
+fn load_keyring(args: &Args) -> Result<wc_control::keys::Keyring> {
+    let path = keyring_path(args);
+    if path.exists() {
+        wc_control::keys::Keyring::load(&path)
+    } else {
+        Ok(wc_control::keys::Keyring::default())
+    }
+}
+
+fn keys_list(args: &Args) -> Result<()> {
+    let ring = load_keyring(args)?;
+    let ts = now();
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&serde_json::to_value(&ring).map_err(|e| {
+                WcError::with_detail(Code::CONFIG_INVALID, "cannot serialise the keyring")
+                    .with_source(e)
+            })?)?
+        );
+        return Ok(());
+    }
+
+    if ring.keys.is_empty() {
+        println!("keyring {} is empty", keyring_path(args).display());
+        println!("  connect keys new --kid $(date +%Y-%m)");
+        return Ok(());
+    }
+
+    println!("keyring  {}", keyring_path(args).display());
+    println!(
+        "rotate   every {}{}",
+        human_duration(ring.rotate_every),
+        if ring.rotation_due(ts) {
+            "   ROTATION OVERDUE"
+        } else {
+            ""
+        }
+    );
+    println!();
+    println!("  {:<24} {:<9} {:<7} {:<22} RETIRABLE", "KID", "STATE", "ALG", "SIGNED THROUGH");
+    for key in &ring.keys {
+        let through = key
+            .last_contract_exp
+            .map_or_else(|| "unknown".to_string(), |e| e.to_string());
+        let retirable = match key.state {
+            wc_control::keys::KeyState::Active => "-- active --".to_string(),
+            wc_control::keys::KeyState::Retired => "retired".to_string(),
+            wc_control::keys::KeyState::Retiring => match key.safe_to_retire_at() {
+                None => "unknown — nothing recorded".to_string(),
+                Some(at) if ts >= at => "now".to_string(),
+                Some(at) => format!("in {}", human_duration(at - ts)),
+            },
+        };
+        println!(
+            "  {:<24} {:<9} {:<7} {:<22} {}",
+            key.kid,
+            key.state.as_str(),
+            key.alg,
+            through,
+            retirable
+        );
+    }
+    Ok(())
+}
+
+/// Print the commands that produce a key this ring accepts.
+///
+/// Deliberately not a keygen. Rolling one into a control plane means owning an
+/// entropy and PKCS#8 bug surface for no gain, and PKCS#11 or a KMS URI is the
+/// production answer anyway.
+fn keys_new(args: &Args) -> Result<()> {
+    let kid = require(args, "kid")?;
+    let alg = args.get("alg").unwrap_or("ES256");
+    let dir = args.get("out").unwrap_or(".");
+    let private = format!("{dir}/{kid}.key");
+    let public = format!("{dir}/{kid}.pub");
+
+    println!("# generate the key pair for kid {kid:?}:");
+    for cmd in wc_control::keys::generation_command(alg, &private, &public) {
+        println!("{cmd}");
+    }
+    println!();
+    println!("# then register the public half:");
+    println!(
+        "connect keys add --kid {kid} --alg {alg} --public {public} --private-ref {private}"
+    );
+    println!();
+    println!("# warden-connect does not generate keys. A PKCS#11 or KMS URI is the");
+    println!("# production answer, and --private-ref records wherever it lives.");
+    Ok(())
+}
+
+fn keys_add(args: &Args) -> Result<()> {
+    let kid = require(args, "kid")?.to_string();
+    let public_path = require(args, "public")?;
+    let public_pem = std::fs::read_to_string(public_path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {public_path}"))
+            .with_source(e)
+    })?;
+
+    let mut ring = load_keyring(args)?;
+    let first = ring.keys.is_empty();
+    let entry = wc_control::keys::KeyEntry {
+        kid: kid.clone(),
+        alg: args.get("alg").unwrap_or("ES256").to_string(),
+        public_pem,
+        private_ref: args.get("private-ref").map(str::to_string),
+        // The first key in an empty ring becomes active; any later one is added
+        // inactive and must be rotated to explicitly, so adding a key never
+        // silently changes what signs.
+        state: if first {
+            wc_control::keys::KeyState::Active
+        } else {
+            wc_control::keys::KeyState::Retiring
+        },
+        activated_at: if first { now() } else { 0 },
+        retiring_at: None,
+        last_contract_exp: None,
+        retired_at: None,
+    };
+    // Rendering the JWK now surfaces a malformed PEM here rather than at the
+    // first mediator that fetches the JWKS.
+    wc_control::keys::jwk_from_pem(&entry.kid, &entry.alg, &entry.public_pem)?;
+
+    ring.add(entry)?;
+    ring.save(&keyring_path(args))?;
+
+    println!("added {kid}");
+    if first {
+        println!("  active — this is the first key in the ring, so it signs immediately");
+    } else {
+        println!("  not signing yet; `connect keys rotate --kid {kid}` promotes it");
+    }
+    Ok(())
+}
+
+fn keys_rotate(args: &Args) -> Result<()> {
+    let kid = require(args, "kid")?;
+    let mut ring = load_keyring(args)?;
+    let rotation = ring.rotate_to(kid, now())?;
+    ring.save(&keyring_path(args))?;
+
+    println!("active   {}", rotation.now_active);
+    match rotation.now_retiring {
+        Some(previous) => {
+            println!("retiring {previous}");
+            println!();
+            println!("  {previous} still verifies, and every contract it signed keeps working.");
+            println!("  Retire it only once those have expired:");
+            println!("    connect keys retire --kid {previous}");
+            println!("  Distribute the new JWKS before minting:  connect keys jwks");
+        }
+        None => println!("  (no key was previously active)"),
+    }
+    Ok(())
+}
+
+fn keys_retire(args: &Args) -> Result<()> {
+    let kid = require(args, "kid")?;
+    let mut ring = load_keyring(args)?;
+    ring.retire(kid, now())?;
+    ring.save(&keyring_path(args))?;
+    println!("retired {kid}");
+    println!("  removed from the JWKS; anything it signed no longer verifies");
+    Ok(())
+}
+
+/// Record the latest contract expiry a key signed.
+///
+/// The number the retirement guard depends on. Monotonic — a later note can only
+/// push the date out — so recording a short contract after a long one cannot
+/// shorten a key's required life.
+fn keys_note(args: &Args) -> Result<()> {
+    let kid = require(args, "kid")?;
+    let exp = args.number("exp").ok_or_else(|| {
+        WcError::with_detail(
+            Code::CONFIG_INVALID,
+            "--exp is required: the unix time of the latest contract this key signed",
+        )
+    })?;
+    let mut ring = load_keyring(args)?;
+    if ring.get(kid).is_none() {
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!("kid {kid:?} is not in the ring"),
+        ));
+    }
+    ring.note_signed(kid, exp);
+    ring.save(&keyring_path(args))?;
+
+    let recorded = ring.get(kid).and_then(|k| k.last_contract_exp).unwrap_or(exp);
+    println!("{kid} signed through {recorded}");
+    if recorded > exp {
+        println!("  (kept the later date already on record; this only ever moves outward)");
+    }
+    if let Some(at) = ring.get(kid).and_then(wc_control::keys::KeyEntry::safe_to_retire_at) {
+        println!("  retirable at {at}");
+    }
+    Ok(())
+}
+
+fn keys_jwks(args: &Args) -> Result<()> {
+    let ring = load_keyring(args)?;
+    let jwks = ring.jwks()?;
+    match args.get("out") {
+        Some(path) => {
+            std::fs::write(path, &jwks).map_err(|e| {
+                WcError::with_detail(Code::CONFIG_INVALID, format!("cannot write {path}"))
+                    .with_source(e)
+            })?;
+            println!("wrote {path} ({} verifying key(s))", ring.verifying().len());
+        }
+        None => println!("{jwks}"),
     }
     Ok(())
 }
@@ -3460,6 +3718,15 @@ ESTATE
                   [--ack-deadline 60] [--push-token TOKEN]
   mediators       [--mediators FILE] [--revocation-pub PEM --kid KID] [--json]
   tenants         [--registry tenants.toml] [--json]   what exists on this root
+
+KEYS  (--keyring keys.toml, default: keys.toml)
+  keys list       [--json]                        state, and what may be retired
+  keys new        --kid KID [--alg ES256] [--out DIR]   prints the openssl command
+  keys add        --kid KID --public PEM [--private-ref REF]
+  keys rotate     --kid KID                       promote; the old key keeps verifying
+  keys retire     --kid KID                       refuses while its contracts are live
+  keys note       --kid KID --exp TS              record what a key signed
+  keys jwks       [--out FILE]                    what mediators verify against
   federate <chain.json> --anchors anchors.toml [--now TS] [--json]
                   resolve a partner trust chain
                   exit 4 if it does not verify · 3 if the anchor is stale
@@ -3698,6 +3965,25 @@ mod tests {
         assert_eq!(human_duration(86_400), "1d");
         assert_eq!(human_duration(30 * 86_400), "30d");
         assert_eq!(human_duration(90_000), "1d1h");
+    }
+
+    #[test]
+    fn every_two_word_command_is_dispatchable_as_two_words() {
+        // Adding `keys list` to COMMANDS without adding it to TWO_WORD made every
+        // `keys` verb resolve to the one-word `keys`, which is not a command —
+        // found by running the binary, because both lists looked right in isolation.
+        for command in COMMANDS {
+            if let Some((head, _)) = command.split_once(' ') {
+                assert!(
+                    TWO_WORD.contains(command),
+                    "{command} is two words but is not in TWO_WORD, so it dispatches as `{head}`"
+                );
+            }
+        }
+        // And nothing in TWO_WORD is missing from COMMANDS.
+        for command in TWO_WORD {
+            assert!(COMMANDS.contains(command), "{command} is not dispatchable");
+        }
     }
 
     #[test]
