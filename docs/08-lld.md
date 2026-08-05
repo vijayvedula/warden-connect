@@ -165,7 +165,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::cpolicy` | `connect-policy.toml`: parse, evaluate, lint, dry-run | 1100 | P1 | condition algebra reimplemented to match `policy.rs` syntax exactly |
 | `wc-control::assurance` | Re-attest scheduler, drift classify, posture score, blast radius | 1100 | P2/P3 | — |
 | `wc-control::evidence` | Lifecycle chain, anchors, OCSF/CAEP sinks | 850 | P0 | same formats as `audit`/`anchor`/`sink`/`ocsf`, held by golden vectors |
-| `wc-control::export` | DORA / CPS 230 / OSCAL / CSV / CycloneDX registers | 520 | P4 | — |
+| `wc-control::export` | DORA / CPS 230 / OSCAL / CSV / CycloneDX registers | 1180 | P4 | independent; no date crate — `iso8601` is 20 lines |
 | `wc-control::federate` | OpenID-Federation trust chains, partner resolution | 460 | P4 | OIDC discovery reimplemented |
 | `wc-control::api` | HTTP/1.1 surface, authn, idempotency, rate limits | 900 | P0→ | same shape as `http.rs`/`authzen.rs` |
 | `wc-control::tenant` | Per-tenant roots: store, keys, policy, chain | 240 | P4 | — |
@@ -617,6 +617,40 @@ Every export embeds `{ as_of, chain_head_seq, chain_head_hash, anchor_ref }`, so
 checkpoint. And every export carries the `exceptions` section (UC-10 A1) — the
 register that declares its own gaps is the one that survives an audit.
 
+### What the implementation settled
+
+- **Point-in-time means replay, not the live projection.** `--as-of` replays the
+  event log to that instant (`Projection::as_of`) rather than reading current
+  state, so "as of 30 June" means what it says. Snapshots are deliberately unused
+  there: a snapshot reflects state *after* its timestamp and there is no way to
+  unwind it.
+- **Reproducible by construction.** Every generator is a pure function of
+  `(projection, provenance)` — nothing reads a clock or the network — so the same
+  `--as-of` twice yields byte-identical output. Asserted by a test, because an
+  auditor who cannot re-derive the register cannot check anybody's working.
+  `uuid_from` is name-based (SHA-256, version-5 shaped) for the same reason: OSCAL
+  consumers key on uuids, and random ones make every diff noise.
+- **`anchor_ref: None` is a stated claim, not a blank.** *"NOT independently
+  verifiable: no signed checkpoint covers this chain head"* appears in the document
+  **and** on stderr, because the one place that caveat must not be missable is the
+  terminal of the person about to file it. Only a checkpoint that actually verified
+  counts — `anchors_verified > 0 && anchor_mismatches.is_empty()`.
+- **Field-level gaps, not just estate-level.** `Exceptions` has two halves:
+  `gaps` (unattested, degraded, quarantined, never-activated, unpinned, no business
+  service, dangling contract party, active-past-expiry) and
+  `unpopulated_fields` — the 14 mandatory DORA fields and 6 CPS 230 fields that are
+  facts about corporate entities living in procurement, finance or BCM systems,
+  each named with the table, the field, and where to get it. **Emitting an empty
+  column is worse than declaring the gap, because a blank reads as a filed answer.**
+- **Ragged tables are refused.** A short row shifts every later value one column
+  left in whatever spreadsheet opens it, which is how a jurisdiction becomes a data
+  class. `Register::check()` runs before anything is written.
+- **Two orientations, because the regulators ask different questions.** DORA is
+  keyed on the *arrangement* (RT.02.01 one row per contract); CPS 230 is keyed on
+  the *critical business service*, with providers hanging off it. Materiality under
+  CPS 230 is offered as `candidate — tier 1/2 dependency`, never asserted: it is
+  the institution's judgement and tier is only the input.
+
 ### 8.5.10 `wc-control::api`
 
 Built on core's `http.rs` threaded server. Authn is a Warden session token
@@ -661,7 +695,8 @@ connect breakglass       --from … --to … --tools … --incident … --justif
 connect quarantine <party> --reason … [--drain|--abort] [--confirm-blast-radius]
 connect posture          [--drift|--expiring|--unattested|--shadow] [--json]
 connect blast-radius <id> [--depth N]
-connect export           --format dora|cps230|oscal|ocsf|csv|bom --as-of …
+connect export           --format dora|cps230|oscal|csv|json|bom [--as-of TS]
+                         [--anchor-pub PEM] [--out FILE] [--id ID]   # id: bom only
 connect verify           <contract.jws> [--mediator-id …] [--pins pins.json]
 connect audit verify     [--export <file>]
 connect canon            <surface.json>          # print the wcs1 doc + pin
