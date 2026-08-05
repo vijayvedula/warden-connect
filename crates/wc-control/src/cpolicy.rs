@@ -39,6 +39,7 @@ use serde::Deserialize;
 use wc_core::contract::{Delegation, EvidenceTerms, Surface, Terms};
 use wc_core::error::{Code, Result, WcError};
 use wc_core::model::{Entity, HumanRef, Lifecycle, Posture, Tier, TrustLevel, ZoneId};
+use wc_core::zone::ZoneLattice;
 
 use crate::admission::capability_class;
 
@@ -423,8 +424,32 @@ impl AssuranceBar {
     }
 }
 
-/// A declared zone.
+/// A declared crossing permission (`[[crossing]]`).
+///
+/// Crossings between trust levels are denied by default, so this is how an estate
+/// says "these two, this way round". Directional on purpose: permitting egress to
+/// a partner does not permit that partner to reach back in.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CrossingDef {
+    /// Which crossing: `egress`, `ingress`, `public`, or a same-level kind.
+    pub crossing: String,
+    /// Caller zone or subtree. Absent means any.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Callee zone or subtree. Absent means any.
+    #[serde(default)]
+    pub to: Option<String>,
+}
+
+/// A declared zone.
+///
+/// `deny_unknown_fields` is load-bearing here rather than tidy. TOML binds a bare
+/// key after an array-of-tables stanza to *that table*, so a root-level setting
+/// written below `[[zone]]` lands inside the zone and is silently ignored — which
+/// is how `strict_crossings = true` can read as enabled and do nothing.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ZoneDef {
     /// Zone id, e.g. `internal.payments`.
     pub id: String,
@@ -878,6 +903,26 @@ pub struct ConnectPolicy {
     /// Declared zones.
     #[serde(default, rename = "zone")]
     pub zones: Vec<ZoneDef>,
+    /// Declared crossing permissions.
+    #[serde(default, rename = "crossing")]
+    pub crossings: Vec<CrossingDef>,
+    /// Refuse any zone that no declaration covers.
+    #[serde(default)]
+    pub strict_zones: bool,
+    /// Enforce the zone lattice as a structural gate.
+    ///
+    /// **Off by default, and that is a compatibility decision rather than a
+    /// security preference.** `[[rules]]` already express crossings through
+    /// `caller_zone` / `callee_zone` globs, so switching the lattice on by default
+    /// would demand every estate say the same thing twice — and forgetting the
+    /// second place would deny traffic they believed they had allowed.
+    ///
+    /// On, a crossing between trust levels needs an explicit `[[crossing]]` and no
+    /// rule can open one. `connect policy lint` reports which crossings the
+    /// existing rules imply, so this can be turned on with knowledge rather than
+    /// with a rollback.
+    #[serde(default)]
+    pub strict_crossings: bool,
     /// Rules, in order.
     #[serde(default, rename = "rules")]
     pub rules: Vec<ConnRule>,
@@ -925,16 +970,88 @@ impl ConnectPolicy {
             .max_by_key(|z| z.id.len())
     }
 
-    /// The bar a single zone sets: its declaration, or its trust level's default.
+    /// The bar a single zone sets: every ancestor's declaration, combined with its
+    /// trust level's floor.
+    ///
+    /// **Inherited along the whole ancestor chain, not taken from the most
+    /// specific match.** Most-specific-wins is the right rule for *finding* a
+    /// declaration and the wrong rule for *applying* one: with it, declaring
+    /// `internal` at `ttl_max = "1d"` and `internal.payments` at `"30d"` lets the
+    /// child widen the parent — and it reads, in the policy file, as tightening.
     #[must_use]
     pub fn bar_for(&self, zone: &ZoneId) -> AssuranceBar {
-        let fallback = AssuranceBar::for_trust(zone.trust_level());
-        match self.zone_def(zone) {
-            // A declared bar is combined with its trust level's, so a zone cannot
-            // declare its way *below* the floor its trust level implies.
-            Some(def) => def.assurance.strictest(&AssuranceBar::for_trust(def.trust)),
-            None => fallback,
+        let mut bar = AssuranceBar::for_trust(zone.trust_level());
+        for ancestor in wc_core::zone::ancestors(zone) {
+            if let Some(def) = self.zones.iter().find(|z| z.id == ancestor.as_str()) {
+                bar = bar
+                    .strictest(&def.assurance)
+                    .strictest(&AssuranceBar::for_trust(def.trust));
+            }
         }
+        bar
+    }
+
+    /// Crossings between trust levels that the `[[rules]]` list appears to permit.
+    ///
+    /// The bridge between the two mechanisms: an estate turning on
+    /// `strict_crossings` needs to know which `[[crossing]]` stanzas to write
+    /// first, and deriving them from the rules already in the file beats
+    /// discovering them from denied traffic.
+    #[must_use]
+    pub fn implied_crossings(&self) -> Vec<(wc_core::zone::Crossing, String, String)> {
+        let mut out: Vec<(wc_core::zone::Crossing, String, String)> = Vec::new();
+        let mut seen: std::collections::BTreeSet<(wc_core::zone::Crossing, String, String)> =
+            std::collections::BTreeSet::new();
+
+        for rule in &self.rules {
+            if rule.decision == ConnDecision::Deny {
+                continue;
+            }
+            let (Some(from), Some(to)) = (&rule.caller_zone, &rule.callee_zone) else {
+                continue;
+            };
+            // A glob is not a zone, so this works from the declared zones it
+            // matches. A rule naming zones nobody declared implies nothing, which
+            // `lint` already flags separately.
+            for caller in self.zones.iter().filter(|z| from.matches(&z.id)) {
+                for callee in self.zones.iter().filter(|z| to.matches(&z.id)) {
+                    let (Ok(cz), Ok(ez)) = (ZoneId::new(&caller.id), ZoneId::new(&callee.id)) else {
+                        continue;
+                    };
+                    let crossing = wc_core::zone::classify(&cz, &ez);
+                    if crossing.is_internal_to_level() {
+                        continue;
+                    }
+                    let key = (crossing, caller.id.clone(), callee.id.clone());
+                    if seen.insert(key.clone()) {
+                        out.push(key);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The zone lattice this policy declares.
+    ///
+    /// Built rather than cached, because a policy is parsed once and evaluated
+    /// many times against a handful of zones — and a stale cached lattice after a
+    /// SIGHUP reload would be a permission set nobody can see in the file.
+    pub fn lattice(&self) -> Result<ZoneLattice> {
+        let mut lattice = ZoneLattice::new();
+        lattice.set_strict_membership(self.strict_zones);
+        for def in &self.zones {
+            lattice.declare(&ZoneId::new(&def.id)?, def.trust)?;
+        }
+        for def in &self.crossings {
+            let crossing = wc_core::zone::Crossing::parse(&def.crossing)?;
+            lattice.permit(wc_core::zone::CrossingRule {
+                crossing,
+                from: def.from.as_deref().map(ZoneId::new).transpose()?,
+                to: def.to.as_deref().map(ZoneId::new).transpose()?,
+            });
+        }
+        Ok(lattice)
     }
 
     /// The bar a pair sets: the stricter of both ends.
@@ -969,6 +1086,25 @@ impl ConnectPolicy {
         assert_surface_declared(req, callee)?;
 
         let mut trace: Vec<String> = Vec::new();
+
+        // The zone lattice sits with the structural preconditions rather than in
+        // the rule list: when it is enforced, a rule that matched a pair the
+        // lattice forbids would be granting a crossing nobody declared. Rules
+        // narrow; they never open a boundary.
+        let decision = self.lattice()?.resolve(&caller.zone, &callee.zone);
+        trace.push(format!("crossing[{}]", decision.crossing.as_str()));
+        if self.strict_crossings && !decision.permitted {
+            return Ok(ConnEval {
+                decision: ConnDecision::Deny,
+                reason: decision.reason,
+                trace: trace.join("/"),
+                ttl_secs: 0,
+                terms: req.terms.clone(),
+                approver_role: None,
+                dual_control: false,
+                bar: self.bar_for_pair(&caller.zone, &callee.zone),
+            });
+        }
 
         // --- 2 · the zone bar ---
         let bar = self.bar_for_pair(&caller.zone, &callee.zone);
@@ -1698,7 +1834,7 @@ decision = "allow"
         assert!(eval.is_issuable());
         assert_eq!(
             eval.trace,
-            "zone-bar[internal.apac-ops→internal.payments]/rule[0]"
+            "crossing[lateral]/zone-bar[internal.apac-ops→internal.payments]/rule[0]"
         );
         assert_eq!(eval.ttl_secs, 30 * 86_400);
     }
@@ -1999,6 +2135,121 @@ review_every = "36500d"
         assert_eq!(pair.approval, ApprovalRequirement::Human);
         assert_eq!(pair.ttl_secs(), Some(7 * 86_400));
         assert_eq!(pair.max_delegation_depth, Some(1));
+    }
+
+    #[test]
+    fn a_root_setting_misplaced_under_a_zone_stanza_is_an_error() {
+        // TOML binds a bare key after `[[zone]]` to that table. Without
+        // deny_unknown_fields this parses cleanly, the setting is dropped, and the
+        // operator believes the lattice is enforced when it is not — found exactly
+        // that way while writing the shipped policy.
+        let err = ConnectPolicy::parse(
+            r#"
+default = "deny"
+version = "v1"
+[[zone]]
+id = "internal.apac"
+trust = "internal"
+strict_crossings = true
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), Code::POLICY_INVALID);
+
+        // Above the stanzas it binds to the root, where it belongs.
+        let ok = ConnectPolicy::parse(
+            r#"
+default = "deny"
+version = "v1"
+strict_crossings = true
+[[zone]]
+id = "internal.apac"
+trust = "internal"
+"#,
+        )
+        .unwrap();
+        assert!(ok.strict_crossings);
+    }
+
+    #[test]
+    fn a_child_zone_cannot_widen_its_parents_ceiling() {
+        // The defect the lattice exists to close. Before ancestor inheritance,
+        // `bar_for` took only the most specific declaration, so this child's 30d
+        // silently replaced the parent's 1d — while reading, in the file, as a
+        // deliberate tightening of a subtree.
+        let p = ConnectPolicy::parse(
+            r#"
+default = "deny"
+version = "v1"
+[[zone]]
+id = "internal"
+trust = "internal"
+assurance = { ttl_max = "1d", provenance = "required" }
+[[zone]]
+id = "internal.payments"
+trust = "internal"
+assurance = { ttl_max = "30d" }
+"#,
+        )
+        .unwrap();
+
+        let bar = p.bar_for(&ZoneId::new("internal.payments").unwrap());
+        assert_eq!(bar.ttl_secs(), Some(86_400), "the parent's ceiling holds");
+        assert_eq!(
+            bar.provenance,
+            Requirement::Required,
+            "and its other demands are inherited too"
+        );
+
+        // Tightening in the child still works, which is the legitimate use.
+        let tightened = ConnectPolicy::parse(
+            r#"
+default = "deny"
+version = "v1"
+[[zone]]
+id = "internal"
+trust = "internal"
+assurance = { ttl_max = "30d" }
+[[zone]]
+id = "internal.payments"
+trust = "internal"
+assurance = { ttl_max = "1d" }
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            tightened
+                .bar_for(&ZoneId::new("internal.payments").unwrap())
+                .ttl_secs(),
+            Some(86_400)
+        );
+    }
+
+    #[test]
+    fn a_bar_is_inherited_through_every_level_of_the_chain() {
+        let p = ConnectPolicy::parse(
+            r#"
+default = "deny"
+version = "v1"
+[[zone]]
+id = "internal"
+trust = "internal"
+assurance = { identity = "required" }
+[[zone]]
+id = "internal.apac"
+trust = "internal"
+assurance = { oversight = "required" }
+[[zone]]
+id = "internal.apac.payments"
+trust = "internal"
+assurance = { ttl_max = "6h" }
+"#,
+        )
+        .unwrap();
+        let bar = p.bar_for(&ZoneId::new("internal.apac.payments").unwrap());
+        assert_eq!(bar.identity, Requirement::Required, "from internal");
+        assert_eq!(bar.oversight, Requirement::Required, "from internal.apac");
+        assert_eq!(bar.ttl_secs(), Some(21_600), "from the leaf");
     }
 
     #[test]
@@ -2434,7 +2685,21 @@ mod shipped {
             )
             .unwrap();
         assert_eq!(eval.decision, ConnDecision::Deny);
-        assert!(eval.reason.contains("partner onboarding"));
+        // With the lattice enforced, public egress is refused one layer earlier
+        // than the rule — structurally, before any rule is consulted. The rule
+        // below it is still the defence in depth if `strict_crossings` is ever
+        // turned off, so both are asserted.
+        assert!(eval.reason.contains("public"), "{}", eval.reason);
+        assert!(eval.trace.contains("crossing[public]"), "{}", eval.trace);
+        assert!(
+            ConnectPolicy::parse(SHIPPED)
+                .unwrap()
+                .rules
+                .iter()
+                .any(|r| r.decision == ConnDecision::Deny
+                    && r.callee_zone.as_ref().is_some_and(|g| g.matches("public"))),
+            "the rule-level public deny must remain as defence in depth"
+        );
     }
 }
 

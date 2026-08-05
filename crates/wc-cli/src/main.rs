@@ -2781,9 +2781,45 @@ fn policy_lint(args: &Args) -> Result<()> {
         println!("zones    {}", policy.zones.len());
         println!("rules    {}", policy.rules.len());
         println!("default  {}", policy.default.as_str());
+        println!(
+            "crossings {} declared, lattice {}",
+            policy.crossings.len(),
+            if policy.strict_crossings {
+                "ENFORCED"
+            } else {
+                "advisory (strict_crossings = false)"
+            }
+        );
         if !report.errors.is_empty() || !report.warnings.is_empty() {
             println!();
         }
+        // The bridge between the two mechanisms: an estate about to turn on
+        // strict_crossings needs to know which stanzas to write first, and
+        // deriving them from the rules already in the file beats discovering them
+        // from denied traffic.
+        let lattice = policy.lattice()?;
+        for problem in lattice.lint() {
+            println!("  warning zone lattice: {problem}");
+        }
+        let implied = policy.implied_crossings();
+        if !implied.is_empty() && !policy.strict_crossings {
+            println!();
+            println!("  these rules cross a trust boundary. To enforce the lattice, set");
+            println!("  strict_crossings = true and declare them:");
+            for (crossing, from, to) in &implied {
+                let already = policy.crossings.iter().any(|c| {
+                    c.crossing == crossing.as_str()
+                        && c.from.as_deref() == Some(from.as_str())
+                        && c.to.as_deref() == Some(to.as_str())
+                });
+                println!(
+                    "    [[crossing]] crossing = {:?}, from = {from:?}, to = {to:?}{}",
+                    crossing.as_str(),
+                    if already { "   # already declared" } else { "" }
+                );
+            }
+        }
+
         for e in &report.errors {
             println!("  error   {e}");
         }

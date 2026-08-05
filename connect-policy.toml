@@ -19,6 +19,12 @@
 default = "require_approval"
 version = "connect-policy@v1"
 
+# Enforce the zone lattice: a crossing between trust levels needs an explicit
+# [[crossing]] below, and no rule can open one. Declared here, above every table
+# stanza, because TOML binds a bare key after `[[zone]]` to *that* zone — where it
+# would be silently ignored.
+strict_crossings = true
+
 
 # --- zones -------------------------------------------------------------------
 #
@@ -45,6 +51,37 @@ trust = "internal"
 id = "partner.acme"
 trust = "partner"
 assurance = { identity = "required", provenance = "required", ttl_max = "7d", approval = "human", oversight = "required", max_delegation_depth = 1 }
+
+
+# --- crossings ---------------------------------------------------------------
+#
+# Zones inside one trust level are permitted to reach each other: they exist to
+# organise the estate, not to separate it — separation is what trust levels are
+# for. Every crossing *between* trust levels is denied until declared here, and
+# the declaration is directional: permitting egress to a partner does not permit
+# that partner to reach back in.
+#
+# `connect policy lint` derives the crossings your [[rules]] imply, so this list
+# can be written from the file you already have rather than from denied traffic.
+
+[[crossing]]
+crossing = "egress"
+from = "internal.apac-ops"
+to = "partner.acme"
+
+[[crossing]]
+crossing = "egress"
+from = "internal.payments"
+to = "partner.acme"
+
+[[crossing]]
+crossing = "egress"
+from = "internal.ledger"
+to = "partner.acme"
+
+# Deliberately absent: any `ingress` stanza, so acme cannot initiate inward, and
+# any `public` stanza, so nothing reaches a public zone. Both are denials that
+# hold whatever the rules below say — a rule can narrow a crossing, never open one.
 
 
 # --- standing policy ---------------------------------------------------------
