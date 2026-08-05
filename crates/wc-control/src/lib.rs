@@ -26,6 +26,7 @@ pub mod export;
 pub mod federate;
 pub mod http;
 pub mod issuance;
+pub mod keys;
 pub mod lock;
 pub mod registry;
 pub mod screen;
