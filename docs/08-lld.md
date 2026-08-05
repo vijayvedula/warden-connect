@@ -166,7 +166,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::assurance` | Re-attest scheduler, drift classify, posture score, blast radius | 1100 | P2/P3 | — |
 | `wc-control::evidence` | Lifecycle chain, anchors, OCSF/CAEP sinks | 850 | P0 | same formats as `audit`/`anchor`/`sink`/`ocsf`, held by golden vectors |
 | `wc-control::export` | DORA / CPS 230 / OSCAL / CSV / CycloneDX registers | 1180 | P4 | independent; no date crate — `iso8601` is 20 lines |
-| `wc-control::federate` | OpenID-Federation trust chains, partner resolution | 460 | P4 | OIDC discovery reimplemented |
+| `wc-control::federate` | OpenID-Federation-shaped trust chains, partner resolution | 1080 | P4 | independent; no OIDC discovery — anchors are configured, never fetched |
 | `wc-control::api` | HTTP/1.1 surface, authn, idempotency, rate limits | 900 | P0→ | same shape as `http.rs`/`authzen.rs` |
 | `wc-control::tenant` | Per-tenant roots: store, keys, policy, chain | 240 | P4 | — |
 | `wc-mediator::cache` | Contract snapshot cache, revocation set, COW swap | 320 | P1 | **links `revocation::RevocationSet`** |
@@ -668,6 +668,59 @@ OCSF mapping (via `warden::ocsf::event`):
 | Quarantine | Detection Finding (2004) + CAEP SET | Create | **Critical** |
 | Ack / non-Ack | Application Lifecycle (6002) | — | Low / High |
 | Export | API Activity (6003) | Read | Informational |
+
+### 8.5.8b `wc-control::federate` — trust chains
+
+Two organisations, two control planes, no shared keys and no catalogue exchange.
+A trust chain is a sequence of signed **entity statements** from the leaf up to an
+anchor whose key was exchanged out of band.
+
+```rust
+pub fn resolve(chain: &[String], anchors: &AnchorSet, now: u64, leeway: u64)
+    -> Result<Resolved, WcError>;      // chain is leaf-first
+```
+
+#### The property everything rests on
+
+**A leaf's self-signed statement is not evidence of its keys.** Anyone can mint
+one claiming any subject and any key set — that is what self-signed means. What
+makes the leaf's keys trustworthy is the *superior's* subordinate statement about
+it, attested one level up, terminating at a configured anchor.
+
+So `resolve` walks **down from the anchor**, verifying each statement with the
+keys the statement above it asserts — never with the keys the statement asserts
+about itself. The leaf's self-signature is still checked, but only as
+proof-of-possession: it shows the leaf holds the key its superior vouched for.
+Getting this backwards yields an implementation that verifies every signature and
+trusts anything.
+
+#### Four rules that are easy to omit
+
+| Rule | What omitting it costs |
+|---|---|
+| The chain must terminate at a **configured** anchor | any self-consistent chain an attacker builds is accepted — `WC-2030` |
+| **`authority_hints` are never followed** | a fetch-a-URL-of-the-attacker's-choosing primitive. They are recorded and ignored |
+| Each statement must be about the entity the level above named | a set of individually valid, unrelated statements stapled together — `WC-2031` |
+| **Superiors narrow, never widen** | a counterparty grants itself capability, TTL or a zone nobody vouched for — `WC-2033`, and it is *refused* rather than silently narrowed, because silent narrowing hides a partner trying it on |
+
+Two more bounds: `MAX_CHAIN_LEN = 6`, checked before any signature verification,
+since an unbounded chain from a counterparty is cheap unbounded work for us; and
+an "unset" superior constraint does **not** narrow to the empty set, or every
+chain would resolve to a partner permitted to do nothing — which reads as a
+working federation.
+
+#### What federation does not decide
+
+It sets a **third ceiling**, alongside the contract and local policy. It never
+names a tool. `partner_terms()` pins `max_delegation_depth` at 1 for a partner
+zone whatever the chain says (UC-05 step 5), and an unplaced partner lands in
+`partner.unclassified` rather than anywhere internal — the one mistake that would
+matter.
+
+`WC-2034` (anchor overdue for re-verification) is a **degrade**, not a refusal:
+UC-05 A2 says existing contracts run to `exp` while issuance stops, so `resolve`
+still succeeds and reports `anchor_stale`, and `connect federate` exits 3 rather
+than 4.
 
 ### 8.5.9 `wc-control::export`
 
@@ -1705,6 +1758,11 @@ so they are additive-only — never renumbered, never reused.
 | WC-2011 | Unknown zone pair → most restrictive | closed | 403 |
 | WC-2020 | Discovery throttled (anti-enumeration) | — | 200 truncated |
 | WC-2021 | Asker not registered/attested | closed | 200 empty |
+| WC-2030 | Federation chain does not reach a trusted anchor | closed | 403 |
+| WC-2031 | Federation trust chain invalid | closed | 403 |
+| WC-2032 | Federation entity statement expired | closed | 403 |
+| WC-2033 | Federation metadata widened by a subordinate | closed | 403 |
+| WC-2034 | Federation anchor overdue for re-verification | **degrade** — existing contracts run to `exp`, issuance stops (UC-05 A2) | 409 |
 | **WC-30xx contract lifecycle** | | | |
 | WC-3001 | Contract not found | — | 404 |
 | WC-3010 | Requested surface ⊄ declared surface | closed | 422 + diff |

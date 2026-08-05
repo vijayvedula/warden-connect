@@ -69,6 +69,17 @@ impl Code {
     /// Asker is not registered or not attested.
     pub const ASKER_NOT_ATTESTED: Code = Code(2021);
 
+    /// A federation trust chain did not terminate at a configured anchor.
+    pub const FEDERATION_ANCHOR_UNKNOWN: Code = Code(2030);
+    /// A link in a federation trust chain did not verify.
+    pub const FEDERATION_CHAIN_INVALID: Code = Code(2031);
+    /// A federation entity statement is expired or not yet valid.
+    pub const FEDERATION_STATEMENT_EXPIRED: Code = Code(2032);
+    /// A subordinate claimed metadata its superior does not permit.
+    pub const FEDERATION_METADATA_WIDENED: Code = Code(2033);
+    /// A federation anchor is overdue for re-verification (UC-05 A2).
+    pub const FEDERATION_ANCHOR_STALE: Code = Code(2034);
+
     // --- WC-30xx contract lifecycle ---
     /// Contract not found.
     pub const CONTRACT_NOT_FOUND: Code = Code(3001);
@@ -424,6 +435,13 @@ pub static CODES: &[CodeSpec] = &[
     spec(2011, Closed, Some(403), None, "unknown zone pair, treated as most restrictive"),
     spec(2020, Report, Some(200), None, "discovery throttled"),
     spec(2021, ClosedUnlessObserve, Some(200), None, "asker not registered or not attested"),
+    // --- federation ---
+    spec(2030, Closed, Some(403), None, "federation chain does not reach a trusted anchor"),
+    spec(2031, Closed, Some(403), None, "federation trust chain invalid"),
+    spec(2032, Closed, Some(403), None, "federation entity statement expired"),
+    spec(2033, Closed, Some(403), None, "federation metadata widened by a subordinate"),
+    // Degrade, not Closed: existing contracts run to exp while issuance stops.
+    spec(2034, Degrade, Some(409), None, "federation anchor overdue for re-verification"),
     // --- contract lifecycle ---
     spec(3001, Report, Some(404), None, "contract not found"),
     spec(3010, Closed, Some(422), None, "requested surface not a subset of declared surface"),
@@ -623,7 +641,7 @@ mod tests {
             );
             prev = s.code;
         }
-        assert_eq!(CODES.len(), 70, "the LLD §8.11 table has 70 codes");
+        assert_eq!(CODES.len(), 75, "the LLD §8.11 table has 75 codes");
     }
 
     #[test]
