@@ -168,7 +168,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::export` | DORA / CPS 230 / OSCAL / CSV / CycloneDX registers | 1180 | P4 | independent; no date crate — `iso8601` is 20 lines |
 | `wc-control::federate` | OpenID-Federation-shaped trust chains, partner resolution | 1080 | P4 | independent; no OIDC discovery — anchors are configured, never fetched |
 | `wc-control::api` | HTTP/1.1 surface, authn, idempotency, rate limits | 900 | P0→ | same shape as `http.rs`/`authzen.rs` |
-| `wc-control::tenant` | Per-tenant roots: store, keys, policy, chain | 240 | P4 | — |
+| `wc-control::tenant` | Validated tenant ids, per-tenant roots, binding and isolation | 620 | P4 | — |
 | `wc-mediator::cache` | Contract snapshot cache, revocation set, COW swap | 320 | P1 | **links `revocation::RevocationSet`** |
 | `wc-mediator::gate` | `Upstream` decorator: the 11 verification steps | 420 | P1 | **links `warden::{Gateway, Upstream}`** — no core changes |
 | `wc-mediator::filter` | `tools/list` filtering, surface allowlist | 260 | P1 | **links `mcp.rs`** |
@@ -773,6 +773,53 @@ register that declares its own gaps is the one that survives an audit.
   the *critical business service*, with providers hanging off it. Materiality under
   CPS 230 is offered as `candidate — tier 1/2 dependency`, never asserted: it is
   the institution's judgement and tier is only the input.
+
+### 8.5.9b `wc-control::tenant` — isolation
+
+Two tenants on one control plane share a process and a binary and **nothing
+else**: separate event log, evidence chain, issuer key and policy. There is no
+cross-tenant query and no cross-tenant contract.
+
+#### The tenant id is a path component, and that was a real hole
+
+Every tenant's state lives at `<root>/tenants/<id>/…`, so the id reaches the
+filesystem — and it arrives from a flag, an environment variable, or in a hosted
+deployment a token minted by somebody else. Before this module:
+
+```
+connect register … --tenant '../../../../tmp/elsewhere'
+  → wrote the estate's state to /tmp/elsewhere
+```
+
+Found by running exactly that against the release binary. `TenantId` is now a
+validated newtype and `TenantPaths` can only be built from one, so the guarantee
+is carried by the type rather than by remembering to check at each call site.
+`dispatch` validates once, before any command touches the filesystem.
+
+The character rule is an **allowlist** — `[a-z0-9-]`, first character
+alphanumeric — not because those are the only safe characters but because an
+allowlist only has to be right about `[a-z0-9-]`, while a denylist has to be right
+about `..`, `/`, `\`, NUL, `:` on Windows, a leading `-` that reads as a flag, a
+trailing dot Windows strips, a bidi override in an operator table, and a Unicode
+normalisation that collapses two ids into one directory.
+
+#### Three further decisions
+
+- **An unknown tenant and a forbidden one return the same code and the same
+  message shape.** Distinguishing them turns the error into an enumeration oracle
+  for the estate's customer list.
+- **An enforcing tenant must have its own issuer key.** A shared key makes one
+  tenant's contracts cryptographically indistinguishable from another's, and the
+  isolation becomes a filesystem convention rather than something a mediator can
+  check. Refused at load rather than defaulted.
+- **`TenantBinding` cannot be built from a request parameter.** A hosted control
+  plane binds it from the credential and derives every store, key and chain access
+  from the binding — isolation by construction rather than by a filter that one
+  call site can forget.
+
+`connect tenants` lists declared and on-disk tenants **separately**: a directory
+with no declaration is state nobody administers, a declaration with no directory
+has never been used, and merging them hides which is which.
 
 ### 8.5.10 `wc-control::api`
 

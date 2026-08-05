@@ -30,3 +30,4 @@ pub mod registry;
 pub mod screen;
 pub mod sink;
 pub mod store;
+pub mod tenant;

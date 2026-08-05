@@ -115,6 +115,10 @@ fn exit_code(code: Code) -> u8 {
         // Overdue re-verification is not an invalid chain — it is a refusal to
         // issue against a valid one, which is a policy-shaped decision.
         Code::FEDERATION_ANCHOR_STALE => 3,
+        // On the CLI there is no credential to bind against, so the only way to
+        // reach this is a malformed `--tenant` — which is a usage error, not an
+        // I/O one. The API maps the same code to 404 for the cross-tenant case.
+        Code::TENANT_UNKNOWN => 2,
         Code::QUARANTINE_DUAL_CONTROL_MISSING | Code::APPROVER_ROLE_MISSING => 6,
         Code::CHAIN_BROKEN
         | Code::PROVENANCE_UNVERIFIABLE
@@ -156,6 +160,7 @@ const COMMANDS: &[&str] = &[
     "quarantine",
     "mediators",
     "federate",
+    "tenants",
     "audit verify",
     "canon",
     "screen",
@@ -252,11 +257,13 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "kid",
             "mediators",
     "federate",
+    "tenants",
             "ack-deadline",
             "push-token",
         ],
         "mediators" => &["mediators", "revocation-pub", "kid"],
         "federate" => &["anchors", "chain", "now", "leeway"],
+        "tenants" => &["registry"],
         "show" => &["id"],
         "entities" => &[],
         "posture" => &["unattested", "expiring", "drift", "score", "id"],
@@ -413,6 +420,9 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         }));
     }
     check_flags(command, args)?;
+    // Before any command touches the filesystem. A tenant id is a path component,
+    // so validating it once here is what keeps every later `paths()` call honest.
+    tenant_id(args)?;
 
     match command {
         "register server" => register_server(args)?,
@@ -425,6 +435,7 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "quarantine" => quarantine(args)?,
         "mediators" => mediators_cmd(args)?,
         "federate" => federate_cmd(args)?,
+        "tenants" => tenants_cmd(args)?,
         "audit verify" => audit_verify(args)?,
         "canon" => canon_cmd(args)?,
         "screen" => screen_cmd(args)?,
@@ -462,22 +473,59 @@ struct Paths {
     acks: PathBuf,
 }
 
-fn paths(args: &Args) -> Paths {
+/// The tenant this invocation acts on.
+///
+/// Validated, because it becomes a path component. An unvalidated `--tenant
+/// '../../../../tmp/elsewhere'` wrote the estate's state outside the root — found
+/// by running exactly that against the release binary.
+fn tenant_id(args: &Args) -> Result<wc_control::tenant::TenantId> {
+    let raw = args.get("tenant").map(str::to_string).or_else(|| {
+        std::env::var("WARDEN_CONNECT_TENANT").ok()
+    });
+    match raw {
+        Some(name) => wc_control::tenant::TenantId::new(name),
+        None => Ok(wc_control::tenant::TenantId::default_tenant()),
+    }
+}
+
+/// Paths for this invocation's tenant.
+///
+/// Fails closed on an invalid tenant rather than falling back to `default`: a
+/// fallback would silently operate on the wrong estate, which is worse than
+/// refusing.
+fn paths_checked(args: &Args) -> Result<Paths> {
     let root = args
         .get("root")
         .map(PathBuf::from)
         .or_else(|| std::env::var("WARDEN_CONNECT_ROOT").ok().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from(DEFAULT_ROOT));
-    let tenant = args.get("tenant").map(str::to_string).unwrap_or_else(|| {
-        std::env::var("WARDEN_CONNECT_TENANT").unwrap_or_else(|_| "default".to_string())
-    });
-    let base = root.join("tenants").join(tenant);
-    Paths {
-        state: base.join("state"),
-        evidence: base.join("evidence"),
-        revocations: base.join("revocations.jsonl"),
-        acks: base.join("acks.json"),
-    }
+    let derived = wc_control::tenant::TenantPaths::new(&root, &tenant_id(args)?);
+    Ok(Paths {
+        state: derived.state,
+        evidence: derived.evidence,
+        revocations: derived.revocations,
+        acks: derived.acks,
+    })
+}
+
+/// Paths, panicking-free but tenant-unchecked callers use this.
+///
+/// Kept as a thin wrapper so the many call sites stay readable; the validation
+/// happens in `paths_checked` and an invalid tenant can never reach the
+/// filesystem because every entry point runs `check_tenant` first.
+fn paths(args: &Args) -> Paths {
+    paths_checked(args).unwrap_or_else(|_| {
+        // Unreachable: `dispatch` validates the tenant before any command runs.
+        // Returning a path under an obviously-invalid directory rather than the
+        // real root means even a future caller that bypasses dispatch cannot
+        // write somewhere it should not.
+        Paths {
+            state: PathBuf::from("/nonexistent/invalid-tenant/state"),
+            evidence: PathBuf::from("/nonexistent/invalid-tenant/evidence"),
+            revocations: PathBuf::from("/nonexistent/invalid-tenant/revocations.jsonl"),
+            acks: PathBuf::from("/nonexistent/invalid-tenant/acks.json"),
+        }
+    })
 }
 
 /// Open the state store, reporting a rebuild that was not clean rather than
@@ -1508,6 +1556,104 @@ fn blast_radius_cmd(args: &Args) -> Result<()> {
                 report.max_depth
             ),
         ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// tenants — what this root holds, and what is declared
+// ---------------------------------------------------------------------------
+
+/// List tenants: those declared in the registry, and those present on disk.
+///
+/// Reported separately on purpose. A directory with no declaration is state
+/// nobody is administering; a declaration with no directory is a tenant that has
+/// never been used. Both are worth seeing, and merging them into one list hides
+/// which is which.
+fn tenants_cmd(args: &Args) -> Result<()> {
+    let root = args
+        .get("root")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("WARDEN_CONNECT_ROOT").ok().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_ROOT));
+
+    let declared = match args.get("registry") {
+        Some(path) => wc_control::tenant::TenantRegistry::load(std::path::Path::new(path))?,
+        None => wc_control::tenant::TenantRegistry::default(),
+    };
+
+    // What is actually on disk. An unparseable directory name is listed as such
+    // rather than skipped: it is state under this root either way.
+    let mut on_disk: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root.join("tenants")) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                on_disk.push(entry.file_name().to_string_lossy().to_string());
+            }
+        }
+    }
+    on_disk.sort();
+
+    let declared_ids: Vec<String> = declared.ids().iter().map(|t| t.to_string()).collect();
+    let undeclared: Vec<&String> = on_disk
+        .iter()
+        .filter(|d| !declared_ids.contains(d))
+        .collect();
+    let unused: Vec<&String> = declared_ids
+        .iter()
+        .filter(|d| !on_disk.contains(d))
+        .collect();
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "root": root.display().to_string(),
+                "declared": declared.tenants.iter().map(|t| json!({
+                    "id": t.id.as_str(),
+                    "name": t.name,
+                    "mode": t.mode,
+                    "suspended": t.suspended,
+                    "has_own_issuer_key": t.issuer_key.is_some(),
+                })).collect::<Vec<_>>(),
+                "on_disk": on_disk,
+                "undeclared": undeclared,
+                "unused": unused,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("root      {}", root.display());
+    if declared.is_empty() {
+        println!("declared  none (pass --registry to load tenants.toml)");
+    } else {
+        println!("declared  {}", declared.len());
+        println!();
+        println!("  {:<20} {:<9} {:<10} NAME", "TENANT", "MODE", "OWN KEY");
+        for t in &declared.tenants {
+            println!(
+                "  {:<20} {:<9} {:<10} {}{}",
+                t.id,
+                t.mode,
+                if t.issuer_key.is_some() { "yes" } else { "shared" },
+                t.name,
+                if t.suspended { "  (suspended)" } else { "" }
+            );
+        }
+    }
+    println!();
+    println!("on disk   {}", on_disk.len());
+    if !undeclared.is_empty() {
+        println!();
+        println!("  UNDECLARED — state under this root that no registry entry administers:");
+        for d in &undeclared {
+            println!("    {d}");
+        }
+    }
+    if !unused.is_empty() {
+        println!();
+        println!("  declared but never used: {}", unused.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
     }
     Ok(())
 }
@@ -3194,6 +3340,7 @@ ESTATE
                   [--revocation-key PEM --kid KID] [--mediators FILE]
                   [--ack-deadline 60] [--push-token TOKEN]
   mediators       [--mediators FILE] [--revocation-pub PEM --kid KID] [--json]
+  tenants         [--registry tenants.toml] [--json]   what exists on this root
   federate <chain.json> --anchors anchors.toml [--now TS] [--json]
                   resolve a partner trust chain
                   exit 4 if it does not verify · 3 if the anchor is stale
