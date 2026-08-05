@@ -161,6 +161,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::attest` | Real stage 1/3/4 verifiers: JWT-SVID, card JWS, DSSE/SLSA | 800 | P2 | independent; `jsonwebtoken::crypto` for raw verification |
 | `wc-control::screen` | Declared-surface injection screening (§8.7.4) | 1540 | P2 | — |
 | `wc-control::broker` | Capability index, mediated discovery, anti-enumeration | 380 | P1 | — |
+| `wc-control::contain` | Signed revocation feed, mediator fan-out, ACK deadlines (§8.7.7) | 900 | P3 | independent; `ureq` for push |
 | `wc-control::cpolicy` | `connect-policy.toml`: parse, evaluate, lint, dry-run | 1100 | P1 | condition algebra reimplemented to match `policy.rs` syntax exactly |
 | `wc-control::assurance` | Re-attest scheduler, drift classify, posture score, blast radius | 1100 | P2/P3 | — |
 | `wc-control::evidence` | Lifecycle chain, anchors, OCSF/CAEP sinks | 850 | P0 | same formats as `audit`/`anchor`/`sink`/`ocsf`, held by golden vectors |
@@ -173,7 +174,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-mediator::filter` | `tools/list` filtering, surface allowlist | 260 | P1 | **links `mcp.rs`** |
 | `wc-mediator::ceiling` | Rate / spend / fan-out / concurrency ceilings | 300 | P1/P3 | **links `budget.rs`** |
 | `wc-mediator::peer` | Peer identity from mTLS / SVID / mesh socket | 340 | P1 | **links `dpop.rs`** |
-| `wc-mediator::drain` | Drain vs abort on revocation | 180 | P3 | **links `control.rs`** pause/drain |
+| `wc-mediator::drain` | Drain vs abort on revocation | 340 | P3 | independent; core's pause/drain model reimplemented |
 | `wc-cli::main` | Command tree, exit codes, output formats | 900 | P0→ | core CLI conventions |
 
 Total ≈ 13 kLOC of new Rust, of which the P0 wedge (`model`, `canon`, `error`,
@@ -948,6 +949,20 @@ The ACK to the control plane carries `{ mediator_id, set_hash, revoked_cids,
 in_flight_aborted, ts }` and is signed with the mediator's SVID key, so
 "contained" is an attested claim rather than an HTTP 200.
 
+Two details the table does not carry:
+
+- **A call that starts after the revocation is not in flight.** It is a new call,
+  and new calls are refused in both modes. Treating it as pre-existing would turn
+  a 10-second grace period into a 10-second hole.
+- **The grace period runs from local application**, not from the order's
+  timestamp. Using the order's would silently shorten the operator's window by the
+  propagation delay — the one part of it nobody controls.
+
+In the stdio sidecar at most one call is ever in flight, so `drain` and `abort`
+differ only in whether that call returns. The distinction earns its keep in the
+shared-gateway topology, where aborting cuts work belonging to parties nobody
+revoked.
+
 ---
 
 ## 8.7 Algorithms
@@ -1239,6 +1254,45 @@ The NFR (< 60 s estate-wide) has ~10× headroom on the push path, and the
 worst-case bound is a *stated* function of the poll interval rather than a hope.
 `unconfirmed` is a first-class field in the report — the HLD's "never assumed
 contained" made structural.
+
+### What the implementation relies on, in order
+
+The three mechanisms are deliberately not equal, and conflating them is how a
+containment tool ends up reporting success it cannot support:
+
+1. **The signed feed is the source of truth.** Append-only, contiguously
+   sequenced, every entry individually signed with the *revocation* key — not the
+   issuer key, so an operator who can mint contracts cannot thereby cut them, and
+   vice versa. A mediator pulls it, so a control plane that is down cannot
+   un-revoke anything and a compromised one cannot forge an order.
+2. **Push is latency only.** It moves the p50 from "under the poll interval" to
+   "under a couple of seconds". Every failure is reported and none of them changes
+   the guarantee. `HttpPush` returning 200 is explicitly **not** a confirmation:
+   the mediator accepted a notification, which is not the same as having applied
+   the order.
+3. **The ACK ledger is the evidence.** Durable, because "did every mediator
+   confirm the 03:14 cut?" is asked long after the process that made it exited. A
+   mediator that has not confirmed *at or beyond the order's sequence* is
+   `Waiting` before its deadline and `Overdue` after — never confirmed, and still
+   listed days later. `retire_confirmed` drops only fully-confirmed orders; age
+   alone never retires one.
+
+Four failure modes closed explicitly, each of which reads as containment if you
+get it wrong:
+
+| Situation | What it must not do | What it does |
+|---|---|---|
+| No mediators configured | report success | `NO MEDIATORS CONFIGURED, so nothing enforces it` |
+| No revocation key supplied | quarantine silently local | `NOT PROPAGATED — the registry says quarantined; the data plane has not been asked` |
+| Mediator acked an *older* sequence | count it as confirmed | `Overdue (last confirmed 4)` |
+| Feed line edited after signing | serve it | `WC-6002 … does not match its signed payload`, exit 1 |
+| Feed has a sequence gap | serve `since=N` as current | refuse to open; a hole means an order was lost |
+
+Revocations at the mediator are **cumulative and deny-only**: a delta extends the
+set rather than rebuilding it, because rebuilding from a partial fetch would
+un-revoke everything the delta happened not to mention. A gap in the delta stops
+application *and does not advance the cursor*, so the next ACK cannot tell the
+control plane this mediator is current when it has missed a cut.
 
 ### 8.7.8 A8 · Blast radius
 

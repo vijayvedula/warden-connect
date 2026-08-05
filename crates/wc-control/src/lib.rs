@@ -18,6 +18,7 @@ pub mod api;
 pub mod assurance;
 pub mod attest;
 pub mod chain;
+pub mod contain;
 pub mod cpolicy;
 pub mod evidence;
 pub mod http;

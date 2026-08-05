@@ -23,5 +23,6 @@
 pub mod cache;
 pub mod ceiling;
 pub mod client;
+pub mod drain;
 pub mod filter;
 pub mod gate;

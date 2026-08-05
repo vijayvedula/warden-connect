@@ -34,6 +34,7 @@ use wc_control::admission::{
 use wc_control::chain::ANCHOR_FILE;
 
 use wc_control::api::{Api, ControlPlane};
+use wc_control::contain;
 use wc_control::cpolicy::{self as cpolicy, ConnectPolicy, StandingState};
 use wc_control::evidence::{EventKind, Evidence, LifecycleEvent};
 use wc_control::http::{self, Shutdown};
@@ -141,6 +142,7 @@ const COMMANDS: &[&str] = &[
     "posture",
     "blast-radius",
     "quarantine",
+    "mediators",
     "audit verify",
     "canon",
     "screen",
@@ -228,7 +230,17 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "builder",
         ],
         "activate" => &["id", "why"],
-        "quarantine" => &["id", "reason", "approver"],
+        "quarantine" => &[
+            "id",
+            "reason",
+            "approver",
+            "revocation-key",
+            "kid",
+            "mediators",
+            "ack-deadline",
+            "push-token",
+        ],
+        "mediators" => &["mediators", "revocation-pub", "kid"],
         "show" => &["id"],
         "entities" => &[],
         "posture" => &["unattested", "expiring", "drift", "score", "id"],
@@ -374,6 +386,7 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "posture" => posture(args)?,
         "blast-radius" => blast_radius_cmd(args)?,
         "quarantine" => quarantine(args)?,
+        "mediators" => mediators_cmd(args)?,
         "audit verify" => audit_verify(args)?,
         "canon" => canon_cmd(args)?,
         "screen" => screen_cmd(args)?,
@@ -403,6 +416,11 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
 struct Paths {
     state: PathBuf,
     evidence: PathBuf,
+    /// The signed revocation feed mediators pull. Beside the state, not inside the
+    /// evidence chain: the chain records what happened, this instructs.
+    revocations: PathBuf,
+    /// Durable per-mediator acknowledgement state.
+    acks: PathBuf,
 }
 
 fn paths(args: &Args) -> Paths {
@@ -418,6 +436,8 @@ fn paths(args: &Args) -> Paths {
     Paths {
         state: base.join("state"),
         evidence: base.join("evidence"),
+        revocations: base.join("revocations.jsonl"),
+        acks: base.join("acks.json"),
     }
 }
 
@@ -921,6 +941,7 @@ fn activate(args: &Args) -> Result<()> {
 fn quarantine(args: &Args) -> Result<()> {
     let id = EntityId::new(positional_or_flag(args, "id")?)?;
     let reason = require(args, "reason")?.to_string();
+    let reason_for_feed = reason.clone();
     let approvers: Vec<HumanRef> = args
         .list("approver")
         .into_iter()
@@ -946,6 +967,58 @@ fn quarantine(args: &Args) -> Result<()> {
         ts,
     )?;
 
+    // --- reach the data plane, and refuse to overstate how far it got ------
+    //
+    // The registry transition above is the control plane's own state. The party
+    // keeps working until every mediator holding one of its contracts stops
+    // honouring it, so the interesting output is which mediators have confirmed.
+    let mediator_set = match args.get("mediators") {
+        Some(path) => contain::MediatorSet::load(std::path::Path::new(path))?,
+        None => contain::MediatorSet::default(),
+    };
+    let containment = match args.get("revocation-key") {
+        Some(key_path) => {
+            let key = load_issuer_key(key_path, require(args, "kid")?, args.get("alg"))?;
+            let p = paths(args);
+            let mut feed = contain::RevocationFeed::open(&p.revocations)?;
+            let mut ledger = contain::AckLedger::open(&p.acks)?;
+            let push: Box<dyn contain::Push> = match args.get("push-token") {
+                Some(token) => Box::new(contain::HttpPush {
+                    token: token.to_string(),
+                    ..contain::HttpPush::default()
+                }),
+                // No token means pull-only, which is slower to confirm and exactly
+                // as safe. It is never silently treated as a successful push.
+                None => Box::new(contain::NoPush),
+            };
+            let deadline = args
+                .number("ack-deadline")
+                .unwrap_or(u64::from(contain::DEFAULT_ACK_DEADLINE))
+                .min(u64::from(u32::MAX)) as u32;
+            let report = {
+                let mut ctx = contain::ContainCtx {
+                    feed: &mut feed,
+                    ledger: &mut ledger,
+                    mediators: &mediator_set,
+                    push: push.as_ref(),
+                    key: &key,
+                    ack_deadline: deadline,
+                };
+                contain::contain(
+                    contain::Revoked::Party { id: id.clone() },
+                    &outcome.revoked,
+                    &reason_for_feed,
+                    &actor_id(args),
+                    ts,
+                    &mut ctx,
+                )?
+            };
+            ledger.save(&p.acks)?;
+            Some(report)
+        }
+        None => None,
+    };
+
     println!("quarantined {}", outcome.party);
     println!("  contracts revoked  {}", outcome.revoked.len());
     for cid in &outcome.revoked {
@@ -961,6 +1034,159 @@ fn quarantine(args: &Args) -> Result<()> {
         );
     }
     println!("  evidence seq       {}", recorded.seq);
+
+    match &containment {
+        None => {
+            // Never phrase an unenforced cut as containment.
+            println!();
+            println!("  NOT PROPAGATED — no --revocation-key, so no signed revocation was");
+            println!("  written and no mediator has been told. The registry says quarantined;");
+            println!("  the data plane has not been asked.");
+        }
+        Some(report) => {
+            println!();
+            println!("  feed seq           {}", report.feed_seq);
+            println!("  {}", report.summary());
+            for m in &report.mediators {
+                let ack = match &m.ack {
+                    contain::AckState::Confirmed { confirmation } => {
+                        format!("confirmed seq {} ({} aborted)", confirmation.feed_seq, confirmation.aborted)
+                    }
+                    contain::AckState::Waiting { seconds_left } => {
+                        format!("waiting, {seconds_left}s to deadline")
+                    }
+                    contain::AckState::Overdue { seconds_late, .. } => {
+                        format!("OVERDUE by {seconds_late}s")
+                    }
+                };
+                let push = match &m.push {
+                    contain::PushOutcome::Accepted => "pushed".to_string(),
+                    contain::PushOutcome::PullOnly => "pull-only".to_string(),
+                    contain::PushOutcome::Failed { attempts, detail } => {
+                        format!("push failed after {attempts}: {detail}")
+                    }
+                };
+                println!("    {:<34} {:<12} {}  (bound {}s)", m.mediator, push, ack, m.bounded_by);
+            }
+            if !report.fully_confirmed() {
+                println!();
+                println!("  Unconfirmed is not contained. Run `connect mediators` to chase it;");
+                println!("  each unconfirmed mediator applies the cut within its own poll");
+                println!("  interval regardless, which is the bound printed above.");
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// mediators — who has confirmed, and who has not (§8.7.7)
+// ---------------------------------------------------------------------------
+
+/// Report outstanding containment orders and which mediators still owe a
+/// confirmation.
+///
+/// This is the command that keeps "never assumed contained" true after the
+/// incident call ends: an order nobody confirmed stays listed until somebody
+/// does, however old it gets.
+fn mediators_cmd(args: &Args) -> Result<()> {
+    let p = paths(args);
+    let ts = now();
+    let ledger = contain::AckLedger::open(&p.acks)?;
+    let feed = contain::RevocationFeed::open(&p.revocations)?;
+
+    // Verifying the feed here is the point: an order an operator cannot verify is
+    // an order that may not have been authorised.
+    let verified = match (args.get("revocation-pub"), args.get("kid")) {
+        (Some(path), Some(kid)) => {
+            let mut keys = IssuerKeys::new();
+            let pem = std::fs::read(path).map_err(|e| {
+                WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}"))
+                    .with_source(e)
+            })?;
+            match args.get("alg").unwrap_or("ES256") {
+                "ES256" => keys.add_ec_pem(kid, &pem, Algorithm::ES256)?,
+                "ES384" => keys.add_ec_pem(kid, &pem, Algorithm::ES384)?,
+                "EdDSA" | "Ed25519" => keys.add_ed_pem(kid, &pem)?,
+                other => {
+                    return Err(WcError::with_detail(
+                        Code::ALG_NOT_ASYMMETRIC,
+                        format!("{other:?} is not an accepted algorithm"),
+                    ))
+                }
+            }
+            Some(feed.verify(&keys)?)
+        }
+        _ => None,
+    };
+
+    let outstanding = ledger.outstanding(ts);
+
+    if args.has("json") {
+        let rows: Vec<Value> = outstanding
+            .iter()
+            .map(|(order, states)| {
+                json!({
+                    "feed_seq": order.feed_seq,
+                    "target": order.target,
+                    "at": order.at,
+                    "deadline_at": order.deadline_at,
+                    "mediators": states.iter().map(|(m, st)| json!({
+                        "mediator": m,
+                        "confirmed": st.is_confirmed(),
+                        "state": match st {
+                            contain::AckState::Confirmed { .. } => "confirmed",
+                            contain::AckState::Waiting { .. } => "waiting",
+                            contain::AckState::Overdue { .. } => "overdue",
+                        },
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            pretty(&json!({
+                "feed_events": feed.len(),
+                "feed_head": feed.next_seq() - 1,
+                "feed_verified": verified,
+                "outstanding": rows,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("feed        {} event(s), head seq {}", feed.len(), feed.next_seq() - 1);
+    match verified {
+        Some(n) => println!("signatures  {n} verified"),
+        None => println!("signatures  not checked (pass --revocation-pub and --kid)"),
+    }
+
+    if outstanding.is_empty() {
+        println!("outstanding none");
+        return Ok(());
+    }
+    println!("outstanding {} order(s)", outstanding.len());
+    for (order, states) in &outstanding {
+        println!("\n  seq {} · {} · ordered at {}", order.feed_seq, order.target, order.at);
+        for (mediator, state) in states.iter() {
+            let text = match state {
+                contain::AckState::Confirmed { confirmation } => {
+                    format!("confirmed seq {}", confirmation.feed_seq)
+                }
+                contain::AckState::Waiting { seconds_left } => {
+                    format!("waiting ({seconds_left}s left)")
+                }
+                contain::AckState::Overdue {
+                    seconds_late,
+                    last_seq,
+                } => format!(
+                    "OVERDUE by {seconds_late}s (last confirmed {})",
+                    last_seq.map_or_else(|| "never".to_string(), |s| s.to_string())
+                ),
+            };
+            println!("    {mediator:<34} {text}");
+        }
+    }
     Ok(())
 }
 
@@ -1720,6 +1946,26 @@ fn requesting_human(args: &Args) -> Result<HumanRef> {
             )
         })?;
     HumanRef::new(raw)
+}
+
+/// A signing key from a PEM path and a `kid`.
+///
+/// Used for the revocation key, which is deliberately separate from the issuer key
+/// (§8.12.1): an operator who can mint contracts should not thereby be able to cut
+/// connections, and vice versa.
+fn load_issuer_key(path: &str, kid: &str, alg: Option<&str>) -> Result<IssuerKey> {
+    let pem = std::fs::read(path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+    })?;
+    match alg.unwrap_or("ES256") {
+        "ES256" => IssuerKey::ec_pem(kid, &pem, Algorithm::ES256),
+        "ES384" => IssuerKey::ec_pem(kid, &pem, Algorithm::ES384),
+        "EdDSA" | "Ed25519" => IssuerKey::ed_pem(kid, &pem),
+        other => Err(WcError::with_detail(
+            Code::ALG_NOT_ASYMMETRIC,
+            format!("{other:?} is not an accepted algorithm"),
+        )),
+    }
 }
 
 /// The issuer signing key, and the `kid` stamped into every artifact.
@@ -2579,6 +2825,9 @@ ESTATE
   posture [--unattested] [--expiring] [--score] [--json]
   blast-radius <id> [--depth 3] [--services] [--json]   exit 1 if truncated
   quarantine <id> --reason R [--approver human:a --approver human:b]
+                  [--revocation-key PEM --kid KID] [--mediators FILE]
+                  [--ack-deadline 60] [--push-token TOKEN]
+  mediators       [--mediators FILE] [--revocation-pub PEM --kid KID] [--json]
 
 EVIDENCE
   audit verify [--anchor-pub PEM] [--json]

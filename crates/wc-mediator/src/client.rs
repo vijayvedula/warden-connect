@@ -19,7 +19,7 @@ use serde::Deserialize;
 use wc_core::contract::IssuerKeys;
 use wc_core::error::{Code, Result, WcError};
 
-use crate::cache::{Cache, Snapshot};
+use crate::cache::{Cache, Revocations, Snapshot};
 
 /// What the control plane says this mediator should hold.
 #[derive(Debug, Clone, Deserialize)]
@@ -66,6 +66,93 @@ impl ContractSet {
             .filter(|c| c.jws.is_none())
             .map(|c| c.cid.as_str())
             .collect()
+    }
+}
+
+/// The revocation feed as served by `GET /v1/revocations`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RevocationDelta {
+    /// Highest sequence the control plane holds.
+    #[serde(default)]
+    pub head_seq: u64,
+    /// Digest over the whole feed, echoed in the acknowledgement.
+    #[serde(default)]
+    pub head_digest: String,
+    /// Entries after the requested sequence.
+    #[serde(default)]
+    pub events: Vec<SignedRevocationWire>,
+}
+
+/// One signed feed entry as it arrives on the wire.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SignedRevocationWire {
+    /// The event, as the control plane rendered it.
+    pub event: serde_json::Value,
+    /// Detached signature over the event.
+    pub jws: String,
+    /// Key that signed it.
+    pub kid: String,
+}
+
+/// What one revocation names, as the mediator needs to apply it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RevokedTarget {
+    /// Every contract naming this party.
+    Party {
+        /// The party.
+        id: String,
+    },
+    /// One connection.
+    Connection {
+        /// The connection id.
+        cid: String,
+    },
+    /// One artifact.
+    Artifact {
+        /// The artifact id.
+        jti: String,
+    },
+}
+
+/// The signed payload, as verified.
+#[derive(Debug, Clone, Deserialize)]
+pub struct VerifiedRevocation {
+    /// Feed sequence.
+    pub seq: u64,
+    /// What it revokes.
+    #[serde(flatten)]
+    pub target: RevokedTarget,
+    /// Why.
+    #[serde(default)]
+    pub reason: String,
+    /// When the order was made.
+    #[serde(default)]
+    pub at: u64,
+}
+
+/// What one revocation pull did.
+#[derive(Debug, Clone, Default)]
+pub struct RevocationReport {
+    /// Sequence applied up to.
+    pub applied_seq: u64,
+    /// Digest of the feed as applied.
+    pub head_digest: String,
+    /// Entries verified and applied.
+    pub applied: usize,
+    /// Entries that failed verification, with the sequence they claimed.
+    pub rejected: Vec<(u64, Code)>,
+    /// Whether the sequence arrived contiguous.
+    pub contiguous: bool,
+    /// The revocation set as applied, ready to install.
+    pub set: Option<Revocations>,
+}
+
+impl RevocationReport {
+    /// Whether the pull was clean.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.rejected.is_empty() && self.contiguous
     }
 }
 
@@ -157,6 +244,48 @@ impl ControlPlaneClient {
         serde_json::from_str(&body).map_err(|e| {
             WcError::with_detail(
                 Code::NO_CONTRACT,
+                format!("{url}: unexpected response shape"),
+            )
+            .with_source(e)
+        })
+    }
+
+    /// Fetch revocations after `since`.
+    ///
+    /// Unreachable is an error, never an empty delta: an empty delta would read as
+    /// "nothing new is revoked", which is exactly the wrong conclusion to draw
+    /// from a control plane you cannot reach.
+    pub fn fetch_revocations(&self, since: u64) -> Result<RevocationDelta> {
+        let url = format!("{}/v1/revocations?since={since}", self.base);
+        let mut response = self
+            .agent()
+            .get(&url)
+            .header("authorization", &format!("Bearer {}", self.token))
+            .call()
+            .map_err(|e| {
+                WcError::with_detail(Code::CONTRACT_REVOKED, format!("{url}: unreachable"))
+                    .with_source(e)
+            })?;
+
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(8 * 1024 * 1024)
+            .read_to_string()
+            .map_err(|e| {
+                WcError::with_detail(Code::CONTRACT_REVOKED, format!("{url}: cannot read response"))
+                    .with_source(e)
+            })?;
+        if !(200..300).contains(&status) {
+            return Err(WcError::with_detail(
+                Code::CONTRACT_REVOKED,
+                format!("{url}: control plane returned {status}"),
+            ));
+        }
+        serde_json::from_str(&body).map_err(|e| {
+            WcError::with_detail(
+                Code::CONTRACT_REVOKED,
                 format!("{url}: unexpected response shape"),
             )
             .with_source(e)
@@ -269,11 +398,199 @@ pub fn refresh(
     Ok(report)
 }
 
+/// Verify a revocation delta and install it, returning what was applied.
+///
+/// Every entry is verified against the revocation keys the mediator was
+/// configured with, exactly as contracts are. The control plane says what is
+/// revoked; it does not get to say the order was authorised.
+///
+/// Revocations are **cumulative and deny-only**, so `previous` is extended rather
+/// than replaced. A delta that omits an earlier entry must not un-revoke it, and
+/// rebuilding the set from a partial fetch would do precisely that.
+pub fn apply_revocations(
+    delta: &RevocationDelta,
+    keys: &IssuerKeys,
+    previous: &Revocations,
+    since: u64,
+) -> RevocationReport {
+    let mut set = previous.clone();
+    let mut report = RevocationReport {
+        head_digest: delta.head_digest.clone(),
+        applied_seq: since,
+        contiguous: true,
+        ..RevocationReport::default()
+    };
+
+    let mut expected = since + 1;
+    for entry in &delta.events {
+        let verified: VerifiedRevocation =
+            match wc_core::contract::verify_detached(&entry.jws, &entry.kid, keys) {
+                Ok(v) => v,
+                Err(e) => {
+                    let claimed = entry
+                        .event
+                        .get("seq")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    report.rejected.push((claimed, e.code()));
+                    continue;
+                }
+            };
+
+        // A hole means an order was lost or withheld. Applying what arrived and
+        // recording the higher sequence would tell the control plane this mediator
+        // is current when it has missed a cut.
+        if verified.seq != expected {
+            report.contiguous = false;
+            break;
+        }
+        match &verified.target {
+            RevokedTarget::Party { id } => set.revoke_party(id.clone()),
+            RevokedTarget::Connection { cid } => set.revoke_cid(cid.clone()),
+            RevokedTarget::Artifact { jti } => set.revoke_jti(jti.clone()),
+        }
+        report.applied += 1;
+        report.applied_seq = verified.seq;
+        expected += 1;
+    }
+
+    report.set = Some(set);
+    report
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    fn keys_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/keys")
+    }
+
+    fn revocation_keys() -> IssuerKeys {
+        let pem = std::fs::read(keys_dir().join("test_issuer_es256_pub.pem")).unwrap();
+        let mut keys = IssuerKeys::new();
+        keys.add_ec_pem("revoke-1", &pem, wc_core::contract::Algorithm::ES256)
+            .unwrap();
+        keys
+    }
+
+    fn signer() -> wc_core::contract::IssuerKey {
+        let pem = std::fs::read(keys_dir().join("test_issuer_es256_priv.pem")).unwrap();
+        wc_core::contract::IssuerKey::ec_pem("revoke-1", &pem, wc_core::contract::Algorithm::ES256)
+            .unwrap()
+    }
+
+    fn signed(seq: u64, body: serde_json::Value) -> SignedRevocationWire {
+        let mut event = body;
+        event["seq"] = serde_json::json!(seq);
+        let jws = wc_core::contract::sign_detached(&event, &signer()).unwrap();
+        SignedRevocationWire {
+            event,
+            jws,
+            kid: "revoke-1".to_string(),
+        }
+    }
+
+    fn party(seq: u64, id: &str) -> SignedRevocationWire {
+        signed(
+            seq,
+            serde_json::json!({ "kind": "party", "id": id, "reason": "SOC-1", "actor": "human:sam", "at": 1_000 }),
+        )
+    }
+
+    fn connection(seq: u64, cid: &str) -> SignedRevocationWire {
+        signed(
+            seq,
+            serde_json::json!({ "kind": "connection", "cid": cid, "reason": "SOC-1", "actor": "human:sam", "at": 1_000 }),
+        )
+    }
+
+    fn delta(events: Vec<SignedRevocationWire>) -> RevocationDelta {
+        let head_seq = events.last().map(|e| e.event["seq"].as_u64().unwrap()).unwrap_or(0);
+        RevocationDelta {
+            head_seq,
+            head_digest: "sha256:aa".to_string(),
+            events,
+        }
+    }
+
+    #[test]
+    fn a_verified_delta_is_applied_to_the_revocation_set() {
+        let report = apply_revocations(
+            &delta(vec![
+                party(1, "spiffe://org/ns/agents/sa/recon"),
+                connection(2, "conn_00000001"),
+            ]),
+            &revocation_keys(),
+            &Revocations::new(),
+            0,
+        );
+        assert!(report.is_clean());
+        assert_eq!(report.applied, 2);
+        assert_eq!(report.applied_seq, 2);
+        let set = report.set.unwrap();
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn an_entry_signed_by_an_untrusted_key_is_rejected_and_the_rest_still_apply() {
+        let mut events = vec![party(1, "spiffe://org/ns/agents/sa/recon")];
+        events[0].kid = "not-a-trusted-kid".to_string();
+        let report = apply_revocations(&delta(events), &revocation_keys(), &Revocations::new(), 0);
+        assert!(!report.is_clean());
+        assert_eq!(report.rejected.len(), 1);
+        assert_eq!(report.applied, 0, "an unauthorised order is not applied");
+    }
+
+    #[test]
+    fn revocations_are_cumulative_so_a_partial_fetch_cannot_un_revoke() {
+        // The failure this prevents: rebuilding the set from a delta would drop
+        // every earlier revocation the moment a fetch returned only new entries.
+        let mut previous = Revocations::new();
+        previous.revoke_party("spiffe://org/ns/agents/sa/old");
+
+        let report = apply_revocations(
+            &delta(vec![connection(1, "conn_00000009")]),
+            &revocation_keys(),
+            &previous,
+            0,
+        );
+        let set = report.set.unwrap();
+        assert_eq!(set.len(), 2, "the earlier revocation survived");
+    }
+
+    #[test]
+    fn a_sequence_gap_stops_application_and_does_not_advance_the_cursor() {
+        // Applying what arrived and reporting the higher sequence would tell the
+        // control plane this mediator is current when it has missed a cut.
+        let report = apply_revocations(
+            &delta(vec![
+                party(1, "spiffe://org/ns/agents/sa/a"),
+                connection(3, "conn_00000003"),
+            ]),
+            &revocation_keys(),
+            &Revocations::new(),
+            0,
+        );
+        assert!(!report.contiguous);
+        assert!(!report.is_clean());
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.applied_seq, 1, "the cursor stops at the hole");
+    }
+
+    #[test]
+    fn an_unreachable_control_plane_is_an_error_not_an_empty_delta() {
+        // An empty delta reads as "nothing new is revoked", which is the wrong
+        // conclusion to draw from a control plane you cannot reach.
+        let client = ControlPlaneClient::new("http://127.0.0.1:1", "m", "t")
+            .with_timeout(Duration::from_millis(400));
+        assert_eq!(
+            client.fetch_revocations(0).unwrap_err().code(),
+            Code::CONTRACT_REVOKED
+        );
+    }
 
     #[test]
     fn a_mediator_id_is_percent_encoded_for_a_path() {
