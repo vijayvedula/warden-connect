@@ -168,6 +168,8 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::export` | DORA / CPS 230 / OSCAL / CSV / CycloneDX registers | 1180 | P4 | independent; no date crate — `iso8601` is 20 lines |
 | `wc-control::federate` | OpenID-Federation-shaped trust chains, partner resolution | 1080 | P4 | independent; no OIDC discovery — anchors are configured, never fetched |
 | `wc-control::api` | HTTP/1.1 surface, authn, idempotency, rate limits | 900 | P0→ | same shape as `http.rs`/`authzen.rs` |
+| `wc-control::bench` | Performance gates (§8.10.3) | 380 | P4 | — |
+| `wc-control::bundle` | Air-gapped `.wcb` envelopes: export, import, hard expiry | 700 | P4 | — |
 | `wc-control::keys` | Issuer keyring, rotation lifecycle, retirement guard, JWKS | 800 | P4 | — |
 | `wc-control::tenant` | Validated tenant ids, per-tenant roots, binding and isolation | 620 | P4 | — |
 | `wc-mediator::cache` | Contract snapshot cache, revocation set, COW swap | 320 | P1 | **links `revocation::RevocationSet`** |
@@ -897,7 +899,8 @@ connect canon            <surface.json>          # print the wcs1 doc + pin
 connect screen           <surface.json>          # screening report, exit 5 on block
 connect policy           lint | dry-run | show
 connect keys             list | new | add | rotate | note | retire | jwks
-connect bundle           export --mediator … --out bundle.wcb   # air-gapped
+connect bundle           export --mediator … --signing-key … --keyring … --out b.wcb
+connect bundle           verify <b.wcb> --envelope-pub … --kid … --mediator …
 connect bench            [--verify|--filter|--mint]              # perf gates
 ```
 
@@ -1761,7 +1764,29 @@ and compared to the pin. Skills are filtered exactly as tools are.
 | Revocation feed | JSONL of ES256 JWTs, `{kind, sub, ts}` — core's format, new kinds `cid`/`party` |
 | Contract set delta | `{seq, set_hash, added[jws], removed[cid], full}` over mTLS |
 | CAEP SET | RFC 8417 SET via `warden::sink` transmitter; `session-revoked`, `credential-change`, plus a `connection-revoked` subject type |
-| Air-gapped bundle (`.wcb`) | `{ bundle_jws, contracts[jws], jwks, revocations[], issued_at, exp }` — one signed envelope, expiry hard, verified by the same code path |
+| Air-gapped bundle (`.wcb`) | `{ body: { schema, mediator_id, issued_at, exp, contracts[jws], jwks, revocations[], revocation_head }, bundle_jws, kid }` — one signed envelope, expiry hard, verified by the same code path |
+
+#### What "expiry hard" means, precisely
+
+**Past `exp` the entire bundle is refused, even though the contracts inside are
+still within their own `exp`.** It is the surprising behaviour and the correct
+one: a mediator that pulls learns of a revocation within its poll interval, and a
+mediator fed by bundles learns of one when somebody carries the next bundle in. So
+the bundle's expiry is the *only* bound on how stale an air-gapped estate's
+revocation list can be, and `MAX_BUNDLE_TTL_SECS` caps it at 14 days — a year-long
+bundle is a permanently unrevocable estate with a reassuring file extension.
+
+The signature covers the **whole body by digest**, not a manifest of contract ids.
+Signing the manifest would let a courier strip the revocations and leave a bundle
+that still verifies; the removal being invisible is exactly the point of putting
+them under the signature. Four tests assert that stripping revocations, extending
+the expiry, adding a contract or swapping the JWKS each break it.
+
+One bundle names one mediator, for the same reason one contract has one audience:
+a bundle usable anywhere is replayable anywhere. And the contracts inside go
+through `contract::verify_artifact` — a bundle is a *transport*, not a second trust
+model, and an import path with its own verification is an import path with its own
+bugs.
 
 ---
 
@@ -1826,6 +1851,25 @@ regression:
 
 A latency claim in a design document that is not asserted by a test is a
 marketing claim.
+
+`connect bench` runs them and exits non-zero on regression. Three properties of
+the harness:
+
+- **An empty report is not a pass.** A run that measured nothing and exited zero
+  is precisely the "control that reports success without checking" this codebase
+  keeps designing against, so `Report::passed` is false for an empty gate list and
+  `--gate` matching nothing is an error.
+- **Marginal gates are reported.** A gate holding at 2% headroom is one about to
+  start failing for reasons nobody changed, which is worse than one that fails
+  outright.
+- **Thresholds are the design's, not the machine's.** A run on a slower box
+  reports honest failures rather than recalibrating, because a gate that adjusts
+  to the hardware measures nothing.
+
+Percentiles are nearest-rank, so a reported p99 is a measurement that actually
+happened rather than an interpolation between two that did. Warmup samples are
+discarded: the first call through any of these paths pays for lazily-built caches
+and page faults, and including it measures the allocator.
 
 ---
 

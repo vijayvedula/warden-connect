@@ -154,6 +154,8 @@ const TWO_WORD: &[&str] = &[
     "keys retire",
     "keys jwks",
     "keys note",
+    "bundle export",
+    "bundle verify",
 ];
 
 /// Every dispatchable command.
@@ -176,6 +178,9 @@ const COMMANDS: &[&str] = &[
     "keys retire",
     "keys jwks",
     "keys note",
+    "bundle export",
+    "bundle verify",
+    "bench",
     "tenants",
     "audit verify",
     "canon",
@@ -287,6 +292,11 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "keys retire" => &["keyring", "kid"],
         "keys jwks" => &["keyring", "out"],
         "keys note" => &["keyring", "kid", "exp"],
+        "bundle export" => &[
+            "mediator", "keyring", "signing-key", "kid", "ttl", "out", "contracts",
+        ],
+        "bundle verify" => &["file", "envelope-pub", "issuer-pub", "kid", "mediator", "now"],
+        "bench" => &["iterations", "gate"],
         "show" => &["id"],
         "entities" => &[],
         "posture" => &["unattested", "expiring", "drift", "score", "id"],
@@ -478,6 +488,9 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "keys retire" => keys_retire(args)?,
         "keys jwks" => keys_jwks(args)?,
         "keys note" => keys_note(args)?,
+        "bundle export" => bundle_export(args)?,
+        "bundle verify" => bundle_verify(args)?,
+        "bench" => bench_cmd(args)?,
         "audit verify" => audit_verify(args)?,
         "canon" => canon_cmd(args)?,
         "screen" => screen_cmd(args)?,
@@ -1704,6 +1717,331 @@ fn blast_radius_cmd(args: &Args) -> Result<()> {
                 report.max_depth
             ),
         ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// bundle — air-gapped contract delivery (§8.9.4)
+// ---------------------------------------------------------------------------
+
+/// Cut a signed bundle for one mediator.
+fn bundle_export(args: &Args) -> Result<()> {
+    let mediator = require(args, "mediator")?.to_string();
+    let key = load_issuer_key(
+        require(args, "signing-key")?,
+        require(args, "kid")?,
+        args.get("alg"),
+    )?;
+    let ttl = args
+        .get("ttl")
+        .and_then(cpolicy::parse_duration)
+        .unwrap_or(7 * 86_400);
+
+    let p = paths(args);
+    let store = open_store(args)?;
+    let ts = now();
+
+    // Every live contract addressed to this mediator, read from the artifacts the
+    // issuer persisted — the same bytes a pulling mediator would receive.
+    let mut contracts: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for record in store.projection.contracts.values() {
+        if !record.is_live(ts) || !record.aud.iter().any(|a| a == &mediator) {
+            continue;
+        }
+        match store.read_artifact(record.cid.as_str(), &mediator) {
+            Some(jws) => contracts.push(jws),
+            // Named, never silently omitted: a bundle short one contract is an
+            // agent that stops working in an air-gapped site with no way to ask why.
+            None => missing.push(record.cid.as_str().to_string()),
+        }
+    }
+
+    let jwks = match args.get("keyring") {
+        Some(path) => wc_control::keys::Keyring::load(std::path::Path::new(path))?.jwks()?,
+        None => {
+            return Err(WcError::with_detail(
+                Code::EXPORT_FAILED,
+                "--keyring is required: a bundle must carry the JWKS its contracts verify against",
+            ))
+        }
+    };
+
+    let feed = wc_control::contain::RevocationFeed::open(&p.revocations)?;
+    let revocations: Vec<Value> = feed
+        .all()
+        .iter()
+        .map(|e| json!({ "event": e.event, "jws": e.jws, "kid": e.kid }))
+        .collect();
+
+    let bundle = wc_control::bundle::export(
+        &wc_control::bundle::ExportRequest {
+            mediator_id: mediator.clone(),
+            contracts,
+            jwks,
+            revocations,
+            revocation_head: feed.head_digest(),
+            ttl_secs: ttl,
+        },
+        ts,
+        &key,
+    )?;
+    let text = wc_control::bundle::to_bytes(&bundle)?;
+
+    match args.get("out") {
+        Some(path) => {
+            std::fs::write(path, &text).map_err(|e| {
+                WcError::with_detail(Code::EXPORT_FAILED, format!("cannot write {path}"))
+                    .with_source(e)
+            })?;
+            println!("wrote {path}");
+        }
+        None => print!("{text}"),
+    }
+
+    eprintln!(
+        "bundle for {mediator}: {} contract(s), {} revocation(s), expires {} (in {})",
+        bundle.body.contracts.len(),
+        bundle.body.revocations.len(),
+        bundle.body.exp,
+        human_duration(ttl)
+    );
+    if !missing.is_empty() {
+        eprintln!(
+            "connect: warning: {} live contract(s) had no stored artifact and are NOT in this \
+             bundle: {}",
+            missing.len(),
+            missing.join(" ")
+        );
+    }
+    eprintln!(
+        "connect: the whole bundle stops working at its expiry, whatever the contracts inside say"
+    );
+    Ok(())
+}
+
+/// Verify a bundle as a mediator would.
+fn bundle_verify(args: &Args) -> Result<()> {
+    let path = positional_or_flag(args, "file")?;
+    let mediator = require(args, "mediator")?;
+    let kid = require(args, "kid")?;
+
+    let mut envelope = IssuerKeys::new();
+    let pem = std::fs::read(require(args, "envelope-pub")?).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, "cannot read --envelope-pub").with_source(e)
+    })?;
+    envelope.add_ec_pem(kid, &pem, Algorithm::ES256)?;
+
+    // The contracts' issuer is a separate trust decision from the courier's
+    // envelope key, so it is loaded separately — falling back to the envelope key
+    // only when the operator says they are the same.
+    let contract_keys = {
+        let path = args.get("issuer-pub").unwrap_or(require(args, "envelope-pub")?);
+        let pem = std::fs::read(path).map_err(|e| {
+            WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+        })?;
+        let mut keys = IssuerKeys::new();
+        keys.add_ec_pem(kid, &pem, Algorithm::ES256)?;
+        keys
+    };
+
+    let ts = args.number("now").unwrap_or_else(now);
+    let imported = wc_control::bundle::import_file(
+        std::path::Path::new(path),
+        &envelope,
+        &contract_keys,
+        mediator,
+        ts,
+    )?;
+
+    println!("bundle      {path}");
+    println!("mediator    {}", imported.mediator_id);
+    println!(
+        "expires     {} (in {})",
+        imported.exp,
+        human_duration(imported.remaining)
+    );
+    println!("contracts   {} verified", imported.contracts.len());
+    if !imported.rejected.is_empty() {
+        println!(
+            "            {} rejected: {}",
+            imported.rejected.len(),
+            imported
+                .rejected
+                .iter()
+                .map(|(i, c)| format!("#{i} {c}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!(
+        "revocations {} (feed head {})",
+        imported.revocations, imported.revocation_head
+    );
+    if !imported.is_clean() {
+        return Err(WcError::with_detail(
+            Code::SIGNATURE_INVALID,
+            format!("{} contract(s) in the bundle did not verify", imported.rejected.len()),
+        ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// bench — the performance gates (§8.10.3)
+// ---------------------------------------------------------------------------
+
+/// Run the CI performance gates.
+///
+/// A latency claim in a design document that is not asserted by a test is a
+/// marketing claim. Exits non-zero on regression.
+fn bench_cmd(args: &Args) -> Result<()> {
+    use wc_control::bench::{measure, thresholds, Report};
+
+    let iterations = args.number("iterations").unwrap_or(500).min(100_000) as usize;
+    let only = args.get("gate");
+    let wanted = |name: &str| only.is_none_or(|g| name.contains(g));
+
+    let mut report = Report::default();
+
+    // wcs1 canonicalisation of a 256-tool surface — the pin path.
+    if wanted("canon") {
+        let tools: Vec<Value> = (0..256)
+            .map(|i| {
+                json!({
+                    "name": format!("tool_{i:03}"),
+                    "description": format!("Operation {i} on the ledger, returning a record."),
+                    "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } } }
+                })
+            })
+            .collect();
+        let raw = json!({ "tools": tools });
+        let entity = EntityId::new("urn:wc:bench")?;
+        report.gates.push(measure(
+            "canon::wcs1 (256 tools)",
+            "canonicalise + pin",
+            thresholds::CANON_256,
+            iterations.min(200),
+            5,
+            || {
+                let _ = canon::canonicalise(SurfaceKind::McpTools, &entity, &raw, &Limits::default());
+            },
+        ));
+    }
+
+    // Screening the same surface — the admission path.
+    if wanted("screen") {
+        let tools: Vec<Value> = (0..256)
+            .map(|i| {
+                json!({
+                    "name": format!("tool_{i:03}"),
+                    "description": format!("Operation {i}. Returns a ledger record for an account."),
+                })
+            })
+            .collect();
+        let entity = EntityId::new("urn:wc:bench")?;
+        let surface = canon::canonicalise(
+            SurfaceKind::McpTools,
+            &entity,
+            &json!({ "tools": tools }),
+            &Limits::default(),
+        )?;
+        let rules = screen::ScreenRules::default();
+        let acceptances = screen::Acceptances::default();
+        let names = screen::NameIndex::empty();
+        let ctx = screen::ScreenCtx {
+            rules: &rules,
+            acceptances: &acceptances,
+            names: &names,
+            entity: &entity,
+            mode: screen::ScreenMode::Flag,
+        };
+        report.gates.push(measure(
+            "screen (256 tools)",
+            "S1-S8 over a full surface",
+            thresholds::SCREEN_256,
+            iterations.min(100),
+            3,
+            || {
+                let _ = screen::screen(&surface, wc_core::model::Tier::THREE, &ctx);
+            },
+        ));
+    }
+
+    // Blast radius over a wide estate — the containment path.
+    if wanted("blast") {
+        let mut projection = wc_control::store::Projection::default();
+        seed_blast_estate(&mut projection, 300)?;
+        let subject = EntityId::new("urn:wc:bench:n0")?;
+        report.gates.push(measure(
+            "assurance::blast_radius",
+            "300 parties, depth 3",
+            thresholds::BLAST_RADIUS,
+            iterations.min(200),
+            3,
+            || {
+                let _ = assurance::blast_radius(&subject, 3, &projection);
+            },
+        ));
+    }
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&serde_json::to_value(&report).map_err(|e| {
+                WcError::with_detail(Code::EXPORT_FAILED, "cannot serialise the report")
+                    .with_source(e)
+            })?)?
+        );
+    } else {
+        println!("gates    {} · {iterations} iterations", report.gates.len());
+        println!();
+        for gate in &report.gates {
+            println!("  {}", gate.line());
+        }
+        if !report.marginal().is_empty() {
+            println!();
+            println!("  marginal gates hold today and are the ones that start failing for");
+            println!("  reasons nobody changed. Investigate before they become a flaky build.");
+        }
+    }
+
+    if !report.passed() {
+        return Err(WcError::with_detail(
+            Code::EXPORT_FAILED,
+            if report.gates.is_empty() {
+                // A run that measured nothing must not exit zero.
+                "no gates ran; `--gate` matched nothing".to_string()
+            } else {
+                format!(
+                    "{} gate(s) regressed: {}",
+                    report.failed().len(),
+                    report
+                        .failed()
+                        .iter()
+                        .map(|g| g.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            },
+        ));
+    }
+    Ok(())
+}
+
+/// A wide estate for the blast-radius gate.
+fn seed_blast_estate(projection: &mut wc_control::store::Projection, parties: u32) -> Result<()> {
+    use wc_core::model::{Entity, HumanRef, Kind, Tier, ZoneId};
+
+    let owner = HumanRef::new("human:bench")?;
+    let zone = ZoneId::new("internal.bench")?;
+    for i in 0..parties {
+        let id = EntityId::new(format!("urn:wc:bench:n{i}"))?;
+        let mut e = Entity::pending(id.clone(), Kind::McpServer, owner.clone(), zone.clone(), Tier::THREE, 0);
+        e.lifecycle = wc_core::model::Lifecycle::Active;
+        e.service = Some(format!("svc-{}", i % 20));
+        projection.entities.insert(id, e);
     }
     Ok(())
 }
@@ -3651,11 +3989,22 @@ fn standing_state(store: &Store) -> StandingState {
 // ---------------------------------------------------------------------------
 
 /// Accept either `connect show <id>` or `connect show --id <id>`.
+/// The subject of a command, from a positional, a trailing verb, or a flag.
+///
+/// `verbs` holds everything before the first flag, so for a one-word command the
+/// subject is `verbs[1]` and for a two-word one it is `verbs[2]`. Reading a fixed
+/// index makes `bundle verify estate.wcb` resolve its own subcommand name as the
+/// filename — found by running exactly that.
 fn positional_or_flag<'a>(args: &'a Args, flag: &str) -> Result<&'a str> {
     if let Some(v) = args.positional.first() {
         return Ok(v);
     }
-    if let Some(v) = args.verbs.get(1) {
+    let skip = if TWO_WORD.contains(&args.verb_prefix(2).as_str()) {
+        2
+    } else {
+        1
+    };
+    if let Some(v) = args.verbs.get(skip) {
         return Ok(v);
     }
     require(args, flag)
@@ -3727,6 +4076,14 @@ KEYS  (--keyring keys.toml, default: keys.toml)
   keys retire     --kid KID                       refuses while its contracts are live
   keys note       --kid KID --exp TS              record what a key signed
   keys jwks       [--out FILE]                    what mediators verify against
+
+AIR-GAPPED
+  bundle export   --mediator ID --signing-key PEM --kid KID [--ttl 7d] [--out FILE]
+  bundle verify   <bundle.wcb> --envelope-pub PEM --kid KID --mediator ID
+                  [--issuer-pub PEM]              exit 4 if it does not verify
+
+CI
+  bench           [--iterations N] [--gate NAME] [--json]   exit 1 on regression
   federate <chain.json> --anchors anchors.toml [--now TS] [--json]
                   resolve a partner trust chain
                   exit 4 if it does not verify · 3 if the anchor is stale
@@ -3965,6 +4322,32 @@ mod tests {
         assert_eq!(human_duration(86_400), "1d");
         assert_eq!(human_duration(30 * 86_400), "30d");
         assert_eq!(human_duration(90_000), "1d1h");
+    }
+
+    #[test]
+    fn a_two_word_command_takes_its_subject_after_the_second_word() {
+        // `bundle verify estate.wcb` resolved its own subcommand name as the
+        // filename, because the subject was read from a fixed index.
+        let two = Args::parse(
+            ["bundle", "verify", "estate.wcb"]
+                .iter()
+                .map(|s| (*s).to_string()),
+        );
+        assert_eq!(positional_or_flag(&two, "file").unwrap(), "estate.wcb");
+
+        // One-word commands are unchanged.
+        let one = Args::parse(
+            ["canon", "surface.json"].iter().map(|s| (*s).to_string()),
+        );
+        assert_eq!(positional_or_flag(&one, "file").unwrap(), "surface.json");
+
+        // And a flag still works when no positional was given.
+        let flagged = Args::parse(
+            ["bundle", "verify", "--file", "x.wcb"]
+                .iter()
+                .map(|s| (*s).to_string()),
+        );
+        assert_eq!(positional_or_flag(&flagged, "file").unwrap(), "x.wcb");
     }
 
     #[test]
