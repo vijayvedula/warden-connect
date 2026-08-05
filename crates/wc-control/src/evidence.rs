@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use wc_core::error::{Code, Result, WcError};
 
 use crate::chain::{Chain, ChainReport, Entry, EntryDraft};
-use crate::sink::{Delivery, Sink};
+use crate::sink::{Delivery, EventSink, Sink};
 
 // ---------------------------------------------------------------------------
 // Event kinds
@@ -434,7 +434,7 @@ pub struct Recorded {
 #[derive(Debug)]
 pub struct Evidence {
     chain: Chain,
-    sinks: Vec<Sink>,
+    sinks: Vec<std::sync::Arc<dyn EventSink>>,
 }
 
 impl Evidence {
@@ -460,6 +460,20 @@ impl Evidence {
     /// Attach sinks.
     #[must_use]
     pub fn with_sinks(mut self, sinks: Vec<Sink>) -> Evidence {
+        self.sinks = sinks
+            .into_iter()
+            .map(|s| std::sync::Arc::new(s) as std::sync::Arc<dyn EventSink>)
+            .collect();
+        self
+    }
+
+    /// Attach sinks of any kind, including an estate's own.
+    ///
+    /// The extension point for the database, queue or bus this project
+    /// deliberately does not ship — see [`EventSink`]. Ordering is preserved, and
+    /// blocking sinks still run before anything is committed.
+    #[must_use]
+    pub fn with_event_sinks(mut self, sinks: Vec<std::sync::Arc<dyn EventSink>>) -> Evidence {
         self.sinks = sinks;
         self
     }
@@ -475,7 +489,7 @@ impl Evidence {
     /// Whether any configured sink would block an operation.
     #[must_use]
     pub fn has_blocking_sinks(&self) -> bool {
-        self.sinks.iter().any(|s| s.delivery == Delivery::Blocking)
+        self.sinks.iter().any(|s| s.delivery() == Delivery::Blocking)
     }
 
     /// Record an event: blocking sinks, then the chain, then fail-safe sinks.
@@ -490,7 +504,7 @@ impl Evidence {
         for sink in self
             .sinks
             .iter()
-            .filter(|s| s.delivery == Delivery::Blocking)
+            .filter(|s| s.delivery() == Delivery::Blocking)
         {
             if !sink.accepts(event) {
                 continue;
@@ -501,12 +515,12 @@ impl Evidence {
                     format!(
                         "{}: blocking sink {} unavailable, so the operation is refused",
                         event.kind.as_str(),
-                        sink.name
+                        sink.name()
                     ),
                 )
                 .with_source(e)
             })?;
-            shipped.push(sink.name.clone());
+            shipped.push(sink.name().to_string());
         }
 
         // 2 · the authoritative record.
@@ -519,14 +533,14 @@ impl Evidence {
         for sink in self
             .sinks
             .iter()
-            .filter(|s| s.delivery == Delivery::FailSafe)
+            .filter(|s| s.delivery() == Delivery::FailSafe)
         {
             if !sink.accepts(event) {
                 continue;
             }
             match sink.ship(event, now) {
-                Ok(()) => shipped.push(sink.name.clone()),
-                Err(e) => warnings.push(format!("sink {}: {e}", sink.name)),
+                Ok(()) => shipped.push(sink.name().to_string()),
+                Err(e) => warnings.push(format!("sink {}: {e}", sink.name())),
             }
         }
 
@@ -654,6 +668,65 @@ mod tests {
     }
 
     // --- ordering: blocking before the chain ---
+
+    #[test]
+    fn an_estates_own_sink_receives_events_without_touching_this_crate() {
+        // The promise this trait carries: warden-connect ships no database
+        // adapter, and an estate that wants one implements this instead of
+        // forking. If that only worked for types defined in here, the promise
+        // would be false — so the test defines its own.
+        #[derive(Debug, Default)]
+        struct Collector {
+            seen: std::sync::Mutex<Vec<String>>,
+        }
+        impl crate::sink::EventSink for Collector {
+            fn name(&self) -> &str {
+                "estate-postgres"
+            }
+            fn accepts(&self, event: &LifecycleEvent) -> bool {
+                // A real one would filter; this proves the hook is consulted.
+                event.kind != EventKind::Discover
+            }
+            fn ship(&self, event: &LifecycleEvent, _now: u64) -> Result<()> {
+                self.seen
+                    .lock()
+                    .map_err(|_| {
+                        WcError::with_detail(Code::BLOCKING_SINK_UNAVAILABLE, "poisoned")
+                    })?
+                    .push(event.kind.as_str().to_string());
+                Ok(())
+            }
+            fn delivery(&self) -> Delivery {
+                Delivery::FailSafe
+            }
+        }
+
+        let tmp = TmpDir::new("custom-sink");
+        let collector = std::sync::Arc::new(Collector::default());
+        let mut evidence = Evidence::open(tmp.path())
+            .unwrap()
+            .with_event_sinks(vec![collector.clone()]);
+
+        let recorded = evidence
+            .record(&LifecycleEvent::new(EventKind::Register, "human:priya"), 1_000)
+            .unwrap();
+        assert_eq!(recorded.shipped, vec!["estate-postgres"]);
+
+        // The filter is honoured.
+        evidence
+            .record(&LifecycleEvent::new(EventKind::Discover, "human:priya"), 1_001)
+            .unwrap();
+
+        assert_eq!(
+            *collector.seen.lock().unwrap(),
+            vec!["entity.register"],
+            "the accepted event only"
+        );
+
+        // And the chain still holds both, because a sink is where evidence goes
+        // to be useful, never where it goes to be true.
+        assert_eq!(Evidence::verify(tmp.path(), None).unwrap().entries, 2);
+    }
 
     #[test]
     fn a_failed_blocking_sink_prevents_the_record_entirely() {

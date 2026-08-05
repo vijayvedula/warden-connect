@@ -164,7 +164,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::contain` | Signed revocation feed, mediator fan-out, ACK deadlines (§8.7.7) | 900 | P3 | independent; `ureq` for push |
 | `wc-control::cpolicy` | `connect-policy.toml`: parse, evaluate, lint, dry-run | 1100 | P1 | condition algebra reimplemented to match `policy.rs` syntax exactly |
 | `wc-control::assurance` | Re-attest scheduler, drift classify, posture score, blast radius | 1100 | P2/P3 | — |
-| `wc-control::evidence` | Lifecycle chain, anchors, OCSF/CAEP sinks | 850 | P0 | same formats as `audit`/`anchor`/`sink`/`ocsf`, held by golden vectors |
+| `wc-control::evidence` | Lifecycle chain, anchors, OCSF/CAEP sinks, `EventSink` extension point | 900 | P0 | same formats as `audit`/`anchor`/`sink`/`ocsf`, held by golden vectors |
 | `wc-control::export` | DORA / CPS 230 / OSCAL / CSV / CycloneDX registers | 1180 | P4 | independent; no date crate — `iso8601` is 20 lines |
 | `wc-control::federate` | OpenID-Federation-shaped trust chains, partner resolution | 1080 | P4 | independent; no OIDC discovery — anchors are configured, never fetched |
 | `wc-control::api` | HTTP/1.1 surface, authn, idempotency, rate limits | 900 | P0→ | same shape as `http.rs`/`authzen.rs` |
@@ -2161,13 +2161,66 @@ the exit gates.
 | **P1 · Contract** | `contract`, `cpolicy`, `broker`, `wc-mediator` (`cache`, `gate`, `filter`, `peer`) as an `Upstream` decorator, API connections + approvals, distribution loop | Conformance vectors 100% pass; `tools/list` filtering verified end to end **against unmodified Warden core**; `connect policy dry-run` accurate; verify p99 ≤ 1.5 ms in CI |
 | **P2 · Assure** | `admission` (stages 3–5), `screen`, `assurance` (re-attest, drift, posture); *optionally* propose core's `ConnectionGate` + hashed `cid` (§8.6.1) | Screening precision ≥ 0.98 on the labelled corpus; material drift detected ≤ tier-1 interval; drift suspension exercised in e2e |
 | **P3 · Contain** | quarantine fan-out, ACK tracking, `drain`, CAEP ingest/emit, `blast_radius`, break-glass, `ceiling` (durable spend) | 200-mediator quarantine < 60 s with ACKs; unconfirmed reported; quarterly drill script in the repo |
-| **P4 · Govern** | `zone` (full lattice), `federate`, `export` (DORA/CPS 230/OSCAL), `tenant`, SQL `Store` adapter, air-gapped bundles | Partner federation e2e against a second control plane; DORA register generated in < 1 h at 10⁵ contracts; cross-tenant reference returns `WC-8002` |
+| **P4 · Govern** | `zone` (full lattice), `federate`, `export` (DORA/CPS 230/OSCAL), `tenant`, air-gapped bundles | Partner federation e2e against a second control plane; DORA register generated in < 1 h at 10⁵ contracts; cross-tenant reference returns `WC-8002` |
 
 Dependency order that cannot be reshuffled: `canon` before `admission` (no pin, no
 admission) · `contract` before `mediator` · per-item pins before `assurance` (drift
 classification depends on them) · `evidence` before everything (P0 ships it first
 so no later phase has to retrofit a record). Nothing in this order depends on a
 change to Warden core, or to any other family member.
+
+---
+
+## 8.16b Deliberately not built: a database adapter
+
+**Decision (2026-08-05): warden-connect ships no SQL `Store` adapter, and
+persistence beyond the evidence chain is an integration rather than a feature.**
+
+The append-only log already provides durability (`fdatasync` per append), 
+point-in-time replay (`Projection::as_of`), single-writer safety (`flock`) and a
+tamper-evident chain with signed checkpoints. A SQL adapter would buy operational
+familiarity, not capability — and it would cost an operational dependency:
+backups, migrations, connection pooling, and a second thing to make highly
+available before the control plane can start.
+
+It also moves the evidence chain somewhere an operator with database access can
+rewrite, which is the one property the chain exists to deny.
+
+### What replaces it
+
+[`sink::EventSink`] is the extension point, and it is a trait rather than the
+closed `File | Webhook` enum precisely so this decision is real:
+
+```rust
+pub trait EventSink: Debug + Send + Sync {
+    fn name(&self) -> &str;
+    fn accepts(&self, event: &LifecycleEvent) -> bool;
+    fn ship(&self, event: &LifecycleEvent, now: u64) -> Result<()>;
+    fn delivery(&self) -> Delivery;
+}
+```
+
+An estate that wants its events in Postgres, Kafka, Splunk or an internal bus
+implements this and passes it to `Evidence::with_event_sinks`. No fork, no patch
+to an enum, and — for a plain HTTPS collector — no code at all, since the built-in
+webhook transport already covers it.
+
+Three obligations an implementation carries, stated because they are the ones that
+are easy to get wrong:
+
+- **`delivery()` is a contract, not a hint.** `Blocking` means the operation the
+  caller was about to perform is *refused* when `ship` fails, so a blocking sink
+  must not be something that is routinely unavailable.
+- **`ship` must be idempotent under retry.** A fail-safe sink that errors after a
+  partial write is called again for the *next* event and never for the one it
+  dropped.
+- **The chain is authoritative, not the sink.** A sink is where evidence goes to be
+  useful; it is never where evidence goes to be true. No implementation may assume
+  it holds the only copy.
+
+Asserted by `evidence::tests::an_estates_own_sink_receives_events_without_touching_this_crate`,
+which defines its own sink type outside the sink module — if the extension point
+only worked for types defined inside this crate, the promise above would be false.
 
 ---
 
