@@ -46,6 +46,7 @@ use wc_control::issuance::{
 };
 use wc_control::assurance;
 use wc_control::attest;
+use wc_control::broker;
 use wc_control::screen;
 use wc_control::store::{Actor, Store};
 use wc_core::canon::{self, Limits, SurfaceKind};
@@ -156,6 +157,7 @@ const COMMANDS: &[&str] = &[
     "entities",
     "show",
     "posture",
+    "discover",
     "blast-radius",
     "quarantine",
     "mediators",
@@ -267,6 +269,14 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "show" => &["id"],
         "entities" => &[],
         "posture" => &["unattested", "expiring", "drift", "score", "id"],
+        "discover" => &[
+            "capability",
+            "as",
+            "jurisdiction",
+            "data-class",
+            "policy",
+            "limit",
+        ],
         "blast-radius" => &["id", "depth", "services"],
         "audit verify" => &["anchor-pub"],
         "export" => &["format", "as-of", "id", "anchor-pub", "out"],
@@ -431,6 +441,7 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "entities" => entities(args)?,
         "show" => show(args)?,
         "posture" => posture(args)?,
+        "discover" => discover_cmd(args)?,
         "blast-radius" => blast_radius_cmd(args)?,
         "quarantine" => quarantine(args)?,
         "mediators" => mediators_cmd(args)?,
@@ -1445,6 +1456,112 @@ fn posture(args: &Args) -> Result<()> {
             println!("  {id}");
         }
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// discover — mediated capability discovery (§8.5.6, UC-03)
+// ---------------------------------------------------------------------------
+
+/// Find who offers a capability, without handing out a catalogue.
+///
+/// The asker is named with `--as` and must itself be registered and active: this
+/// is a mediated directory, not a public one. A result names an entity and its
+/// owner and nothing that would let you reach it — the contract still does that.
+fn discover_cmd(args: &Args) -> Result<()> {
+    let capability = positional_or_flag(args, "capability")?.to_string();
+    let asker = EntityId::new(require(args, "as")?)?;
+    let policy = load_policy(args)?;
+    let store = open_store(args)?;
+    let ts = now();
+
+    let limits = broker::DiscoveryLimits {
+        max_matches: args
+            .number("limit")
+            .unwrap_or(broker::DiscoveryLimits::default().max_matches as u64)
+            .min(1_000) as usize,
+        ..broker::DiscoveryLimits::default()
+    };
+    limits.validate()?;
+
+    let standing = standing_state(&store);
+    let query = broker::Query {
+        capability: capability.clone(),
+        jurisdiction: args.get("jurisdiction").map(str::to_string),
+        data_class: args.get("data-class").map(str::to_string),
+    };
+
+    // Padding is applied around the whole answer so an empty result is not
+    // measurably faster than a full one. It is necessary, not sufficient — see
+    // `broker::Padding` for what a floor cannot cover.
+    let padding = broker::Padding::new(limits.latency_floor_ms);
+    let started = std::time::Instant::now();
+    let result = broker::discover(
+        &query,
+        &asker,
+        &mut broker::Throttle::new(),
+        &broker::BrokerCtx {
+            projection: &store.projection,
+            policy: &policy,
+            standing: &standing,
+            limits: &limits,
+            now: ts,
+        },
+    );
+    padding.apply(started.elapsed());
+    let result = result?;
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "capability": capability,
+                "normalised": broker::CapKey::normalise(&capability).as_str(),
+                "matches": result.matches,
+                "truncated": result.truncated,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "query      {:?}  →  {}",
+        capability,
+        broker::CapKey::normalise(&capability)
+    );
+    if result.matches.is_empty() {
+        // Deliberately the same wording whether nothing matched, everything was
+        // filtered out, or the asker is over budget.
+        println!("matches    none");
+        if result.truncated {
+            println!("           (the answer was cut short)");
+        }
+        return Ok(());
+    }
+
+    println!("matches    {}", result.matches.len());
+    println!();
+    println!(
+        "  {:<44} {:<18} {:<5} {:<22} LIKELY",
+        "ENTITY", "CAPABILITY", "TIER", "OWNER"
+    );
+    for m in &result.matches {
+        println!(
+            "  {:<44} {:<18} {:<5} {:<22} {}",
+            m.entity,
+            m.capability,
+            m.tier,
+            m.owner,
+            m.likely_decision
+        );
+    }
+    if result.truncated {
+        println!();
+        println!("  the answer was cut short; narrow the capability to see more");
+    }
+    println!();
+    println!("  No endpoint is returned. Reaching one of these needs a contract:");
+    println!("    connect request --from {asker} --to <ENTITY> --tools … --justify …");
     Ok(())
 }
 
@@ -3334,6 +3451,8 @@ ESTATE
   activate <id> [--why REASON]
   entities [--json]
   show <id> [--json]
+  discover --capability payments.balance.read --as ID
+           [--jurisdiction SG] [--data-class financial] [--limit N] [--json]
   posture [--unattested] [--expiring] [--score] [--json]
   blast-radius <id> [--depth 3] [--services] [--json]   exit 1 if truncated
   quarantine <id> --reason R [--approver human:a --approver human:b]

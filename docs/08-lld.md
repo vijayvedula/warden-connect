@@ -160,7 +160,7 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::admission` | 7-stage admission pipeline, tier derivation (§8.7.3) | 900 | P0/P2 | independent |
 | `wc-control::attest` | Real stage 1/3/4 verifiers: JWT-SVID, card JWS, DSSE/SLSA | 800 | P2 | independent; `jsonwebtoken::crypto` for raw verification |
 | `wc-control::screen` | Declared-surface injection screening (§8.7.4) | 1540 | P2 | — |
-| `wc-control::broker` | Capability index, mediated discovery, anti-enumeration | 380 | P1 | — |
+| `wc-control::broker` | Capability index, mediated discovery, anti-enumeration | 1050 | P1 | — |
 | `wc-control::contain` | Signed revocation feed, mediator fan-out, ACK deadlines (§8.7.7) | 900 | P3 | independent; `ureq` for push |
 | `wc-control::cpolicy` | `connect-policy.toml`: parse, evaluate, lint, dry-run | 1100 | P1 | condition algebra reimplemented to match `policy.rs` syntax exactly |
 | `wc-control::assurance` | Re-attest scheduler, drift classify, posture score, blast radius | 1100 | P2/P3 | — |
@@ -570,9 +570,32 @@ Anti-enumeration is four concrete mechanics, not an aspiration:
    non-empty path (±jitter) so timing does not leak existence. Cheap, and it
    closes the only side channel the shaping leaves open.
 
-`CapKey` is derived at admission from tool names, descriptions and declared
-capability tags via a deterministic normalisation (lowercase, dot-segmented,
-stop-words removed). It is a search key, never an authority key.
+`CapKey` is derived from tool names, the business service and declared data
+classes via a deterministic normalisation (lowercase, dot-segmented, stop-words
+removed). It is a search key, never an authority key.
+
+**Descriptions are deliberately not indexed**, which is a change from the original
+sketch. Descriptions are attacker-controlled text — that is the entire premise of
+`screen` — and letting them steer discovery would let a poisoned description
+advertise itself into other teams' searches.
+
+Matching requires **every query token to be present**, not a substring: `bal` must
+not find `balance`, because a search that returns surprising things is one people
+stop trusting.
+
+Two implementation notes on the anti-enumeration mechanics:
+
+- **Truncation is one flag for two causes.** Over-budget and over-cap both return
+  `truncated: true` with the same shape, because a caller who can tell "you are
+  throttled" from "there are more results" can binary-search the estate by
+  watching which one they get. The `considered` count is an operator metric and is
+  asserted absent from the serialised summary.
+- **Padding is necessary, not sufficient, and says so.** `Padding::plan` returns
+  `exceeded: true` when the work took longer than the floor, because a floor cannot
+  pad *down*. Silently failing to mask is worse than not padding — it is the same
+  signal, plus a belief that it was covered. TLS record sizes, body length and
+  HTTP framing still vary with the answer; closing those is a transport concern
+  this module cannot reach.
 
 ### 8.5.7 `wc-control::assurance` — scheduler, drift, posture, blast radius
 

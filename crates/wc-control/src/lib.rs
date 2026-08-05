@@ -17,6 +17,7 @@ pub mod admission;
 pub mod api;
 pub mod assurance;
 pub mod attest;
+pub mod broker;
 pub mod chain;
 pub mod contain;
 pub mod cpolicy;
