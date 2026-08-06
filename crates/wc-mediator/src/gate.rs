@@ -108,6 +108,36 @@ enum State {
     /// Refused. Terminal for this connection — a denied connection does not get
     /// to retry its way in.
     Denied(Code, String),
+    /// There is no contract for this pair and this mediator is observing, so the
+    /// traffic passes and the absence is the finding (§8.5 UC-08).
+    ///
+    /// This is the shadow case, and it is deliberately narrow: only an *absent*
+    /// contract lands here. A contract that resolves and then fails a closed check
+    /// — revoked, pin mismatch, zone crossing — is a different fact from no
+    /// contract at all, and the taxonomy closes on those in both modes.
+    Observed(Code, String),
+}
+
+/// Something the mediator would have refused had it been enforcing.
+///
+/// Observe mode is not a lenient enforcement mode; it is a deployment where the
+/// mediator has no mandate to gate. The findings are its entire output.
+#[derive(Debug, Clone)]
+pub struct Finding {
+    /// The code that would have been returned in enforce mode.
+    pub code: Code,
+    /// Why.
+    pub detail: String,
+    /// The tool, when the finding is about one call rather than the connection.
+    pub tool: Option<String>,
+    /// Whether the traffic went through anyway.
+    ///
+    /// The pair (code, allowed) is the whole story: the same code means "this was
+    /// wrong and I stopped it" when enforcing and "this was wrong and I let it
+    /// through" when observing. A finding that recorded only the code would leave a
+    /// reader unable to tell those apart, which is the difference between an
+    /// incident and an inventory.
+    pub allowed: bool,
 }
 
 /// What the mediator observed on a connection, for the evidence record.
@@ -119,8 +149,23 @@ pub struct ConnectionLog {
     pub filtered: Vec<(String, FilterStat)>,
     /// Calls refused, with the code.
     pub denials: Vec<(String, Code)>,
+    /// What was wrong with this connection, in both modes. Each carries whether the
+    /// traffic was stopped, so the same list serves the observe-mode inventory and
+    /// the enforce-mode incident.
+    pub findings: Vec<Finding>,
     /// Calls forwarded.
     pub forwarded: u64,
+}
+
+impl ConnectionLog {
+    /// Whether this connection ran without a contract. True only in observe mode;
+    /// in enforce the connection would have been refused instead.
+    #[must_use]
+    pub fn is_shadow(&self) -> bool {
+        self.findings
+            .iter()
+            .any(|f| f.code == Code::NO_CONTRACT && f.allowed)
+    }
 }
 
 /// The decorator: wraps the real upstream so the connection is verified, the
@@ -199,6 +244,42 @@ impl MediatedUpstream {
         }
     }
 
+    /// Refuse the connection, and record why.
+    ///
+    /// The recording is not decoration. UC-08 asks for the enforce-mode refusal to
+    /// be *raised as an incident*, and a refusal that leaves nothing in the
+    /// connection log cannot be. The subsequent refusals on the same connection are
+    /// consequences of this one, so only the transition is recorded — a denied
+    /// connection that retries a hundred times is one finding, not a hundred.
+    fn deny(&mut self, code: Code, detail: &str) {
+        self.state = State::Denied(code, detail.to_string());
+        self.log.findings.push(Finding {
+            code,
+            detail: detail.to_string(),
+            tool: None,
+            allowed: false,
+        });
+    }
+
+    /// No contract, and nothing to do about it here: record the finding and let the
+    /// traffic through untouched.
+    ///
+    /// The forwarding is the point. P0 ships the mediator in observe mode onto live
+    /// paths to find out what is already talking to what, and its exit criterion is
+    /// *zero behaviour change measured on the proxy path* (§8.16). A mediator that
+    /// refused uncontracted traffic while calling itself an observer would be the
+    /// worst version of this: it reads as configured, and it breaks production.
+    fn observe(&mut self, req: &Request, code: Code, detail: &str, tool: Option<String>) -> Response {
+        self.log.findings.push(Finding {
+            code,
+            detail: detail.to_string(),
+            tool,
+            allowed: true,
+        });
+        self.log.forwarded += 1;
+        self.inner.request(req)
+    }
+
     /// `initialize`: resolve the contract and run every check that does not need
     /// the tool list.
     fn on_initialize(&mut self, req: &Request) -> Response {
@@ -222,7 +303,17 @@ impl MediatedUpstream {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    self.state = State::Denied(e.code(), e.detail().to_string());
+                    if self.cfg.mode == Mode::Observe {
+                        self.state = State::Observed(e.code(), e.detail().to_string());
+                        self.log.findings.push(Finding {
+                            code: e.code(),
+                            detail: e.detail().to_string(),
+                            tool: None,
+                            allowed: true,
+                        });
+                        return response;
+                    }
+                    self.deny(e.code(), e.detail());
                     return self.blocked(req, e.code(), e.detail());
                 }
             };
@@ -250,7 +341,7 @@ impl MediatedUpstream {
                 response
             }
             Err(e) => {
-                self.state = State::Denied(e.code(), e.detail().to_string());
+                self.deny(e.code(), e.detail());
                 self.blocked(req, e.code(), e.detail())
             }
         }
@@ -294,12 +385,26 @@ impl MediatedUpstream {
         let items = match &self.state {
             State::Live { admitted, .. } => permitted_for(admitted, catalog),
             State::Denied(code, detail) => return self.blocked(req, *code, detail),
+            State::Observed(code, detail) => {
+                let (code, detail) = (*code, detail.clone());
+                // Unfiltered on purpose: with no contract there is no allowlist to
+                // filter against, and an empty catalogue is a behaviour change.
+                return self.observe(req, code, &detail, None);
+            }
             State::New => {
+                if self.cfg.mode == Mode::Observe {
+                    return self.observe(
+                        req,
+                        Code::NO_CONTRACT,
+                        "catalogue requested before any handshake",
+                        None,
+                    );
+                }
                 return self.blocked(
                     req,
                     Code::NO_CONTRACT,
                     "no connection: call initialize first",
-                )
+                );
             }
         };
 
@@ -312,7 +417,7 @@ impl MediatedUpstream {
                 match self.pin_from_catalog(&result) {
                     Ok(pin) => {
                         if let Err(e) = self.verify_pin(&pin) {
-                            self.state = State::Denied(e.code(), e.detail().to_string());
+                            self.deny(e.code(), e.detail());
                             self.log
                                 .denials
                                 .push((catalog.method().to_string(), e.code()));
@@ -322,7 +427,7 @@ impl MediatedUpstream {
                     Err(e) => {
                         // A surface we cannot canonicalise cannot be compared to a
                         // pin, so it cannot be trusted.
-                        self.state = State::Denied(e.code(), e.detail().to_string());
+                        self.deny(e.code(), e.detail());
                         return self.blocked(req, e.code(), e.detail());
                     }
                 }
@@ -372,12 +477,21 @@ impl MediatedUpstream {
                 pin_verified,
             } => (admitted.cid.as_str().to_string(), !*pin_verified),
             State::Denied(code, detail) => return self.blocked(req, *code, detail),
+            State::Observed(code, detail) => {
+                let (code, detail) = (*code, detail.clone());
+                let tool = parse_tool_call(&req.params).map(|(n, _)| n);
+                return self.observe(req, code, &detail, tool);
+            }
             State::New => {
+                if self.cfg.mode == Mode::Observe {
+                    let tool = parse_tool_call(&req.params).map(|(n, _)| n);
+                    return self.observe(req, Code::NO_CONTRACT, "call before any handshake", tool);
+                }
                 return self.blocked(
                     req,
                     Code::NO_CONTRACT,
                     "no connection: call initialize first",
-                )
+                );
             }
         };
         let _ = cid;
@@ -386,7 +500,7 @@ impl MediatedUpstream {
         // ourselves and check the pin before anything is forwarded.
         if needs_pin {
             if let Err(e) = self.verify_pin_lazily() {
-                self.state = State::Denied(e.code(), e.detail().to_string());
+                self.deny(e.code(), e.detail());
                 self.log.denials.push((
                     parse_tool_call(&req.params)
                         .map(|(n, _)| n)
@@ -415,6 +529,10 @@ impl MediatedUpstream {
         let admitted = match &self.state {
             State::Live { admitted, .. } => admitted.clone(),
             State::Denied(code, detail) => return self.blocked(req, *code, detail),
+            State::Observed(code, detail) => {
+                let (code, detail) = (*code, detail.clone());
+                return self.observe(req, code, &detail, Some(tool));
+            }
             State::New => return self.blocked(req, Code::NO_CONTRACT, "no connection"),
         };
 
@@ -493,7 +611,7 @@ impl Upstream for MediatedUpstream {
                 // unrecognised method must not be a way to reach an upstream the
                 // agent has no contract for.
                 None => match &self.state {
-                    State::Live { .. } => self.inner.request(req),
+                    State::Live { .. } | State::Observed(_, _) => self.inner.request(req),
                     State::Denied(code, detail) => self.blocked(req, *code, detail),
                     State::New => self.inner.request(req),
                 },

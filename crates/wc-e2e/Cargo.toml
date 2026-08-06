@@ -1,0 +1,30 @@
+[package]
+name = "wc-e2e"
+description = "End-to-end scenarios, one per use case (docs/08-lld.md §8.15.4) and the failure-injection matrix (§8.15.5)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Nothing ships from here. The crate exists so the top of the test pyramid can
+# reach *both* planes at once — no shipped crate depends on both wc-control and
+# wc-mediator, and adding such a dependency to make testing convenient would
+# undo the independence the split exists for (§8.3).
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+wc-core = { path = "../wc-core" }
+wc-control = { path = "../wc-control" }
+wc-mediator = { path = "../wc-mediator" }
+warden = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+jsonwebtoken = { workspace = true }
+
+[lints]
+workspace = true

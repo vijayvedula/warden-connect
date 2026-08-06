@@ -37,7 +37,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use wc_core::contract::{Delegation, EvidenceTerms, Surface, Terms};
-use wc_core::error::{Code, Result, WcError};
+use wc_core::error::{Code, Mode, Result, WcError};
 use wc_core::model::{Entity, HumanRef, Lifecycle, Posture, Tier, TrustLevel, ZoneId};
 use wc_core::zone::ZoneLattice;
 
@@ -1182,7 +1182,40 @@ impl ConnectPolicy {
             dual_control = true;
         }
 
-        // --- 5 · standing-policy caps: may only downgrade ---
+        // --- 5 · posture: an unproven party is never standing work ---
+        //
+        // Quarantine is refused above, structurally. Everything short of `Attested`
+        // is different: it is a fact an approver needs, not a decision the policy
+        // can make. So it escalates and names itself.
+        //
+        // The mediator's check 9 refuses these connections anyway (`WC-3109`), which
+        // is exactly why this belongs here too. Without it, standing policy mints a
+        // contract that can never carry a call — the register shows a live
+        // connection, every request fails, and nobody was ever asked. Failing closed
+        // downstream is not a reason to issue blindly upstream.
+        for (role, party) in [("caller", caller), ("callee", callee)] {
+            // `may_connect` already encodes the fail-closed matrix (§7.8). Asked with
+            // `Enforce`, it answers "attested only" — the rule lives in one place
+            // rather than being restated here.
+            if party.posture.may_connect(Mode::Enforce) {
+                continue;
+            }
+            if decision == ConnDecision::Allow {
+                decision = ConnDecision::RequireApproval;
+            }
+            let note = format!(
+                "{role} {} posture is {:?}, not attested",
+                party.id, party.posture
+            );
+            reason = if reason.starts_with("default ") {
+                note
+            } else {
+                format!("{reason}; {note}")
+            };
+            trace.push(format!("posture[{role}:{:?}]", party.posture).to_lowercase());
+        }
+
+        // --- 6 · standing-policy caps: may only downgrade ---
         if decision == ConnDecision::Allow {
             if let Some(why) = self.standing.blocks(req, callee, state, now) {
                 decision = ConnDecision::RequireApproval;
@@ -1814,6 +1847,102 @@ decision = "allow"
             .evaluate(&request(&["get_balance"]), &caller(), &b, &state(), NOW)
             .unwrap_err();
         assert_eq!(err.code(), Code::ILLEGAL_TRANSITION);
+    }
+
+    // --- posture ---
+
+    #[test]
+    fn an_unattested_party_is_never_standing_work() {
+        // The auto-approved majority is the whole point of standing policy, and the
+        // whole risk in it. This is the case that must not slip through: a callee
+        // whose re-attestation just failed, on a request that otherwise qualifies.
+        let p = policy();
+        let base = p
+            .evaluate(
+                &request(&["get_balance", "list_transactions"]),
+                &caller(),
+                &callee(Tier::THREE),
+                &state(),
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(base.decision, ConnDecision::Allow, "the baseline must auto-approve");
+
+        for posture in [Posture::Unattested, Posture::Degraded] {
+            let mut c = callee(Tier::THREE);
+            c.posture = posture;
+            let eval = p
+                .evaluate(
+                    &request(&["get_balance", "list_transactions"]),
+                    &caller(),
+                    &c,
+                    &state(),
+                    NOW,
+                )
+                .unwrap();
+            assert_eq!(
+                eval.decision,
+                ConnDecision::RequireApproval,
+                "{posture:?} must reach a human"
+            );
+            // And the human must be told which fact they are weighing. Escalating
+            // without naming the reason asks somebody to approve blind, which is a
+            // rubber stamp with an audit trail.
+            assert!(
+                eval.reason.contains("not attested"),
+                "{posture:?}: {}",
+                eval.reason
+            );
+            assert!(eval.trace.contains("posture["), "{}", eval.trace);
+        }
+    }
+
+    #[test]
+    fn an_unattested_caller_escalates_too() {
+        // Both ends. A caller whose identity can no longer be proved is the same
+        // problem from the other side.
+        let p = policy();
+        let mut a = caller();
+        a.posture = Posture::Degraded;
+        let eval = p
+            .evaluate(
+                &request(&["get_balance", "list_transactions"]),
+                &a,
+                &callee(Tier::THREE),
+                &state(),
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(eval.decision, ConnDecision::RequireApproval);
+        assert!(eval.reason.contains("caller"), "{}", eval.reason);
+    }
+
+    #[test]
+    fn posture_does_not_upgrade_a_denial() {
+        // The posture step may only tighten. A rule that denied must stay denied
+        // however the postures read, or an unproven party would be a way out of a
+        // deny rule.
+        let p = policy();
+        let mut c = entity(
+            "spiffe://org/ns/tools/sa/public-scraper",
+            "public.internet",
+            Tier::THREE,
+            &["get_balance"],
+        );
+        let denied = p
+            .evaluate(&request(&["get_balance"]), &caller(), &c, &state(), NOW)
+            .unwrap();
+        assert_eq!(denied.decision, ConnDecision::Deny);
+
+        c.posture = Posture::Degraded;
+        let still = p
+            .evaluate(&request(&["get_balance"]), &caller(), &c, &state(), NOW)
+            .unwrap();
+        assert_eq!(
+            still.decision,
+            ConnDecision::Deny,
+            "posture must not open a denied path"
+        );
     }
 
     // --- the standing-policy path ---
