@@ -1,0 +1,1 @@
+{"head_seq":1,"head_digest":"sha256:aa","events":[{"event":{"seq":1,"kind":"party","id":"spiffe://org/ns/agents/sa/recon","reason":"SOC-1","at":1785312500},"jws":"not.a.signature","kid":"revoke-1"}]}

@@ -1,0 +1,1 @@
+{"head_seq":3,"head_digest":"sha256:aa","events":[{"event":{"seq":1,"kind":"party","id":"x","reason":"r","at":1},"jws":"a.b.c","kid":"revoke-1"},{"event":{"seq":3,"kind":"connection","cid":"conn_00000003","reason":"r","at":1},"jws":"a.b.c","kid":"revoke-1"}]}

@@ -1,0 +1,21 @@
+default = "require_approval"
+version = "connect-policy@v1"
+
+[[zone]]
+id = "internal.payments"
+trust = "internal"
+
+[[zone]]
+id = "partner.acme"
+trust = "partner"
+assurance = { identity = "required", ttl_max = "7d", approval = "human" }
+
+[standing]
+reviewed_at = 1785312500
+min_callee_tier = 3
+
+[[rules]]
+caller_zone = "internal.*"
+callee_zone = "internal.*"
+decision = "allow"
+ttl_max = "30d"

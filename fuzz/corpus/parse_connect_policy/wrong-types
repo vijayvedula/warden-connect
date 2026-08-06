@@ -1,0 +1,4 @@
+default = "deny"
+[[rules]]
+surface = { write = "not a bool" }
+decision = "allow"

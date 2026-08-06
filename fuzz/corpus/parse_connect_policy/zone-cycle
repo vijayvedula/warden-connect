@@ -1,0 +1,9 @@
+default = "deny"
+[[zone]]
+id = "a"
+trust = "internal"
+parent = "b"
+[[zone]]
+id = "b"
+trust = "internal"
+parent = "a"

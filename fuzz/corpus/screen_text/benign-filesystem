@@ -1,0 +1,1 @@
+Read the complete contents of a file from the filesystem. Only paths within the configured allowed directories can be read.

@@ -1,0 +1,1 @@
+{"name":"recon","description":"Nightly reconciliation.","skills":[{"id":"payments-recon","name":"Reconcile","description":"Match postings."}],"version":"1.2.0"}
