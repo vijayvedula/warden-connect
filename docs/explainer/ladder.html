@@ -1,0 +1,1978 @@
+<title>The Ladder at Aldgate Group</title>
+
+<style>
+  :root {
+    --ground:  #151816;
+    --surface: #1d211e;
+    --raised:  #252a26;
+    --ink:     #e7eae5;
+    --muted:   #929a91;
+    --faint:   #6f776e;
+    --rule:    #2f352f;
+    --brass:   #d8a63e;
+    --brass-w: #2e2617;
+    --teal:    #64b3bd;
+    --teal-w:  #16292c;
+    --alarm:   #e0705a;
+    --alarm-w: #2e1c17;
+
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", "Roboto Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+
+    --col: 40rem;
+    --wide: 68rem;
+    --plate: 78rem;
+    color-scheme: dark;
+  }
+
+  /* A deliberate single visual world: ink on slate, as if the whiteboard were
+     photographed at night. The light theme is not missing, it is declined. */
+
+  .page {
+    background: var(--ground);
+    background-image:
+      radial-gradient(120% 70% at 50% 0%, #1b201c 0%, var(--ground) 62%);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 1.0625rem;
+    line-height: 1.65;
+    margin: 0 auto;
+    padding: 0 1.25rem 7rem;
+    max-width: 100%;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .col   { max-width: var(--col);   margin-inline: auto; }
+  .wide  { max-width: var(--wide);  margin-inline: auto; }
+  .plate { max-width: var(--plate); margin-inline: auto; }
+
+  .page p, .page ul, .page ol { margin: 0 0 1.15rem; }
+  .page li { margin-bottom: .45rem; }
+  .page strong { font-weight: 600; }
+  .page a { color: var(--teal); text-underline-offset: 2px; }
+  .page a:focus-visible, .page button:focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
+
+  code, .mono { font-family: var(--mono); font-size: .855em; font-variant-ligatures: none; }
+  p code, li code, td code { background: var(--raised); border-radius: 3px; padding: .08em .32em; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--faint); margin: 0 0 .6rem;
+  }
+
+  /* ---- hero ---------------------------------------------------------- */
+  .hero { padding: 4.5rem 0 1rem; }
+  .hero h1 {
+    font-size: clamp(2.3rem, 6vw, 3.9rem);
+    line-height: 1.03; letter-spacing: -.023em; font-weight: 500;
+    margin: 0 0 1.3rem; text-wrap: balance;
+  }
+  .hero h1 .accent { color: var(--brass); }
+  .lede { font-size: 1.22rem; line-height: 1.55; color: var(--muted); margin-bottom: 1.5rem; }
+  .lede strong { color: var(--ink); font-weight: 500; }
+  .byline {
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .06em;
+    color: var(--faint); border-top: 1px solid var(--rule); padding-top: .9rem;
+    display: flex; flex-wrap: wrap; gap: .35rem 1.4rem;
+  }
+
+  /* ---- structure ----------------------------------------------------- */
+  .band { padding: 3.4rem 0; }
+  .band + .band { border-top: 1px solid var(--rule); }
+  h2 {
+    font-size: clamp(1.55rem, 3.3vw, 2.05rem); line-height: 1.16;
+    letter-spacing: -.014em; font-weight: 500; margin: 0 0 1.2rem; text-wrap: balance;
+  }
+  h3 {
+    font-family: var(--sans); font-size: .95rem; font-weight: 650;
+    letter-spacing: -.005em; margin: 2.1rem 0 .7rem;
+  }
+  .num {
+    font-family: var(--mono); font-size: .74rem; color: var(--brass);
+    letter-spacing: .12em; display: block; margin-bottom: .5rem; text-transform: uppercase;
+  }
+
+  .aside {
+    font-family: var(--sans); font-size: .875rem; line-height: 1.58; color: var(--muted);
+    border-left: 2px solid var(--brass); padding: .1rem 0 .1rem 1rem; margin: 1.7rem 0;
+  }
+  .aside strong { color: var(--ink); }
+
+  .kicker {
+    font-family: var(--sans); font-size: 1.04rem; line-height: 1.5; font-weight: 550;
+    letter-spacing: -.01em; margin: 2rem 0; padding: 1.15rem 1.3rem;
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 2px;
+  }
+  .kicker .lbl {
+    display: block; font-family: var(--mono); font-weight: 400; font-size: .67rem;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--brass); margin-bottom: .5rem;
+  }
+
+  .cmd {
+    font-family: var(--mono); font-size: .77rem; line-height: 1.65;
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 2px;
+    padding: .65rem .8rem; margin: 0 0 .8rem; overflow-x: auto; white-space: pre; color: var(--ink);
+  }
+  .cmd .c { color: var(--faint); }
+  .cmd .out { color: var(--teal); }
+  .cmd .bad { color: var(--alarm); }
+
+  .tags { display: flex; flex-wrap: wrap; gap: .4rem .5rem; font-family: var(--sans); font-size: .78rem; }
+  .tag {
+    border: 1px solid var(--rule); border-radius: 999px; padding: .15rem .62rem;
+    color: var(--muted); background: var(--surface); white-space: nowrap;
+  }
+  .tag.get  { border-color: var(--teal);  color: var(--teal);  background: var(--teal-w); }
+  .tag.cost { border-color: var(--brass); color: var(--brass); background: var(--brass-w); }
+  .tag.bad  { border-color: var(--alarm); color: var(--alarm); background: var(--alarm-w); }
+  .tag.stop { font-family: var(--mono); font-size: .71rem; letter-spacing: .03em; }
+
+  /* ---- drawn plates -------------------------------------------------- */
+  /* Every rule below that sets a margin shorthand on an element also carrying
+     `.col` / `.wide` / `.plate` must keep `auto` on the inline axis, or the
+     shorthand silently cancels the centring those classes provide. */
+  figure.plate-fig { margin: 2.2rem auto 1.4rem; }
+  .ink { width: 100%; height: auto; display: block; overflow: visible; }
+  .ink text { font-family: var(--mono); fill: var(--muted); }
+  .ink .t-lab  { font-size: 13px; letter-spacing: .06em; }
+  .ink .t-cap  { font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase; fill: var(--faint); }
+  .ink .t-big  { font-family: var(--serif); font-size: 19px; fill: var(--ink); letter-spacing: 0; }
+  .ink .t-note { font-family: var(--sans); font-size: 12.5px; fill: var(--muted); letter-spacing: 0; }
+  figcaption {
+    font-family: var(--sans); font-size: .8rem; line-height: 1.55; color: var(--muted);
+    margin-top: .5rem; max-width: 36rem;
+  }
+  figcaption b { color: var(--ink); font-weight: 600; }
+
+  /* draw-on animation */
+  .ink [data-len] { stroke-dasharray: var(--len); stroke-dashoffset: var(--len); }
+  .ink.on [data-len] { animation: dash .75s cubic-bezier(.3,.8,.4,1) forwards; animation-delay: var(--d); }
+  .ink [data-fade] { opacity: 0; }
+  .ink.on [data-fade] { animation: fade .5s ease forwards; animation-delay: calc(var(--d) + .18s); }
+  @keyframes dash { to { stroke-dashoffset: 0; } }
+  @keyframes fade { to { opacity: var(--o, 1); } }
+
+  /* ---- act I: the ladder rail ---------------------------------------- */
+  .act1 { position: relative; }
+  .rail {
+    position: sticky; top: 0; float: left;
+    width: 6.5rem; height: 100vh; margin-left: -8.5rem;
+    display: flex; align-items: center; pointer-events: none;
+  }
+  .rail svg { width: 100%; height: 62vh; overflow: visible; }
+  .rail .climber { transition: transform .35s cubic-bezier(.3,.8,.4,1); }
+  @media (max-width: 1180px) { .rail { display: none; } }
+
+  .rungsec { padding: 2.8rem 0; border-top: 1px solid var(--rule); }
+  .rungsec:first-of-type { border-top: 0; }
+  .rung-head { display: flex; align-items: baseline; gap: .9rem; margin-bottom: .3rem; }
+  .rung-n {
+    font-family: var(--mono); font-size: 2.1rem; line-height: 1; color: var(--brass);
+    font-variant-numeric: tabular-nums;
+  }
+  .rung-when {
+    font-family: var(--mono); font-size: .69rem; letter-spacing: .11em;
+    text-transform: uppercase; color: var(--faint);
+  }
+  .rungsec h3.rt {
+    font-family: var(--serif); font-size: clamp(1.35rem, 2.8vw, 1.7rem); font-weight: 500;
+    letter-spacing: -.012em; margin: .15rem 0 1rem; color: var(--ink);
+  }
+  .who-strip {
+    display: flex; align-items: center; gap: .55rem; font-family: var(--mono);
+    font-size: .72rem; letter-spacing: .05em; color: var(--faint);
+    border-top: 1px solid var(--rule); padding-top: .6rem; margin-bottom: 1.1rem;
+  }
+  .who-strip b { color: var(--teal); font-weight: 400; }
+
+  /* ---- cast ---------------------------------------------------------- */
+  /* Nine cards, so three columns divide exactly. The grid keeps the page ground
+     rather than the rule colour, because a trailing empty cell on a rule-coloured
+     grid reads as a tenth, broken card. */
+  .cast { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px;
+          background: var(--ground); margin: 2rem auto; }
+  @media (max-width: 820px) { .cast { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 540px) { .cast { grid-template-columns: minmax(0, 1fr); } }
+  .card { background: var(--ground); padding: 1.1rem 1.15rem; box-shadow: 0 0 0 1px var(--rule); }
+  .card .who { font-family: var(--mono); font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; color: var(--brass); margin-bottom: .4rem; }
+  .card h4 { font-family: var(--sans); font-size: .96rem; font-weight: 620; margin: 0 0 .35rem; letter-spacing: -.01em; }
+  .card p { font-size: .875rem; line-height: 1.5; color: var(--muted); margin: 0 0 .55rem; }
+  .card .verb { font-family: var(--mono); font-size: .72rem; color: var(--ink); display: block;
+                padding-top: .5rem; border-top: 1px solid var(--rule); overflow-x: auto; white-space: pre; }
+
+  /* ---- domain switcher ----------------------------------------------- */
+  .switch { display: flex; flex-wrap: wrap; gap: .4rem; margin: 1.8rem auto 1.2rem; }
+  .switch button {
+    font-family: var(--sans); font-size: .82rem; font-weight: 550; letter-spacing: -.005em;
+    background: var(--surface); color: var(--muted); border: 1px solid var(--rule);
+    border-radius: 2px; padding: .45rem .8rem; cursor: pointer;
+    transition: color .2s ease, border-color .2s ease, background .2s ease;
+  }
+  .switch button:hover { color: var(--ink); border-color: var(--faint); }
+  .switch button[aria-pressed="true"] { color: var(--ground); background: var(--brass); border-color: var(--brass); }
+
+  .domain { display: grid; grid-template-columns: minmax(0,1fr) minmax(0, 20rem); gap: 1.8rem; align-items: start; }
+  @media (max-width: 860px) { .domain { grid-template-columns: minmax(0,1fr); } }
+  .dpanel h4 { font-family: var(--serif); font-size: 1.32rem; font-weight: 500; margin: 0 0 .2rem; letter-spacing: -.012em; }
+  .dpanel .juris { font-family: var(--mono); font-size: .7rem; letter-spacing: .08em; color: var(--faint); text-transform: uppercase; margin-bottom: .9rem; }
+  .dpanel p { font-size: .93rem; color: var(--muted); }
+  .dpanel p strong { color: var(--ink); font-weight: 550; }
+  .spec { border: 1px solid var(--rule); background: var(--surface); border-radius: 2px; }
+  .spec dl { margin: 0; display: grid; grid-template-columns: 7.2rem minmax(0,1fr); }
+  .spec dt {
+    font-family: var(--mono); font-size: .66rem; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--faint); padding: .6rem .5rem .6rem .85rem; border-top: 1px solid var(--rule);
+  }
+  .spec dd {
+    margin: 0; font-family: var(--sans); font-size: .84rem; color: var(--ink);
+    padding: .6rem .85rem .6rem .5rem; border-top: 1px solid var(--rule); line-height: 1.4;
+  }
+  .spec dl > dt:first-of-type, .spec dl > dt:first-of-type + dd { border-top: 0; }
+  .spec dd em { font-style: normal; color: var(--muted); display: block; font-size: .78rem; }
+
+  /* ---- the builder --------------------------------------------------- */
+  .builder { border: 1px solid var(--rule); background: var(--surface); border-radius: 2px; margin: 2.2rem auto; }
+  .bgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 1px; background: var(--rule); }
+  .bcol { background: var(--surface); padding: 1rem 1.1rem 1.15rem; }
+  .bcol > span {
+    display: block; font-family: var(--mono); font-size: .66rem; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--brass); margin-bottom: .7rem;
+  }
+  .opts { display: flex; flex-direction: column; gap: .3rem; }
+  .opts button {
+    font-family: var(--sans); font-size: .82rem; text-align: left; cursor: pointer;
+    background: transparent; color: var(--muted); border: 1px solid transparent;
+    border-radius: 2px; padding: .3rem .5rem; display: flex; gap: .6rem; align-items: baseline;
+    transition: color .18s ease, background .18s ease;
+  }
+  .opts button i {
+    font-family: var(--mono); font-style: normal; font-size: .7rem; color: var(--faint);
+    min-width: 1.6rem; font-variant-numeric: tabular-nums;
+  }
+  .opts button:hover { color: var(--ink); background: var(--raised); }
+  .opts button[aria-pressed="true"] { color: var(--ink); background: var(--raised); border-color: var(--faint); }
+  .opts button[aria-pressed="true"] i { color: var(--brass); }
+
+  .verdict { border-top: 1px solid var(--rule); padding: 1.2rem 1.15rem 1.35rem; }
+  .verdict .status {
+    font-family: var(--mono); font-size: .68rem; letter-spacing: .13em; text-transform: uppercase;
+    display: inline-block; padding: .2rem .6rem; border-radius: 999px; margin-bottom: .8rem;
+  }
+  .verdict[data-status="ok"]    .status { color: var(--teal);  background: var(--teal-w);  border: 1px solid var(--teal); }
+  .verdict[data-status="cost"]  .status { color: var(--brass); background: var(--brass-w); border: 1px solid var(--brass); }
+  .verdict[data-status="bad"]   .status { color: var(--alarm); background: var(--alarm-w); border: 1px solid var(--alarm); }
+  .verdict h4 { font-family: var(--serif); font-size: 1.2rem; font-weight: 500; margin: 0 0 .55rem; letter-spacing: -.01em; }
+  .verdict p { font-size: .91rem; color: var(--muted); margin: 0 0 .7rem; max-width: 44rem; }
+  .verdict p strong { color: var(--ink); font-weight: 550; }
+  .verdict .runs {
+    font-family: var(--mono); font-size: .73rem; color: var(--faint); letter-spacing: .04em;
+    border-top: 1px solid var(--rule); padding-top: .65rem; margin: .9rem 0 0;
+  }
+  .verdict .runs b { color: var(--teal); font-weight: 400; }
+  .bfig { border-top: 1px solid var(--rule); padding: 1rem 1.15rem .4rem; }
+
+  /* ---- tables -------------------------------------------------------- */
+  .tw { overflow-x: auto; margin: 2rem auto; border: 1px solid var(--rule); }
+  table { border-collapse: collapse; width: 100%; font-family: var(--sans); font-size: .845rem; min-width: 48rem; }
+  th, td { text-align: left; padding: .66rem .8rem; border-bottom: 1px solid var(--rule); vertical-align: top; line-height: 1.45; }
+  th { font-family: var(--mono); font-size: .66rem; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); font-weight: 400; background: var(--surface); }
+  tr:last-child td { border-bottom: 0; }
+  td strong { font-weight: 620; }
+  td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--brass); }
+  .ok  { color: var(--teal);  font-family: var(--mono); font-size: .78rem; }
+  .bad { color: var(--alarm); font-family: var(--mono); font-size: .78rem; }
+
+  /* ---- ratchet ------------------------------------------------------- */
+  .ratchet { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 1rem; margin: 2rem auto; }
+  .step { border: 1px solid var(--rule); background: var(--surface); padding: 1.05rem 1.1rem; border-radius: 2px; }
+  .step .n { font-family: var(--mono); font-size: .69rem; letter-spacing: .1em; color: var(--brass); }
+  .step h4 { font-family: var(--sans); font-size: .98rem; font-weight: 620; margin: .35rem 0 .5rem; }
+  .step p { font-size: .87rem; line-height: 1.5; color: var(--muted); margin: 0; }
+  .step.on { border-color: var(--teal); }
+  .step.on .n { color: var(--teal); }
+
+  /* ---- legend -------------------------------------------------------- */
+  /* `.legend > div`, not `.legend div` — the inner wrapper is also a div, and a
+     descendant selector would make it a second grid and put the label beside
+     its own paragraph. */
+  .legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 1.4rem 1.6rem;
+            margin: 1.8rem auto .5rem; font-family: var(--sans); font-size: .84rem; }
+  .legend > div { display: grid; grid-template-columns: 1.5rem 1fr; gap: .7rem; align-items: start; }
+  .legend b { display: block; font-family: var(--mono); font-size: .68rem; letter-spacing: .1em;
+              text-transform: uppercase; margin-bottom: .15rem; font-weight: 400; }
+  .legend p { margin: 0; color: var(--muted); line-height: 1.45; font-size: .82rem; }
+  .swatch { height: 2px; margin-top: .55rem; border-radius: 2px; }
+
+  /* ---- close --------------------------------------------------------- */
+  .close { padding: 3.6rem 0 1rem; }
+  .invariant {
+    font-family: var(--mono); font-size: clamp(.8rem, 2.2vw, 1rem); line-height: 1.75; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--rule); padding: 1.25rem 1.35rem;
+    border-radius: 2px; margin: 0 0 1.5rem; overflow-x: auto; white-space: pre-wrap;
+  }
+  .invariant .op { color: var(--brass); }
+  .fineprint { font-family: var(--sans); font-size: .78rem; color: var(--faint); line-height: 1.55; }
+
+  .rise { opacity: 0; transform: translateY(12px); transition: opacity .6s ease, transform .6s cubic-bezier(.2,.7,.3,1); }
+  .rise.in { opacity: 1; transform: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rise { opacity: 1; transform: none; transition: none; }
+    .ink [data-len] { stroke-dashoffset: 0; }
+    .ink [data-fade] { opacity: 1; }
+    .ink.on [data-len], .ink.on [data-fade] { animation: none; }
+    .rail .climber { transition: none; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="hero col">
+    <p class="eyebrow">warden-connect · the ladder, drawn</p>
+    <h1>Forty thousand engineers,<br>five jurisdictions,<br><span class="accent">one rung at a time</span></h1>
+    <p class="lede">A control plane for agent connections cannot be introduced as a mandate — mandates get routed around. So here is the same ladder as the adoption note, but climbed inside a bank that has <strong>four regulators, six booking centres and no appetite for a big-bang migration</strong>: who climbs it, where each business chooses to stop, and what happens at 03:00 when the domains that never agreed on anything have to act as one.</p>
+    <p class="byline">
+      <span>Five rungs · five domains · one estate</span>
+      <span>Aldgate Group is fictional. The mechanisms are not.</span>
+    </p>
+  </header>
+
+  <figure class="plate-fig plate">
+    <svg class="ink" id="s-hero" role="img" aria-label="A hand-drawn bank tower with a ladder of five rungs leaning against it; a small figure stands at the foot of the ladder holding a laptop."></svg>
+  </figure>
+
+  <section class="band">
+    <div class="col">
+      <span class="num">how to read the ink</span>
+      <h2>Three colours, and each one means something</h2>
+      <p>Nothing on these plates is coloured for decoration. If a line changes colour, the thing it represents has changed category.</p>
+    </div>
+    <div class="col legend">
+      <div><span class="swatch" style="background: var(--brass)"></span><div><b style="color: var(--brass)">brass</b><p>The mechanism. Pins, keys, signatures, contracts, the control plane. Anything warden-connect itself produces or holds.</p></div></div>
+      <div><span class="swatch" style="background: var(--teal)"></span><div><b style="color: var(--teal)">teal</b><p>People and traffic. Humans, agents, tool calls that are permitted to proceed. Movement that is allowed.</p></div></div>
+      <div><span class="swatch" style="background: var(--alarm)"></span><div><b style="color: var(--alarm)">alarm</b><p>Refusal and honesty. A denied call, a severed contract, a drifted pin — and, importantly, a mediator that <em>could not confirm</em>.</p></div></div>
+      <div><span class="swatch" style="background: var(--faint)"></span><div><b style="color: var(--faint)">graphite</b><p>The estate as it already is. Racks, clouds, vaults, org boundaries. Everything that existed before any of this was deployed.</p></div></div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="col">
+      <span class="num">the bank</span>
+      <h2>Aldgate Group, and the nine people who decide whether this works</h2>
+      <p>A group holding company in London, banking licences in four more places, and the usual consequence: <strong>the domains do not report to each other, do not share a deployment pipeline, and do not answer to the same regulator</strong>. Any design that requires them to agree before anything ships will ship nothing.</p>
+      <p>So the interesting question is not how one team adopts this. It is what the estate looks like when five domains adopt <em>different amounts</em> of it, at different speeds — and whether that estate can still act as one bank in an incident.</p>
+    </div>
+
+    <figure class="plate-fig plate">
+      <svg class="ink" id="s-cast" role="img" aria-label="Nine hand-drawn figures standing in a row, each labelled with a name, role and location within Aldgate Group."></svg>
+      <figcaption>The cast. <b>Nobody here has authority over everybody else</b> — which is the constraint the whole design is shaped around.</figcaption>
+    </figure>
+
+    <div class="wide cast">
+      <div class="card"><p class="who">retail &amp; digital · bengaluru</p><h4>Rhea Nadkarni</h4><p>Agent engineer. Ships a reconciliation agent that reads balances. Has never filed a connection ticket that came back in under three weeks, so has stopped filing them.</p><span class="verb">connect canon · request</span></div>
+      <div class="card"><p class="who">group engineering · warsaw</p><h4>Tomas Wierzbicki</h4><p>Platform engineer. Owns the base image and the CI template, which means owning rungs 2 and 4 for four thousand repositories whether or not anyone asked.</p><span class="verb">connect-mediate --contracts …</span></div>
+      <div class="card"><p class="who">corporate &amp; institutional · singapore</p><h4>Aiko Tanabe</h4><p>Security architect. Holds an approver key. Reviews about fifty relationship requests a month, which is survivable only because relationships are reviewed, not calls.</p><span class="verb">connect approve req_… --approver-key</span></div>
+      <div class="card"><p class="who">group soc · follow-the-sun</p><h4>Dele Ajayi</h4><p>Incident analyst. At 03:00 needs the reachable set of a compromised agent, and needs containment to be one verb with proof it landed — not an email to five platform teams.</p><span class="verb">connect quarantine agent:… --reason</span></div>
+      <div class="card"><p class="who">regulatory reporting · frankfurt</p><h4>Margit Sauer</h4><p>Answers the ECB. Needs to say what was permitted on the fourteenth, to the minute, without reconstructing it from a ticketing system that was migrated twice.</p><span class="verb">connect export --as-of · audit verify</span></div>
+      <div class="card"><p class="who">payments core · london</p><h4>Iva Petrova</h4><p>Owns the MCP server everyone depends on. Has never had a list of who calls which of its tools, so every breaking change has been a surprise for somebody.</p><span class="verb">connect posture --drift</span></div>
+      <div class="card"><p class="who">booking centre · zurich</p><h4>Nils Berger</h4><p>Runs a jurisdiction where the control plane is not permitted to be reachable. Enforcement is full strength; the network call is the thing that is forbidden.</p><span class="verb">connect bundle export · verify</span></div>
+      <div class="card"><p class="who">markets &amp; treasury · new york</p><h4>Sofia Reyes</h4><p>Runs an Envoy egress fleet that already exists and will not be duplicated. Will implement the checks in the filter rather than add a hop to a latency budget measured in microseconds.</p><span class="verb">the 19 conformance vectors</span></div>
+      <div class="card"><p class="who">group ciso · london</p><h4>Halima Osman</h4><p>Owns the trust anchors and the one decision that matters: refusing to mandate this before it is useful, so that when enforcement arrives it arrives with consent.</p><span class="verb">the friction budget</span></div>
+    </div>
+  </section>
+
+  <section class="band act1" id="act1">
+    <div class="rail" aria-hidden="true">
+      <svg class="ink" id="s-rail" viewBox="0 0 100 420" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+
+    <div class="col">
+      <span class="num">act one</span>
+      <h2>Rhea climbs</h2>
+      <p>Five rungs. Each is a superset of the last, each is independently valuable, and <strong>each one is a legitimate place to stop forever</strong>. Rhea starts alone, on a laptop in Bengaluru, with permission from nobody.</p>
+      <p>Watch what it costs her at each step. If her total time ever goes up, the rung above it never gets built.</p>
+    </div>
+
+    <div class="col">
+
+      <section class="rungsec">
+        <div class="rung-head"><span class="rung-n">1</span><span class="rung-when">minute one · no state, no server, no registration</span></div>
+        <h3 class="rt">Give a tool surface a name</h3>
+        <p class="who-strip"><b>Rhea</b> · alone · her laptop · nobody informed</p>
+        <p>Aldgate's payments MCP server offers a handful of tools. The first thing warden-connect does is turn that manifest into a <strong>pin</strong>: canonical serialisation of exactly the contracted fields, then a hash. Nothing else in the response is in scope, and nothing in scope is out of it.</p>
+      </section>
+    </div>
+
+    <figure class="plate-fig plate">
+      <svg class="ink" id="s-r1" role="img" aria-label="A tool manifest sheet fed through a box labelled canon, producing a pin with a hash digest; a second sheet from a later day produces a different digest, marked in alarm."></svg>
+      <figcaption>Run it on Tuesday and again on Friday. If a tool <b>description</b> changed — which is exactly where a prompt-injection payload lives — the digest moves and the diff names the tool.</figcaption>
+    </figure>
+
+    <div class="col">
+      <section class="rungsec" style="border-top:0; padding-top:0">
+        <div class="cmd"><span class="c"># a pure function. no config, no daemon, no permission.</span>
+connect canon tools.json --kind mcp
+<span class="out">surface_digest  sha256:230c1f4acb7bf…</span>
+<span class="out">get_balance     sha256:8a1e…   list_transactions  sha256:c40b…</span></div>
+        <div class="tags">
+          <span class="tag get">get: change detection</span>
+          <span class="tag cost">cost: one command</span>
+          <span class="tag stop">↓ stop here: still useful</span>
+        </div>
+      </section>
+
+      <section class="rungsec">
+        <div class="rung-head"><span class="rung-n">2</span><span class="rung-when">hour one · a directory on disk</span></div>
+        <h3 class="rt">Know what you actually have</h3>
+        <p class="who-strip"><b>Rhea</b> → <b>Tomas</b> · a CI step, not a database</p>
+        <p>Register the agents and servers that already exist. State is an append-only log under <code>--root</code> plus an in-memory projection — <strong>a directory, not a database</strong>. There is nothing to provision, which is why Rhea can do it before Tomas has heard of it, and why Tomas can later put it in the pipeline template without migrating anything.</p>
+        <p>Nothing is enforced. What Aldgate gains is the thing no bank has: <strong>a list, with owners</strong>. Every lifecycle transition lands in a tamper-evident hash chain, so the list can prove it was not edited afterwards.</p>
+      </section>
+    </div>
+
+    <figure class="plate-fig plate">
+      <svg class="ink" id="s-r2" role="img" aria-label="A shelf of registered agents and servers linked by a chain, with owners named beneath each; three entities carry a question mark marking them unattested."></svg>
+      <figcaption>The register is honest about its own gaps. <b>The question marks are the point</b> — <code>posture --unattested</code> names every party that cannot yet prove what it claims, rather than quietly treating a claim as a fact.</figcaption>
+    </figure>
+
+    <div class="col">
+      <section class="rungsec" style="border-top:0; padding-top:0">
+        <div class="cmd">connect register server --endpoint https://payments.internal/mcp \
+  --owner human:iva --zone corp.payments --surface tools.json
+connect register agent  --card recon-agent.json --owner human:rhea \
+  --zone retail.apac-ops
+
+connect entities
+connect posture --unattested        <span class="c"># who cannot prove what they claim</span></div>
+        <div class="tags">
+          <span class="tag get">get: the register + evidence</span>
+          <span class="tag cost">cost: a CI step</span>
+          <span class="tag stop">↓ stop here: this is a real deployment</span>
+        </div>
+      </section>
+
+      <section class="rungsec">
+        <div class="rung-head"><span class="rung-n">3</span><span class="rung-when">day one · still entirely local, still just files</span></div>
+        <h3 class="rt">Turn an approval into an artifact</h3>
+        <p class="who-strip"><b>Rhea</b> requests → <b>Aiko</b> signs · seconds, not weeks</p>
+        <p>The core loop. A request names both parties, the exact tools wanted, and why. Policy answers <em>instantly</em> whether it auto-approves — internal, read-only, low tier, and Rhea never waits. Everything else reaches Aiko, and an approval is <strong>a detached signature from a named human's key</strong>, not a row in a table an operator with database access could write.</p>
+        <p>The payoff is the exit code. <code>4</code> means the artifact is not trustworthy. <code>3</code> means you asked for more than the ceiling allows. <code>5</code> means the surface looks poisoned. Aldgate's CI can now fail on the difference <strong>without scraping stderr</strong> — and a contract that expires is a review that actually happens.</p>
+      </section>
+    </div>
+
+    <figure class="plate-fig plate">
+      <svg class="ink" id="s-r3" role="img" aria-label="A request slip travelling from Rhea to Aiko, who signs it with a key; the result is a contract card carrying a seal and an expiry clock, and three exit-code tags."></svg>
+      <figcaption>Aiko approves the <b>relationship</b>, not the call. That is the only reason fifty reviews a month is survivable — and because the signature <em>is</em> the enforcement mechanism, it cannot decay into a filed ticket nobody implemented.</figcaption>
+    </figure>
+
+    <div class="col">
+      <section class="rungsec" style="border-top:0; padding-top:0">
+        <div class="cmd">connect request --from agent:recon --to server:payments \
+  --tools get_balance,list_transactions --justify "nightly reconciliation" \
+  --ttl 30d --issuer-key issuer.pem --kid k1
+<span class="out">req_7f3c  →  require_approval  (write surface: none · callee tier 3)</span>
+
+connect approve req_7f3c --by human:aiko --approver-key aiko.pem
+<span class="out">minted conn_1a9b  →  contract.jws   exp +30d</span></div>
+        <div class="tags">
+          <span class="tag get">get: signed, expiring permission</span>
+          <span class="tag cost">cost: an issuer key</span>
+          <span class="tag stop">↓ stop here: enforcement still optional</span>
+        </div>
+      </section>
+
+      <section class="rungsec">
+        <div class="rung-head"><span class="rung-n">4</span><span class="rung-when">week one · the first rung that changes behaviour</span></div>
+        <h3 class="rt">Put the contract on the path</h3>
+        <p class="who-strip"><b>Tomas</b> ships it in the base image · <b>Rhea</b> changes no config</p>
+        <p><code>connect-mediate</code> is one process composing <strong>unmodified Warden core</strong> with a connect decorator. Rhea's MCP client points where it already pointed. No manifest edit, no second network hop, and — the part that gets it through change advisory — <strong>it starts in <code>--observe</code></strong>, byte-identical to not having deployed it.</p>
+        <p>When it does turn on, two things change. <code>tools/list</code> returns <strong>only the contracted tools</strong>, so the wrong tool cannot be called by accident. And an uncontracted <code>tools/call</code> is refused with <code>WC-4002</code> before the upstream is ever spoken to.</p>
+      </section>
+    </div>
+
+    <figure class="plate-fig plate">
+      <svg class="ink" id="s-r4" role="img" aria-label="Three tools offered by a payments server; two pass through a mediator shield to the agent while the third is refused with error WC-4002 before reaching the upstream."></svg>
+      <figcaption>Verified end to end: with Warden core's own policy set to permit everything, warden-connect alone blocks the uncontracted tool and the upstream logs <b>zero</b> executions of it. The two layers are genuinely independent, which is the whole point of the split.</figcaption>
+    </figure>
+
+    <div class="col">
+      <section class="rungsec" style="border-top:0; padding-top:0">
+        <div class="cmd">connect-mediate --upstream "python payments_server.py" \
+  --mediator-id warden:mediator:retail-apac \
+  --caller agent:recon --callee server:payments \
+  --contract contract.jws --issuer-pub issuer.pub --kid k1 \
+  <span class="c">--observe</span>            <span class="c"># record findings; deny nothing. start here.</span></div>
+        <div class="tags">
+          <span class="tag get">get: deny-by-default</span>
+          <span class="tag cost">cost: a sidecar</span>
+          <span class="tag stop">↓ stop here: no control plane needed</span>
+        </div>
+      </section>
+
+      <section class="rungsec">
+        <div class="rung-head"><span class="rung-n">5</span><span class="rung-when">month one · the estate, not the repo</span></div>
+        <h3 class="rt">Make it estate-wide, and make containment one verb</h3>
+        <p class="who-strip"><b>Halima</b> authorises · <b>Tomas</b> operates · <b>Dele</b> uses it at 03:00</p>
+        <p>Run the control plane. Mediators <strong>pull</strong> their contract sets and acknowledge exactly what they applied — pull, not push, because a lost push is silent whereas a missed pull surfaces as ACK lag you can alert on. In a bank, the difference between those two failure modes is the difference between a control and a belief.</p>
+        <p>Then containment is one verb across the whole estate, under dual control. Every contract the party holds, inbound and outbound, revoked at every mediator, <strong>with per-mediator confirmation</strong>. Mediators that do not confirm are reported as unconfirmed and fail closed themselves — because a containment tool that assumes success manufactures false confidence, which at 03:00 is worse than no tool.</p>
+      </section>
+    </div>
+
+    <figure class="plate-fig plate">
+      <svg class="ink" id="s-r5" role="img" aria-label="A control plane mast with dashed pull arrows from four mediators returning acknowledgements; a quarantine lever severs every contract, and one mediator returns unconfirmed in alarm."></svg>
+      <figcaption>Four mediators confirm. <b>The fifth does not, and says so.</b> An unconfirmed mediator is drawn in alarm because it is the single most important thing on the plate — it is the state that every other tool in this category reports as success.</figcaption>
+    </figure>
+
+    <div class="col">
+      <section class="rungsec" style="border-top:0; padding-top:0">
+        <div class="cmd">connect serve --listen 0.0.0.0:8443 --issuer-key issuer.pem --kid k1
+
+connect-mediate … --contracts https://connect.aldgate.internal --token $T --refresh 5
+<span class="out">1 contract(s) installed, set sha256:230c1f4acb7bf seq 8, acked</span>
+
+connect quarantine agent:recon --reason "SIEM: anomalous egress" \
+  --approver human:dele --approver human:halima      <span class="c"># dual control</span></div>
+        <div class="tags">
+          <span class="tag get">get: sub-minute containment</span>
+          <span class="tag cost">cost: a service to operate</span>
+          <span class="tag stop">— top rung</span>
+        </div>
+      </section>
+    </div>
+
+    <div class="col">
+      <div class="kicker">
+        <span class="lbl">the design rule, restated</span>
+        Every rung must either <em>shrink a surface</em> or <em>shorten a wait</em>. A rung that does neither will be removed by the organisation, whether or not you agree with them.
+      </div>
+      <p>Notice what is not on this ladder: a migration, a mandate, or a step where Rhea's total time goes up. Rung 2 costs a CI step she does not perform by hand, traded against weeks of waiting she no longer does. The friction budget is <strong>net negative</strong> — and it has to be, or rung 4 never gets permission to change behaviour.</p>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="col">
+      <span class="num">the ratchet</span>
+      <h2>Inside every rung that touches traffic, a smaller gradient</h2>
+      <p>And it only turns one way. Rungs 4 and 5 are not a switch; they are a wheel with a pawl.</p>
+    </div>
+    <figure class="plate-fig wide">
+      <svg class="ink" id="s-ratchet" role="img" aria-label="A hand-drawn ratchet wheel with three teeth labelled observe, flag and enforce, and a pawl preventing it from turning back."></svg>
+    </figure>
+    <div class="wide ratchet">
+      <div class="step">
+        <span class="n">mode = observe</span>
+        <h4>Record, deny nothing</h4>
+        <p>Every check runs, every finding is written to the evidence chain, behaviour is byte-identical to not having deployed it. This is where Aldgate discovers the eleven agent connections nobody had recorded.</p>
+      </div>
+      <div class="step">
+        <span class="n">mode = flag</span>
+        <h4>Surface, still permit</h4>
+        <p>Findings become alerts to named owners. Drift, ceiling approach and upcoming expiry reach a human. Nothing is blocked, so nothing breaks — but the organisation starts reacting to the signal.</p>
+      </div>
+      <div class="step on">
+        <span class="n">mode = enforce</span>
+        <h4>Refuse</h4>
+        <p>Uncontracted calls are denied before the upstream is spoken to. Only reachable once the register is populated enough that denial is correct rather than merely loud.</p>
+      </div>
+    </div>
+    <div class="col">
+      <div class="aside"><strong>The order is not a suggestion.</strong> An early build of the issuer hardcoded enforce mode. At rung 2 every party is <code>Unattested</code> — nobody has provenance verification deployed yet — so nothing could ever be minted. Enforcement was demanded before the machinery that satisfies it existed, and the tool failed on first use, for the correct reason, in a way that looked exactly like a bug. Mode is now a <em>deployment property</em>, which is what lets rung 2 exist at all.</div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="col">
+      <span class="num">act two</span>
+      <h2>Five domains, five different answers, and none of them wrong</h2>
+      <p>The ladder is one engineer's path. An estate has many running at once, and where a domain <em>stops</em> is decided less by risk appetite than by three facts about it: who owns the deployment manifest, what the regulator will permit on the network, and whether an enforcement chokepoint already exists.</p>
+      <p>So Aldgate does not roll this out. Five domains each configure it, and the configurations are genuinely different — different rungs, different topologies, different modes, control planes in different places. Pick one.</p>
+    </div>
+
+    <div class="wide">
+      <div class="switch" role="group" aria-label="Aldgate business domains">
+        <button type="button" data-dom="retail"  aria-pressed="true">Retail &amp; Digital</button>
+        <button type="button" data-dom="corp"    aria-pressed="false">Corporate &amp; Institutional</button>
+        <button type="button" data-dom="wealth"  aria-pressed="false">Wealth &amp; Private</button>
+        <button type="button" data-dom="markets" aria-pressed="false">Markets &amp; Treasury</button>
+        <button type="button" data-dom="group"   aria-pressed="false">Group Risk &amp; Audit</button>
+      </div>
+
+      <figure class="plate-fig" style="margin-top:.5rem">
+        <svg class="ink" id="s-domain" role="img" aria-label="A hand-drawn estate map for the selected Aldgate business domain, redrawn on selection."></svg>
+      </figure>
+
+      <div class="domain" id="domain-panel"></div>
+    </div>
+
+    <div class="col">
+      <div class="aside"><strong>Read the row that enforces nothing.</strong> Group Risk runs the register and no data plane at all — truthful inventory, owners, pins, drift detection, an evidence chain, and zero behaviour change. That is a deliberate product decision, and <code>connect posture</code> says so loudly. Honest visibility beats fake enforcement, because nobody investigates something that looks fine.</div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="col">
+      <span class="num">the combination</span>
+      <h2>Build one yourself, and find out where it breaks</h2>
+      <p>Rung, topology and mode are three independent dials, which means most of their combinations are reachable and <strong>some of them are incoherent</strong>. The incoherent ones are the interesting part: nearly all of them are configurations that look deployed, report success, and enforce nothing.</p>
+      <p>Turn the dials.</p>
+    </div>
+
+    <div class="wide builder">
+      <div class="bgrid">
+        <div class="bcol">
+          <span>rung</span>
+          <div class="opts" id="o-rung"></div>
+        </div>
+        <div class="bcol">
+          <span>topology</span>
+          <div class="opts" id="o-topo"></div>
+        </div>
+        <div class="bcol">
+          <span>mode</span>
+          <div class="opts" id="o-mode"></div>
+        </div>
+      </div>
+      <div class="bfig">
+        <svg class="ink" id="s-build" role="img" aria-label="A hand-drawn diagram of the currently selected rung, topology and mode combination."></svg>
+      </div>
+      <div class="verdict" id="verdict" data-status="ok" aria-live="polite"></div>
+    </div>
+
+    <div class="col">
+      <p>Two of those combinations are worth dwelling on, because both are the same species of failure and both were found by <strong>running the binaries rather than the test suite</strong>. Control-plane-only in <code>enforce</code> is a system with nothing on the path being told to deny; rung 2 in <code>enforce</code> is a system being told to require attestation before anything can attest. Neither errors in a way that reads as a configuration mistake. Both look, from a dashboard, like a control that is working.</p>
+      <div class="kicker">
+        <span class="lbl">the question to ask on every rung</span>
+        What would this look like if the control silently did nothing? Prefer the negative assertion — <em>the upstream never executed it; nothing was appended; the string is absent from the bytes.</em>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="col">
+      <span class="num">the estate, in one table</span>
+      <h2>What Aldgate actually runs</h2>
+      <p>Five domains, five configurations, one artifact format. Nobody sequenced this and nobody had to.</p>
+    </div>
+    <div class="wide tw">
+      <table>
+        <thead>
+          <tr><th>Domain</th><th class="n">Rung</th><th>Topology</th><th>Mode</th><th>Control plane</th><th>Why that combination</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Retail &amp; Digital</strong><br><span class="mono" style="color:var(--faint)">London · Bengaluru</span></td>
+            <td class="n">5</td><td>Sidecar</td><td class="ok">enforce</td><td>Group, regional read replicas</td>
+            <td>Four thousand repos on one paved road. Tomas owns rungs 2 and 4 centrally, so the only rung an application team touches is <code>request</code> — and most of those auto-approve.</td>
+          </tr>
+          <tr>
+            <td><strong>Corporate &amp; Institutional</strong><br><span class="mono" style="color:var(--faint)">Singapore · London</span></td>
+            <td class="n">5</td><td>Sidecar + egress mediator</td><td class="ok">enforce</td><td>Group, dual-control approvals</td>
+            <td>Payments and trade finance: the highest blast radius in the bank. Write surfaces never auto-approve, and the org boundary gets a dedicated mediator because correspondent traffic leaves the estate.</td>
+          </tr>
+          <tr>
+            <td><strong>Wealth &amp; Private</strong><br><span class="mono" style="color:var(--faint)">Zurich · Singapore</span></td>
+            <td class="n">4</td><td>Air-gapped bundles</td><td class="ok">enforce</td><td class="bad">none reachable</td>
+            <td>The booking centre may not call out. Enforcement is full strength; contracts arrive as signed bundles. TTLs are set by what the bundle refresh cycle can sustain, not by what the risk appetite would prefer.</td>
+          </tr>
+          <tr>
+            <td><strong>Markets &amp; Treasury</strong><br><span class="mono" style="color:var(--faint)">New York</span></td>
+            <td class="n">5</td><td>Third-party enforcement</td><td class="ok">enforce</td><td>Group, Envoy filter as data plane</td>
+            <td>An egress fleet already exists and a second hop is not affordable. Sofia's filter implements the eleven checks and passes the nineteen published vectors. Conformance is Aldgate's problem, not the tool's.</td>
+          </tr>
+          <tr>
+            <td><strong>Group Risk &amp; Audit</strong><br><span class="mono" style="color:var(--faint)">Frankfurt · London</span></td>
+            <td class="n">3</td><td>Control plane only</td><td>observe</td><td>Group, read-only</td>
+            <td>Deliberately enforces nothing. Register, owners, pins, drift, evidence chain and <code>as_of</code> export. Margit needs a defensible answer, not a chokepoint — and a second chokepoint owned by Risk would be a governance problem, not a control.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="col">
+      <p>Two of those five have no shared infrastructure with each other at all. Wealth cannot reach the control plane by design; Markets does not run the data plane at all. They still interoperate, because the integration point is <strong>an artifact format and one identifier</strong> — a signed contract, a session token, and a <code>cid</code> — rather than a shared library, a shared cluster or a shared release train.</p>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="col">
+      <span class="num">act three</span>
+      <h2>The three moments where the estate has to act as one bank</h2>
+      <p>Configuring five domains differently is easy. The design only earns its place if the differences stop mattering exactly when it counts. There are three such moments, and each one is a plate.</p>
+    </div>
+
+    <div class="col">
+      <h3>One · A relationship that crosses a jurisdiction</h3>
+      <p>A wealth agent in Singapore needs balances from the payments server in London. Two domains, two regulators, two control planes, and no shared approval chain. What makes it tractable is that <strong>a contract is a ceiling, never a grant</strong> — so the answer is not a negotiation, it is an intersection.</p>
+    </div>
+
+    <figure class="plate-fig plate">
+      <svg class="ink" id="s-x1" role="img" aria-label="A cross-jurisdiction request narrowing through four stacked ceilings — declared surface, contract surface, token scope and policy decision — to a small effective set."></svg>
+      <figcaption>Each layer can only narrow. <b>warden-connect owns the relationship boundary</b> — may these two parties be introduced at all, and on what surface. <b>Warden core owns the action boundary</b> — may this specific call proceed right now. Neither can widen the other, and removing either does not silently widen what remains.</figcaption>
+    </figure>
+
+    <div class="col">
+      <p>The two control planes federate at the trust-anchor level rather than merging. Singapore's issuer key never signs for London, and London's approver registry never governs Singapore — Halima owns the anchor lifecycle, which is a named human's job precisely because it is the one thing federation makes fragile.</p>
+    </div>
+
+    <div class="col">
+      <h3>Two · 03:00, and one agent has to disappear</h3>
+      <p>SIEM flags anomalous egress from a retail agent that, over eight months, accumulated contracts into corporate payments and a partner fintech. Dele needs the reachable set and then needs it gone. The estate it has to reach is four different topologies that were never designed together.</p>
+    </div>
+
+    <figure class="plate-fig plate">
+      <svg class="ink" id="s-x2" role="img" aria-label="A quarantine order fanning out to four heterogeneous environments; three confirm with ticks, the air-gapped Zurich booking centre returns unconfirmed in alarm."></svg>
+      <figcaption>Scoping goes from <b>ask three teams and grep deployment repos</b> to one query. Containment goes from hours to one verb. And the Zurich vault — which cannot be reached by design — is reported as <b>unconfirmed</b>, fails closed locally, and appears in the incident record as an open item rather than a green tick.</figcaption>
+    </figure>
+
+    <div class="col">
+      <div class="cmd">connect quarantine agent:retail-recon --reason "SIEM: anomalous egress" \
+  --approver human:dele --approver human:halima
+<span class="out">contracts revoked   7  (4 inbound · 3 outbound)</span>
+<span class="out">mediators confirmed 12 / 13                        41s</span>
+<span class="bad">unconfirmed         warden:mediator:wealth-zrh-air  (air-gapped · fails closed locally)</span>
+<span class="c">  → next bundle refresh 06:00 CET · tracked as INC-4471 open item</span></div>
+      <p>That last line is the whole argument. A containment tool that reported <code>13 / 13</code> here would be lying, and the lie would be indistinguishable from success on every dashboard in the bank. <strong>Explicit non-confirmation is the feature</strong>, and it is why the air-gapped domain is allowed to exist without weakening the claim the other four make.</p>
+    </div>
+
+    <div class="col">
+      <h3>Three · The regulator asks about the fourteenth</h3>
+      <p>Margit is asked what a specific agent was permitted to reach on a date four months ago. The honest answer today, in most banks, is a reconstruction from tickets, wiki pages and the memory of somebody who has since left. Here it is a query — and it spans all five domains despite their having nothing in common operationally.</p>
+    </div>
+
+    <figure class="plate-fig plate">
+      <svg class="ink" id="s-x3" role="img" aria-label="A hash-chained evidence ledger with signed checkpoints, queried as of a past date, returning one answer that spans five differently-configured domains."></svg>
+      <figcaption>Every lifecycle event hash-chained, checkpoints signed, <code>as_of</code> answerable to the minute. <b>Including from the domain that enforces nothing</b> — Group Risk's register produces the same evidence as Corporate's, because the evidence is a property of the record, not of the enforcement.</figcaption>
+    </figure>
+
+    <div class="col">
+      <div class="cmd">connect export --as-of 2026-04-14T00:00Z --party agent:retail-recon
+<span class="out">4 contracts effective · 2 expired since · 1 revoked 2026-04-19</span>
+<span class="out">chain verified  head sha256:9c2e…  checkpoints 41  signed  ✓</span></div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="col">
+      <span class="num">what this cost</span>
+      <h2>The honest ledger</h2>
+      <p>Five domains at five different rungs is not a compromise position that a stronger organisation would have avoided. It is the outcome the design is <em>for</em>. But it is not free, and the costs land on named people.</p>
+    </div>
+    <div class="wide tw">
+      <table>
+        <thead><tr><th>What it costs</th><th>Who carries it</th><th>Why it is worth carrying</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Trust-anchor lifecycle</strong><br>rotation, revocation, cross-domain federation</td><td>Halima · Group CISO</td><td>Federation is what lets Singapore and London approve independently. The alternative is one approval chain for the whole group, which is the thing that made connection requests take three weeks.</td></tr>
+          <tr><td><strong>Expiry management under air-gap</strong><br>TTLs bounded by bundle refresh</td><td>Nils · Zurich</td><td>Revocation latency in the booking centre is real and is reported as such. The alternative is a network exception the regulator will not grant.</td></tr>
+          <tr><td><strong>Conformance</strong><br>19 vectors, 11 checks, in someone else's filter</td><td>Sofia · Markets</td><td>Not duplicating an egress fleet. The vectors are published precisely so this is a testable claim rather than a trusted one.</td></tr>
+          <tr><td><strong>Estate coverage</strong><br>base image and CI template for 4,000 repos</td><td>Tomas · Group Engineering</td><td>The two rungs with real setup cost get paid once, centrally. This is the only pattern that reaches coverage, and it works because application teams only ever touch rung 3.</td></tr>
+          <tr><td><strong>Fifty relationship reviews a month</strong></td><td>Aiko · Corporate</td><td>Relationships, not calls. If it were calls the number would be seven figures and the review would be a rubber stamp within a fortnight.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="close col">
+    <p class="eyebrow">the invariant</p>
+    <div class="invariant">effective_surface <span class="op">=</span> declared ∩ contract ∩ token ∩ policy
+
+<span class="op">∀</span> layers L : removing L <span class="op">→</span> narrower or equal. <span class="op">never</span> wider.
+<span class="op">∀</span> mediators M : unreachable(M) <span class="op">→</span> reported unconfirmed, <span class="op">never</span> assumed applied.</div>
+    <p style="font-size:1.15rem; line-height:1.5">Every rung must shrink a surface or shorten a wait. Every domain must be able to stop where it needs to. And every control must be able to say, out loud, that it did nothing.</p>
+    <p style="color: var(--muted)">If those three hold, adoption does not need a mandate. It needs a first rung small enough to climb on a Tuesday afternoon in Bengaluru.</p>
+    <p class="fineprint" style="border-top:1px solid var(--rule); padding-top:1rem; margin-top:2rem">Aldgate Group, its entities and the nine people above are fictional, invented to give the five rungs and seven topologies somewhere concrete to land. Commands, exit codes, error codes and mechanisms are those of the shipped <span class="mono">warden-connect</span> binaries.</p>
+  </section>
+
+</div>
+
+<script>
+(() => {
+"use strict";
+const NS = "http://www.w3.org/2000/svg";
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* ---------------------------------------------------------------------------
+   The pen. Everything drawn on this page is generated, not authored — a seeded
+   PRNG jitters every endpoint and every midpoint so the strokes wobble the way
+   a hand does, and the same seed always produces the same drawing.
+--------------------------------------------------------------------------- */
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const r1 = v => Math.round(v * 10) / 10;
+
+function smooth(p) {
+  let d = "M" + r1(p[0][0]) + " " + r1(p[0][1]);
+  for (let i = 1; i < p.length - 1; i++) {
+    const mx = (p[i][0] + p[i + 1][0]) / 2, my = (p[i][1] + p[i + 1][1]) / 2;
+    d += "Q" + r1(p[i][0]) + " " + r1(p[i][1]) + " " + r1(mx) + " " + r1(my);
+  }
+  const l = p[p.length - 1];
+  d += "L" + r1(l[0]) + " " + r1(l[1]);
+  return d;
+}
+
+class Pen {
+  constructor(seed) { this.rnd = rng(seed); }
+  j(a) { return (this.rnd() * 2 - 1) * a; }
+  line(x1, y1, x2, y2, w) {
+    w = w == null ? 1.1 : w;
+    const mx = (x1 + x2) / 2 + this.j(w * 2), my = (y1 + y2) / 2 + this.j(w * 2);
+    return "M" + r1(x1 + this.j(w)) + " " + r1(y1 + this.j(w)) +
+           "Q" + r1(mx) + " " + r1(my) + " " + r1(x2 + this.j(w)) + " " + r1(y2 + this.j(w));
+  }
+  /* Corners stay sharp — each segment bows on its own rather than being smoothed
+     through the vertices. A smoothed polygon turns a document into a blob and a
+     ratchet tooth into a scallop. */
+  poly(pts, close, w) {
+    w = w == null ? 1.1 : w;
+    const p = pts.map(q => [q[0] + this.j(w), q[1] + this.j(w)]);
+    if (close) p.push(p[0]);
+    let d = "M" + r1(p[0][0]) + " " + r1(p[0][1]);
+    for (let i = 1; i < p.length; i++) {
+      const a = p[i - 1], b = p[i];
+      d += "Q" + r1((a[0] + b[0]) / 2 + this.j(w * 1.5)) + " " + r1((a[1] + b[1]) / 2 + this.j(w * 1.5)) +
+           " " + r1(b[0]) + " " + r1(b[1]);
+    }
+    return d;
+  }
+  ell(cx, cy, rx, ry, w) {
+    w = w == null ? 1.2 : w;
+    const N = 13, start = this.rnd() * 6.28, span = 6.283 + 0.45, pts = [];
+    for (let i = 0; i <= N; i++) {
+      const t = start + (i / N) * span;
+      pts.push([cx + Math.cos(t) * rx + this.j(w), cy + Math.sin(t) * ry + this.j(w)]);
+    }
+    return smooth(pts);
+  }
+  arc(cx, cy, rx, ry, a0, a1, w) {
+    w = w == null ? 1.1 : w;
+    const N = 9, pts = [];
+    for (let i = 0; i <= N; i++) {
+      const t = a0 + (i / N) * (a1 - a0);
+      pts.push([cx + Math.cos(t) * rx + this.j(w), cy + Math.sin(t) * ry + this.j(w)]);
+    }
+    return smooth(pts);
+  }
+  /* corners overshoot slightly, the way a hand does not stop exactly on a corner */
+  rect(x, y, w, h, o) {
+    o = o == null ? 1.6 : o;
+    const e = () => this.j(o);
+    return [
+      this.line(x - o + e(), y + e(), x + w + o + e(), y + e()),
+      this.line(x + w + e(), y - o + e(), x + w + e(), y + h + o + e()),
+      this.line(x + w + o + e(), y + h + e(), x - o + e(), y + h + e()),
+      this.line(x + e(), y + h + o + e(), x + e(), y - o + e())
+    ];
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The scene. A tiny declarative layer so each plate below reads as a picture
+   description rather than as path data.
+--------------------------------------------------------------------------- */
+const COLOR = { ink: "var(--ink)", muted: "var(--muted)", faint: "var(--faint)",
+                rule: "var(--rule)", brass: "var(--brass)", teal: "var(--teal)",
+                alarm: "var(--alarm)", ground: "var(--ground)", surface: "var(--surface)" };
+
+class Scene {
+  constructor(w, h, seed) {
+    this.w = w; this.h = h; this.pen = new Pen(seed || 7); this.items = []; this.n = 0;
+  }
+  _push(o) { o.i = this.n++; this.items.push(o); return this; }
+  p(d, o) { o = o || {}; return this._push({ k: "p", d: d, c: o.c || "ink", sw: o.sw == null ? 1.7 : o.sw, dash: o.dash, op: o.op, fill: o.fill }); }
+  ps(arr, o) { arr.forEach(d => this.p(d, o)); return this; }
+  line(x1, y1, x2, y2, o) { o = o || {}; return this.p(this.pen.line(x1, y1, x2, y2, o.w), o); }
+  ell(cx, cy, rx, ry, o) { o = o || {}; return this.p(this.pen.ell(cx, cy, rx, ry, o.w), o); }
+  rect(x, y, w, h, o) { o = o || {}; return this.ps(this.pen.rect(x, y, w, h, o.o), o); }
+  t(x, y, s, o) {
+    o = o || {};
+    return this._push({ k: "t", x: x, y: y, s: s, c: o.c || "muted", cls: o.cls || "t-lab",
+                        anchor: o.anchor || "middle", op: o.op });
+  }
+  /* an arrow with a bowed shaft and a head that overshoots a touch */
+  arrow(x1, y1, x2, y2, o) {
+    o = o || {};
+    const bow = o.bow == null ? 0 : o.bow;
+    const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len, ny = dx / len;
+    const mx = (x1 + x2) / 2 + nx * bow, my = (y1 + y2) / 2 + ny * bow;
+    this.p("M" + r1(x1) + " " + r1(y1) + "Q" + r1(mx) + " " + r1(my) + " " + r1(x2) + " " + r1(y2), o);
+    const ang = Math.atan2(y2 - my, x2 - mx), hl = o.head == null ? 9 : o.head;
+    this.line(x2, y2, x2 - Math.cos(ang - 0.42) * hl, y2 - Math.sin(ang - 0.42) * hl, o);
+    this.line(x2, y2, x2 - Math.cos(ang + 0.42) * hl, y2 - Math.sin(ang + 0.42) * hl, o);
+    if (o.label) this.t(mx + (o.lx || 0), my + (o.ly == null ? -7 : o.ly), o.label, { c: o.lc || o.c, cls: "t-cap" });
+    return this;
+  }
+  cross(x, y, r, o) {
+    o = Object.assign({ c: "alarm", sw: 2.1 }, o || {});
+    this.line(x - r, y - r, x + r, y + r, o); this.line(x + r, y - r, x - r, y + r, o); return this;
+  }
+  tick(x, y, r, o) {
+    o = Object.assign({ c: "teal", sw: 2.1 }, o || {});
+    this.p(this.pen.poly([[x - r, y], [x - r * 0.2, y + r * 0.8], [x + r, y - r]], false, 0.8), o); return this;
+  }
+  qmark(x, y, o) {
+    o = Object.assign({ c: "brass", sw: 1.8 }, o || {});
+    this.p(this.pen.arc(x, y - 4, 4.2, 4.2, Math.PI, Math.PI * 2.35, 0.7), o);
+    this.line(x + 2.6, y + 0.5, x + 1.4, y + 5, o);
+    this.ell(x + 1.2, y + 8.6, 0.9, 0.9, o); return this;
+  }
+
+  /* --- composites ------------------------------------------------------ */
+  box(x, y, w, h, o) {
+    o = o || {};
+    this.rect(x, y, w, h, { c: o.c || "faint", sw: o.sw == null ? 1.5 : o.sw, o: o.o });
+    if (o.label) this.t(x + w / 2, y + h / 2 + (o.sub ? -2 : 4.5), o.label, { c: o.lc || "ink", cls: o.cls || "t-lab" });
+    if (o.sub) this.t(x + w / 2, y + h / 2 + 13, o.sub, { c: "faint", cls: "t-cap" });
+    return this;
+  }
+  /* an on-prem rack: a box with slot lines */
+  rack(x, y, w, h, label, sub) {
+    this.rect(x, y, w, h, { c: "faint", sw: 1.5 });
+    for (let i = 1; i <= 3; i++) this.line(x + 6, y + (h / 4) * i, x + w - 6, y + (h / 4) * i, { c: "rule", sw: 1.2 });
+    if (label) this.t(x + w / 2, y + h + 15, label, { c: "muted", cls: "t-lab" });
+    if (sub) this.t(x + w / 2, y + h + 28, sub, { c: "faint", cls: "t-cap" });
+    return this;
+  }
+  /* a cloud: three overlapping arcs on a base line */
+  cloud(x, y, w, h, label, sub) {
+    const p = this.pen, pts = [];
+    const N = 26;
+    for (let i = 0; i <= N; i++) {
+      const t = i / N, ang = Math.PI + t * Math.PI;
+      const lobe = 1 + 0.22 * Math.sin(t * Math.PI * 3.1);
+      pts.push([x + w / 2 + Math.cos(ang) * (w / 2) * 1.0 + p.j(1.2),
+                y + h - Math.abs(Math.sin(ang)) * h * lobe + p.j(1.2)]);
+    }
+    this.p(smooth(pts), { c: "faint", sw: 1.5 });
+    this.line(x + 3, y + h, x + w - 3, y + h, { c: "faint", sw: 1.5 });
+    if (label) this.t(x + w / 2, y + h + 16, label, { c: "muted", cls: "t-lab" });
+    if (sub) this.t(x + w / 2, y + h + 29, sub, { c: "faint", cls: "t-cap" });
+    return this;
+  }
+  /* an air-gapped vault: heavy box, a dial, and a break in the wire */
+  vault(x, y, w, h, label, sub, bare) {
+    this.rect(x, y, w, h, { c: "faint", sw: 2.1 });
+    this.rect(x + 5, y + 5, w - 10, h - 10, { c: "rule", sw: 1.2, o: 0.8 });
+    if (!bare) {   /* the dial is skipped when something else is drawn inside */
+      this.ell(x + w / 2, y + h / 2, 9, 9, { c: "faint", sw: 1.6 });
+      this.line(x + w / 2, y + h / 2, x + w / 2 + 6, y + h / 2 - 6, { c: "faint", sw: 1.6 });
+    }
+    if (label) this.t(x + w / 2, y + h + 16, label, { c: "muted", cls: "t-lab" });
+    if (sub) this.t(x + w / 2, y + h + 29, sub, { c: "faint", cls: "t-cap" });
+    return this;
+  }
+  /* the control plane: a mast with broadcast arcs */
+  tower(x, y, o) {
+    o = o || {};
+    const c = o.c || "brass", s = o.s || 1;
+    this.p(this.pen.poly([[x - 13 * s, y], [x, y - 34 * s], [x + 13 * s, y]], false, 1), { c: c, sw: 1.8 });
+    this.line(x - 8 * s, y - 11 * s, x + 8 * s, y - 11 * s, { c: c, sw: 1.4 });
+    this.line(x - 4.5 * s, y - 22 * s, x + 4.5 * s, y - 22 * s, { c: c, sw: 1.4 });
+    this.p(this.pen.arc(x, y - 34 * s, 11 * s, 11 * s, -2.5, -0.64, 0.7), { c: c, sw: 1.4 });
+    this.p(this.pen.arc(x, y - 34 * s, 19 * s, 19 * s, -2.4, -0.74, 0.7), { c: c, sw: 1.2, op: 0.65 });
+    if (o.label) this.t(x, y + 17, o.label, { c: "brass", cls: "t-lab" });
+    if (o.sub) this.t(x, y + 30, o.sub, { c: "faint", cls: "t-cap" });
+    return this;
+  }
+  /* the mediator: a shield */
+  shield(x, y, s, o) {
+    o = o || {};
+    const c = o.c || "brass";
+    const w = 15 * s, h = 19 * s;
+    this.p(this.pen.poly([[x - w, y - h * 0.72], [x, y - h * 0.95], [x + w, y - h * 0.72],
+                          [x + w * 0.72, y + h * 0.5], [x, y + h], [x - w * 0.72, y + h * 0.5]], true, 0.9),
+           { c: c, sw: 1.8 });
+    if (o.label) this.t(x, y + h + 15, o.label, { c: c === "alarm" ? "alarm" : "brass", cls: "t-cap" });
+    return this;
+  }
+  /* a document / manifest */
+  sheet(x, y, w, h, o) {
+    o = o || {};
+    const c = o.c || "muted";
+    this.p(this.pen.poly([[x, y], [x + w - 9, y], [x + w, y + 9], [x + w, y + h], [x, y + h]], true, 0.9), { c: c, sw: 1.5 });
+    this.p(this.pen.poly([[x + w - 9, y], [x + w - 9, y + 9], [x + w, y + 9]], false, 0.8), { c: c, sw: 1.2 });
+    const n = o.lines == null ? 4 : o.lines;
+    for (let i = 0; i < n; i++) this.line(x + 7, y + 20 + i * 9, x + w - 9 - (i === n - 1 ? 12 : 0), y + 20 + i * 9, { c: "rule", sw: 1.3 });
+    if (o.label) this.t(x + w / 2, y + h + 15, o.label, { c: c, cls: "t-cap" });
+    return this;
+  }
+  /* the pin: a seal-like disc with a ridged core */
+  pin(x, y, o) {
+    o = o || {};
+    const c = o.c || "brass", s = o.s || 1;
+    this.ell(x, y, 15 * s, 15 * s, { c: c, sw: 1.8 });
+    for (let i = 0; i < 3; i++)
+      this.p(this.pen.arc(x, y + 3 * s, (4 + i * 3.4) * s, (4 + i * 3.4) * s, Math.PI * 1.08, Math.PI * 1.92, 0.5), { c: c, sw: 1.3 });
+    if (o.label) this.t(x, y + 15 * s + 16, o.label, { c: c, cls: "t-cap" });
+    return this;
+  }
+  /* a key */
+  key(x, y, o) {
+    o = o || {};
+    const c = o.c || "brass";
+    this.ell(x - 9, y, 6.5, 6.5, { c: c, sw: 1.7 });
+    this.line(x - 3, y, x + 15, y, { c: c, sw: 1.7 });
+    this.line(x + 11, y, x + 11, y + 6, { c: c, sw: 1.7 });
+    this.line(x + 15, y, x + 15, y + 7, { c: c, sw: 1.7 });
+    return this;
+  }
+  /* a clock, for expiry */
+  clock(x, y, r, o) {
+    o = o || {};
+    const c = o.c || "brass";
+    this.ell(x, y, r, r, { c: c, sw: 1.6 });
+    this.line(x, y, x, y - r * 0.62, { c: c, sw: 1.5 });
+    this.line(x, y, x + r * 0.5, y + r * 0.35, { c: c, sw: 1.5 });
+    return this;
+  }
+  /* a person. Distinguishing features are drawn, never colour-coded. */
+  person(x, g, s, o) {
+    o = o || {};
+    const p = this.pen, c = o.c || "teal", sw = 1.7;
+    const hy = g - 62 * s, hr = 9.5 * s, ny = hy + hr, hip = g - 27 * s, sh = ny + 6 * s;
+    this.ell(x, hy, hr, hr * 1.05, { c: c, sw: sw });
+    this.line(x, ny, x, hip, { c: c, sw: sw });
+    this.line(x - 11 * s, g, x, hip, { c: c, sw: sw });
+    this.line(x + 11 * s, g, x, hip, { c: c, sw: sw });
+
+    const hair = o.hair;
+    if (hair === "bob") { this.p(p.arc(x, hy - 1 * s, hr * 1.15, hr * 1.25, Math.PI * 1.02, Math.PI * 1.98, 0.6), { c: c, sw: 1.5 });
+      this.line(x - hr * 1.12, hy - 1 * s, x - hr * 1.2, hy + 7 * s, { c: c, sw: 1.4 });
+      this.line(x + hr * 1.12, hy - 1 * s, x + hr * 1.2, hy + 7 * s, { c: c, sw: 1.4 }); }
+    if (hair === "bun") { this.p(p.arc(x, hy, hr * 1.1, hr * 1.15, Math.PI * 1.05, Math.PI * 1.95, 0.6), { c: c, sw: 1.5 });
+      this.ell(x + hr * 0.9, hy - hr * 0.95, 4 * s, 4 * s, { c: c, sw: 1.4 }); }
+    if (hair === "curls") for (let i = 0; i < 5; i++)
+      this.ell(x - hr + i * (hr / 2), hy - hr * 0.85 - (i === 2 ? 2 * s : 0), 3.4 * s, 3.1 * s, { c: c, sw: 1.4 });
+    if (hair === "crop") this.p(p.arc(x, hy + 1 * s, hr * 1.05, hr * 1.1, Math.PI * 1.08, Math.PI * 1.92, 0.5), { c: c, sw: 1.6 });
+    if (hair === "wrap") { this.p(p.arc(x, hy, hr * 1.22, hr * 1.3, Math.PI * 0.96, Math.PI * 2.04, 0.6), { c: c, sw: 1.6 });
+      this.p(p.poly([[x - hr * 1.2, hy + 2 * s], [x - hr * 1.5, hy + 12 * s], [x - hr * 0.5, hy + 9 * s]], false, 0.8), { c: c, sw: 1.4 }); }
+    if (hair === "cap") { this.p(p.arc(x, hy + 1 * s, hr * 1.1, hr * 1.15, Math.PI, Math.PI * 2, 0.5), { c: c, sw: 1.6 });
+      this.line(x - hr * 1.05, hy + 1 * s, x - hr * 2.1, hy + 3 * s, { c: c, sw: 1.5 }); }
+
+    if (o.glasses) {
+      this.ell(x - 4.1 * s, hy + 0.5 * s, 3.5 * s, 3 * s, { c: c, sw: 1.3 });
+      this.ell(x + 4.1 * s, hy + 0.5 * s, 3.5 * s, 3 * s, { c: c, sw: 1.3 });
+      this.line(x - 0.6 * s, hy + 0.5 * s, x + 0.6 * s, hy + 0.5 * s, { c: c, sw: 1.2 });
+    }
+    if (o.beard) this.p(p.arc(x, hy + 2 * s, hr * 0.85, hr * 1.0, 0.25, Math.PI - 0.25, 0.5), { c: c, sw: 1.4 });
+    if (o.headset) { this.p(p.arc(x, hy - 1 * s, hr * 1.25, hr * 1.25, Math.PI * 1.06, Math.PI * 1.94, 0.5), { c: c, sw: 1.5 });
+      this.rect(x - hr * 1.5, hy - 2 * s, 4.5 * s, 6 * s, { c: c, sw: 1.3, o: 0.6 }); }
+    if (o.tie) { this.p(p.poly([[x - 3.2 * s, ny + 2 * s], [x, ny + 6 * s], [x + 3.2 * s, ny + 2 * s]], false, 0.6), { c: c, sw: 1.3 });
+      this.p(p.poly([[x, ny + 6 * s], [x - 2.6 * s, ny + 15 * s], [x, ny + 19 * s], [x + 2.6 * s, ny + 15 * s]], true, 0.6), { c: c, sw: 1.3 }); }
+    if (o.lanyard) { this.line(x - 4 * s, ny + 1 * s, x, ny + 13 * s, { c: c, sw: 1.2 });
+      this.line(x + 4 * s, ny + 1 * s, x, ny + 13 * s, { c: c, sw: 1.2 });
+      this.rect(x - 3 * s, ny + 13 * s, 6 * s, 7 * s, { c: c, sw: 1.2, o: 0.5 }); }
+
+    /* arms — the free arm's pose depends on what the person is holding */
+    const pr = o.prop;
+    this.line(x, sh, x - 15 * s, sh + 13 * s, { c: c, sw: sw });
+    if (pr === "laptop") {
+      this.line(x, sh, x + 14 * s, sh + 10 * s, { c: c, sw: sw });
+      this.p(p.poly([[x + 6 * s, sh + 12 * s], [x + 26 * s, sh + 12 * s], [x + 30 * s, sh + 19 * s], [x + 2 * s, sh + 19 * s]], true, 0.7), { c: c, sw: 1.4 });
+      this.p(p.poly([[x + 7 * s, sh + 12 * s], [x + 12 * s, sh - 3 * s], [x + 29 * s, sh - 3 * s], [x + 25 * s, sh + 12 * s]], true, 0.7), { c: c, sw: 1.4 });
+    } else if (pr === "key") {
+      this.line(x, sh, x + 16 * s, sh + 2 * s, { c: c, sw: sw });
+      this.key(x + 24 * s, sh + 2 * s, { c: "brass" });
+    } else if (pr === "sheet") {
+      this.line(x, sh, x + 14 * s, sh + 8 * s, { c: c, sw: sw });
+      this.sheet(x + 14 * s, sh + 1 * s, 17 * s, 22 * s, { c: c, lines: 3 });
+    } else if (pr === "up") {
+      this.line(x, sh, x + 16 * s, sh - 15 * s, { c: c, sw: sw });
+    } else if (pr === "mug") {
+      this.line(x, sh, x + 14 * s, sh + 9 * s, { c: c, sw: sw });
+      this.rect(x + 12 * s, sh + 9 * s, 10 * s, 10 * s, { c: c, sw: 1.4, o: 0.6 });
+      this.p(p.arc(x + 23 * s, sh + 14 * s, 4 * s, 4 * s, -1.4, 1.4, 0.5), { c: c, sw: 1.3 });
+    } else {
+      this.line(x, sh, x + 15 * s, sh + 13 * s, { c: c, sw: sw });
+    }
+
+    if (o.name) this.t(x, g + 20, o.name, { c: "ink", cls: "t-lab" });
+    if (o.role) this.t(x, g + 33, o.role, { c: "faint", cls: "t-cap" });
+    if (o.where) this.t(x, g + 45, o.where, { c: "faint", cls: "t-cap" });
+    return this;
+  }
+  /* a small agent: a rounded box with an antenna and two eyes */
+  agent(x, y, s, o) {
+    o = o || {};
+    const c = o.c || "teal";
+    this.rect(x - 13 * s, y - 12 * s, 26 * s, 22 * s, { c: c, sw: 1.6 });
+    this.ell(x - 4.5 * s, y - 3 * s, 2.4 * s, 2.4 * s, { c: c, sw: 1.5 });
+    this.ell(x + 4.5 * s, y - 3 * s, 2.4 * s, 2.4 * s, { c: c, sw: 1.5 });
+    this.line(x, y - 12 * s, x, y - 20 * s, { c: c, sw: 1.4 });
+    this.ell(x, y - 22 * s, 2.6 * s, 2.6 * s, { c: c, sw: 1.4 });
+    if (o.label) this.t(x, y + 24 * s, o.label, { c: c, cls: "t-cap" });
+    return this;
+  }
+  /* a chain link run, for the hash chain */
+  chain(x1, y, x2, o) {
+    o = o || {};
+    const c = o.c || "brass", n = o.n || 6, step = (x2 - x1) / n;
+    for (let i = 0; i < n; i++) this.ell(x1 + step * (i + 0.5), y, step * 0.62, 5.5, { c: c, sw: 1.5 });
+    return this;
+  }
+}
+
+/* --- rendering -------------------------------------------------------- */
+function render(svg, scene) {
+  svg.setAttribute("viewBox", "0 0 " + scene.w + " " + scene.h);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const total = scene.items.length || 1;
+  scene.items.forEach(it => {
+    const delay = (it.i / total) * (scene.dur || 1.5);
+    let el;
+    if (it.k === "p") {
+      el = document.createElementNS(NS, "path");
+      el.setAttribute("d", it.d);
+      el.setAttribute("fill", it.fill ? COLOR[it.fill] : "none");
+      el.setAttribute("stroke", COLOR[it.c] || it.c);
+      el.setAttribute("stroke-width", it.sw);
+      el.setAttribute("stroke-linecap", "round");
+      el.setAttribute("stroke-linejoin", "round");
+      if (it.dash) el.setAttribute("stroke-dasharray", it.dash);
+      if (it.op != null) el.setAttribute("opacity", it.op);
+    } else {
+      el = document.createElementNS(NS, "text");
+      el.setAttribute("x", it.x); el.setAttribute("y", it.y);
+      el.setAttribute("text-anchor", it.anchor);
+      el.setAttribute("fill", COLOR[it.c] || it.c);
+      el.setAttribute("class", it.cls);
+      el.textContent = it.s;
+      el.setAttribute("data-fade", "1");
+      if (it.op != null) el.style.setProperty("--o", it.op);
+    }
+    el.style.setProperty("--d", delay.toFixed(2) + "s");
+    svg.appendChild(el);
+  });
+  /* dash lengths must be measured after insertion */
+  if (!reduce) {
+    svg.querySelectorAll("path").forEach(el => {
+      if (el.getAttribute("stroke-dasharray")) { el.setAttribute("data-fade", "1"); return; }
+      let len = 0;
+      try { len = el.getTotalLength(); } catch (e) { len = 0; }
+      if (len > 0 && len < 4000) { el.setAttribute("data-len", "1"); el.style.setProperty("--len", Math.ceil(len)); }
+      else el.setAttribute("data-fade", "1");
+    });
+  }
+  return svg;
+}
+
+const seen = new WeakSet();
+
+/* Everything on this page is hidden until an observer says otherwise, which
+   means an observer that never delivers renders a blank document that reports
+   no error. Same species as the bugs the page is about, so it gets the same
+   treatment: assume nothing, and reveal unconditionally if the signal is absent. */
+let observerFired = false;
+function revealAll() {
+  document.querySelectorAll("svg.ink").forEach(el => el.classList.add("on"));
+  document.querySelectorAll(".rise").forEach(el => el.classList.add("in"));
+}
+setTimeout(() => { if (!observerFired) revealAll(); }, 2500);
+
+const io = new IntersectionObserver(es => {
+  observerFired = true;
+  es.forEach(e => { if (e.isIntersecting) { e.target.classList.add("on"); io.unobserve(e.target); } });
+}, { threshold: 0.12, rootMargin: "0px 0px -8% 0px" });
+
+function plate(id, build, w, h, seed) {
+  const svg = document.getElementById(id);
+  if (!svg) return null;
+  const sc = new Scene(w, h, seed);
+  build(sc);
+  render(svg, sc);
+  svg.classList.remove("on");
+  if (seen.has(svg)) {
+    void svg.getBoundingClientRect();          /* force reflow so the redraw actually restarts */
+    requestAnimationFrame(() => svg.classList.add("on"));
+  } else { seen.add(svg); io.observe(svg); }
+  return svg;
+}
+
+/* =========================================================================
+   THE PLATES
+   ========================================================================= */
+
+/* --- hero: the tower, the ladder, and one engineer at the foot of it --- */
+plate("s-hero", s => {
+  const p = s.pen, gy = 470;
+  /* the building */
+  const bx = 196, by = 62, bw = 196, bh = gy - by;
+  s.rect(bx, by, bw, bh, { c: "faint", sw: 1.8 });
+  s.p(p.poly([[bx, by], [bx + bw / 2, by - 34], [bx + bw, by]], false, 1.2), { c: "faint", sw: 1.8 });
+  for (let r = 0; r < 7; r++) for (let c = 0; c < 4; c++)
+    s.rect(bx + 20 + c * 42, by + 32 + r * 50, 24, 28, { c: "rule", sw: 1.2, o: 0.8 });
+  s.t(bx + bw / 2, gy + 26, "ALDGATE GROUP", { c: "muted", cls: "t-lab" });
+  s.t(bx + bw / 2, gy + 40, "lon · fra · sgp · nyc · zrh", { c: "faint", cls: "t-cap" });
+
+  /* the ladder, actually leaning on the building's right corner */
+  const ty = 92, lean = 58, lx1 = bx + bw + 6, lx2 = lx1 + 56;
+  s.line(lx1 + lean, gy, lx1, ty, { c: "brass", sw: 2.2 });
+  s.line(lx2 + lean, gy, lx2, ty, { c: "brass", sw: 2.2 });
+  for (let i = 0; i < 5; i++) {
+    const t = 0.08 + i * 0.21, yy = gy - (gy - ty) * t, off = lean * (1 - t);
+    s.line(lx1 + off - 5, yy, lx2 + off + 5, yy, { c: "brass", sw: 2 });
+    s.t(lx1 + off - 14, yy + 5, String(i + 1), { c: "brass", cls: "t-lab", anchor: "end" });
+  }
+
+  /* the engineer at the foot, clear of the stiles */
+  s.person(660, gy, 1.2, { hair: "bun", name: "RHEA", role: "agent engineer", where: "retail · bengaluru", prop: "laptop" });
+
+  s.line(100, gy, 820, gy, { c: "rule", sw: 1.5 });
+
+  /* annotations — one at each end of the climb */
+  s.t(760, 122, "RUNG 5", { c: "brass", cls: "t-lab", anchor: "start" });
+  s.t(760, 140, "THE ESTATE · 41 SECONDS", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.arrow(752, 128, lx2 + 14, 148, { c: "rule", sw: 1.2, bow: 12, head: 6 });
+  s.t(760, 336, "RUNG 1", { c: "brass", cls: "t-lab", anchor: "start" });
+  s.t(760, 354, "A LAPTOP · ONE COMMAND", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.arrow(752, 342, lx2 + lean - 6, 396, { c: "rule", sw: 1.2, bow: -14, head: 6 });
+
+  s.t(24, 156, "nobody asked", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.t(24, 172, "for a control plane.", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.arrow(44, 190, 176, 252, { c: "rule", sw: 1.3, bow: 22, head: 7 });
+}, 900, 540, 11);
+
+/* --- the cast: nine figures in a row -------------------------------------- */
+plate("s-cast", s => {
+  /* Labels are kept short on purpose — at nine figures across, a role longer
+     than about eleven characters collides with its neighbour. */
+  const cast = [
+    { n: "RHEA",   r: "agent eng", w: "retail·blr", o: { hair: "bun", prop: "laptop" } },
+    { n: "TOMAS",  r: "platform",  w: "group·waw",  o: { hair: "crop", beard: 1, prop: "sheet" } },
+    { n: "AIKO",   r: "sec arch",  w: "corp·sgp",   o: { hair: "bob", glasses: 1, prop: "key" } },
+    { n: "DELE",   r: "soc",       w: "soc·03:00",  o: { hair: "curls", headset: 1, prop: "mug" } },
+    { n: "MARGIT", r: "reporting", w: "risk·fra",   o: { hair: "bob", glasses: 1, prop: "sheet" } },
+    { n: "IVA",    r: "provider",  w: "corp·lon",   o: { hair: "bun", lanyard: 1 } },
+    { n: "NILS",   r: "booking",   w: "wealth·zrh", o: { hair: "crop", tie: 1 } },
+    { n: "SOFIA",  r: "markets",   w: "mkts·nyc",   o: { hair: "wrap", prop: "laptop" } },
+    { n: "HALIMA", r: "ciso",      w: "group·lon",  o: { hair: "wrap", glasses: 1, prop: "up" } }
+  ];
+  const g = 120, step = 106;
+  cast.forEach((c, i) => {
+    const o = Object.assign({ name: c.n, role: c.r, where: c.w }, c.o);
+    s.person(72 + i * step, g, 0.94, o);
+  });
+  s.line(24, g, 984, g, { c: "rule", sw: 1.4 });
+  s.t(24, g + 76, "no line manager in common · no shared release train · four regulators", { c: "faint", cls: "t-cap", anchor: "start" });
+}, 1010, 206, 23);
+
+/* --- rung 1: canon --------------------------------------------------------- */
+plate("s-r1", s => {
+  s.sheet(60, 60, 96, 120, { c: "muted", label: "TOOLS/LIST · TUE", lines: 5 });
+  s.arrow(170, 120, 246, 120, { c: "teal", sw: 1.6 });
+  s.box(250, 84, 120, 72, { label: "canon", sub: "pure function", c: "brass", lc: "brass" });
+  s.arrow(384, 120, 452, 120, { c: "teal", sw: 1.6 });
+  s.pin(496, 120, { label: "SHA256:230C1F4A…" });
+
+  s.sheet(60, 250, 96, 120, { c: "muted", label: "TOOLS/LIST · FRI", lines: 5 });
+  s.arrow(170, 310, 246, 310, { c: "teal", sw: 1.6 });
+  s.box(250, 274, 120, 72, { label: "canon", sub: "same function", c: "brass", lc: "brass" });
+  s.arrow(384, 310, 452, 310, { c: "teal", sw: 1.6 });
+  s.pin(496, 310, { c: "alarm", label: "SHA256:8B04E71D…" });
+
+  s.line(556, 120, 596, 120, { c: "rule", sw: 1.3 });
+  s.line(556, 310, 596, 310, { c: "rule", sw: 1.3 });
+  s.line(596, 120, 596, 310, { c: "rule", sw: 1.3, dash: "5 6" });
+  s.cross(596, 215, 9);
+  s.t(624, 200, "get_balance.description", { c: "alarm", cls: "t-lab", anchor: "start" });
+  s.t(624, 218, "changed between runs", { c: "alarm", cls: "t-lab", anchor: "start" });
+  s.t(624, 240, "NOBODY SHIPPED A RELEASE", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.t(624, 256, "NOBODY GOT AN ALERT", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.t(624, 272, "THE DIGEST NOTICED", { c: "brass", cls: "t-cap", anchor: "start" });
+}, 1000, 400, 41);
+
+/* --- rung 2: the register -------------------------------------------------- */
+plate("s-r2", s => {
+  s.t(40, 34, "CONNECT ENTITIES", { c: "faint", cls: "t-cap", anchor: "start" });
+  const ax = [110, 250, 390];
+  ax.forEach((x, i) => s.agent(x, 92, 1, { label: ["AGENT:RECON", "AGENT:KYC-TRIAGE", "AGENT:FX-WATCH"][i] }));
+  s.rack(500, 60, 74, 64, "SERVER:PAYMENTS", "OWNER HUMAN:IVA");
+  s.rack(630, 60, 74, 64, "SERVER:LEDGER", "OWNER HUMAN:IVA");
+  s.rack(760, 60, 74, 64, "SERVER:CRM", "OWNER — ");
+
+  s.t(110, 138, "OWNER HUMAN:RHEA", { c: "faint", cls: "t-cap" });
+  s.t(250, 138, "OWNER HUMAN:RHEA", { c: "faint", cls: "t-cap" });
+  s.t(390, 138, "OWNER — ", { c: "faint", cls: "t-cap" });
+
+  /* the unattested */
+  s.qmark(390, 44); s.qmark(797, 44);
+  s.t(880, 48, "unattested", { c: "brass", cls: "t-lab", anchor: "start" });
+  s.t(880, 66, "cannot prove", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.t(880, 80, "what it claims", { c: "faint", cls: "t-cap", anchor: "start" });
+
+  /* the chain underneath */
+  s.line(40, 200, 940, 200, { c: "rule", sw: 1.3 });
+  s.chain(60, 232, 620, { n: 11 });
+  s.t(40, 268, "APPEND-ONLY · HASH-CHAINED · A DIRECTORY, NOT A DATABASE", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.arrow(640, 232, 700, 232, { c: "brass", sw: 1.5 });
+  s.box(704, 208, 150, 48, { label: "audit verify", c: "brass", lc: "brass" });
+  s.tick(884, 232, 9);
+}, 1000, 290, 59);
+
+/* --- rung 3: request, approve, mint ---------------------------------------- */
+plate("s-r3", s => {
+  s.person(90, 190, 1.0, { hair: "bun", prop: "sheet", name: "RHEA", role: "requests" });
+  s.arrow(190, 140, 300, 140, { c: "teal", sw: 1.6, bow: -16, label: "REQ_7F3C", lc: "teal" });
+  s.box(304, 108, 168, 66, { label: "policy", sub: "answers instantly", c: "brass", lc: "brass" });
+
+  s.arrow(390, 182, 390, 236, { c: "brass", sw: 1.5, label: "AUTO-APPROVE?", ly: 16, lc: "faint" });
+  s.t(390, 262, "internal · read-only · tier 3", { c: "faint", cls: "t-cap" });
+  s.t(390, 278, "→ NO. WRITE SURFACE ADJACENT", { c: "alarm", cls: "t-cap" });
+
+  s.arrow(486, 140, 588, 140, { c: "teal", sw: 1.6, bow: -16, label: "REQUIRE_APPROVAL", lc: "teal" });
+  s.person(640, 190, 1.0, { hair: "bob", glasses: 1, prop: "key", name: "AIKO", role: "signs" });
+
+  s.arrow(716, 128, 794, 128, { c: "brass", sw: 1.6, label: "DETACHED SIG", lc: "brass" });
+  /* the contract card */
+  s.rect(800, 74, 168, 108, { c: "brass", sw: 1.9 });
+  s.t(884, 100, "CONN_1A9B", { c: "brass", cls: "t-lab" });
+  s.line(818, 112, 950, 112, { c: "rule", sw: 1.2 });
+  s.t(884, 130, "get_balance", { c: "ink", cls: "t-cap" });
+  s.t(884, 146, "list_transactions", { c: "ink", cls: "t-cap" });
+  s.clock(838, 166, 9, { c: "brass" });
+  s.t(884, 170, "EXP +30D", { c: "faint", cls: "t-cap", anchor: "start" });
+
+  /* exit codes — one line each, so CI can branch without reading prose */
+  s.line(60, 320, 940, 320, { c: "rule", sw: 1.3 });
+  s.t(60, 352, "THE PAYOFF IS", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.t(60, 368, "THE EXIT CODE", { c: "faint", cls: "t-cap", anchor: "start" });
+  [["3", "ceiling exceeded"], ["4", "artifact not trustworthy"], ["5", "surface looks poisoned"]]
+    .forEach((c, i) => {
+      const x = 250 + i * 240;
+      s.ell(x, 358, 14, 14, { c: "alarm", sw: 1.7 });
+      s.t(x, 364, c[0], { c: "alarm", cls: "t-lab" });
+      s.t(x + 24, 363, c[1], { c: "muted", cls: "t-cap", anchor: "start" });
+    });
+}, 1000, 400, 71);
+
+/* --- rung 4: the mediator on the path -------------------------------------- */
+plate("s-r4", s => {
+  s.t(500, 34, "ONE PROCESS · UNMODIFIED WARDEN CORE + CONNECT DECORATOR", { c: "faint", cls: "t-cap" });
+  s.agent(96, 150, 1.25, { label: "AGENT:RECON" });
+  s.rack(830, 108, 90, 82, "SERVER:PAYMENTS", "UPSTREAM");
+
+  s.t(462, 76, "CONNECT-MEDIATE", { c: "brass", cls: "t-cap" });
+  s.shield(462, 150, 2.0, {});
+
+  const rows = [
+    { y: 108, name: "get_balance", ok: true },
+    { y: 152, name: "list_transactions", ok: true },
+    { y: 196, name: "wire_funds", ok: false }
+  ];
+  rows.forEach(r => {
+    s.arrow(818, r.y, 512, r.y, { c: r.ok ? "teal" : "faint", sw: 1.5, head: 8 });
+    s.t(665, r.y - 10, r.name, { c: r.ok ? "teal" : "faint", cls: "t-cap" });
+    if (r.ok) s.arrow(412, r.y, 150, r.y, { c: "teal", sw: 1.5, head: 8 });
+  });
+  s.cross(424, 196, 10);
+  s.t(300, 200, "WC-4002", { c: "alarm", cls: "t-lab" });
+  s.t(300, 218, "REFUSED BEFORE THE UPSTREAM IS SPOKEN TO", { c: "alarm", cls: "t-cap" });
+
+  s.line(60, 254, 940, 254, { c: "rule", sw: 1.3 });
+  s.t(60, 284, "THE SERVER OFFERS THREE. THE AGENT SEES TWO.", { c: "muted", cls: "t-lab", anchor: "start" });
+  s.t(60, 304, "THE WRONG TOOL CANNOT BE CALLED BY ACCIDENT — IT IS NOT IN THE LIST.", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.person(878, 300, 0.86, { hair: "crop", beard: 1, prop: "sheet", name: "TOMAS", role: "ships the image" });
+}, 1000, 356, 89);
+
+/* --- rung 5: the control plane and the one verb ---------------------------- */
+plate("s-r5", s => {
+  s.tower(500, 96, { s: 1.5, label: "CONNECT SERVE", sub: "GROUP CONTROL PLANE" });
+
+  const meds = [
+    { x: 110, ok: true,  n: "retail-blr" },
+    { x: 300, ok: true,  n: "corp-sgp" },
+    { x: 700, ok: true,  n: "mkts-nyc" },
+    { x: 890, ok: false, n: "wealth-zrh" }
+  ];
+  meds.forEach(m => {
+    const off = m.x < 500 ? 64 : -64;
+    s.shield(m.x, 290, 1.4, { c: m.ok ? "brass" : "alarm", label: m.n });
+    s.arrow(m.x, 262, 500 + (m.x < 500 ? -60 : 60), 152, { c: m.ok ? "brass" : "alarm", sw: 1.4, dash: "6 7", bow: m.x < 500 ? 22 : -22, head: 8 });
+    if (m.ok) { s.tick(m.x + off, 292, 8); s.t(m.x + off, 316, "ACKED", { c: "teal", cls: "t-cap" }); }
+    else { s.cross(m.x + off, 292, 8); s.t(m.x + off, 316, "UNCONFIRMED", { c: "alarm", cls: "t-cap" }); }
+  });
+  s.t(500, 212, "PULL, NOT PUSH", { c: "brass", cls: "t-cap" });
+  s.t(500, 232, "A LOST PUSH IS SILENT.", { c: "faint", cls: "t-cap" });
+  s.t(500, 248, "A MISSED PULL IS ACK LAG", { c: "faint", cls: "t-cap" });
+  s.t(500, 264, "YOU CAN ALERT ON.", { c: "faint", cls: "t-cap" });
+
+  /* the lever */
+  s.line(60, 396, 940, 396, { c: "rule", sw: 1.3 });
+  s.person(112, 480, 0.92, { hair: "curls", headset: 1, prop: "up", name: "DELE", role: "03:00" });
+  s.box(216, 432, 220, 52, { label: "quarantine agent:recon", c: "alarm", lc: "alarm", cls: "t-cap" });
+  s.t(326, 502, "DUAL CONTROL · TWO NAMED APPROVERS", { c: "faint", cls: "t-cap" });
+  s.arrow(448, 458, 546, 458, { c: "alarm", sw: 1.7 });
+  s.t(580, 444, "EVERY CONTRACT THE PARTY HOLDS, INBOUND", { c: "alarm", cls: "t-cap", anchor: "start" });
+  s.t(580, 462, "AND OUTBOUND, AT EVERY MEDIATOR · 41S", { c: "alarm", cls: "t-cap", anchor: "start" });
+}, 1000, 530, 97);
+
+/* --- the ratchet ----------------------------------------------------------- */
+plate("s-ratchet", s => {
+  const cx = 190, cy = 150, R = 96;
+  const teeth = 12, pts = [];
+  for (let i = 0; i < teeth; i++) {
+    const a0 = (i / teeth) * Math.PI * 2, a1 = ((i + 0.55) / teeth) * Math.PI * 2;
+    pts.push([cx + Math.cos(a0) * R, cy + Math.sin(a0) * R]);
+    pts.push([cx + Math.cos(a1) * R * 0.78, cy + Math.sin(a1) * R * 0.78]);
+  }
+  s.p(s.pen.poly(pts, true, 1.1), { c: "brass", sw: 1.8 });
+  s.ell(cx, cy, 16, 16, { c: "brass", sw: 1.7 });
+  /* the pawl */
+  s.p(s.pen.poly([[cx + 96, cy - 96], [cx + 58, cy - 58], [cx + 74, cy - 40]], false, 1), { c: "alarm", sw: 2 });
+  s.t(cx + 106, cy - 92, "THE PAWL", { c: "alarm", cls: "t-cap", anchor: "start" });
+  s.t(cx + 106, cy - 76, "DOES NOT TURN BACK", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.p(s.pen.arc(cx, cy, R + 30, R + 30, Math.PI * 0.62, Math.PI * 1.42, 0.8), { c: "teal", sw: 1.6 });
+  s.arrow(cx - 128, cy - 34, cx - 118, cy - 60, { c: "teal", sw: 1.6, head: 8 });
+
+  const steps = [["observe", "record, deny nothing"], ["flag", "surface, still permit"], ["enforce", "refuse"]];
+  steps.forEach((st, i) => {
+    const y = 64 + i * 78;
+    s.box(452, y, 190, 54, { label: st[0], sub: st[1].toUpperCase(), c: i === 2 ? "teal" : "faint", lc: i === 2 ? "teal" : "ink" });
+    if (i < 2) s.arrow(547, y + 56, 547, y + 74, { c: "brass", sw: 1.5, head: 7 });
+  });
+  s.t(672, 88, "BYTE-IDENTICAL TO", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.t(672, 104, "NOT HAVING DEPLOYED IT", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.t(672, 242, "ONLY REACHABLE ONCE THE REGISTER", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.t(672, 258, "MAKES DENIAL CORRECT", { c: "faint", cls: "t-cap", anchor: "start" });
+  s.t(672, 274, "RATHER THAN MERELY LOUD", { c: "teal", cls: "t-cap", anchor: "start" });
+}, 1000, 320, 103);
+
+/* =========================================================================
+   ACT TWO — the domains
+   ========================================================================= */
+const DOMAINS = {
+  retail: {
+    name: "Retail &amp; Digital",
+    juris: "London · Bengaluru · FCA / PRA · 40m customers",
+    who: "Rhea ships · Tomas operates",
+    spec: { Rung: ["5", "the full ladder"], Topology: ["Sidecar", "one process per agent runtime"],
+            Mode: ["enforce", "observe → flag → enforce over ten weeks"],
+            "Control plane": ["Group, regional replicas", "pull with 5s refresh"],
+            Estate: ["Hybrid", "cloud runtimes, on-prem core banking"] },
+    prose: "<p>Four thousand repositories and a genuinely high agent count — small, numerous, mostly read-only. The volume is what makes the <strong>paved road</strong> the only viable pattern: Tomas owns the base image and the CI template, so rungs 2 and 4 are paid once, centrally, and an application team's entire interaction with the system is <code>connect request</code>.</p><p>Most of those requests auto-approve in seconds, which is the fact that keeps the friction budget negative. If they did not, the whole thing would be a ticketing system with extra steps.</p>",
+    gives: "Surgical containment — killing one sidecar cuts one agent — at the cost of many more instances to operate. Which is the trade Tomas would make anyway.",
+    draw: sc => {
+      const cars = [104, 168, 232, 346, 410, 474];
+      sc.cloud(64, 22, 210, 56, "AZURE · WEST EUROPE", "");
+      sc.cloud(306, 22, 210, 56, "AZURE · CENTRAL INDIA", "");
+      cars.forEach(x => sc.agent(x, 52, 0.58));
+      cars.forEach(x => sc.shield(x, 150, 0.72, {}));
+      cars.forEach(x => sc.arrow(x, 78, x, 128, { c: "teal", sw: 1.1, head: 6 }));
+      sc.t(268, 208, "ONE SIDECAR PER AGENT RUNTIME", { c: "brass", cls: "t-cap" });
+
+      sc.rack(700, 116, 90, 76, "ON-PREM CORE", "LONDON DC · MAINFRAME");
+      cars.forEach(x => sc.arrow(x + 14, 166, 690, 150, { c: "teal", sw: 1, bow: 10, head: 6 }));
+
+      /* one contract bus rather than six pull lines, which is what it looks
+         like operationally anyway: the mediators all read the same set */
+      sc.line(96, 268, 830, 268, { c: "brass", sw: 1.4, dash: "7 8" });
+      cars.forEach(x => sc.line(x, 172, x, 264, { c: "brass", sw: 1, dash: "4 6" }));
+      sc.tower(880, 268, { s: 1.05, label: "GROUP CP", sub: "PULL · 5S · ACK" });
+      sc.line(830, 268, 858, 268, { c: "brass", sw: 1.4, dash: "7 8" });
+      sc.t(300, 292, "ONE CONTRACT SET, PULLED · REGIONAL READ REPLICAS", { c: "faint", cls: "t-cap" });
+    }
+  },
+  corp: {
+    name: "Corporate &amp; Institutional",
+    juris: "Singapore · London · MAS / PRA · payments, trade finance",
+    who: "Aiko approves · Iva provides",
+    spec: { Rung: ["5", "plus a dedicated boundary"], Topology: ["Sidecar + egress mediator", "two enforcement points, different jobs"],
+            Mode: ["enforce", "write surfaces never auto-approve"],
+            "Control plane": ["Group, dual control", "two named approvers on every mint"],
+            Estate: ["On-prem", "mainframe-adjacent, low change appetite"] },
+    prose: "<p>The highest blast radius in the bank. A wrongly-scoped agent here does not leak a balance, it moves money — so the policy file is deliberately stricter than Retail's: <strong>any contract touching a write surface requires a human signature</strong>, and there is no auto-approve path that reaches one.</p><p>The second enforcement point exists because correspondent traffic leaves the estate. An egress mediator on the org boundary governs those crossings specifically; it does not replace the sidecars, because internal relationships still need governing and a single boundary mediator would say nothing about them.</p>",
+    gives: "Two things to operate instead of one, and a review load Aiko carries personally. Relationship-level review is what keeps that at fifty a month instead of seven figures.",
+    draw: sc => {
+      sc.rack(80, 46, 90, 80, "PAYMENTS CORE", "LONDON DC");
+      sc.rack(210, 46, 90, 80, "TRADE FINANCE", "SINGAPORE DC");
+      for (let i = 0; i < 2; i++) sc.agent(120 + i * 130, 190, 0.7, { label: ["AGENT:RECON", "AGENT:SANCTIONS"][i] });
+      [120, 250].forEach(x => sc.shield(x, 148, 0.78, {}));
+      [120, 250].forEach((x, i) => { sc.arrow(x, 166, x, 132, { c: "teal", sw: 1.2, head: 6 }); });
+      sc.line(400, 24, 400, 250, { c: "rule", sw: 1.6, dash: "8 8" });
+      sc.t(400, 262, "ORG BOUNDARY", { c: "faint", cls: "t-cap" });
+      sc.shield(400, 116, 1.5, { label: "EGRESS MEDIATOR" });
+      sc.arrow(310, 100, 372, 108, { c: "teal", sw: 1.3, head: 7 });
+      sc.box(510, 84, 170, 60, { label: "correspondent", sub: "PARTNER BANK", c: "faint" });
+      sc.arrow(430, 116, 502, 116, { c: "teal", sw: 1.3, head: 7 });
+      sc.tower(830, 150, { s: 1.1, label: "GROUP CP", sub: "DUAL CONTROL" });
+      sc.person(600, 240, 0.72, { hair: "bob", glasses: 1, prop: "key", name: "AIKO" });
+      sc.t(760, 220, "WRITE SURFACE", { c: "alarm", cls: "t-cap", anchor: "start" });
+      sc.t(760, 236, "NEVER AUTO-APPROVES", { c: "alarm", cls: "t-cap", anchor: "start" });
+    }
+  },
+  wealth: {
+    name: "Wealth &amp; Private",
+    juris: "Zurich · Singapore · FINMA / MAS · booking centres",
+    who: "Nils operates the vault",
+    spec: { Rung: ["4", "full enforcement, no control plane"], Topology: ["Air-gapped bundles + multi-cloud sidecars", "two halves that never meet"],
+            Mode: ["enforce", "full strength inside the booking centre"],
+            "Control plane": ["not reachable", "contracts arrive as signed bundles"],
+            Estate: ["Multi-cloud + air-gap", "GCP Zurich, AWS Singapore, isolated core"] },
+    prose: "<p>The booking centre may not make an outbound call to a control plane. That is not a risk-appetite position, it is a licence condition — so the topology is chosen by the regulator, not by the architect.</p><p><strong>Enforcement is full strength anyway.</strong> Contracts are minted in the connected environment, exported as signed bundles, and carried in. The mediator verifies signatures locally; it does not need the issuer to be reachable to know the artifact is genuine. What it loses is not enforcement — it is <em>freshness</em>.</p><p>The rest of the domain runs across two clouds in two jurisdictions with ordinary sidecars, so Wealth is really two configurations wearing one name.</p>",
+    gives: "Revocation latency bounded by the bundle refresh cycle. TTLs are therefore set by what that cycle can sustain, not by what the risk appetite would prefer — and a quarantine order to Zurich returns <em>unconfirmed</em> rather than a tick.",
+    draw: sc => {
+      sc.vault(70, 40, 170, 130, "ZURICH BOOKING CENTRE", "NO OUTBOUND · FINMA", true);
+      sc.shield(155, 96, 1.2, { label: "MEDIATOR · ENFORCE" });
+      sc.line(268, 104, 340, 104, { c: "rule", sw: 1.6, dash: "7 9" });
+      sc.cross(304, 104, 9);
+      sc.t(304, 134, "NO CALL PERMITTED", { c: "alarm", cls: "t-cap" });
+      sc.sheet(360, 62, 84, 96, { c: "brass", label: "SIGNED BUNDLE", lines: 4 });
+      sc.t(402, 194, "CARRIED IN · 06:00 CET", { c: "brass", cls: "t-cap" });
+      sc.arrow(356, 110, 272, 110, { c: "brass", sw: 1.5, bow: -26, head: 8 });
+      sc.cloud(520, 40, 170, 60, "GCP · ZURICH", "ADVISORY AGENTS");
+      sc.cloud(730, 40, 170, 60, "AWS · SINGAPORE", "ADVISORY AGENTS");
+      [556, 604, 652, 766, 814, 862].forEach(x => sc.shield(x, 150, 0.6, {}));
+      sc.tower(710, 246, { s: 1, label: "GROUP CP", sub: "REACHES ONLY THE CLOUD HALF" });
+      [556, 604, 652, 766, 814, 862].forEach(x => sc.arrow(x, 172, 700, 216, { c: "brass", sw: 1, dash: "5 6", bow: 10, head: 0 }));
+      sc.t(240, 240, "ONE DOMAIN. TWO CONFIGURATIONS.", { c: "muted", cls: "t-lab", anchor: "start" });
+      sc.t(240, 258, "THE REGULATOR CHOSE THE LEFT ONE.", { c: "faint", cls: "t-cap", anchor: "start" });
+    }
+  },
+  markets: {
+    name: "Markets &amp; Treasury",
+    juris: "New York · OCC · latency measured in microseconds",
+    who: "Sofia owns the filter",
+    spec: { Rung: ["5", "control plane yes, our data plane no"], Topology: ["Third-party enforcement", "checks implemented in an existing Envoy fleet"],
+            Mode: ["enforce", "in someone else's proxy"],
+            "Control plane": ["Group", "contracts pulled, applied by the filter"],
+            Estate: ["Multi-cloud", "AWS + colo, existing egress fleet"] },
+    prose: "<p>An egress proxy already exists here and will not be duplicated. Adding a hop to this path is not a preference question — the latency budget forbids it.</p><p>So Markets runs the control plane and <strong>substitutes its own data plane</strong>. Sofia's Envoy filter implements the eleven verification checks and is held to the nineteen published conformance vectors. The artifact format, the canonicalisation and the checks are specified precisely so that this is a <em>testable</em> claim rather than a trusted one.</p><p>This row is the argument that the design is a specification with an implementation, not a product with an API.</p>",
+    gives: "Conformance becomes Aldgate's problem. A filter that passes eighteen of nineteen vectors is a control that works almost always — which, in this category, is a control that fails silently.",
+    draw: sc => {
+      sc.cloud(56, 26, 196, 56, "AWS · US-EAST-1", "PRICING AGENTS");
+      for (let i = 0; i < 3; i++) sc.agent(102 + i * 54, 56, 0.55);
+      sc.rack(300, 32, 84, 66, "COLO · NJ2", "MATCHING");
+
+      /* The box label sits at the top so the filter can occupy the box, which
+         is the whole point: our checks live inside their proxy. */
+      sc.rect(468, 26, 214, 104, { c: "faint", sw: 1.5 });
+      sc.t(575, 50, "ENVOY EGRESS FLEET", { c: "muted", cls: "t-lab" });
+      sc.t(575, 66, "ALREADY EXISTS", { c: "faint", cls: "t-cap" });
+      sc.rect(486, 82, 178, 36, { c: "brass", sw: 1.7 });
+      sc.t(575, 105, "wc filter · 11 checks", { c: "brass", cls: "t-cap" });
+
+      sc.arrow(258, 56, 460, 60, { c: "teal", sw: 1.2, head: 7 });
+      sc.arrow(392, 66, 460, 76, { c: "teal", sw: 1.2, head: 7 });
+      sc.tower(850, 78, { s: 1.05, label: "GROUP CP", sub: "CONTRACTS PULLED" });
+      sc.arrow(824, 58, 692, 62, { c: "brass", sw: 1.2, dash: "5 6", head: 7 });
+
+      sc.line(60, 176, 940, 176, { c: "rule", sw: 1.3 });
+      sc.t(60, 208, "19 PUBLISHED CONFORMANCE VECTORS", { c: "muted", cls: "t-lab", anchor: "start" });
+      for (let i = 0; i < 19; i++) sc.tick(420 + i * 27, 203, 6);
+      sc.t(60, 232, "PASSING 18 IS A CONTROL THAT WORKS ALMOST ALWAYS,", { c: "faint", cls: "t-cap", anchor: "start" });
+      sc.t(60, 248, "WHICH IN THIS CATEGORY IS A CONTROL THAT FAILS SILENTLY.", { c: "alarm", cls: "t-cap", anchor: "start" });
+    }
+  },
+  group: {
+    name: "Group Risk &amp; Audit",
+    juris: "Frankfurt · London · ECB / BaFin · DORA reporting",
+    who: "Margit queries it",
+    spec: { Rung: ["3", "and deliberately no further"], Topology: ["Control plane only", "no data plane at all"],
+            Mode: ["observe", "nothing is enforced, and it says so"],
+            "Control plane": ["Group, read-only", "register, pins, drift, evidence"],
+            Estate: ["None of its own", "reads across all four other domains"] },
+    prose: "<p>The row people assume is a mistake. Group Risk deploys the register and <em>nothing else</em>: truthful inventory, named owners, pinned surfaces, drift detection, a hash-chained evidence ledger and an <code>as_of</code> query — and it enforces nothing whatsoever.</p><p>That is correct for two reasons. Margit needs a <strong>defensible answer</strong>, not a chokepoint. And a second enforcement chokepoint owned by the second line of defence would be a governance problem dressed as a control — Risk would be operating the thing it is meant to be assuring.</p>",
+    gives: "Nothing is enforced. Contracts are issued but unverified, <code>tools/list</code> is unfiltered, quarantine notifies rather than cuts. <strong>Honest visibility, zero behaviour change</strong> — and <code>connect posture</code> says so loudly rather than reporting a green tick.",
+    draw: sc => {
+      sc.tower(500, 96, { s: 1.4, label: "CONNECT SERVE" });
+      sc.t(500, 148, "READS ALL FOUR", { c: "brass", cls: "t-cap" });
+      sc.t(500, 164, "GOVERNS NONE", { c: "brass", cls: "t-cap" });
+      [["retail", 100], ["corp", 300], ["wealth", 700], ["markets", 900]].forEach(d => {
+        sc.box(d[1] - 66, 196, 132, 46, { label: d[0], c: "faint" });
+        sc.arrow(d[1], 194, 500 + (d[1] < 500 ? -54 : 54), 124, { c: "brass", sw: 1.2, dash: "5 6", bow: d[1] < 500 ? 18 : -18, head: 7 });
+      });
+      sc.person(500, 306, 0.76, { hair: "bob", glasses: 1, prop: "sheet", name: "MARGIT", role: "answers the ecb" });
+      sc.t(80, 284, "NO DATA PLANE", { c: "alarm", cls: "t-lab", anchor: "start" });
+      sc.t(80, 302, "NOTHING IS ENFORCED HERE", { c: "alarm", cls: "t-cap", anchor: "start" });
+      sc.t(80, 318, "AND POSTURE SAYS SO", { c: "alarm", cls: "t-cap", anchor: "start" });
+      sc.t(700, 284, "HONEST VISIBILITY", { c: "teal", cls: "t-lab", anchor: "start" });
+      sc.t(700, 302, "BEATS FAKE ENFORCEMENT", { c: "teal", cls: "t-cap", anchor: "start" });
+      sc.t(700, 318, "NOBODY INVESTIGATES", { c: "faint", cls: "t-cap", anchor: "start" });
+      sc.t(700, 334, "SOMETHING THAT LOOKS FINE", { c: "faint", cls: "t-cap", anchor: "start" });
+    }
+  }
+};
+
+const panel = document.getElementById("domain-panel");
+const tabs = Array.from(document.querySelectorAll(".switch button"));
+let domSeed = 200;
+
+function showDomain(key) {
+  const d = DOMAINS[key];
+  tabs.forEach(b => b.setAttribute("aria-pressed", String(b.dataset.dom === key)));
+  plate("s-domain", d.draw, 1000, 360, domSeed += 7);
+  const rows = Object.entries(d.spec).map(([k, v]) =>
+    "<dt>" + k + "</dt><dd>" + v[0] + "<em>" + v[1] + "</em></dd>").join("");
+  panel.innerHTML =
+    '<div class="dpanel"><h4>' + d.name + "</h4>" +
+    '<p class="juris">' + d.juris + " · " + d.who + "</p>" +
+    d.prose +
+    '<p style="font-size:.88rem"><strong style="color:var(--alarm)">What it gives up.</strong> ' + d.gives + "</p></div>" +
+    '<div class="spec"><dl>' + rows + "</dl></div>";
+}
+tabs.forEach(b => b.addEventListener("click", () => showDomain(b.dataset.dom)));
+showDomain("retail");
+
+/* =========================================================================
+   THE COMBINATION BUILDER
+   ========================================================================= */
+const RUNGS = [
+  { id: 1, n: "1", label: "Pin a surface", d: "canon only" },
+  { id: 2, n: "2", label: "The register", d: "entities + evidence" },
+  { id: 3, n: "3", label: "Signed contracts", d: "request / approve / mint" },
+  { id: 4, n: "4", label: "On the path", d: "a mediator, contracts as files" },
+  { id: 5, n: "5", label: "Estate-wide", d: "control plane + quarantine" }
+];
+const TOPOS = [
+  { id: "cpo",   n: "cp", label: "Control plane only", d: "no data plane at all" },
+  { id: "side",  n: "sc", label: "Sidecar", d: "one mediator per agent runtime" },
+  { id: "gw",    n: "gw", label: "Shared gateway", d: "one mediator, many agents" },
+  { id: "third", n: "3p", label: "Third-party enforcement", d: "your Envoy, our checks" },
+  { id: "egr",   n: "eg", label: "Egress mediator", d: "the org boundary only" },
+  { id: "fed",   n: "fd", label: "Federated", d: "a control plane per BU" },
+  { id: "air",   n: "ag", label: "Air-gapped", d: "signed bundles, carried in" }
+];
+const MODES = [
+  { id: "observe", n: "○", label: "observe", d: "record, deny nothing" },
+  { id: "flag",    n: "◐", label: "flag", d: "alert owners, still permit" },
+  { id: "enforce", n: "●", label: "enforce", d: "refuse uncontracted calls" }
+];
+
+const state = { rung: 5, topo: "side", mode: "enforce" };
+
+/* The rules. Order matters — the first incoherence found is the one reported,
+   because a configuration with two contradictions is not twice as informative. */
+function judge(st) {
+  const R = st.rung, T = st.topo, M = st.mode;
+
+  if (R <= 3 && T !== "cpo")
+    return { s: "bad", h: "There is nothing on the path to enforce with.",
+      p: "Rungs 1–3 produce artifacts: a pin, a register, a signed contract. None of them sit in the traffic. Selecting <strong>" + name(TOPOS, T) + "</strong> here describes a mediator that has not been deployed — the contract is minted and then nothing reads it. <strong>This is the failure mode the whole design is built to make visible</strong>: a control that exists on paper, reports success, and never executes.",
+      runs: "Nobody at Aldgate. Rungs 1–3 are correctly paired with <b>control plane only</b>." };
+
+  if (T === "cpo" && M !== "observe")
+    return { s: "bad", h: "A system with nothing on the path cannot deny.",
+      p: "Control-plane-only has no data plane by definition. Setting <strong>" + M + "</strong> renames a mode; it does not create an enforcement point. Contracts are issued but unverified, <code>tools/list</code> is unfiltered, and quarantine notifies rather than cuts. The dashboard will be green. <strong>Nothing is being stopped.</strong>",
+      runs: "Group Risk runs this topology deliberately — in <b>observe</b>, and <code>connect posture</code> announces that it enforces nothing." };
+
+  if (R === 2 && M === "enforce")
+    return { s: "bad", h: "Enforcement demanded before the machinery that satisfies it exists.",
+      p: "At rung 2 every party is <code>Unattested</code> — nobody has provenance verification deployed yet — so <strong>nothing can ever be minted</strong>. An early build of the issuer hardcoded exactly this and failed on first use, for the correct reason, in a way that looked precisely like a bug. Mode is now a deployment property rather than a compile-time one, which is what lets rung 2 exist at all.",
+      runs: "This is a real regression, found by running the binary rather than by the test suite." };
+
+  if (R === 5 && T === "air")
+    return { s: "cost", h: "Reachable, but the top rung arrives with a caveat.",
+      p: "Contracts are pre-issued as signed bundles and verified locally, so <strong>enforcement is full strength</strong>. What rung 5 adds — pull, ACK, and one-verb containment — degrades: a quarantine order cannot reach the mediator, so it is reported <strong>unconfirmed</strong> and the mediator fails closed locally. Revocation latency is bounded by the bundle refresh cycle, which means TTLs are set by what that cycle can sustain rather than by what the risk appetite would prefer.",
+      runs: "<b>Nils · Zurich booking centre.</b> The regulator chose this topology, not the architect." };
+
+  if (R === 4 && (T === "side" || T === "gw") && M === "observe")
+    return { s: "ok", h: "The correct place to start, and it changes nothing.",
+      p: "Every check runs and every finding is written to the evidence chain, while behaviour stays <strong>byte-identical to not having deployed it</strong>. This is where an estate discovers the agent connections nobody recorded — and it is the only version of rung 4 that gets through change advisory without an argument.",
+      runs: "<b>Every Aldgate domain passed through here.</b> Retail spent ten weeks in observe and flag before enforcing." };
+
+  if (R === 4 && M === "enforce")
+    return { s: "cost", h: "Deny-by-default, with contracts as files in a repository.",
+      p: "This works, and for one team it is the right answer — it needs approval from nobody and proves the model in a week. Contracts are renewed by a pull request. What it will not do is scale: at forty teams, contract distribution becomes a merge-conflict problem, and there is <strong>no containment verb</strong>, because containment requires something that knows where every mediator is.",
+      runs: "<b>Pattern A.</b> The first team at Aldgate ran exactly this for six weeks." };
+
+  if (R === 5 && T === "third")
+    return { s: "cost", h: "You run the control plane and substitute the data plane.",
+      p: "The artifact format, the canonicalisation and the eleven checks are specified, and nineteen conformance vectors are published, so this is a <em>testable</em> claim rather than a trusted one. That is the whole point — you do not have to run our data plane at all. The cost transfers with it: <strong>conformance is now yours</strong>, and a filter that passes eighteen of nineteen vectors is a control that works almost always.",
+      runs: "<b>Sofia · Markets &amp; Treasury, New York.</b> An egress fleet that already exists and a latency budget that forbids a second hop." };
+
+  if (R === 5 && T === "gw" && M === "enforce")
+    return { s: "cost", h: "Simpler to operate, with the trust boundary concentrated.",
+      p: "One mediator fronting many agents is the right answer for brownfield estates and for anywhere a chokepoint already exists. The trade is real: containment now relies on per-<code>cid</code> revocation rather than process isolation, so <strong>killing the process cuts every agent behind it</strong> rather than the one you meant.",
+      runs: "Two Aldgate subsidiaries acquired in 2024, where per-agent sidecars would have meant touching manifests nobody owns." };
+
+  if (R === 5 && T === "egr")
+    return { s: "cost", h: "The boundary is governed. The inside is not.",
+      p: "A dedicated mediator on the org boundary is correct for partner and public-zone crossings, and Corporate runs one. But it <strong>must not be the only mediator</strong> — every internal relationship is invisible to it, and an estate whose only enforcement point is at the perimeter has described its threat model as entirely external.",
+      runs: "<b>Aiko · Corporate &amp; Institutional</b> — as a second enforcement point, never as the first." };
+
+  if (R === 5 && T === "fed")
+    return { s: "cost", h: "Independent approval chains, at the price of anchor lifecycle.",
+      p: "A control plane per business unit, each with its own issuer key, policy file and approver registry, federated at the trust-anchor level. Correct when units have genuinely different regulators — which at Aldgate they do. The honest cost is that <strong>trust-anchor rotation becomes something a named human owns</strong>, and the failure mode of forgetting is estate-wide.",
+      runs: "<b>Halima · Group CISO.</b> Reached only after a second regulator forced it — starting here is how you spend a year on a platform nobody has used." };
+
+  if (R === 5 && T === "side" && M === "enforce")
+    return { s: "ok", h: "The default, and the shape most of the estate ends up in.",
+      p: "One <code>connect-mediate</code> per agent runtime, contracts pulled from the control plane with an ACK, uncontracted calls refused with <code>WC-4002</code> before the upstream is spoken to, and containment as one verb with <strong>per-mediator confirmation</strong>. Surgical: killing one process cuts one agent. The cost is instance count, which is a problem a platform team already knows how to have.",
+      runs: "<b>Retail &amp; Digital</b> — four thousand repositories on Tomas's paved road." };
+
+  if (M === "flag")
+    return { s: "ok", h: "The middle tooth of the ratchet.",
+      p: "Findings become alerts to named owners — drift, ceiling approach and upcoming expiry all reach a human. Nothing is blocked, so nothing breaks, but the organisation starts reacting to the signal. <strong>This is where you find out whether anyone will act on it</strong> before you make it mandatory.",
+      runs: "Every domain spent time here. Retail spent six weeks." };
+
+  return { s: "ok", h: "A coherent configuration.",
+    p: "Rung " + R + " with <strong>" + name(TOPOS, T) + "</strong> in <strong>" + M + "</strong>. Enforcement sits where the artifacts are, and the mode matches what the register can currently support.",
+    runs: "Reachable today with the shipped binaries." };
+}
+function name(list, id) { const f = list.find(x => x.id === id); return f ? f.label.toLowerCase() : id; }
+
+function drawBuild(sc) {
+  const R = state.rung, T = state.topo, M = state.mode;
+  const v = judge(state);
+  const bad = v.s === "bad";
+
+  sc.agent(80, 90, 0.95, { label: "AGENT" });
+  sc.rack(830, 52, 84, 76, "TOOL SERVER", "UPSTREAM");
+
+  /* what the rung produces */
+  const arts = [];
+  if (R >= 1) arts.push("pin");
+  if (R >= 2) arts.push("register");
+  if (R >= 3) arts.push("contract");
+  arts.forEach((a, i) => {
+    const x = 210 + i * 106;
+    sc.rect(x, 190, 92, 40, { c: "brass", sw: 1.5 });
+    sc.t(x + 46, 215, a, { c: "brass", cls: "t-cap" });
+  });
+  sc.t(210, 254, "ARTIFACTS PRODUCED", { c: "faint", cls: "t-cap", anchor: "start" });
+
+  /* the path */
+  if (T === "cpo" || R <= 3) {
+    sc.arrow(140, 90, 812, 90, { c: bad ? "alarm" : "faint", sw: 1.5, head: 8, dash: bad ? null : "7 8" });
+    sc.t(476, 66, bad ? "UNGOVERNED — NOTHING READS THE ARTIFACT" : "UNGOVERNED BY DESIGN · NOTHING IS ON THE PATH",
+         { c: bad ? "alarm" : "faint", cls: "t-cap" });
+  } else {
+    const enf = M === "enforce";
+    const c = enf ? "brass" : "faint";
+    if (T === "side") { sc.t(470, 40, "SIDECAR", { c: c, cls: "t-cap" }); sc.shield(470, 90, 1.5, { c: c }); }
+    else if (T === "gw") { sc.t(470, 34, "SHARED GATEWAY", { c: c, cls: "t-cap" }); sc.shield(470, 90, 1.9, { c: c });
+      sc.agent(80, 176, 0.7, {}); sc.agent(80, 246, 0.7, {});
+      sc.arrow(122, 176, 436, 108, { c: "teal", sw: 1.2, bow: 12, head: 6 });
+      sc.arrow(122, 246, 436, 118, { c: "teal", sw: 1.2, bow: 16, head: 6 }); }
+    else if (T === "third") { sc.box(400, 56, 150, 70, { label: "envoy", sub: "YOUR PROXY", c: "faint" });
+      sc.rect(414, 92, 122, 28, { c: c, sw: 1.6 }); sc.t(475, 111, "wc · 11 checks", { c: c, cls: "t-cap" }); }
+    else if (T === "egr") { sc.line(600, 20, 600, 170, { c: "rule", sw: 1.5, dash: "8 8" });
+      sc.t(600, 186, "ORG BOUNDARY", { c: "faint", cls: "t-cap" });
+      sc.shield(600, 90, 1.5, { c: c, label: "EGRESS ONLY" });
+      sc.t(330, 66, "INTERNAL CALLS UNGOVERNED", { c: "alarm", cls: "t-cap" }); }
+    else if (T === "air") { sc.vault(400, 40, 150, 106, "AIR-GAPPED", "");
+      sc.shield(475, 92, 1.1, { c: c, label: "" }); }
+    else if (T === "fed") { sc.shield(400, 90, 1.3, { c: c, label: "BU A" });
+      sc.shield(560, 90, 1.3, { c: c, label: "BU B" });
+      sc.p(sc.pen.arc(480, 90, 80, 42, Math.PI, Math.PI * 2, 0.7), { c: "brass", sw: 1.3, dash: "5 6" });
+      sc.t(480, 34, "FEDERATED ANCHORS", { c: "brass", cls: "t-cap" }); }
+
+    const gate = T === "egr" ? 600 : 475;
+    sc.arrow(140, 90, gate - 42, 90, { c: "teal", sw: 1.5, head: 8 });
+    if (M === "enforce") {
+      sc.arrow(gate + 42, 90, 812, 90, { c: "teal", sw: 1.5, head: 8 });
+      sc.arrow(gate + 42, 132, 812, 132, { c: "alarm", sw: 1.4, head: 8, dash: "6 7" });
+      sc.cross(gate + 24, 132, 9);
+      sc.t(gate + 150, 156, "UNCONTRACTED · WC-4002", { c: "alarm", cls: "t-cap" });
+    } else {
+      sc.arrow(gate + 42, 90, 812, 90, { c: "teal", sw: 1.5, head: 8 });
+      sc.t(gate + 150, 66, M === "observe" ? "RECORDED, NOT DENIED" : "ALERTED, STILL PERMITTED", { c: "faint", cls: "t-cap" });
+    }
+  }
+
+  /* the control plane */
+  if (R === 5) {
+    if (T === "air") { sc.sheet(660, 200, 76, 84, { c: "brass", label: "SIGNED BUNDLE", lines: 3 });
+      sc.line(660, 242, 600, 242, { c: "rule", sw: 1.4, dash: "6 8" }); sc.cross(628, 242, 8);
+      sc.t(760, 240, "NO PULL · NO ACK", { c: "alarm", cls: "t-cap", anchor: "start" }); }
+    else { sc.tower(760, 250, { s: 1.05, label: "CONTROL PLANE", sub: "PULL · ACK · QUARANTINE" });
+      sc.arrow(700, 226, 520, 140, { c: "brass", sw: 1.2, dash: "5 6", bow: 20, head: 7 }); }
+  } else if (R === 4) {
+    sc.sheet(660, 200, 76, 84, { c: "brass", label: "CONTRACT IN REPO", lines: 3 });
+    sc.t(770, 240, "RENEWED BY A PR", { c: "faint", cls: "t-cap", anchor: "start" });
+    sc.t(770, 256, "NO CONTAINMENT VERB", { c: "alarm", cls: "t-cap", anchor: "start" });
+  }
+}
+
+function paint() {
+  ["rung", "topo", "mode"].forEach(k => {
+    document.querySelectorAll("#o-" + k + " button").forEach(b =>
+      b.setAttribute("aria-pressed", String(String(state[k]) === b.dataset.v)));
+  });
+  const v = judge(state);
+  const el = document.getElementById("verdict");
+  el.setAttribute("data-status", v.s);
+  el.innerHTML =
+    '<span class="status">' + (v.s === "bad" ? "incoherent" : v.s === "cost" ? "works, with a cost" : "coherent") + "</span>" +
+    "<h4>" + v.h + "</h4><p>" + v.p + '</p><p class="runs">who runs it · ' + v.runs + "</p>";
+  plate("s-build", drawBuild, 960, 300, 300 + state.rung * 13 + state.topo.length * 7 + state.mode.length);
+}
+
+function opts(host, list, key) {
+  const el = document.getElementById(host);
+  el.innerHTML = list.map(o =>
+    '<button type="button" data-v="' + (o.id != null ? o.id : o.n) + '" aria-pressed="false">' +
+    "<i>" + o.n + "</i><span>" + o.label + "<br><span style=\"color:var(--faint);font-size:.75rem\">" + o.d + "</span></span></button>").join("");
+  el.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+    state[key] = key === "rung" ? Number(b.dataset.v) : b.dataset.v;
+    paint();
+  }));
+}
+opts("o-rung", RUNGS, "rung");
+opts("o-topo", TOPOS, "topo");
+opts("o-mode", MODES, "mode");
+paint();
+
+/* =========================================================================
+   ACT THREE
+   ========================================================================= */
+
+/* --- crossing a jurisdiction: the ceiling is an intersection ------------- */
+plate("s-x1", s => {
+  s.person(80, 150, 0.9, { hair: "bun", name: "WEALTH AGENT", role: "singapore" });
+  s.person(890, 150, 0.9, { hair: "bun", lanyard: 1, name: "IVA", role: "payments · london" });
+  s.line(485, 24, 485, 122, { c: "rule", sw: 1.6, dash: "8 8" });
+  s.t(485, 16, "MAS  |  PRA", { c: "faint", cls: "t-cap" });
+  s.tower(300, 116, { s: 0.95, label: "CP · SINGAPORE", sub: "OWN ISSUER KEY" });
+  s.tower(670, 116, { s: 0.95, label: "CP · LONDON", sub: "OWN APPROVERS" });
+  s.p(s.pen.arc(485, 116, 185, 62, Math.PI, Math.PI * 2, 0.8), { c: "brass", sw: 1.4, dash: "6 7" });
+  s.t(485, 44, "FEDERATED AT THE TRUST ANCHOR — NOT MERGED", { c: "brass", cls: "t-cap" });
+
+  /* the narrowing */
+  /* Each bar must sit strictly inside the one above it. A bar that pokes out on
+     either edge draws the opposite of the invariant the figure exists to state. */
+  const rows = [
+    ["callee declares", 0, 700, "faint", "get_balance · list_transactions · wire_funds · post_journal · reverse"],
+    ["contract surface", 0, 470, "brass", "get_balance · list_transactions"],
+    ["token scope", 60, 360, "muted", "read-only · this tenant"],
+    ["policy decision", 90, 280, "teal", "permitted now, this caller"],
+    ["effective", 90, 280, "teal", ""]
+  ];
+  rows.forEach((r, i) => {
+    const y = 216 + i * 42;
+    s.t(210, y + 5, r[0].toUpperCase(), { c: "faint", cls: "t-cap", anchor: "end" });
+    if (i === 4) {
+      s.rect(226 + r[1], y - 15, r[2], 30, { c: "teal", sw: 1.6, o: 1 });
+      s.t(226 + r[1] + r[2] / 2, y + 5, "get_balance · list_transactions", { c: "teal", cls: "t-cap" });
+    } else {
+      s.rect(226 + r[1], y - 15, r[2], 30, { c: r[3], sw: 1.4, o: 1 });
+      s.t(226 + r[1] + 10, y + 5, r[4], { c: r[3], cls: "t-cap", anchor: "start" });
+    }
+  });
+  s.t(940, 300, "EACH LAYER", { c: "muted", cls: "t-cap", anchor: "end" });
+  s.t(940, 316, "CAN ONLY NARROW", { c: "muted", cls: "t-cap", anchor: "end" });
+  s.t(940, 340, "REMOVING ONE DOES NOT", { c: "brass", cls: "t-cap", anchor: "end" });
+  s.t(940, 356, "WIDEN THE OTHERS", { c: "brass", cls: "t-cap", anchor: "end" });
+}, 1000, 440, 131);
+
+/* --- 03:00 containment across four topologies --------------------------- */
+plate("s-x2", s => {
+  s.person(88, 176, 1.0, { hair: "curls", headset: 1, prop: "mug", name: "DELE", role: "group soc", where: "03:04 utc" });
+  s.box(180, 112, 232, 56, { label: "quarantine agent:retail-recon", c: "alarm", lc: "alarm", cls: "t-cap" });
+  s.t(296, 186, "DUAL CONTROL · DELE + HALIMA", { c: "faint", cls: "t-cap" });
+
+  /* One column, one row per environment. Four heterogeneous topologies fanned
+     out from a single verb — the arrows must not cross, or the point is lost. */
+  const env = [
+    { y: 24,  kind: "cloud", n: "RETAIL · SIDECARS",   sub: "6 MEDIATORS", ok: true },
+    { y: 94,  kind: "rack",  n: "CORPORATE · ON-PREM", sub: "4 MEDIATORS", ok: true },
+    { y: 164, kind: "box",   n: "MARKETS · ENVOY",     sub: "2 FILTERS",   ok: true },
+    { y: 234, kind: "vault", n: "WEALTH · ZURICH",     sub: "1 MEDIATOR",  ok: false }
+  ];
+  env.forEach(e => {
+    const x = 552, w = 140, h = 50;
+    if (e.kind === "cloud") s.cloud(x, e.y, w, h, "", "");
+    else if (e.kind === "rack") s.rack(x + 26, e.y, 88, h, "", "");
+    else if (e.kind === "vault") s.vault(x + 16, e.y, 108, h, "", "");
+    else s.box(x, e.y, w, h, { c: "faint" });
+    s.arrow(424, 140, x - 14, e.y + 26, { c: e.ok ? "alarm" : "faint", sw: 1.4, bow: (e.y - 140) / 9, head: 7 });
+    s.t(712, e.y + 18, e.n, { c: "muted", cls: "t-lab", anchor: "start" });
+    s.t(712, e.y + 34, e.sub, { c: "faint", cls: "t-cap", anchor: "start" });
+    if (e.ok) { s.tick(720, e.y + 50, 7); s.t(738, e.y + 55, "CONFIRMED", { c: "teal", cls: "t-cap", anchor: "start" }); }
+    else { s.cross(720, e.y + 50, 7); s.t(738, e.y + 55, "UNCONFIRMED · FAILS CLOSED LOCALLY", { c: "alarm", cls: "t-cap", anchor: "start" }); }
+  });
+
+  s.line(60, 316, 940, 316, { c: "rule", sw: 1.3 });
+  s.t(60, 346, "12 / 13 CONFIRMED IN 41 SECONDS", { c: "teal", cls: "t-lab", anchor: "start" });
+  s.t(60, 368, "THE THIRTEENTH FAILS CLOSED LOCALLY AND IS TRACKED AS AN OPEN ITEM.", { c: "muted", cls: "t-cap", anchor: "start" });
+  s.t(60, 392, "A TOOL THAT REPORTED 13 / 13 HERE WOULD BE LYING —", { c: "alarm", cls: "t-cap", anchor: "start" });
+  s.t(60, 408, "AND THE LIE WOULD LOOK EXACTLY LIKE SUCCESS ON EVERY DASHBOARD IN THE BANK.", { c: "alarm", cls: "t-cap", anchor: "start" });
+}, 1000, 436, 149);
+
+/* --- the evidence chain, queried as of a past date ----------------------- */
+plate("s-x3", s => {
+  s.chain(60, 90, 700, { n: 13 });
+  for (let i = 0; i < 4; i++) {
+    const x = 132 + i * 176;
+    s.line(x, 66, x, 34, { c: "brass", sw: 1.4 });
+    s.p(s.pen.poly([[x - 9, 34], [x + 9, 34], [x, 20]], true, 0.7), { c: "brass", sw: 1.5 });
+    s.t(x, 12, "SIGNED CHECKPOINT", { c: "brass", cls: "t-cap" });
+  }
+  s.t(60, 126, "APPEND-ONLY · EVERY LIFECYCLE EVENT · TAMPER-EVIDENT", { c: "faint", cls: "t-cap", anchor: "start" });
+
+  s.line(396, 90, 396, 190, { c: "alarm", sw: 1.6, dash: "6 7" });
+  s.t(396, 210, "AS_OF 2026-04-14T00:00Z", { c: "alarm", cls: "t-cap" });
+  s.person(150, 260, 0.85, { hair: "bob", glasses: 1, prop: "sheet", name: "MARGIT", role: "answers the ecb" });
+
+  s.box(560, 180, 340, 46, { label: "4 effective · 2 expired · 1 revoked", c: "teal", lc: "teal", cls: "t-cap" });
+  s.box(560, 236, 340, 46, { label: "chain verified · 41 checkpoints · signed", c: "teal", lc: "teal", cls: "t-cap" });
+  s.arrow(700, 106, 700, 172, { c: "brass", sw: 1.4, head: 7 });
+
+  s.t(300, 300, "ANSWERED FROM ALL FIVE DOMAINS —", { c: "muted", cls: "t-lab", anchor: "start" });
+  s.t(300, 320, "INCLUDING THE ONE THAT ENFORCES NOTHING.", { c: "brass", cls: "t-lab", anchor: "start" });
+  s.t(300, 342, "THE EVIDENCE IS A PROPERTY OF THE RECORD, NOT OF THE ENFORCEMENT.", { c: "faint", cls: "t-cap", anchor: "start" });
+}, 1000, 370, 163);
+
+/* =========================================================================
+   THE RAIL — a ladder that a small figure climbs as you scroll Act One
+   ========================================================================= */
+(() => {
+  const svg = document.getElementById("s-rail");
+  if (!svg) return;
+  const sc = new Scene(100, 420, 17);
+  sc.line(30, 400, 30, 20, { c: "rule", sw: 2.2 });
+  sc.line(74, 400, 74, 20, { c: "rule", sw: 2.2 });
+  for (let i = 0; i < 5; i++) {
+    const y = 370 - i * 86;
+    sc.line(26, y, 78, y, { c: "brass", sw: 2 });
+    sc.t(90, y + 4, String(i + 1), { c: "faint", cls: "t-cap", anchor: "start" });
+  }
+  render(svg, sc);
+  svg.classList.add("on");
+  svg.querySelectorAll("[data-len],[data-fade]").forEach(el => { el.style.setProperty("--d", "0s"); });
+
+  const g = document.createElementNS(NS, "g");
+  g.setAttribute("class", "climber");
+  const cs = new Scene(100, 420, 5);
+  cs.person(52, 30, 0.42, { hair: "bun" });
+  cs.items.forEach(it => {
+    if (it.k !== "p") return;
+    const el = document.createElementNS(NS, "path");
+    el.setAttribute("d", it.d); el.setAttribute("fill", "none");
+    el.setAttribute("stroke", COLOR.teal); el.setAttribute("stroke-width", 2);
+    el.setAttribute("stroke-linecap", "round");
+    g.appendChild(el);
+  });
+  svg.appendChild(g);
+
+  const act = document.getElementById("act1");
+  let raf = 0;
+  const place = () => {
+    raf = 0;
+    const r = act.getBoundingClientRect();
+    const span = r.height - innerHeight;
+    const t = span > 0 ? Math.min(1, Math.max(0, -r.top / span)) : 0;
+    g.setAttribute("transform", "translate(0," + (370 - t * 344).toFixed(1) + ")");
+  };
+  addEventListener("scroll", () => { if (!raf) raf = requestAnimationFrame(place); }, { passive: true });
+  place();
+})();
+
+/* --- prose reveal ------------------------------------------------------- */
+const rio = new IntersectionObserver(es => es.forEach(e => {
+  observerFired = true;
+  if (e.isIntersecting) { e.target.classList.add("in"); rio.unobserve(e.target); }
+}), { threshold: 0.1 });
+document.querySelectorAll(".card, .step, .rungsec").forEach(el => { el.classList.add("rise"); rio.observe(el); });
+
+})();
+</script>
