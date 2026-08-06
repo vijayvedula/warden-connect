@@ -782,3 +782,118 @@ fn the_connection_log_records_what_happened() {
     assert_eq!(log.filtered.len(), 1);
     assert_eq!(log.filtered[0].1.hidden, 2);
 }
+
+// ---------------------------------------------------------------------------
+// The uncontracted pair: shadow detection (UC-08)
+// ---------------------------------------------------------------------------
+
+/// A mediator over an empty cache — no contract for this pair at all.
+fn uncontracted(mode: Mode) -> Fixture {
+    let recorder = Recorder::default();
+    let upstream = RecordingServer {
+        inner: StubServer::new(DECLARED),
+        recorder: recorder.clone(),
+    };
+    let cache = Arc::new(Cache::new());
+    cache.install(Snapshot::build(&[], &keys(), MEDIATOR, NOW));
+
+    let mut cfg = GateCfg::new(
+        MEDIATOR,
+        PeerIdentity {
+            caller: agent(),
+            callee: server(),
+        },
+        now,
+    );
+    cfg.mode = mode;
+    cfg.zones = Box::new(AnyZone);
+
+    Fixture {
+        cache: Arc::clone(&cache),
+        recorder,
+        mediated: MediatedUpstream::new(Box::new(upstream), cache, cfg)
+            .with_ceilings(Ceilings::new()),
+    }
+}
+
+#[test]
+fn observe_mode_does_not_change_behaviour_on_an_uncontracted_pair() {
+    // P0 ships this onto live paths to find out what is already talking to what,
+    // and its exit criterion is *zero behaviour change measured on the proxy path*
+    // (§8.16). A mediator that refused here would read as observing and break
+    // production — the worst version of a control that is not what it says.
+    let mut f = uncontracted(Mode::Observe);
+
+    let init = f.mediated.request(&initialize());
+    assert!(init.error.is_none(), "{:?}", init.error);
+
+    let listed = f.mediated.request(&tools_list());
+    assert_eq!(
+        visible(&listed),
+        vec![
+            "get_balance".to_string(),
+            "list_transactions".to_string(),
+            "wire_funds".to_string()
+        ],
+        "with no contract there is no allowlist, so the catalogue must arrive whole"
+    );
+
+    let called = f.mediated.request(&call("wire_funds"));
+    assert!(called.error.is_none(), "{:?}", called.error);
+    assert_eq!(f.recorder.calls(), vec!["wire_funds".to_string()]);
+
+    // The finding is the output.
+    let log = f.mediated.log();
+    assert!(log.is_shadow());
+    assert!(log.denials.is_empty(), "observe mode denies nothing");
+    assert!(log.findings.iter().all(|x| x.code == Code::NO_CONTRACT && x.allowed));
+    assert!(log
+        .findings
+        .iter()
+        .any(|x| x.tool.as_deref() == Some("wire_funds")));
+}
+
+#[test]
+fn enforce_mode_refuses_an_uncontracted_pair_and_leaves_the_incident_behind() {
+    let mut f = uncontracted(Mode::Enforce);
+
+    assert_eq!(blocked_with(&f.mediated.request(&initialize())), Some("WC-4001".to_string()));
+    assert!(visible(&f.mediated.request(&tools_list())).is_empty());
+    assert!(f.mediated.request(&call("wire_funds")).error.is_some());
+    assert!(f.recorder.calls().is_empty(), "nothing may reach the upstream");
+
+    let log = f.mediated.log();
+    assert!(!log.is_shadow(), "nothing ran, so nothing shadowed");
+    // One connection, one finding: the later refusals are consequences of the
+    // first, and a denied connection that retries is not a hundred incidents.
+    assert_eq!(log.findings.len(), 1);
+    assert_eq!(log.findings[0].code, Code::NO_CONTRACT);
+    assert!(!log.findings[0].allowed);
+}
+
+#[test]
+fn observe_mode_still_closes_when_a_contract_exists_and_fails_a_closed_check() {
+    // Deliberately narrow: observe mode softens the *absence* of a contract, which
+    // is the shadow case. A contract that resolves and then fails a closed check is
+    // a different fact, and the taxonomy closes on those in both modes.
+    let mut f = build(
+        &["get_balance"],
+        DECLARED,
+        |mut p| {
+            // The contracted item's own digest, not the whole-surface manifest: an
+            // additive change to an uncontracted tool is benign by design, so
+            // corrupting the manifest alone would prove nothing.
+            p.callee.surface_digest = Some(
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
+            );
+            p
+        },
+        Mode::Observe,
+        Terms::default(),
+    );
+    f.mediated.request(&initialize());
+    let listed = f.mediated.request(&tools_list());
+    assert_eq!(blocked_with(&listed), Some("WC-3108".to_string()));
+    assert!(f.mediated.log().findings.iter().any(|x| !x.allowed));
+}

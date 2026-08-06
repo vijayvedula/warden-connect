@@ -1226,6 +1226,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wc-e2e"
+version = "0.1.0"
+dependencies = [
+ "jsonwebtoken",
+ "serde",
+ "serde_json",
+ "warden",
+ "wc-control",
+ "wc-core",
+ "wc-mediator",
+]
+
+[[package]]
 name = "wc-mediator"
 version = "0.1.0"
 dependencies = [
