@@ -21,6 +21,13 @@ external requests — open any of them directly in a browser, or serve the folde
 | [`uc-09.html`](uc-09.html) | Renewal, review and offboarding |
 | [`uc-10.html`](uc-10.html) | Regulatory register and evidence export |
 
+## Journey videos
+
+[`video/`](video/) holds five animated explainers, one per persona in
+[`../06-journey-maps.md`](../06-journey-maps.md) — 1080p, 53 seconds each, no
+audio. Same palette and typography as the pages above. See
+[`video/README.md`](video/README.md) for the beat structure and how to regenerate.
+
 Source of truth for the content is [`../05-use-cases.md`](../05-use-cases.md) and
 [`../08-lld.md`](../08-lld.md). These pages are a rendering, not a second
 specification — if they disagree with the design documents, the design documents
@@ -28,6 +35,7 @@ are right and these need regenerating.
 
 ## Regenerating
 
+`src/journeys.py` renders the videos (Pillow draws frames, ffmpeg encodes);
 `src/gen.py` holds the shared design system and the per-use-case content;
 `src/hub.py` builds the hub and patches cross-links. Both write into
 `explainers/` beside themselves, so copy the output back here:
