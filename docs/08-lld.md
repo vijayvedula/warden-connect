@@ -1284,9 +1284,15 @@ matches while `wcs2` differs it performs a **silent shadow re-pin** and records 
 problem, and the design solves it once rather than in each operator's runbook.
 
 Property tests: key-order permutation invariance; whitespace-reformat invariance;
-idempotence (`pin(pin_doc)` stable); **sensitivity** — a single inserted U+200B,
-one changed word in a description, or a swapped `required` member must all move
-the hash.
+idempotence (`pin(pin_doc)` stable); **sensitivity** — a single inserted U+200B or
+one changed word in a description must move the hash.
+
+A **reordered `required` or `enum` member must not**, and an earlier draft of this
+paragraph said the opposite. Element order carries no meaning in either — every
+JSON Schema validator treats them as sets — so `ORDER_FREE_ARRAYS` sorts them, and
+treating a reordering as drift would suspend connections over a server that changed
+nothing. Sensitivity is asserted instead on `examples`, where order does mean
+something.
 
 ### 8.7.2 A2 · Contract mint
 
@@ -2285,8 +2291,8 @@ policy_version, decision, reason, duration_us}`. OTel span attributes carry
 
 | Module | Property tests |
 |---|---|
-| `canon` | permutation invariance · whitespace-reformat invariance · idempotence · **sensitivity** (one U+200B, one word, one reordered `required` each move the hash) · `surface_digest` unchanged by additive tools |
-| `contract` | mint→verify round trip · `Terms::intersect` never widens (monotone narrowing) · TTL is `min` of all bounds · any single-bit mutation of the JWS fails verification |
+| `canon` | permutation invariance · whitespace-reformat invariance · idempotence · **sensitivity** (one U+200B, one word, one reordered `examples` member each move the hash; a reordered `required` or `enum` member deliberately does not — see §8.7.1) · `surface_digest` unchanged by additive tools |
+| `contract` | mint→verify round trip · `Terms::intersect` never widens (monotone narrowing) · it is a **genuine meet** — commutative, idempotent, associative, so the order sources fold in cannot change the answer · an intersection that empties a *declared* allowlist stays empty through the rest of a fold · TTL is `min` of all bounds · any single-bit mutation of the JWS fails verification |
 | `cpolicy` | first-match determinism · rules cannot raise a zone bar · `dry_run` diff is exact |
 | `filter` | **∀ upstream response, ∀ contract: visible ⊆ contract.surface.tools** |
 | `store` | `apply` totality · rebuild(snapshot+tail) == rebuild(full log) · unknown kinds counted, never dropped |
