@@ -79,6 +79,8 @@ impl Code {
     pub const FEDERATION_METADATA_WIDENED: Code = Code(2033);
     /// A federation anchor is overdue for re-verification (UC-05 A2).
     pub const FEDERATION_ANCHOR_STALE: Code = Code(2034);
+    /// A shared-signals transmitter is not authorised for what it asserted.
+    pub const SIGNAL_NOT_AUTHORISED: Code = Code(2035);
 
     // --- WC-30xx contract lifecycle ---
     /// Contract not found.
@@ -442,6 +444,7 @@ pub static CODES: &[CodeSpec] = &[
     spec(2033, Closed, Some(403), None, "federation metadata widened by a subordinate"),
     // Degrade, not Closed: existing contracts run to exp while issuance stops.
     spec(2034, Degrade, Some(409), None, "federation anchor overdue for re-verification"),
+    spec(2035, Closed, Some(403), None, "shared-signals transmitter not authorised for this subject"),
     // --- contract lifecycle ---
     spec(3001, Report, Some(404), None, "contract not found"),
     spec(3010, Closed, Some(422), None, "requested surface not a subset of declared surface"),
@@ -641,7 +644,7 @@ mod tests {
             );
             prev = s.code;
         }
-        assert_eq!(CODES.len(), 75, "the LLD §8.11 table has 75 codes");
+        assert_eq!(CODES.len(), 76, "the LLD §8.11 table has 76 codes");
     }
 
     #[test]

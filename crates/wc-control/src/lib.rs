@@ -20,6 +20,7 @@ pub mod attest;
 pub mod bench;
 pub mod broker;
 pub mod bundle;
+pub mod caep;
 pub mod chain;
 pub mod contain;
 pub mod cpolicy;
