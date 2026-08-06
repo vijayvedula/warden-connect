@@ -168,7 +168,8 @@ Rough sizes are implementation estimates, for sequencing — not targets.
 | `wc-control::export` | DORA / CPS 230 / OSCAL / CSV / CycloneDX registers | 1180 | P4 | independent; no date crate — `iso8601` is 20 lines |
 | `wc-control::federate` | OpenID-Federation-shaped trust chains, partner resolution | 1080 | P4 | independent; no OIDC discovery — anchors are configured, never fetched |
 | `wc-control::api` | HTTP/1.1 surface, authn, idempotency, rate limits | 900 | P0→ | same shape as `http.rs`/`authzen.rs` |
-| `wc-control::bench` | Performance gates (§8.10.3) | 380 | P4 | — |
+| `wc-control::bench` | Performance gates (§8.10.3) | 420 | P4 | — |
+| `wc-control::caep` | Shared-signals ingest: transmitter authority, replay, effects | 900 | P3 | — |
 | `wc-control::bundle` | Air-gapped `.wcb` envelopes: export, import, hard expiry | 700 | P4 | — |
 | `wc-control::keys` | Issuer keyring, rotation lifecycle, retirement guard, JWKS | 800 | P4 | — |
 | `wc-control::tenant` | Validated tenant ids, per-tenant roots, binding and isolation | 620 | P4 | — |
@@ -1763,7 +1764,54 @@ and compared to the pin. Skills are filtered exactly as tools are.
 |---|---|
 | Revocation feed | JSONL of ES256 JWTs, `{kind, sub, ts}` — core's format, new kinds `cid`/`party` |
 | Contract set delta | `{seq, set_hash, added[jws], removed[cid], full}` over mTLS |
-| CAEP SET | RFC 8417 SET via `warden::sink` transmitter; `session-revoked`, `credential-change`, plus a `connection-revoked` subject type |
+| CAEP SET | RFC 8417 SET via the `EventSink` transmitter; `session-revoked`, `credential-change`, `assurance-level-change`, plus a `connection-revoked` subject type |
+
+#### Ingest is the dangerous direction
+
+Emission is easy: project a lifecycle event onto a stream and let something
+downstream decide. **Ingest is a remote-triggered containment path**, and a
+receiver that acts on a token it did not verify has published an unauthenticated
+API for degrading its own estate.
+
+**What a transmitter may cause is bounded by what it has authority over.** A
+verified signature says *who sent this*, not *that they were entitled to say it*:
+
+| Authority | May assert | Typical holder |
+|---|---|---|
+| `directory` | `session-revoked`, `credential-change`, `assurance-level-change` | the IdP |
+| `partner` | `connection-revoked` **only**, and only for connections in its declared `parties` | a federated counterparty |
+| `estate` | all of the above | a sibling control plane |
+
+A partner asserting `credential-change` has a perfect signature and no authority —
+it would let a counterparty degrade our attestation posture on their word. That is
+the case a receiver which only checks signatures gets wrong, and `WC-2035` is the
+refusal. A `partner` transmitter with an empty `parties` list is refused **at
+load**, because it could otherwise cut any connection in the estate.
+
+The check order is itself the design:
+
+1. the `iss` must be a configured transmitter — an unknown issuer never reaches a
+   signature check, so an attacker cannot make us verify against a key of their
+   choosing by naming one;
+2. the signature must verify against **that** transmitter's keys;
+3. the `aud` must be ours, so a token minted for another receiver's stream does not
+   replay into this one;
+4. fresh (default 1 h) and unseen — acting on a week-old containment signal
+   re-degrades a party somebody has since remediated, and the replay store is
+   bounded because an unbounded one is a memory-growth primitive for anyone who
+   can send us tokens;
+5. and only then, per event, the authority check.
+
+**Nothing on this path can quarantine.** Same rule as the posture score, same
+reason: an external input that can cut connections is a denial-of-service
+primitive handed to whoever can reach the endpoint. The strongest ingested outcome
+is revoking one connection its sender is a party to; everything else is a
+degradation a human can see and reverse. Asserted over every event type the
+receiver understands.
+
+An event type present but not acted on is **reported**, distinguishing "we do not
+understand this" from "you may not say this" — a stream whose events we silently
+drop is a partner who believes they have told us something.
 | Air-gapped bundle (`.wcb`) | `{ body: { schema, mediator_id, issued_at, exp, contracts[jws], jwks, revocations[], revocation_head }, bundle_jws, kid }` — one signed envelope, expiry hard, verified by the same code path |
 
 #### What "expiry hard" means, precisely
@@ -1928,6 +1976,7 @@ so they are additive-only — never renumbered, never reused.
 | WC-2032 | Federation entity statement expired | closed | 403 |
 | WC-2033 | Federation metadata widened by a subordinate | closed | 403 |
 | WC-2034 | Federation anchor overdue for re-verification | **degrade** — existing contracts run to `exp`, issuance stops (UC-05 A2) | 409 |
+| WC-2035 | Shared-signals transmitter not authorised for this subject | closed | 403 |
 | **WC-30xx contract lifecycle** | | | |
 | WC-3001 | Contract not found | — | 404 |
 | WC-3010 | Requested surface ⊄ declared surface | closed | 422 + diff |

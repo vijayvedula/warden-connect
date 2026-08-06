@@ -156,6 +156,7 @@ const TWO_WORD: &[&str] = &[
     "keys note",
     "bundle export",
     "bundle verify",
+    "caep ingest",
 ];
 
 /// Every dispatchable command.
@@ -181,6 +182,7 @@ const COMMANDS: &[&str] = &[
     "bundle export",
     "bundle verify",
     "bench",
+    "caep ingest",
     "tenants",
     "audit verify",
     "canon",
@@ -297,6 +299,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         ],
         "bundle verify" => &["file", "envelope-pub", "issuer-pub", "kid", "mediator", "now"],
         "bench" => &["iterations", "gate", "signing-key", "verify-pub", "kid", "scale"],
+        "caep ingest" => &["file", "transmitters", "now"],
         "show" => &["id"],
         "entities" => &[],
         "posture" => &["unattested", "expiring", "drift", "score", "id"],
@@ -491,6 +494,7 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
         "bundle export" => bundle_export(args)?,
         "bundle verify" => bundle_verify(args)?,
         "bench" => bench_cmd(args)?,
+        "caep ingest" => caep_ingest(args)?,
         "audit verify" => audit_verify(args)?,
         "canon" => canon_cmd(args)?,
         "screen" => screen_cmd(args)?,
@@ -1718,6 +1722,84 @@ fn blast_radius_cmd(args: &Args) -> Result<()> {
             ),
         ));
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// caep — ingest a shared-signals token (§8.9.4)
+// ---------------------------------------------------------------------------
+
+/// Verify a Security Event Token and report what it asks this estate to do.
+///
+/// Prints rather than applies. Ingest is a remote-triggered path, so an operator
+/// gets to see what a stream asked for before anything acts on it — and a
+/// verified signature is only half the check: the transmitter's declared
+/// authority is the other half.
+fn caep_ingest(args: &Args) -> Result<()> {
+    let path = positional_or_flag(args, "file")?;
+    let token = std::fs::read_to_string(path)
+        .map_err(|e| {
+            WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+        })?
+        .trim()
+        .to_string();
+
+    let streams = wc_control::caep::TransmitterSet::load(std::path::Path::new(require(
+        args,
+        "transmitters",
+    )?))?;
+    let ts = args.number("now").unwrap_or_else(now);
+
+    // Replay state is per-invocation here; a running control plane keeps it for
+    // the freshness window. The CLI exists to inspect one token, and saying so
+    // beats implying a durable store it does not have.
+    let mut seen = wc_control::caep::SeenTokens::default();
+    let out = wc_control::caep::ingest(&token, &streams, &mut seen, ts)?;
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "issuer": out.issuer,
+                "jti": out.jti,
+                "subject": out.subject,
+                "effects": out.effects.iter().map(|e| json!({
+                    "kind": e.kind(),
+                    "detail": format!("{e:?}"),
+                })).collect::<Vec<_>>(),
+                "unhandled": out.unhandled.iter().map(|(uri, why)| json!({
+                    "event": uri, "reason": why
+                })).collect::<Vec<_>>(),
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("issuer    {}", out.issuer);
+    println!("token     {}", out.jti);
+    println!("subject   {}", out.subject);
+    if out.effects.is_empty() {
+        println!("effects   none");
+    } else {
+        println!("effects   {}", out.effects.len());
+        for effect in &out.effects {
+            println!("  {:<20} {effect:?}", effect.kind());
+        }
+    }
+    if !out.unhandled.is_empty() {
+        // A stream sending events we silently drop is a partner who believes they
+        // have told us something.
+        println!();
+        println!("not acted on");
+        for (uri, why) in &out.unhandled {
+            println!("  {uri}");
+            println!("    {why}");
+        }
+    }
+    println!();
+    println!("  Nothing on this path can quarantine the estate. An external input that");
+    println!("  can cut connections is a denial-of-service primitive; the strongest");
+    println!("  outcome here is revoking one connection its sender is a party to.");
     Ok(())
 }
 
@@ -4329,6 +4411,10 @@ AIR-GAPPED
   bundle export   --mediator ID --signing-key PEM --kid KID [--ttl 7d] [--out FILE]
   bundle verify   <bundle.wcb> --envelope-pub PEM --kid KID --mediator ID
                   [--issuer-pub PEM]              exit 4 if it does not verify
+
+SHARED SIGNALS
+  caep ingest     <token.jwt> --transmitters streams.toml [--now TS] [--json]
+                  verify a Security Event Token and print what it asks for
 
 CI
   bench           [--iterations N] [--gate NAME] [--scale N] [--json]
