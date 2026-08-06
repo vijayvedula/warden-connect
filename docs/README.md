@@ -38,10 +38,15 @@ recorder, joined up across agents**.
 | 7 | [07-hld.md](07-hld.md) | High-level technical design — components, domain model, contract schema, flows, APIs, threat model, topologies, NFRs, phasing |
 | 8 | [08-lld.md](08-lld.md) | Low-level design — crate layout, module signatures, algorithms, storage records, wire formats, error codes, latency budgets, test suite, resolved open questions |
 | 9 | [warden-connect-logical-architecture.svg](warden-connect-logical-architecture.svg) | Logical architecture diagram (same visual language as `warden-logical-architecture.svg`) |
+| — | [explainer/](explainer/) | Twelve self-contained HTML pages: a capability hub, one per use case, and the adoption ladder. A *rendering* of 05 and 08 for sharing, not a second specification |
 
 Read them in order; 01 and 02 are the positioning, 03–06 are the product
 definition, 07–09 are the build. 07 decides *what* the components are; 08 decides
 *how* they are built — and resolves every open question 07 left standing.
+
+`explainer/` is downstream of all of it. If a page disagrees with 05 or 08, the
+design documents are right and the page needs regenerating — the generator in
+`explainer/src/` exists so that is one command rather than twelve edits.
 
 ---
 

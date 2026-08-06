@@ -1,0 +1,271 @@
+<title>UC-03 · Mediated capability discovery — warden-connect</title>
+
+<style>
+:root {
+  --ground:#eceee9; --surface:#f7f8f5; --raised:#e3e6e0; --ink:#1a1e1c;
+  --muted:#5f665f; --faint:#878e86; --rule:#cfd3cc;
+  --brass:#8f6712; --brass-w:#f0e3c4;
+  --teal:#26646e;  --teal-w:#d8e8ea;
+  --alarm:#a03621; --alarm-w:#f2ded8;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,"Cascadia Mono","Roboto Mono",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  --col:40rem; --wide:66rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground:#151816; --surface:#1d211e; --raised:#252a26; --ink:#e7eae5;
+    --muted:#929a91; --faint:#6f776e; --rule:#2f352f;
+    --brass:#d8a63e; --brass-w:#2e2617;
+    --teal:#64b3bd;  --teal-w:#16292c;
+    --alarm:#e0705a; --alarm-w:#2e1c17;
+  }
+}
+:root[data-theme="dark"] {
+  --ground:#151816; --surface:#1d211e; --raised:#252a26; --ink:#e7eae5;
+  --muted:#929a91; --faint:#6f776e; --rule:#2f352f;
+  --brass:#d8a63e; --brass-w:#2e2617; --teal:#64b3bd; --teal-w:#16292c;
+  --alarm:#e0705a; --alarm-w:#2e1c17;
+}
+:root[data-theme="light"] {
+  --ground:#eceee9; --surface:#f7f8f5; --raised:#e3e6e0; --ink:#1a1e1c;
+  --muted:#5f665f; --faint:#878e86; --rule:#cfd3cc;
+  --brass:#8f6712; --brass-w:#f0e3c4; --teal:#26646e; --teal-w:#d8e8ea;
+  --alarm:#a03621; --alarm-w:#f2ded8;
+}
+
+.page{background:var(--ground);color:var(--ink);font-family:var(--serif);
+  font-size:1.0625rem;line-height:1.65;margin:0 auto;padding:0 1.25rem 7rem;
+  max-width:100%;overflow-x:hidden;-webkit-font-smoothing:antialiased}
+.col{max-width:var(--col);margin-inline:auto}
+.wide{max-width:var(--wide);margin-inline:auto}
+.page p,.page ul,.page ol{margin:0 0 1.15rem}
+.page li{margin-bottom:.45rem}
+.page strong{font-weight:600}
+.page a{color:var(--teal);text-decoration-thickness:1px;text-underline-offset:2px}
+.page a:focus-visible,.page button:focus-visible{outline:2px solid var(--brass);outline-offset:3px}
+code,.mono{font-family:var(--mono);font-size:.855em;font-variant-ligatures:none}
+p code,li code,td code,.step code{background:var(--raised);border-radius:3px;padding:.08em .32em}
+
+.eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--faint);margin:0 0 .6rem}
+.eyebrow a{color:var(--faint);text-decoration:none;border-bottom:1px solid var(--rule)}
+.eyebrow a:hover{color:var(--brass)}
+
+.hero{padding:4.5rem 0 2.5rem}
+.hero h1{font-size:clamp(2.1rem,5.4vw,3.4rem);line-height:1.04;letter-spacing:-.02em;
+  font-weight:500;margin:0 0 1.3rem;text-wrap:balance}
+.hero h1 .accent{color:var(--brass)}
+.lede{font-size:1.2rem;line-height:1.55;color:var(--muted);margin-bottom:1.4rem}
+.lede strong{color:var(--ink);font-weight:500}
+.byline{font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;color:var(--faint);
+  border-top:1px solid var(--rule);padding-top:.85rem;display:flex;flex-wrap:wrap;gap:.3rem 1.4rem}
+
+.band{padding:3rem 0}
+.band+.band{border-top:1px solid var(--rule)}
+h2{font-size:clamp(1.5rem,3.2vw,1.95rem);line-height:1.16;letter-spacing:-.014em;
+  font-weight:500;margin:0 0 1.2rem;text-wrap:balance}
+h3{font-family:var(--sans);font-size:.95rem;font-weight:650;margin:2rem 0 .7rem}
+.num{font-family:var(--mono);font-size:.78rem;color:var(--brass);letter-spacing:.1em;
+  display:block;margin-bottom:.5rem}
+
+.kicker{font-family:var(--sans);font-size:1.02rem;line-height:1.5;font-weight:550;
+  letter-spacing:-.01em;margin:1.8rem 0;padding:1.1rem 1.25rem;background:var(--surface);
+  border:1px solid var(--rule);border-radius:2px}
+.kicker .lbl{display:block;font-family:var(--mono);font-weight:400;font-size:.68rem;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--brass);margin-bottom:.5rem}
+.aside{font-family:var(--sans);font-size:.875rem;line-height:1.58;color:var(--muted);
+  border-left:2px solid var(--brass);padding:.1rem 0 .1rem 1rem;margin:1.6rem 0}
+.aside strong{color:var(--ink)}
+
+.cmd{font-family:var(--mono);font-size:.78rem;line-height:1.65;background:var(--surface);
+  border:1px solid var(--rule);border-radius:2px;padding:.6rem .75rem;margin:0 0 1rem;
+  overflow-x:auto;white-space:pre;color:var(--ink)}
+.cmd .c{color:var(--faint)} .cmd .out{color:var(--teal)} .cmd .no{color:var(--alarm)}
+
+/* staged flow */
+.flow{display:grid;gap:0;margin:2.2rem 0}
+.stage{display:grid;grid-template-columns:2.2rem 1fr;gap:0 .9rem;padding:1.1rem 0;
+  border-top:1px solid var(--rule);align-items:start}
+.stage:last-child{border-bottom:1px solid var(--rule)}
+.stage-n{font-family:var(--mono);font-size:.9rem;color:var(--brass);padding-top:.15rem;
+  font-variant-numeric:tabular-nums}
+.stage h4{font-family:var(--sans);font-size:.98rem;font-weight:620;letter-spacing:-.012em;margin:0 0 .4rem}
+.stage p{font-size:.94rem;margin:0 0 .5rem;color:var(--muted)}
+.stage p strong{color:var(--ink);font-weight:550}
+.who{font-family:var(--mono);font-size:.68rem;letter-spacing:.09em;text-transform:uppercase;
+  display:inline-block;padding:.1rem .45rem;border-radius:999px;margin-bottom:.4rem}
+.who.wc{color:var(--brass);background:var(--brass-w);border:1px solid var(--brass)}
+.who.core{color:var(--teal);background:var(--teal-w);border:1px solid var(--teal)}
+.who.both{color:var(--muted);background:var(--raised);border:1px solid var(--rule)}
+
+/* two-layer strip */
+.layers{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:1px;
+  background:var(--rule);border:1px solid var(--rule);margin:2.2rem 0}
+.layer{background:var(--ground);padding:1.3rem 1.2rem}
+.layer .who{margin-bottom:.6rem}
+.layer h4{font-family:var(--sans);font-size:.98rem;font-weight:620;margin:0 0 .5rem}
+.layer p{font-size:.9rem;line-height:1.55;color:var(--muted);margin:0 0 .6rem}
+.layer .verb{font-family:var(--mono);font-size:.73rem;color:var(--ink);display:block;
+  padding-top:.5rem;border-top:1px solid var(--rule);overflow-x:auto;white-space:pre}
+
+/* exception cards */
+.excs{display:grid;gap:1rem;margin:2rem 0}
+.exc{border:1px solid var(--rule);border-left:3px solid var(--alarm);background:var(--surface);
+  padding:1.05rem 1.2rem;border-radius:2px}
+.exc h4{font-family:var(--sans);font-size:.94rem;font-weight:620;margin:0 0 .45rem}
+.exc h4 .tag{font-family:var(--mono);font-size:.7rem;color:var(--alarm);margin-right:.5rem}
+.exc p{font-size:.9rem;line-height:1.55;margin:0;color:var(--muted)}
+.exc p strong{color:var(--ink)}
+
+/* tables */
+.tw{overflow-x:auto;margin:1.8rem 0;border:1px solid var(--rule)}
+table{border-collapse:collapse;width:100%;font-family:var(--sans);font-size:.85rem;min-width:34rem}
+th,td{text-align:left;padding:.62rem .8rem;border-bottom:1px solid var(--rule);vertical-align:top;line-height:1.45}
+th{font-family:var(--mono);font-size:.67rem;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--faint);font-weight:400;background:var(--surface)}
+tr:last-child td{border-bottom:0}
+
+/* evidence chips */
+.chips{display:flex;flex-wrap:wrap;gap:.4rem .5rem;margin:1.2rem 0;font-family:var(--sans);font-size:.8rem}
+.chip{border:1px solid var(--rule);border-radius:999px;padding:.18rem .65rem;color:var(--muted);background:var(--surface)}
+.chip.ev{border-color:var(--teal);color:var(--teal);background:var(--teal-w)}
+.chip.th{border-color:var(--alarm);color:var(--alarm);background:var(--alarm-w)}
+
+/* use-case index cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(17rem,1fr));gap:1px;
+  background:var(--rule);border:1px solid var(--rule);margin:2.2rem 0}
+.card{background:var(--ground);padding:1.25rem 1.15rem;text-decoration:none;color:inherit;display:block}
+.card:hover{background:var(--surface)}
+.card .id{font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;color:var(--brass);display:block;margin-bottom:.4rem}
+.card h4{font-family:var(--sans);font-size:.97rem;font-weight:620;margin:0 0 .45rem;letter-spacing:-.01em}
+.card p{font-size:.875rem;line-height:1.5;color:var(--muted);margin:0}
+.card .go{font-family:var(--mono);font-size:.72rem;color:var(--teal);display:block;margin-top:.7rem}
+
+/* nav */
+.nav{display:flex;flex-wrap:wrap;gap:1rem;justify-content:space-between;
+  border-top:1px solid var(--rule);padding-top:1.4rem;margin-top:3rem;
+  font-family:var(--mono);font-size:.75rem}
+.nav a{color:var(--teal);text-decoration:none}
+.nav a:hover{text-decoration:underline}
+
+.rise{opacity:0;transform:translateY(10px);transition:opacity .55s ease,transform .55s cubic-bezier(.2,.7,.3,1)}
+.rise.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){.rise{opacity:1;transform:none;transition:none}}
+</style>
+
+<div class="page">
+
+<header class="hero col">
+  <p class="eyebrow"><a href="https://claude.ai/code/artifact/6be42646-5d68-4880-ab65-6594568d263b">warden-connect</a> · UC-03</p>
+  <h1>A directory that answers freely hands over <span class="accent">the map</span></h1>
+  <p class="lede">Discovery has to be the fastest way to find a capability, or the whole model collapses at step one. It is also the estate's enumeration surface — so the design question is <strong>what a caller can learn from an answer they were not entitled to</strong>.</p>
+  <p class="byline"><span>Mediated capability discovery</span><span>Discovery hands out no reachability.</span></p>
+</header>
+
+<section class="band col">
+  <span class="num">01</span>
+  <h2>What happens without it</h2>
+  <p>A developer asks in Slack. They get three contradictory answers, two teams point at each other, and the fastest path to working code is to skip the question entirely.</p>
+  <div class="kicker"><span class="lbl">the claim</span>Discovery hands out no reachability.</div>
+</section>
+
+<section class="band">
+  <div class="col">
+    <span class="num">02</span>
+    <h2>The flow</h2>
+    <p>Each step is labelled with which layer owns it. The badge matters more than it looks: most of the confusion about this system is people expecting one layer to answer the other's question.</p>
+  </div>
+  <div class="col flow"><div class="stage rise">
+  <div class="stage-n">1</div>
+  <div>
+    <span class="who wc">warden-connect</span>
+    <h4>A capability question</h4>
+    <p>Not a catalogue request. <code>--capability payments.balance.read --as agent:recon</code>, and the asker must itself be registered and active: answering an unattested party would make the register a service for exactly the caller it was built to constrain.</p>
+  </div>
+</div>
+<div class="stage rise">
+  <div class="stage-n">2</div>
+  <div>
+    <span class="who wc">warden-connect</span>
+    <h4>Resolve candidates</h4>
+    <p>Capability keys derive from tool names, the business service and declared data classes. <strong>Descriptions are deliberately not indexed</strong> — they are attacker-controlled text, and indexing them would let a poisoned description advertise itself into other teams' searches.</p>
+  </div>
+</div>
+<div class="stage rise">
+  <div class="stage-n">3</div>
+  <div>
+    <span class="who wc">warden-connect</span>
+    <h4>Filter by eligibility — before shaping</h4>
+    <p>Every candidate the asker could never connect to is dropped from the result set entirely. Filtering <em>after</em> shaping would leak existence through the count.</p>
+  </div>
+</div>
+<div class="stage rise">
+  <div class="stage-n">4</div>
+  <div>
+    <span class="who wc">warden-connect</span>
+    <h4>Shape the answer</h4>
+    <p>Entity, capability, tier, zone, owner. No endpoint, no schema, no item list, no pin. Knowing a capability exists is not the same as being able to reach it.</p>
+  </div>
+</div>
+<div class="stage rise">
+  <div class="stage-n">5</div>
+  <div>
+    <span class="who wc">warden-connect</span>
+    <h4>Log the query</h4>
+    <p>Per asker, so a scanning pattern is visible as a pattern rather than as a hundred unrelated lookups.</p>
+  </div>
+</div></div>
+</section>
+
+<section class="band">
+  <div class="col">
+    <span class="num">03</span>
+    <h2>Where the boundary is</h2>
+    <p>Two layers, and neither can widen the other. Removing one does not silently loosen what remains.</p>
+  </div>
+  <div class="wide layers"><div class="layer"><span class="who wc">warden-connect</span>
+  <h4>The whole of it</h4><p>Discovery is a relationship-layer question by definition — <em>who might I be introduced to?</em> There is no action to authorise, so core has nothing to say.</p><span class="verb">connect discover --capability … --as …</span></div>
+<div class="layer"><span class="who core">Warden core</span>
+  <h4>Deliberately absent</h4><p>Core sees calls. A discovery query is not a call to anything, and routing it through an action-layer engine would be asking the wrong component a question it cannot answer.</p><span class="verb">— not on this path —</span></div></div>
+</section>
+
+<section class="band">
+  <div class="col">
+    <span class="num">04</span>
+    <h2>The exception paths</h2>
+    <p>Where the real design lives. A main flow describes the day everything works; these describe the days that decide whether anyone keeps the thing switched on.</p>
+  </div>
+  <div class="col excs"><div class="exc rise"><h4><span class="tag">A1</span>No eligible entries</h4><p>An empty result — and it is <strong>indistinguishable from "exists but you may not see it"</strong>. The test for this compares an estate where the denied entity exists against one where it does not, and asserts the answers are equal.</p></div>
+<div class="exc rise"><h4><span class="tag">A2</span>An enumeration pattern</h4><p>Throttled, and the throttle <em>truncates</em> rather than refusing. A status code that changes when you cross a threshold is itself a signal, and a caller who can tell "throttled" from "no results" can binary-search the estate.</p></div></div>
+</section>
+
+<section class="band col">
+  <span class="num">05</span>
+  <h2>What it leaves behind</h2>
+  <div class="chips"><span class="chip ev">Discovery query log per asker</span><span class="chip ev">Throttle findings</span></div>
+  <h3>Threats this addresses</h3>
+  <div class="chips"><span class="chip th">Reconnaissance</span><span class="chip th">Lateral discovery after a privilege compromise</span></div>
+  <p style="margin-top:1.6rem">Latency is padded to a floor, because the empty-result path is otherwise faster than the full one and that difference is readable across a few hundred queries. The padding also <em>reports when it failed to mask</em> — a floor cannot pad down, and silently failing is the same signal plus a belief that it was covered.</p>
+
+  <div class="nav">
+    <a href="https://claude.ai/code/artifact/b0f2726c-b781-42d6-b343-486cbc17fb32">← UC-02</a>
+    <a href="https://claude.ai/code/artifact/6be42646-5d68-4880-ab65-6594568d263b">all use cases</a>
+    <a href="https://claude.ai/code/artifact/bc4e07dd-4e1a-4e7f-96d3-2ac97945fdad">UC-04 →</a>
+  </div>
+</section>
+
+</div>
+
+<script>
+(function(){
+  var els=document.querySelectorAll('.rise');
+  if(!('IntersectionObserver' in window)||window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+    els.forEach(function(e){e.classList.add('in')});return;
+  }
+  var io=new IntersectionObserver(function(en){en.forEach(function(e){
+    if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},
+    {rootMargin:'0px 0px -8% 0px',threshold:.08});
+  els.forEach(function(e,i){e.style.transitionDelay=(Math.min(i,4)*50)+'ms';io.observe(e)});
+})();
+</script>
