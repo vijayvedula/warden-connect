@@ -137,6 +137,41 @@ pub struct Terms {
     /// Evidence obligation.
     #[serde(default)]
     pub evidence: EvidenceTerms,
+    /// Whether [`Terms::data_classes`] is empty *because the sources disagreed*.
+    ///
+    /// An empty list means two different things and the wire format cannot tell
+    /// them apart: *this source declared nothing*, which must yield to the other
+    /// side, and *the sources have no overlap*, which means nothing may cross. Read
+    /// the second as the first and a fold resurrects authority that had correctly
+    /// reduced to zero — intersect a request's `["SG"]` with a bar's `["AU"]` to get
+    /// nothing, then intersect that with a rule's `["AU"]`, and `AU` is back.
+    ///
+    /// Per list, not per `Terms`: no overlap on data classes says nothing about
+    /// jurisdictions, and collapsing the two would make `intersect` lose
+    /// information it had.
+    ///
+    /// Never serialised. It is a fact about *this* computation, and a `Terms` that
+    /// carries it is one no contract may be minted from — so there is no artifact
+    /// for it to appear in, and `wcs1` is unaffected. Deserialising gives `false`,
+    /// which is right: a contract that exists had a non-empty overlap.
+    #[serde(skip)]
+    pub classes_closed: bool,
+    /// The same for [`Terms::jurisdictions`].
+    #[serde(skip)]
+    pub jurisdictions_closed: bool,
+}
+
+impl Terms {
+    /// Whether some declared allowlist reduced to nothing, so nothing may cross.
+    ///
+    /// The issuer must refuse rather than mint an empty-but-valid-looking contract:
+    /// a contract whose declared classes are empty reads on the wire as
+    /// "unconstrained", which is the opposite of what happened. Either list closing
+    /// is enough — a connection that may carry no data class carries nothing.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.classes_closed || self.jurisdictions_closed
+    }
 }
 
 impl Terms {
@@ -148,12 +183,28 @@ impl Terms {
     /// depth takes the minimum; a `blocking` evidence obligation wins over
     /// `fail-safe`.
     ///
+    /// It is a genuine meet: commutative, idempotent and **associative**, so the
+    /// order sources are folded in cannot change the answer. That last one is the
+    /// reason for [`Terms::closed`] — see there.
+    ///
     /// Monotonicity is asserted by `intersect_never_widens`.
     #[must_use]
     pub fn intersect(&self, other: &Terms) -> Terms {
+        let (data_classes, classes_closed) = meet_allowlist(
+            &self.data_classes,
+            &other.data_classes,
+            self.classes_closed || other.classes_closed,
+        );
+        let (jurisdictions, jurisdictions_closed) = meet_allowlist(
+            &self.jurisdictions,
+            &other.jurisdictions,
+            self.jurisdictions_closed || other.jurisdictions_closed,
+        );
         Terms {
-            data_classes: intersect_or_union(&self.data_classes, &other.data_classes),
-            jurisdictions: intersect_or_union(&self.jurisdictions, &other.jurisdictions),
+            classes_closed,
+            jurisdictions_closed,
+            data_classes,
+            jurisdictions,
             max_calls_per_hour: min_opt(self.max_calls_per_hour, other.max_calls_per_hour),
             max_concurrent: min_opt(self.max_concurrent, other.max_concurrent),
             max_spend_usd_per_day: match (self.max_spend_usd_per_day, other.max_spend_usd_per_day) {
@@ -188,19 +239,35 @@ impl Terms {
     }
 }
 
-/// Intersect two allowlists. An empty list means "unconstrained by this source",
-/// so it yields to the other rather than intersecting to nothing.
-fn intersect_or_union(a: &[String], b: &[String]) -> Vec<String> {
-    if a.is_empty() {
-        return b.to_vec();
+/// Meet two allowlists, returning the result and whether it closed.
+///
+/// An empty list means "unconstrained by this source" and yields to the other —
+/// that is the config semantics, and it is what makes a TOML file with the field
+/// omitted mean "I did not specify" rather than "nothing may cross". The second
+/// return value is what keeps that reading from being exploitable: once two
+/// *declared* lists intersect to nothing, the emptiness is a decision, and
+/// `already_closed` makes it stick through the rest of a fold.
+/// The result is always sorted and deduplicated, in every branch. Not tidiness:
+/// `Terms` is serialised into the signed payload, so an unsorted yield-to-the-other
+/// branch would make the same decision produce different contract bytes depending
+/// on the order the requester happened to type their data classes.
+fn meet_allowlist(a: &[String], b: &[String], already_closed: bool) -> (Vec<String>, bool) {
+    if already_closed {
+        return (Vec::new(), true);
     }
-    if b.is_empty() {
-        return a.to_vec();
-    }
-    let mut out: Vec<String> = a.iter().filter(|x| b.contains(x)).cloned().collect();
+    let mut out: Vec<String> = if a.is_empty() {
+        b.to_vec()
+    } else if b.is_empty() {
+        a.to_vec()
+    } else {
+        a.iter().filter(|x| b.contains(x)).cloned().collect()
+    };
     out.sort_unstable();
     out.dedup();
-    out
+    // Only a *declared* pair can close. Two empty lists are two sources with nothing
+    // to say, which is not a disagreement.
+    let closed = out.is_empty() && !a.is_empty() && !b.is_empty();
+    (out, closed)
 }
 
 fn min_opt(a: Option<u32>, b: Option<u32>) -> Option<u32> {
@@ -1386,6 +1453,87 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_overlap_stays_empty_through_a_fold() {
+        // The bug this exists for: an empty list means both "this source declared
+        // nothing" and "the sources disagree", and reading the second as the first
+        // resurrects authority that had correctly reduced to zero.
+        let request = Terms {
+            jurisdictions: vec!["SG".into()],
+            ..Default::default()
+        };
+        let bar = Terms {
+            jurisdictions: vec!["AU".into()],
+            ..Default::default()
+        };
+        let no_overlap = request.intersect(&bar);
+        assert!(no_overlap.jurisdictions.is_empty());
+        assert!(no_overlap.is_closed(), "an empty overlap must record that it is one");
+
+        // Fold in a rule that declares AU. Before the fix, AU came back.
+        let rule = Terms {
+            jurisdictions: vec!["AU".into()],
+            ..Default::default()
+        };
+        let folded = no_overlap.intersect(&rule);
+        assert!(
+            folded.jurisdictions.is_empty(),
+            "a third source revived a jurisdiction two sources had already excluded"
+        );
+        assert!(folded.is_closed());
+
+        // Associativity is the general statement of the same thing.
+        assert_eq!(
+            request.intersect(&bar).intersect(&rule),
+            request.intersect(&bar.intersect(&rule))
+        );
+    }
+
+    #[test]
+    fn closure_is_per_list_so_one_disagreement_does_not_erase_the_other() {
+        let a = Terms {
+            data_classes: vec!["pii".into()],
+            jurisdictions: vec!["SG".into(), "AU".into()],
+            ..Default::default()
+        };
+        let b = Terms {
+            data_classes: vec!["phi".into()],
+            jurisdictions: vec!["AU".into()],
+            ..Default::default()
+        };
+        let met = a.intersect(&b);
+        assert!(met.data_classes.is_empty() && met.classes_closed);
+        assert_eq!(met.jurisdictions, vec!["AU".to_string()]);
+        assert!(!met.jurisdictions_closed, "jurisdictions overlapped and must not close");
+        assert!(met.is_closed(), "a connection carrying no data class carries nothing");
+        assert_eq!(met, met.intersect(&met), "still idempotent");
+    }
+
+    #[test]
+    fn two_silent_sources_are_not_a_disagreement() {
+        let met = Terms::default().intersect(&Terms::default());
+        assert!(!met.is_closed(), "nothing declared is not the same as nothing permitted");
+    }
+
+    #[test]
+    fn the_result_is_sorted_whichever_branch_produced_it() {
+        // `Terms` is serialised into the signed payload, so an unsorted
+        // yield-to-the-other branch would make the same decision produce different
+        // contract bytes depending on the order the requester typed their classes.
+        let declared = Terms {
+            data_classes: vec!["pii".into(), "financial".into(), "phi".into()],
+            ..Default::default()
+        };
+        let silent = Terms::default();
+        let yielded = silent.intersect(&declared);
+        assert_eq!(
+            yielded.data_classes,
+            vec!["financial".to_string(), "phi".to_string(), "pii".to_string()]
+        );
+        assert_eq!(yielded, yielded.intersect(&yielded));
+        assert_eq!(yielded, declared.intersect(&silent));
+    }
+
+    #[test]
     fn intersect_is_commutative_on_ceilings() {
         let a = Terms {
             max_calls_per_hour: Some(7),
@@ -1671,6 +1819,7 @@ mod conformance {
                 sink: "ocsf://siem".to_string(),
                 delivery: "blocking".to_string(),
             },
+            ..Terms::default()
         };
         p.approval = ApprovalRef {
             by: Some(HumanRef::new("human:cecil@org").unwrap()),
