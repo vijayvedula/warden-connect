@@ -1,2 +1,5 @@
 .DS_Store
 /target
+/fuzz/target
+/fuzz/Cargo.lock
+/fuzz/artifacts

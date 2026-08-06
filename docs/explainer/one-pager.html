@@ -101,16 +101,28 @@
   figcaption { font-size: .82rem; color: var(--muted); margin-top: .5rem; max-width: 76ch; }
   figcaption b { color: var(--ink); }
 
-  /* ---- five steps ---- */
-  .steps { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
-  .step { background: var(--ground); padding: .7rem .8rem .8rem; }
-  .step .n { font-family: var(--mono); font-size: 1.35rem; color: var(--brass); line-height: 1; }
-  .step h3 { font-size: .93rem; font-weight: 640; margin: .35rem 0 .3rem; letter-spacing: -.01em; }
-  .step p { font-size: .84rem; color: var(--muted); margin: 0 0 .55rem; }
-  .step .cost {
-    font-family: var(--mono); font-size: .68rem; letter-spacing: .06em; text-transform: uppercase;
-    color: var(--faint); display: block; padding-top: .45rem; border-top: 1px solid var(--rule);
+  /* ---- the five steps, each with its plate ---- */
+  .ladder { border: 1px solid var(--rule); }
+  .rung {
+    display: grid; grid-template-columns: 20rem minmax(0, 1fr); gap: 1.7rem;
+    padding: 1.05rem 1.1rem 1.15rem; border-top: 1px solid var(--rule); align-items: center;
   }
+  .rung:first-child { border-top: 0; }
+  .rung .n { font-family: var(--mono); font-size: 1.5rem; color: var(--brass); line-height: 1; }
+  .rung .when {
+    font-family: var(--mono); font-size: .64rem; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--faint); display: block; margin: .35rem 0 .15rem;
+  }
+  .rung h3 {
+    font-family: var(--serif); font-size: 1.16rem; font-weight: 500; letter-spacing: -.012em;
+    margin: 0 0 .35rem; line-height: 1.2;
+  }
+  .rung p { font-size: .855rem; color: var(--muted); margin: 0 0 .5rem; }
+  .rung .cost {
+    font-family: var(--mono); font-size: .66rem; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--faint); display: block; padding-top: .4rem; border-top: 1px solid var(--rule);
+  }
+  .rung figure { min-width: 0; }
   .stopline {
     font-family: var(--serif); font-size: 1rem; color: var(--ink);
     margin: .7rem 0 0; padding-left: .9rem; border-left: 2px solid var(--brass);
@@ -152,20 +164,22 @@
   .fine { font-size: .74rem; color: var(--faint); line-height: 1.5; margin-top: 1.4rem; max-width: 90ch; }
 
   @media (max-width: 1000px) {
-    .steps, .roles { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .roles { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .rung { grid-template-columns: minmax(0,1fr); gap: .8rem; }
     .gap { grid-template-columns: minmax(0,1fr); gap: .9rem; }
     .foot { grid-template-columns: minmax(0,1fr); gap: 1.4rem; }
     .ask { grid-template-columns: minmax(0,1fr); }
     .ask .more { text-align: left; white-space: normal; }
   }
   @media (max-width: 560px) {
-    .steps, .roles, .nums { grid-template-columns: minmax(0,1fr); }
+    .roles, .nums { grid-template-columns: minmax(0,1fr); }
   }
 
   @media print {
     .page { background: #fff; color: #000; padding: 0; font-size: 9.5pt; }
     section { margin-bottom: 12pt; page-break-inside: avoid; }
-    .role li, .step p { font-size: 8pt; }
+    .role li, .rung p { font-size: 8pt; }
+    .rung { page-break-inside: avoid; }
   }
 </style>
 
@@ -206,37 +220,63 @@
 
   <section>
     <h2>Adoption — five steps, each independently valuable</h2>
-    <div class="steps">
-      <div class="step">
-        <span class="n">1</span>
-        <h3>Fingerprint the tool surface</h3>
-        <p>Hash exactly what was contracted. A silently changed tool description — where injection payloads live — moves the hash and names the tool.</p>
-        <span class="cost">cost: one command</span>
+    <div class="ladder">
+
+      <div class="rung">
+        <div>
+          <span class="n">1</span>
+          <span class="when">minute one · no state, no server, no registration</span>
+          <h3>Give a tool surface a name</h3>
+          <p>Turn a tool manifest into a hash over exactly the fields that were contracted. Run it twice: if a tool <b>description</b> changed — where injection payloads live — the digest moves and names the tool.</p>
+          <span class="cost">cost: one command</span>
+        </div>
+        <figure><svg class="ink" id="f1" role="img" aria-label="The same tool manifest read on two different days, each hashed by the same function, producing two different digests; the difference is a changed tool description that nobody shipped a release for."></svg></figure>
       </div>
-      <div class="step">
-        <span class="n">2</span>
-        <h3>Build the register</h3>
-        <p>Agents and services with named owners, in a tamper-evident log. The inventory the estate does not have.</p>
-        <span class="cost">cost: a pipeline step</span>
+
+      <div class="rung">
+        <div>
+          <span class="n">2</span>
+          <span class="when">hour one · a directory on disk</span>
+          <h3>Know what you actually have</h3>
+          <p>Register the agents and services that already exist, with named owners, in a tamper-evident log. Nothing is enforced. What you gain is <b>a list</b> — and it declares its own gaps rather than treating a claim as a fact.</p>
+          <span class="cost">cost: a pipeline step</span>
+        </div>
+        <figure><svg class="ink" id="f2" role="img" aria-label="A row of registered agents and services with owners, two of them marked unattested with a question mark, above a hash chain that an audit command verifies."></svg></figure>
       </div>
-      <div class="step">
-        <span class="n">3</span>
-        <h3>Make approval an artifact</h3>
-        <p>Signed, expiring, machine-checkable. Low-risk requests auto-approve in seconds. The approval <i>is</i> the enforcement.</p>
-        <span class="cost">cost: an issuer key</span>
+
+      <div class="rung">
+        <div>
+          <span class="n">3</span>
+          <span class="when">day one · still entirely local, still just files</span>
+          <h3>Turn an approval into an artifact</h3>
+          <p>Policy answers instantly whether a request auto-approves. Everything else reaches a named human, whose approval is <b>a signature, not a ticket</b>. The exit code lets a pipeline act on the difference.</p>
+          <span class="cost">cost: an issuer key</span>
+        </div>
+        <figure><svg class="ink" id="f3" role="img" aria-label="A request evaluated by policy, escalated to a human approver who signs it with a key, producing a contract naming two tools with an expiry; three exit codes are shown beneath."></svg></figure>
       </div>
-      <div class="step">
-        <span class="n">4</span>
-        <h3>Enforce in the path</h3>
-        <p>Agents see only contracted tools; uncontracted calls are refused before the service is reached. <b>Starts in observe mode.</b></p>
-        <span class="cost">cost: a sidecar</span>
+
+      <div class="rung">
+        <div>
+          <span class="n">4</span>
+          <span class="when">week one · the first rung that changes behaviour</span>
+          <h3>Put the contract on the path</h3>
+          <p>The service offers nine tools; the agent is shown two. The wrong tool cannot be called by accident because <b>it is not in the list</b> — and an uncontracted call is refused before the service is spoken to.</p>
+          <span class="cost">cost: a sidecar</span>
+        </div>
+        <figure><svg class="ink" id="f4" role="img" aria-label="A service offering three tools through an in-path check; two reach the agent and appear in its tool list, the third is refused with error WC-4002 before the service is called."></svg></figure>
       </div>
-      <div class="step">
-        <span class="n">5</span>
-        <h3>Estate-wide, plus a kill switch</h3>
-        <p>Distribution with acknowledgement, and containment as one dual-controlled command with per-node proof.</p>
-        <span class="cost">cost: a service to operate</span>
+
+      <div class="rung">
+        <div>
+          <span class="n">5</span>
+          <span class="when">month one · the estate, not the repo</span>
+          <h3>Make it estate-wide, and make containment one verb</h3>
+          <p>Nodes <b>pull</b> and acknowledge what they applied, so a missed update is visible lag rather than silence. Containment is one dual-controlled command — and a node that cannot confirm is reported unconfirmed, never assumed.</p>
+          <span class="cost">cost: a service to operate</span>
+        </div>
+        <figure><svg class="ink" id="f5" role="img" aria-label="Four enforcement nodes pulling from a control plane and acknowledging; three confirm and one is reported unconfirmed. Below, a single dual-controlled quarantine command."></svg></figure>
       </div>
+
     </div>
     <p class="stopline">Each step pays for itself on its own. <strong>You can stop on any of them indefinitely</strong> — steps 1 and 2 need no infrastructure, no budget line and no approval, so one team can prove the model in a week.</p>
   </section>
@@ -328,175 +368,358 @@
 "use strict";
 const NS = "http://www.w3.org/2000/svg";
 const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-/* A small hand: seeded jitter so the strokes read as drawn rather than plotted.
-   Deliberately much less machinery than the long-form page — one figure needs
-   a pen, not a scene graph. */
-function rng(a) {
-  return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-}
-const r1 = v => Math.round(v * 10) / 10;
-const rnd = rng(20260806);
-const j = a => (rnd() * 2 - 1) * a;
-
-const svg = document.getElementById("fig");
-const W = 1000, H = 310;
-svg.setAttribute("viewBox", "0 0 " + W + " " + H);
-svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-const items = [];
-
-function path(d, c, sw, dash) {
-  items.push({ k: "p", d: d, c: c || "muted", sw: sw == null ? 1.6 : sw, dash: dash });
-}
-function line(x1, y1, x2, y2, c, sw, dash) {
-  const w = 1.1, mx = (x1 + x2) / 2 + j(w * 2), my = (y1 + y2) / 2 + j(w * 2);
-  path("M" + r1(x1 + j(w)) + " " + r1(y1 + j(w)) + "Q" + r1(mx) + " " + r1(my) +
-       " " + r1(x2 + j(w)) + " " + r1(y2 + j(w)), c, sw, dash);
-}
-function poly(pts, close, c, sw) {
-  const p = pts.map(q => [q[0] + j(1), q[1] + j(1)]);
-  if (close) p.push(p[0]);
-  let d = "M" + r1(p[0][0]) + " " + r1(p[0][1]);
-  for (let i = 1; i < p.length; i++) {
-    const a = p[i - 1], b = p[i];
-    d += "Q" + r1((a[0] + b[0]) / 2 + j(1.4)) + " " + r1((a[1] + b[1]) / 2 + j(1.4)) +
-         " " + r1(b[0]) + " " + r1(b[1]);
-  }
-  path(d, c, sw);
-}
-function rect(x, y, w, h, c, sw) {
-  const o = 1.4;
-  line(x - o, y, x + w + o, y, c, sw); line(x + w, y - o, x + w, y + h + o, c, sw);
-  line(x + w + o, y + h, x - o, y + h, c, sw); line(x, y + h + o, x, y - o, c, sw);
-}
-function ell(cx, cy, rx, ry, c, sw) {
-  const N = 12, st = rnd() * 6.28, pts = [];
-  for (let i = 0; i <= N; i++) { const t = st + (i / N) * 6.73;
-    pts.push([cx + Math.cos(t) * rx + j(1), cy + Math.sin(t) * ry + j(1)]); }
-  let d = "M" + r1(pts[0][0]) + " " + r1(pts[0][1]);
-  for (let i = 1; i < pts.length - 1; i++) {
-    const mx = (pts[i][0] + pts[i + 1][0]) / 2, my = (pts[i][1] + pts[i + 1][1]) / 2;
-    d += "Q" + r1(pts[i][0]) + " " + r1(pts[i][1]) + " " + r1(mx) + " " + r1(my);
-  }
-  path(d, c, sw);
-}
-function arrow(x1, y1, x2, y2, c, sw, dash) {
-  line(x1, y1, x2, y2, c, sw, dash);
-  const a = Math.atan2(y2 - y1, x2 - x1), h = 8;
-  line(x2, y2, x2 - Math.cos(a - .42) * h, y2 - Math.sin(a - .42) * h, c, sw);
-  line(x2, y2, x2 - Math.cos(a + .42) * h, y2 - Math.sin(a + .42) * h, c, sw);
-}
-function text(x, y, s, c, cls, anchor) {
-  items.push({ k: "t", x: x, y: y, s: s, c: c || "muted", cls: cls || "t-l", anchor: anchor || "middle" });
-}
-function agent(x, y, c) {
-  rect(x - 14, y - 12, 28, 23, c, 1.5);
-  ell(x - 5, y - 2, 2.6, 2.6, c, 1.4); ell(x + 5, y - 2, 2.6, 2.6, c, 1.4);
-  line(x, y - 12, x, y - 21, c, 1.4); ell(x, y - 23, 2.6, 2.6, c, 1.4);
-}
-function server(x, y, c) {
-  rect(x, y, 74, 62, c, 1.5);
-  for (let i = 1; i <= 3; i++) line(x + 7, y + (62 / 4) * i, x + 67, y + (62 / 4) * i, "rule", 1.2);
-}
-function shield(x, y, s, c) {
-  const w = 15 * s, h = 19 * s;
-  poly([[x - w, y - h * .72], [x, y - h * .95], [x + w, y - h * .72],
-        [x + w * .72, y + h * .5], [x, y + h], [x - w * .72, y + h * .5]], true, c, 1.8);
-}
-
-/* ---------- panel A: today ---------- */
-text(24, 24, "TODAY", "alarm", "t-s", "start");
-
-/* the agents nobody registered, drawn behind the one you know about */
-agent(120, 76, "rule"); agent(110, 86, "rule"); agent(100, 96, "teal");
-text(100, 128, "AGENT", "muted", "t-s");
-text(100, 146, "+ HOW MANY MORE?", "faint", "t-s");
-
-server(338, 68, "faint");
-text(375, 152, "SERVICE", "muted", "t-s");
-text(375, 166, "9 TOOLS EXPOSED", "faint", "t-s");
-
-arrow(140, 100, 330, 100, "alarm", 1.5, "7 8");
-text(236, 86, "shared credential", "alarm", "t-l");
-
-text(240, 226, "NO REGISTER · NO OWNER", "alarm", "t-s");
-text(240, 244, "NO EXPIRY · NO SCOPE", "alarm", "t-s");
-text(240, 262, "NO WAY TO SWITCH IT OFF", "alarm", "t-s");
-
-/* ---------- divider ---------- */
-line(500, 16, 500, 292, "rule", 1.5, "9 9");
-
-/* ---------- panel B: with a contract on the path ---------- */
-text(530, 24, "WITH A CONTRACT ON THE PATH", "teal", "t-s", "start");
-
-agent(578, 100, "teal");
-text(578, 132, "AGENT", "muted", "t-s");
-shield(704, 96, 1.7, "brass");
-text(704, 152, "IN-PATH CHECK", "brass", "t-s");
-server(858, 68, "faint");
-text(895, 152, "SERVICE", "muted", "t-s");
-
-/* the contracted call goes through */
-arrow(606, 92, 674, 92, "teal", 1.5);
-arrow(736, 92, 850, 92, "teal", 1.5);
-
-/* the uncontracted call is stopped at the check, and never reaches the service */
-line(606, 196, 682, 196, "teal", 1.4, "6 7");
-line(698, 190, 712, 204, "alarm", 2.1); line(712, 190, 698, 204, "alarm", 2.1);
-line(728, 196, 850, 196, "rule", 1.2, "4 8");
-text(604, 184, "UNCONTRACTED CALL", "muted", "t-s", "start");
-text(742, 190, "REFUSED HERE.", "alarm", "t-s", "start");
-text(742, 206, "THE SERVICE IS NEVER CALLED.", "alarm", "t-s", "start");
-
-/* the contract itself, and the one verb that cancels it */
-rect(560, 242, 196, 48, "brass", 1.7);
-text(658, 262, "SIGNED CONTRACT · 2 OF 9", "brass", "t-s");
-text(658, 280, "expires · named approver", "ink", "t-l");
-
-rect(800, 242, 108, 48, "alarm", 1.6);
-text(854, 264, "REVOKE", "alarm", "t-l");
-text(854, 280, "ONE VERB", "faint", "t-s");
-arrow(796, 266, 764, 266, "alarm", 1.5);
-
-/* ---------- render ---------- */
 const COLOR = { ink: "var(--ink)", muted: "var(--muted)", faint: "var(--faint)",
                 rule: "var(--rule)", brass: "var(--brass)", teal: "var(--teal)", alarm: "var(--alarm)" };
-const total = items.length;
-items.forEach((it, i) => {
-  let el;
-  if (it.k === "p") {
-    el = document.createElementNS(NS, "path");
-    el.setAttribute("d", it.d); el.setAttribute("fill", "none");
-    el.setAttribute("stroke", COLOR[it.c]); el.setAttribute("stroke-width", it.sw);
-    el.setAttribute("stroke-linecap", "round"); el.setAttribute("stroke-linejoin", "round");
-    if (it.dash) el.setAttribute("stroke-dasharray", it.dash);
-  } else {
-    el = document.createElementNS(NS, "text");
-    el.setAttribute("x", it.x); el.setAttribute("y", it.y);
-    el.setAttribute("text-anchor", it.anchor); el.setAttribute("fill", COLOR[it.c]);
-    el.setAttribute("class", it.cls); el.textContent = it.s;
+
+/* A small hand: seeded jitter so strokes read as drawn rather than plotted.
+   One pen, six figures — each gets its own seed so redraws are stable. */
+function pen(seed) {
+  let a = seed >>> 0;
+  const rnd = () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const r1 = v => Math.round(v * 10) / 10;
+  const j = m => (rnd() * 2 - 1) * m;
+  const items = [];
+  const P = {
+    items: items,
+    path(d, c, sw, dash) { items.push({ k: "p", d: d, c: c || "muted", sw: sw == null ? 1.5 : sw, dash: dash }); return P; },
+    line(x1, y1, x2, y2, c, sw, dash) {
+      const w = 1, mx = (x1 + x2) / 2 + j(w * 2), my = (y1 + y2) / 2 + j(w * 2);
+      return P.path("M" + r1(x1 + j(w)) + " " + r1(y1 + j(w)) + "Q" + r1(mx) + " " + r1(my) +
+                    " " + r1(x2 + j(w)) + " " + r1(y2 + j(w)), c, sw, dash);
+    },
+    /* sharp corners: each segment bows on its own, so a document stays a document */
+    poly(pts, close, c, sw) {
+      const q = pts.map(v => [v[0] + j(.9), v[1] + j(.9)]);
+      if (close) q.push(q[0]);
+      let d = "M" + r1(q[0][0]) + " " + r1(q[0][1]);
+      for (let i = 1; i < q.length; i++) {
+        const A = q[i - 1], B = q[i];
+        d += "Q" + r1((A[0] + B[0]) / 2 + j(1.3)) + " " + r1((A[1] + B[1]) / 2 + j(1.3)) +
+             " " + r1(B[0]) + " " + r1(B[1]);
+      }
+      return P.path(d, c, sw);
+    },
+    rect(x, y, w, h, c, sw) {
+      const o = 1.3;
+      P.line(x - o, y, x + w + o, y, c, sw); P.line(x + w, y - o, x + w, y + h + o, c, sw);
+      P.line(x + w + o, y + h, x - o, y + h, c, sw); P.line(x, y + h + o, x, y - o, c, sw); return P;
+    },
+    ell(cx, cy, rx, ry, c, sw) {
+      const N = 12, st = rnd() * 6.28, q = [];
+      for (let i = 0; i <= N; i++) { const t = st + (i / N) * 6.73;
+        q.push([cx + Math.cos(t) * rx + j(.9), cy + Math.sin(t) * ry + j(.9)]); }
+      let d = "M" + r1(q[0][0]) + " " + r1(q[0][1]);
+      for (let i = 1; i < q.length - 1; i++) {
+        const mx = (q[i][0] + q[i + 1][0]) / 2, my = (q[i][1] + q[i + 1][1]) / 2;
+        d += "Q" + r1(q[i][0]) + " " + r1(q[i][1]) + " " + r1(mx) + " " + r1(my);
+      }
+      return P.path(d, c, sw);
+    },
+    arc(cx, cy, r, a0, a1, c, sw) {
+      const N = 9, q = [];
+      for (let i = 0; i <= N; i++) { const t = a0 + (i / N) * (a1 - a0);
+        q.push([cx + Math.cos(t) * r + j(.7), cy + Math.sin(t) * r + j(.7)]); }
+      let d = "M" + r1(q[0][0]) + " " + r1(q[0][1]);
+      for (let i = 1; i < q.length; i++) d += "L" + r1(q[i][0]) + " " + r1(q[i][1]);
+      return P.path(d, c, sw);
+    },
+    arrow(x1, y1, x2, y2, c, sw, dash) {
+      P.line(x1, y1, x2, y2, c, sw, dash);
+      const t = Math.atan2(y2 - y1, x2 - x1), h = 7;
+      P.line(x2, y2, x2 - Math.cos(t - .42) * h, y2 - Math.sin(t - .42) * h, c, sw);
+      P.line(x2, y2, x2 - Math.cos(t + .42) * h, y2 - Math.sin(t + .42) * h, c, sw); return P;
+    },
+    text(x, y, str, c, cls, anchor) {
+      items.push({ k: "t", x: x, y: y, s: str, c: c || "muted", cls: cls || "t-l", anchor: anchor || "middle" }); return P;
+    },
+    cross(x, y, r, c) { P.line(x - r, y - r, x + r, y + r, c || "alarm", 2); P.line(x + r, y - r, x - r, y + r, c || "alarm", 2); return P; },
+    tick(x, y, r) { return P.poly([[x - r, y], [x - r * .2, y + r * .8], [x + r, y - r]], false, "teal", 2); },
+    qmark(x, y) {
+      P.arc(x, y - 3, 3.6, Math.PI, Math.PI * 2.35, "brass", 1.6);
+      P.line(x + 2.2, y + .5, x + 1.2, y + 4, "brass", 1.6);
+      P.ell(x + 1, y + 7, .8, .8, "brass", 1.6); return P;
+    },
+    box(x, y, w, h, label, sub, c) {
+      P.rect(x, y, w, h, c || "faint", 1.5);
+      if (label) P.text(x + w / 2, y + h / 2 + (sub ? -2 : 4), label, c === "brass" ? "brass" : "ink", "t-l");
+      if (sub) P.text(x + w / 2, y + h / 2 + 12, sub, "faint", "t-s");
+      return P;
+    },
+    agent(x, y, s, c) {
+      s = s || 1;
+      P.rect(x - 13 * s, y - 11 * s, 26 * s, 21 * s, c || "teal", 1.4);
+      P.ell(x - 4.5 * s, y - 2 * s, 2.3 * s, 2.3 * s, c || "teal", 1.3);
+      P.ell(x + 4.5 * s, y - 2 * s, 2.3 * s, 2.3 * s, c || "teal", 1.3);
+      P.line(x, y - 11 * s, x, y - 19 * s, c || "teal", 1.3);
+      P.ell(x, y - 21 * s, 2.3 * s, 2.3 * s, c || "teal", 1.3); return P;
+    },
+    server(x, y, w, h, c) {
+      P.rect(x, y, w, h, c || "faint", 1.5);
+      for (let i = 1; i <= 3; i++) P.line(x + 6, y + (h / 4) * i, x + w - 6, y + (h / 4) * i, "rule", 1.2);
+      return P;
+    },
+    shield(x, y, s, c) {
+      const w = 15 * s, h = 19 * s;
+      return P.poly([[x - w, y - h * .72], [x, y - h * .95], [x + w, y - h * .72],
+                     [x + w * .72, y + h * .5], [x, y + h], [x - w * .72, y + h * .5]], true, c || "brass", 1.7);
+    },
+    sheet(x, y, w, h, c, lines) {
+      P.poly([[x, y], [x + w - 8, y], [x + w, y + 8], [x + w, y + h], [x, y + h]], true, c || "muted", 1.4);
+      P.poly([[x + w - 8, y], [x + w - 8, y + 8], [x + w, y + 8]], false, c || "muted", 1.2);
+      const n = lines || 3;
+      for (let i = 0; i < n; i++) P.line(x + 6, y + 17 + i * 8, x + w - 8 - (i === n - 1 ? 9 : 0), y + 17 + i * 8, "rule", 1.2);
+      return P;
+    },
+    /* the pin: a seal-like disc with a ridged core */
+    pin(x, y, r, c) {
+      P.ell(x, y, r, r, c || "brass", 1.7);
+      for (let i = 0; i < 3; i++) P.arc(x, y + r * .2, r * .28 + i * r * .22, Math.PI * 1.08, Math.PI * 1.92, c || "brass", 1.2);
+      return P;
+    },
+    key(x, y, c) {
+      P.ell(x - 7, y, 5, 5, c || "brass", 1.5); P.line(x - 2, y, x + 11, y, c || "brass", 1.5);
+      P.line(x + 8, y, x + 8, y + 4.5, c || "brass", 1.5); P.line(x + 11, y, x + 11, y + 5, c || "brass", 1.5); return P;
+    },
+    clock(x, y, r, c) {
+      P.ell(x, y, r, r, c || "brass", 1.4);
+      P.line(x, y, x, y - r * .6, c || "brass", 1.3); P.line(x, y, x + r * .5, y + r * .35, c || "brass", 1.3); return P;
+    },
+    chain(x1, y, x2, n, c) {
+      const step = (x2 - x1) / n;
+      for (let i = 0; i < n; i++) P.ell(x1 + step * (i + .5), y, step * .6, 4.5, c || "brass", 1.4);
+      return P;
+    },
+    tower(x, y, s, c) {
+      s = s || 1; c = c || "brass";
+      P.poly([[x - 11 * s, y], [x, y - 28 * s], [x + 11 * s, y]], false, c, 1.7);
+      P.line(x - 7 * s, y - 9 * s, x + 7 * s, y - 9 * s, c, 1.3);
+      P.arc(x, y - 28 * s, 9 * s, -2.5, -.64, c, 1.3);
+      P.arc(x, y - 28 * s, 15 * s, -2.4, -.74, c, 1.2); return P;
+    },
+    person(x, g, s, c) {
+      s = s || 1; c = c || "teal";
+      const hy = g - 40 * s, hr = 6.5 * s, ny = hy + hr, hip = g - 17 * s, sh = ny + 4 * s;
+      P.ell(x, hy, hr, hr, c, 1.5);
+      P.line(x, ny, x, hip, c, 1.5);
+      P.line(x - 7 * s, g, x, hip, c, 1.5); P.line(x + 7 * s, g, x, hip, c, 1.5);
+      P.line(x, sh, x - 10 * s, sh + 9 * s, c, 1.5); P.line(x, sh, x + 10 * s, sh + 9 * s, c, 1.5);
+      return P;
+    }
+  };
+  return P;
+}
+
+function render(id, W, H, seed, build) {
+  const svg = document.getElementById(id);
+  if (!svg) return;
+  const P = pen(seed);
+  build(P);
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  const total = P.items.length || 1;
+  P.items.forEach((it, i) => {
+    let el;
+    if (it.k === "p") {
+      el = document.createElementNS(NS, "path");
+      el.setAttribute("d", it.d); el.setAttribute("fill", "none");
+      el.setAttribute("stroke", COLOR[it.c]); el.setAttribute("stroke-width", it.sw);
+      el.setAttribute("stroke-linecap", "round"); el.setAttribute("stroke-linejoin", "round");
+      if (it.dash) el.setAttribute("stroke-dasharray", it.dash);
+    } else {
+      el = document.createElementNS(NS, "text");
+      el.setAttribute("x", it.x); el.setAttribute("y", it.y);
+      el.setAttribute("text-anchor", it.anchor); el.setAttribute("fill", COLOR[it.c]);
+      el.setAttribute("class", it.cls); el.textContent = it.s;
+    }
+    el.style.setProperty("--d", ((i / total) * .9).toFixed(2) + "s");
+    svg.appendChild(el);
+  });
+  if (!reduce) {
+    svg.querySelectorAll("path").forEach(el => {
+      let L = 0; try { L = el.getTotalLength(); } catch (e) {}
+      el.style.setProperty("--len", Math.ceil(L) || 1);
+    });
   }
-  el.style.setProperty("--d", ((i / total) * 1.1).toFixed(2) + "s");
-  svg.appendChild(el);
-});
+}
 
 if (!reduce) {
-  const style = document.createElement("style");
-  style.textContent =
-    "#fig path{stroke-dasharray:var(--len);stroke-dashoffset:var(--len);animation:dr .6s ease forwards var(--d)}" +
-    "#fig text{opacity:0;animation:fd .4s ease forwards calc(var(--d) + .15s)}" +
+  const st = document.createElement("style");
+  st.textContent =
+    ".ink path{stroke-dasharray:var(--len);stroke-dashoffset:var(--len);animation:dr .55s ease forwards var(--d)}" +
+    ".ink text{opacity:0;animation:fd .35s ease forwards calc(var(--d) + .12s)}" +
     "@keyframes dr{to{stroke-dashoffset:0}}@keyframes fd{to{opacity:1}}";
-  document.head.appendChild(style);
-  svg.querySelectorAll("path").forEach(el => {
-    let L = 0; try { L = el.getTotalLength(); } catch (e) {}
-    el.style.setProperty("--len", Math.ceil(L) || 1);
-  });
-  /* if the animation never starts, the figure must still be visible */
-  setTimeout(() => {
-    svg.querySelectorAll("path").forEach(el => { el.style.strokeDashoffset = "0"; });
-    svg.querySelectorAll("text").forEach(el => { el.style.opacity = "1"; });
-  }, 3000);
+  document.head.appendChild(st);
 }
+
+/* ══════════ the banner figure: today vs. a contract on the path ══════════ */
+render("fig", 1000, 276, 20260806, P => {
+  P.text(24, 24, "TODAY", "alarm", "t-s", "start");
+  P.agent(120, 76, 1, "rule"); P.agent(110, 86, 1, "rule"); P.agent(100, 96, 1, "teal");
+  P.text(100, 128, "AGENT", "muted", "t-s");
+  P.text(100, 146, "+ HOW MANY MORE?", "faint", "t-s");
+  P.server(338, 68, 74, 62, "faint");
+  P.text(375, 146, "SERVICE", "muted", "t-s");
+  P.text(375, 160, "9 TOOLS EXPOSED", "faint", "t-s");
+  P.arrow(140, 100, 330, 100, "alarm", 1.5, "7 8");
+  P.text(236, 86, "shared credential", "alarm", "t-l");
+  P.text(240, 204, "NO REGISTER · NO OWNER", "alarm", "t-s");
+  P.text(240, 222, "NO EXPIRY · NO SCOPE", "alarm", "t-s");
+  P.text(240, 240, "NO WAY TO SWITCH IT OFF", "alarm", "t-s");
+
+  P.line(500, 16, 500, 256, "rule", 1.5, "9 9");
+
+  P.text(530, 24, "WITH A CONTRACT ON THE PATH", "teal", "t-s", "start");
+  P.agent(578, 100, 1, "teal");
+  P.text(578, 132, "AGENT", "muted", "t-s");
+  P.shield(704, 96, 1.7, "brass");
+  P.text(704, 148, "IN-PATH CHECK", "brass", "t-s");
+  P.server(858, 68, 74, 62, "faint");
+  P.text(895, 148, "SERVICE", "muted", "t-s");
+  P.arrow(606, 92, 674, 92, "teal", 1.5);
+  P.arrow(736, 92, 850, 92, "teal", 1.5);
+  P.line(606, 186, 682, 186, "teal", 1.4, "6 7");
+  P.cross(705, 187, 7);
+  P.text(604, 172, "UNCONTRACTED CALL", "muted", "t-s", "start");
+  P.text(730, 182, "REFUSED HERE — SERVICE", "alarm", "t-s", "start");
+  P.text(730, 196, "IS NEVER CALLED.", "alarm", "t-s", "start");
+  P.rect(560, 206, 196, 60, "brass", 1.7);
+  P.text(658, 224, "SIGNED CONTRACT", "brass", "t-s");
+  P.text(658, 244, "2 of 9 tools", "ink", "t-l");
+  P.text(658, 259, "EXPIRES · NAMED APPROVER", "faint", "t-s");
+  P.rect(800, 206, 108, 60, "alarm", 1.6);
+  P.text(854, 232, "REVOKE", "alarm", "t-l");
+  P.text(854, 250, "ONE VERB", "faint", "t-s");
+  P.arrow(796, 236, 764, 236, "alarm", 1.5);
+});
+
+/* ══════════ 1 · Give a tool surface a name ══════════ */
+render("f1", 660, 190, 41, P => {
+  [["TUE", 42, "brass", "230C1F4A"], ["FRI", 132, "alarm", "8B04E71D"]].forEach(r => {
+    P.sheet(16, r[1] - 28, 44, 56, "muted", 3);
+    P.text(38, r[1] + 42, r[0], "faint", "t-s");
+    P.arrow(68, r[1], 96, r[1], "teal", 1.3);
+    P.box(100, r[1] - 20, 70, 40, "canon", null, "brass");
+    P.arrow(176, r[1], 204, r[1], "teal", 1.3);
+    P.pin(228, r[1], 15, r[2]);
+    P.text(228, r[1] + 32, r[3], r[2], "t-s");
+  });
+  P.line(252, 42, 288, 42, "rule", 1.2);
+  P.line(252, 132, 288, 132, "rule", 1.2);
+  P.line(288, 42, 288, 132, "rule", 1.2, "5 6");
+  P.cross(288, 87, 8);
+  P.text(306, 74, "get_balance.description", "alarm", "t-l", "start");
+  P.text(306, 90, "CHANGED BETWEEN RUNS", "alarm", "t-s", "start");
+  P.text(306, 112, "NOBODY SHIPPED A RELEASE.", "faint", "t-s", "start");
+  P.text(306, 126, "NOBODY GOT AN ALERT.", "faint", "t-s", "start");
+  P.text(306, 140, "THE DIGEST NOTICED.", "brass", "t-s", "start");
+});
+
+/* ══════════ 2 · Know what you actually have ══════════ */
+render("f2", 660, 190, 59, P => {
+  P.text(16, 16, "CONNECT ENTITIES", "faint", "t-s", "start");
+  [[46, "AGENT:RECON", "OWNED"], [136, "AGENT:KYC", "OWNED"], [226, "AGENT:FX", "—"]].forEach((a, i) => {
+    P.agent(a[0], 48, .8, "teal");
+    P.text(a[0], 74, a[1], "muted", "t-s");
+    P.text(a[0], 87, a[2], "faint", "t-s");
+    if (i === 2) P.qmark(a[0] + 16, 26);
+  });
+  [[326, "SERVICE:TXB"], [416, "SERVICE:LEDGER"], [506, "SERVICE:CRM"]].forEach((v, i) => {
+    P.server(v[0] - 26, 30, 52, 40, "faint");
+    P.text(v[0], 84, v[1], "muted", "t-s");
+    P.text(v[0], 97, i === 2 ? "—" : "OWNED", "faint", "t-s");
+    if (i === 2) P.qmark(v[0] + 30, 26);
+  });
+  P.text(586, 44, "UNATTESTED —", "brass", "t-s", "start");
+  P.text(586, 58, "CANNOT PROVE", "faint", "t-s", "start");
+  P.text(586, 72, "WHAT IT CLAIMS", "faint", "t-s", "start");
+  P.chain(16, 138, 330, 9);
+  P.arrow(342, 138, 368, 138, "brass", 1.3);
+  P.box(372, 120, 112, 36, "audit verify", null, "brass");
+  P.tick(504, 138, 8);
+  P.text(16, 172, "APPEND-ONLY · HASH-CHAINED · PROVES IT WAS NOT EDITED AFTERWARDS", "faint", "t-s", "start");
+});
+
+/* ══════════ 3 · Turn an approval into an artifact ══════════ */
+render("f3", 660, 190, 71, P => {
+  P.person(34, 74, 1, "teal");
+  P.text(34, 90, "REQUESTS", "faint", "t-s");
+  P.arrow(56, 44, 96, 44, "teal", 1.3);
+  P.text(76, 34, "REQ_7F3C", "teal", "t-s");
+  P.box(100, 24, 92, 40, "policy", "INSTANT", "brass");
+  P.arrow(198, 44, 240, 44, "brass", 1.3);
+  P.text(219, 34, "NEEDS A HUMAN", "faint", "t-s");
+  P.person(266, 74, 1, "teal");
+  P.key(292, 46, "brass");
+  P.text(272, 90, "SIGNS", "faint", "t-s");
+  P.arrow(312, 44, 352, 44, "brass", 1.3);
+  P.rect(356, 16, 172, 60, "brass", 1.7);
+  P.text(442, 34, "CONN_1A9B", "brass", "t-s");
+  P.text(442, 53, "2 of 9 tools", "ink", "t-l");
+  P.clock(382, 66, 7, "brass");
+  P.text(462, 69, "EXPIRES 30D", "faint", "t-s");
+  P.text(560, 40, "NOT A TICKET.", "teal", "t-s", "start");
+  P.text(560, 54, "A SIGNATURE.", "teal", "t-s", "start");
+
+  P.line(16, 120, 644, 120, "rule", 1.2);
+  P.text(16, 146, "CI CAN ACT ON", "faint", "t-s", "start");
+  P.text(16, 160, "THE EXIT CODE", "faint", "t-s", "start");
+  [["3", "asked for more than the ceiling allows"], ["4", "the artifact is not trustworthy"],
+   ["5", "the surface looks poisoned"]].forEach((c, i) => {
+    const x = 150 + i * 172;
+    P.ell(x, 150, 12, 12, "alarm", 1.6);
+    P.text(x, 155, c[0], "alarm", "t-l");
+    P.text(x + 20, 148, c[1].slice(0, 20), "muted", "t-s", "start");
+    P.text(x + 20, 161, c[1].slice(20), "muted", "t-s", "start");
+  });
+});
+
+/* ══════════ 4 · Put the contract on the path ══════════ */
+render("f4", 660, 190, 89, P => {
+  P.agent(52, 70, 1.1, "teal");
+  P.text(52, 100, "AGENT", "muted", "t-s");
+  P.text(52, 114, "SEES TWO", "teal", "t-s");
+  P.shield(300, 70, 1.7, "brass");
+  P.text(300, 118, "IN-PATH CHECK", "brass", "t-s");
+  P.server(552, 42, 66, 56, "faint");
+  P.text(585, 112, "SERVICE", "muted", "t-s");
+  P.text(585, 126, "OFFERS NINE", "faint", "t-s");
+  [[38, "get_balance", true], [70, "list_transactions", true], [102, "wire_funds", false]].forEach(r => {
+    P.arrow(544, r[0], 336, r[0], r[2] ? "teal" : "faint", 1.3);
+    P.text(440, r[0] - 8, r[1], r[2] ? "teal" : "faint", "t-s");
+    if (r[2]) P.arrow(264, r[0], 82, r[0], "teal", 1.3);
+  });
+  P.cross(268, 102, 8);
+  P.text(180, 100, "WC-4002", "alarm", "t-l");
+  P.text(180, 116, "REFUSED BEFORE THE", "alarm", "t-s");
+  P.text(180, 129, "SERVICE IS SPOKEN TO", "alarm", "t-s");
+  P.line(16, 152, 644, 152, "rule", 1.2);
+  P.text(16, 176, "THE WRONG TOOL CANNOT BE CALLED BY ACCIDENT — IT IS NOT IN THE LIST.", "muted", "t-s", "start");
+});
+
+/* ══════════ 5 · Estate-wide, and containment as one verb ══════════ */
+render("f5", 660, 210, 97, P => {
+  P.tower(330, 54, 1.1, "brass");
+  P.text(330, 72, "CONTROL PLANE", "brass", "t-s");
+  P.text(330, 86, "PULL · NOT PUSH", "faint", "t-s");
+  [[52, true, "node 1"], [180, true, "node 2"], [480, true, "node 3"], [608, false, "node 4"]].forEach(m => {
+    P.shield(m[0], 126, 1.1, m[1] ? "brass" : "alarm");
+    P.arrow(m[0], 106, 330 + (m[0] < 330 ? -34 : 34), 62, m[1] ? "brass" : "alarm", 1.2, "5 6");
+    P.text(m[0], 160, m[2], "faint", "t-s");
+    if (m[1]) { P.tick(m[0] + 34, 126, 7); P.text(m[0] + 34, 148, "ACKED", "teal", "t-s"); }
+    else { P.cross(m[0] - 40, 126, 7); P.text(m[0] - 40, 148, "UNCONFIRMED", "alarm", "t-s"); }
+  });
+  P.line(16, 178, 644, 178, "rule", 1.2);
+  P.box(210, 184, 240, 22, "quarantine agent:x", null, "alarm");
+  P.text(96, 200, "ONE VERB", "alarm", "t-s");
+  P.text(540, 196, "DUAL CONTROL ·", "faint", "t-s");
+  P.text(540, 208, "PER-NODE PROOF", "faint", "t-s");
+});
+
+/* If the animation never starts, the figures must still be visible. */
+if (!reduce) setTimeout(() => {
+  document.querySelectorAll(".ink path").forEach(el => { el.style.strokeDashoffset = "0"; });
+  document.querySelectorAll(".ink text").forEach(el => { el.style.opacity = "1"; });
+}, 3000);
 })();
 </script>

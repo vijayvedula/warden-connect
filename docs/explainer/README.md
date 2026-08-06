@@ -9,7 +9,9 @@ external requests — open any of them directly in a browser, or serve the folde
 | File | Subject |
 |---|---|
 | [`hub.html`](hub.html) | **Start here.** The two-layer model, all ten use cases, what is built |
+| [`one-pager.html`](one-pager.html) | **For leadership.** One page: the gap, the control, five steps, and what it means to a Chief Architect, AI Architect, CTO, CIO and CISO |
 | [`adoption.html`](adoption.html) | How an estate adopts this: the five-rung ladder, six team readings, seven topologies |
+| [`ladder.html`](ladder.html) | The ladder drawn, mapped onto a 54-market network bank: segments, topologies, residency, and a combination builder |
 | [`uc-01.html`](uc-01.html) | Register and admit an internal agent |
 | [`uc-02.html`](uc-02.html) | Onboard a tool server and pin its surface |
 | [`uc-03.html`](uc-03.html) | Mediated capability discovery |

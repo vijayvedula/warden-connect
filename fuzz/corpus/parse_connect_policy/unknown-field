@@ -1,0 +1,5 @@
+default = "deny"
+[[zone]]
+id = "internal.x"
+trust = "internal"
+strict_crossings = true

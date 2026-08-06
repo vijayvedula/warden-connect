@@ -818,16 +818,16 @@ pub fn screen(surface: &CanonicalSurface, tier_hint: Tier, ctx: &ScreenCtx<'_>) 
     let mut skipped: Vec<(Detector, String)> = Vec::new();
 
     for d in Detector::ALL {
-        if !rules.enabled(d) {
-            skipped.push((d, "disabled in ruleset".to_string()));
-        } else if d == Detector::S2 && ctx.names.is_empty() {
-            // The script half still runs; say so precisely rather than claiming
-            // the whole detector executed.
+        if rules.enabled(d) {
             ran.push(d);
         } else {
-            ran.push(d);
+            skipped.push((d, "disabled in ruleset".to_string()));
         }
     }
+    // S2 lands in *both* lists when the name index is empty, and that is the honest
+    // answer: its script half ran and its collision half could not. Reporting it as
+    // run would claim coverage that does not exist; reporting it as skipped would
+    // discard findings it did produce.
     if rules.enabled(Detector::S2) && ctx.names.is_empty() {
         skipped.push((
             Detector::S2,

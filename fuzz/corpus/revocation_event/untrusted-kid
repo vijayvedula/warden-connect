@@ -1,0 +1,1 @@
+{"head_seq":1,"head_digest":"sha256:aa","events":[{"event":{"seq":1,"kind":"party","id":"x","reason":"r","at":1},"jws":"a.b.c","kid":"attacker-key"}]}

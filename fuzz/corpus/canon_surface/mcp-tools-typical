@@ -1,0 +1,1 @@
+{"tools":[{"name":"get_balance","description":"Read an account balance.","inputSchema":{"type":"object","required":["account_id"],"properties":{"account_id":{"type":"string"}}}},{"name":"wire_funds","description":"Move money.","inputSchema":{"type":"object"}}]}
