@@ -618,6 +618,10 @@ impl TermsOverride {
                     .clone()
                     .unwrap_or_else(|| "fail-safe".to_string()),
             },
+            // A rule override is a source, not a result: it has never intersected
+            // anything, so neither list can be closed.
+            classes_closed: false,
+            jurisdictions_closed: false,
         }
     }
 }
@@ -1215,7 +1219,31 @@ impl ConnectPolicy {
             trace.push(format!("posture[{role}:{:?}]", party.posture).to_lowercase());
         }
 
-        // --- 6 · standing-policy caps: may only downgrade ---
+        // --- 6 · no overlap is a denial, not an empty allowlist ---
+        //
+        // If the request, the bar and the matched rule have no data class or
+        // jurisdiction in common, the honest answer is that nothing may cross. An
+        // empty list on the wire reads as *unconstrained*, so minting here would
+        // produce a contract that says the opposite of what was decided.
+        if terms.is_closed() {
+            return Ok(ConnEval {
+                decision: ConnDecision::Deny,
+                reason: "the request, the zone bar and the matched rule have no data class \
+                         or jurisdiction in common, so nothing may cross"
+                    .to_string(),
+                trace: {
+                    trace.push("terms-closed".to_string());
+                    trace.join("/")
+                },
+                ttl_secs: 0,
+                terms,
+                approver_role: None,
+                dual_control: false,
+                bar,
+            });
+        }
+
+        // --- 7 · standing-policy caps: may only downgrade ---
         if decision == ConnDecision::Allow {
             if let Some(why) = self.standing.blocks(req, callee, state, now) {
                 decision = ConnDecision::RequireApproval;
@@ -1847,6 +1875,43 @@ decision = "allow"
             .evaluate(&request(&["get_balance"]), &caller(), &b, &state(), NOW)
             .unwrap_err();
         assert_eq!(err.code(), Code::ILLEGAL_TRANSITION);
+    }
+
+    // --- no overlap ---
+
+    #[test]
+    fn terms_with_no_overlap_are_denied_rather_than_minted_empty() {
+        // An empty allowlist reads on the wire as *unconstrained*, so minting here
+        // would produce a contract saying the opposite of what was decided. The
+        // decision must be a denial that names the reason.
+        let p = policy();
+        let mut request = request(&["get_balance"]);
+        request.terms.jurisdictions = vec!["BR".to_string()];
+        request.terms.data_classes = vec!["financial".to_string()];
+
+        // Nothing in the reference policy declares BR, so on its own this is fine —
+        // one declaring side and one silent side is not a disagreement.
+        let eval = p
+            .evaluate(&request, &caller(), &callee(Tier::THREE), &state(), NOW)
+            .unwrap();
+        assert_ne!(eval.decision, ConnDecision::Deny, "a silent side is not a refusal");
+
+        // Now intersect it with a second declared set that shares nothing.
+        let closed = request
+            .terms
+            .intersect(&Terms {
+                jurisdictions: vec!["SG".to_string()],
+                ..Terms::default()
+            });
+        assert!(closed.is_closed());
+        request.terms = closed;
+        let eval = p
+            .evaluate(&request, &caller(), &callee(Tier::THREE), &state(), NOW)
+            .unwrap();
+        assert_eq!(eval.decision, ConnDecision::Deny);
+        assert!(eval.reason.contains("no data class"), "{}", eval.reason);
+        assert!(eval.trace.contains("terms-closed"), "{}", eval.trace);
+        assert_eq!(eval.ttl_secs, 0, "a denial grants no lifetime");
     }
 
     // --- posture ---

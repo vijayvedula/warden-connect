@@ -1,0 +1,502 @@
+<title>Governing agent access — one page</title>
+
+<style>
+  :root {
+    --ground:  #eceee9;
+    --surface: #f7f8f5;
+    --raised:  #e3e6e0;
+    --ink:     #1a1e1c;
+    --muted:   #5f665f;
+    --faint:   #878e86;
+    --rule:    #cfd3cc;
+    --brass:   #8f6712;
+    --brass-w: #f0e3c4;
+    --teal:    #26646e;
+    --teal-w:  #d8e8ea;
+    --alarm:   #a03621;
+    --alarm-w: #f2ded8;
+
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", "Roboto Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --w: 74rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground:#151816; --surface:#1d211e; --raised:#252a26; --ink:#e7eae5;
+      --muted:#929a91; --faint:#6f776e; --rule:#2f352f;
+      --brass:#d8a63e; --brass-w:#2e2617; --teal:#64b3bd; --teal-w:#16292c;
+      --alarm:#e0705a; --alarm-w:#2e1c17;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#151816; --surface:#1d211e; --raised:#252a26; --ink:#e7eae5;
+    --muted:#929a91; --faint:#6f776e; --rule:#2f352f;
+    --brass:#d8a63e; --brass-w:#2e2617; --teal:#64b3bd; --teal-w:#16292c;
+    --alarm:#e0705a; --alarm-w:#2e1c17;
+  }
+  :root[data-theme="light"] {
+    --ground:#eceee9; --surface:#f7f8f5; --raised:#e3e6e0; --ink:#1a1e1c;
+    --muted:#5f665f; --faint:#878e86; --rule:#cfd3cc;
+    --brass:#8f6712; --brass-w:#f0e3c4; --teal:#26646e; --teal-w:#d8e8ea;
+    --alarm:#a03621; --alarm-w:#f2ded8;
+  }
+
+  .page {
+    background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.5;
+    margin: 0 auto; padding: 2.2rem 1.5rem 3rem; max-width: 100%;
+    overflow-x: hidden; -webkit-font-smoothing: antialiased;
+  }
+  .w { max-width: var(--w); margin-inline: auto; }
+  .page p { margin: 0 0 .7rem; }
+  .page strong { font-weight: 650; }
+  .page a { color: var(--teal); text-underline-offset: 2px; }
+  .page a:focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
+  code, .mono { font-family: var(--mono); font-size: .88em; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: .68rem; letter-spacing: .15em;
+    text-transform: uppercase; color: var(--brass); margin: 0 0 .7rem;
+  }
+
+  /* ---- banner ---- */
+  .banner { border-bottom: 2px solid var(--ink); padding-bottom: 1.05rem; margin-bottom: 1.35rem; }
+  h1 {
+    font-family: var(--serif); font-weight: 500;
+    font-size: clamp(1.6rem, 3vw, 2.3rem); line-height: 1.08;
+    letter-spacing: -.02em; margin: 0 0 .6rem; text-wrap: balance; max-width: 42ch;
+  }
+  h1 em { font-style: normal; color: var(--alarm); }
+  .stand {
+    font-family: var(--serif); font-size: clamp(.98rem, 1.5vw, 1.12rem);
+    line-height: 1.4; color: var(--muted); max-width: 78ch; margin: 0;
+  }
+  .stand strong { color: var(--ink); font-weight: 500; }
+
+  h2 {
+    font-family: var(--mono); font-size: .68rem; letter-spacing: .15em;
+    text-transform: uppercase; color: var(--faint); font-weight: 400;
+    margin: 0 0 .7rem; padding-bottom: .4rem; border-bottom: 1px solid var(--rule);
+  }
+  section { margin-bottom: 1.35rem; }
+
+  /* ---- the gap ---- */
+  .gap { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 1.1rem; }
+  .gap div { display: grid; grid-template-columns: 1.6rem 1fr; gap: .1rem .7rem; align-items: start; }
+  .gap .n {
+    font-family: var(--mono); font-size: .72rem; color: var(--alarm);
+    border: 1px solid var(--alarm); border-radius: 50%; width: 1.5rem; height: 1.5rem;
+    display: grid; place-items: center; margin-top: .1rem;
+  }
+  .gap p { font-size: .92rem; color: var(--muted); margin: 0; }
+  .gap p b { color: var(--ink); font-weight: 620; }
+
+  /* ---- diagram ---- */
+  figure { margin: 0; }
+  .ink { width: 100%; height: auto; display: block; overflow: visible; }
+  .ink text { font-family: var(--mono); fill: var(--muted); }
+  .ink .t-l { font-size: 12.5px; letter-spacing: .05em; }
+  .ink .t-s { font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; fill: var(--faint); }
+  figcaption { font-size: .82rem; color: var(--muted); margin-top: .5rem; max-width: 76ch; }
+  figcaption b { color: var(--ink); }
+
+  /* ---- five steps ---- */
+  .steps { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .step { background: var(--ground); padding: .7rem .8rem .8rem; }
+  .step .n { font-family: var(--mono); font-size: 1.35rem; color: var(--brass); line-height: 1; }
+  .step h3 { font-size: .93rem; font-weight: 640; margin: .35rem 0 .3rem; letter-spacing: -.01em; }
+  .step p { font-size: .84rem; color: var(--muted); margin: 0 0 .55rem; }
+  .step .cost {
+    font-family: var(--mono); font-size: .68rem; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--faint); display: block; padding-top: .45rem; border-top: 1px solid var(--rule);
+  }
+  .stopline {
+    font-family: var(--serif); font-size: 1rem; color: var(--ink);
+    margin: .7rem 0 0; padding-left: .9rem; border-left: 2px solid var(--brass);
+  }
+
+  /* ---- roles ---- */
+  .roles { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .role { background: var(--ground); padding: .8rem .85rem .85rem; }
+  .role .who {
+    font-family: var(--mono); font-size: .66rem; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--teal); margin-bottom: .5rem; min-height: 2.2em;
+  }
+  .role h3 { font-size: .92rem; font-weight: 640; margin: 0 0 .45rem; letter-spacing: -.01em; }
+  .role ul { list-style: none; margin: 0; padding: 0; }
+  .role li { font-size: .82rem; color: var(--muted); line-height: 1.4; margin-bottom: .38rem; padding-left: .8rem; position: relative; }
+  .role li::before { content: "—"; position: absolute; left: 0; color: var(--faint); }
+  .role li b { color: var(--ink); font-weight: 620; }
+
+  /* ---- numbers + caveat ---- */
+  .foot { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 2.2rem; align-items: start; }
+  .nums { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 1.1rem 1.4rem; }
+  .num .v {
+    font-family: var(--serif); font-size: clamp(1.6rem, 3vw, 2.15rem); line-height: 1;
+    color: var(--brass); font-variant-numeric: tabular-nums; letter-spacing: -.02em;
+  }
+  .num .k { font-size: .82rem; color: var(--muted); margin-top: .3rem; line-height: 1.35; }
+  .caveat { background: var(--surface); border: 1px solid var(--rule); border-left: 3px solid var(--alarm); padding: .95rem 1.1rem; }
+  .caveat h3 { font-size: .9rem; font-weight: 640; margin: 0 0 .45rem; }
+  .caveat p { font-size: .85rem; color: var(--muted); margin: 0 0 .5rem; }
+  .caveat p:last-child { margin: 0; }
+  .caveat b { color: var(--ink); }
+
+  .ask {
+    margin-top: 1.3rem; padding-top: 1rem; border-top: 2px solid var(--ink);
+    display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 1.5rem; align-items: end;
+  }
+  .ask p { font-family: var(--serif); font-size: 1.1rem; line-height: 1.45; margin: 0; max-width: 56ch; }
+  .ask .more { font-family: var(--mono); font-size: .76rem; color: var(--muted); text-align: right; line-height: 1.7; white-space: nowrap; }
+  .fine { font-size: .74rem; color: var(--faint); line-height: 1.5; margin-top: 1.4rem; max-width: 90ch; }
+
+  @media (max-width: 1000px) {
+    .steps, .roles { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .gap { grid-template-columns: minmax(0,1fr); gap: .9rem; }
+    .foot { grid-template-columns: minmax(0,1fr); gap: 1.4rem; }
+    .ask { grid-template-columns: minmax(0,1fr); }
+    .ask .more { text-align: left; white-space: normal; }
+  }
+  @media (max-width: 560px) {
+    .steps, .roles, .nums { grid-template-columns: minmax(0,1fr); }
+  }
+
+  @media print {
+    .page { background: #fff; color: #000; padding: 0; font-size: 9.5pt; }
+    section { margin-bottom: 12pt; page-break-inside: avoid; }
+    .role li, .step p { font-size: 8pt; }
+  }
+</style>
+
+<div class="page">
+ <div class="w">
+
+  <header class="banner">
+    <p class="eyebrow">warden-connect · one page · for architecture, technology and security leadership</p>
+    <h1>AI agents are already calling production services. <em>Nothing records it, scopes it, or switches it off.</em></h1>
+    <p class="stand">One control closes that gap: a <strong>signed, expiring contract for every agent-to-service relationship</strong> — enforced in the request path, and revocable across the whole estate in under a minute with proof it landed.</p>
+  </header>
+
+  <section>
+    <h2>Why existing controls do not cover this</h2>
+    <div class="gap">
+      <div>
+        <span class="n">1</span>
+        <p><b>Identity and gateways answer a different question.</b> IAM authenticates the caller; gateways shape the call. Neither answers <i>may this agent talk to this service at all, and on which tools?</i></p>
+      </div>
+      <div>
+        <span class="n">2</span>
+        <p><b>Today the answer is a ticket.</b> Two-to-three weeks, an unclear approver, a shared credential from a wiki — and nothing enforced at the end of it. So engineers route around it.</p>
+      </div>
+      <div>
+        <span class="n">3</span>
+        <p><b>So there is no register.</b> No inventory, no owners, no expiry, no scoping — and in an incident, no way to answer "what can this agent reach?"</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>The control, in one picture</h2>
+    <figure>
+      <svg class="ink" id="fig" role="img" aria-label="Two panels. On the left, today: an agent reaches a service over a shared credential with no record, alongside other agents nobody knows about. On the right, with warden-connect: the same agent holds a signed contract naming two of nine tools with an expiry, an uncontracted call is refused before the service is reached, and one command revokes everything."></svg>
+      <figcaption>The contract is a <b>ceiling, not a grant</b>. Holding one never authorises a call — it bounds what a call could possibly be. Your existing authorisation still decides whether each individual call proceeds, and <b>neither layer can widen the other</b>.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>Adoption — five steps, each independently valuable</h2>
+    <div class="steps">
+      <div class="step">
+        <span class="n">1</span>
+        <h3>Fingerprint the tool surface</h3>
+        <p>Hash exactly what was contracted. A silently changed tool description — where injection payloads live — moves the hash and names the tool.</p>
+        <span class="cost">cost: one command</span>
+      </div>
+      <div class="step">
+        <span class="n">2</span>
+        <h3>Build the register</h3>
+        <p>Agents and services with named owners, in a tamper-evident log. The inventory the estate does not have.</p>
+        <span class="cost">cost: a pipeline step</span>
+      </div>
+      <div class="step">
+        <span class="n">3</span>
+        <h3>Make approval an artifact</h3>
+        <p>Signed, expiring, machine-checkable. Low-risk requests auto-approve in seconds. The approval <i>is</i> the enforcement.</p>
+        <span class="cost">cost: an issuer key</span>
+      </div>
+      <div class="step">
+        <span class="n">4</span>
+        <h3>Enforce in the path</h3>
+        <p>Agents see only contracted tools; uncontracted calls are refused before the service is reached. <b>Starts in observe mode.</b></p>
+        <span class="cost">cost: a sidecar</span>
+      </div>
+      <div class="step">
+        <span class="n">5</span>
+        <h3>Estate-wide, plus a kill switch</h3>
+        <p>Distribution with acknowledgement, and containment as one dual-controlled command with per-node proof.</p>
+        <span class="cost">cost: a service to operate</span>
+      </div>
+    </div>
+    <p class="stopline">Each step pays for itself on its own. <strong>You can stop on any of them indefinitely</strong> — steps 1 and 2 need no infrastructure, no budget line and no approval, so one team can prove the model in a week.</p>
+  </section>
+
+  <section>
+    <h2>What it means in your terms</h2>
+    <div class="roles">
+      <div class="role">
+        <p class="who">Group Chief Architect</p>
+        <h3>A boundary that composes</h3>
+        <ul>
+          <li>Integrates through <b>two signed artifacts and one identifier</b> — not a shared library, cluster or release train.</li>
+          <li>Format, canonicalisation and checks are <b>specified, with published conformance tests</b>.</li>
+          <li><b>No lock-in to our data plane</b>: implement the checks in your own egress layer and still interoperate.</li>
+        </ul>
+      </div>
+      <div class="role">
+        <p class="who">AI / Agent Architect</p>
+        <h3>A smaller, explicit surface</h3>
+        <ul>
+          <li>Agents receive a <b>narrower tool list</b>, so the wrong tool cannot be called by accident.</li>
+          <li>Tool <b>descriptions are hashed</b> — a silently altered description is detected rather than trusted.</li>
+          <li>Works for <b>agent-to-agent and cross-organisation</b> on the same artifact; neither side exposes a catalogue.</li>
+        </ul>
+      </div>
+      <div class="role">
+        <p class="who">CTO</p>
+        <h3>Delivery gets faster</h3>
+        <ul>
+          <li>Low-risk access moves from <b>weeks to seconds</b> via policy auto-approval.</li>
+          <li>Application teams change <b>no manifests and no configuration</b> — the platform ships it in the base image.</li>
+          <li>The friction budget is <b>net negative by design</b>. That is the adoption bet, and it is deliberate.</li>
+        </ul>
+      </div>
+      <div class="role">
+        <p class="who">CIO</p>
+        <h3>Operable, and honest when degraded</h3>
+        <ul>
+          <li>Runs as a sidecar, a shared gateway, or <b>inside an egress proxy you already run</b>.</li>
+          <li><b>Pull with acknowledgement</b>: a missed update shows up as measurable lag, never as silence.</li>
+          <li>Poor connectivity degrades to <b>signed offline bundles</b> rather than to a control that stops working quietly.</li>
+        </ul>
+      </div>
+      <div class="role">
+        <p class="who">CISO</p>
+        <h3>Blast radius, and a kill switch</h3>
+        <ul>
+          <li>"What can this agent reach?" becomes <b>one query</b> instead of an archaeology exercise.</li>
+          <li>Containment is <b>one dual-controlled command with per-node confirmation</b> — nodes that cannot confirm are reported unconfirmed and fail closed, never assumed successful.</li>
+          <li>Tamper-evident evidence answers <b>"what was permitted on the 14th"</b> to the minute.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="foot">
+      <div class="nums">
+        <div class="num"><div class="v">weeks → seconds</div><div class="k">Time to a governed connection, where policy auto-approves</div></div>
+        <div class="num"><div class="v">&lt; 60s</div><div class="k">Estate-wide containment, with per-node proof it applied</div></div>
+        <div class="num"><div class="v">0</div><div class="k">Service-side executions of an uncontracted tool — verified end to end, not asserted</div></div>
+        <div class="num"><div class="v">5</div><div class="k">Independently valuable steps. Stop on any one of them</div></div>
+      </div>
+      <div class="caveat">
+        <h3>What it deliberately does not do</h3>
+        <p>It <b>does not replace identity, authorisation or network controls</b>. It adds the relationship boundary those layers do not cover, and it cannot widen them.</p>
+        <p>Deployed in visibility-only mode it <b>enforces nothing — and says so, loudly</b>, rather than reporting a green status.</p>
+        <p>That last point is the design principle: <b>a control that reports success while doing nothing is worse than no control</b>, because nobody investigates something that looks fine.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="ask">
+    <p><strong>The decision in front of you is small.</strong> Steps 1 and 2 require no infrastructure, no budget and no mandate — one team, one week, and the estate gets a register with owners that can prove it was not edited afterwards.</p>
+    <p class="more">
+      <a href="https://claude.ai/code/artifact/ec2ff48d-ad48-4631-89f1-c97d773e1ec4">full detail →</a><br>
+      the five-step ladder, seven deployment<br>
+      topologies and multi-market residency
+    </p>
+  </div>
+
+  <p class="fine">In a multi-market group, one further constraint applies: the record of a permission is itself regulated data, so the control plane federates per residency zone rather than centralising — anchors of trust cross borders, stored records do not. · This page describes <span class="mono">warden-connect</span>, an internal control-plane component. Commands, error codes and mechanisms are those of the shipped binaries; deployment specifics are proposals, not descriptions of any organisation's current architecture.</p>
+
+ </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+const NS = "http://www.w3.org/2000/svg";
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* A small hand: seeded jitter so the strokes read as drawn rather than plotted.
+   Deliberately much less machinery than the long-form page — one figure needs
+   a pen, not a scene graph. */
+function rng(a) {
+  return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+const r1 = v => Math.round(v * 10) / 10;
+const rnd = rng(20260806);
+const j = a => (rnd() * 2 - 1) * a;
+
+const svg = document.getElementById("fig");
+const W = 1000, H = 310;
+svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+const items = [];
+
+function path(d, c, sw, dash) {
+  items.push({ k: "p", d: d, c: c || "muted", sw: sw == null ? 1.6 : sw, dash: dash });
+}
+function line(x1, y1, x2, y2, c, sw, dash) {
+  const w = 1.1, mx = (x1 + x2) / 2 + j(w * 2), my = (y1 + y2) / 2 + j(w * 2);
+  path("M" + r1(x1 + j(w)) + " " + r1(y1 + j(w)) + "Q" + r1(mx) + " " + r1(my) +
+       " " + r1(x2 + j(w)) + " " + r1(y2 + j(w)), c, sw, dash);
+}
+function poly(pts, close, c, sw) {
+  const p = pts.map(q => [q[0] + j(1), q[1] + j(1)]);
+  if (close) p.push(p[0]);
+  let d = "M" + r1(p[0][0]) + " " + r1(p[0][1]);
+  for (let i = 1; i < p.length; i++) {
+    const a = p[i - 1], b = p[i];
+    d += "Q" + r1((a[0] + b[0]) / 2 + j(1.4)) + " " + r1((a[1] + b[1]) / 2 + j(1.4)) +
+         " " + r1(b[0]) + " " + r1(b[1]);
+  }
+  path(d, c, sw);
+}
+function rect(x, y, w, h, c, sw) {
+  const o = 1.4;
+  line(x - o, y, x + w + o, y, c, sw); line(x + w, y - o, x + w, y + h + o, c, sw);
+  line(x + w + o, y + h, x - o, y + h, c, sw); line(x, y + h + o, x, y - o, c, sw);
+}
+function ell(cx, cy, rx, ry, c, sw) {
+  const N = 12, st = rnd() * 6.28, pts = [];
+  for (let i = 0; i <= N; i++) { const t = st + (i / N) * 6.73;
+    pts.push([cx + Math.cos(t) * rx + j(1), cy + Math.sin(t) * ry + j(1)]); }
+  let d = "M" + r1(pts[0][0]) + " " + r1(pts[0][1]);
+  for (let i = 1; i < pts.length - 1; i++) {
+    const mx = (pts[i][0] + pts[i + 1][0]) / 2, my = (pts[i][1] + pts[i + 1][1]) / 2;
+    d += "Q" + r1(pts[i][0]) + " " + r1(pts[i][1]) + " " + r1(mx) + " " + r1(my);
+  }
+  path(d, c, sw);
+}
+function arrow(x1, y1, x2, y2, c, sw, dash) {
+  line(x1, y1, x2, y2, c, sw, dash);
+  const a = Math.atan2(y2 - y1, x2 - x1), h = 8;
+  line(x2, y2, x2 - Math.cos(a - .42) * h, y2 - Math.sin(a - .42) * h, c, sw);
+  line(x2, y2, x2 - Math.cos(a + .42) * h, y2 - Math.sin(a + .42) * h, c, sw);
+}
+function text(x, y, s, c, cls, anchor) {
+  items.push({ k: "t", x: x, y: y, s: s, c: c || "muted", cls: cls || "t-l", anchor: anchor || "middle" });
+}
+function agent(x, y, c) {
+  rect(x - 14, y - 12, 28, 23, c, 1.5);
+  ell(x - 5, y - 2, 2.6, 2.6, c, 1.4); ell(x + 5, y - 2, 2.6, 2.6, c, 1.4);
+  line(x, y - 12, x, y - 21, c, 1.4); ell(x, y - 23, 2.6, 2.6, c, 1.4);
+}
+function server(x, y, c) {
+  rect(x, y, 74, 62, c, 1.5);
+  for (let i = 1; i <= 3; i++) line(x + 7, y + (62 / 4) * i, x + 67, y + (62 / 4) * i, "rule", 1.2);
+}
+function shield(x, y, s, c) {
+  const w = 15 * s, h = 19 * s;
+  poly([[x - w, y - h * .72], [x, y - h * .95], [x + w, y - h * .72],
+        [x + w * .72, y + h * .5], [x, y + h], [x - w * .72, y + h * .5]], true, c, 1.8);
+}
+
+/* ---------- panel A: today ---------- */
+text(24, 24, "TODAY", "alarm", "t-s", "start");
+
+/* the agents nobody registered, drawn behind the one you know about */
+agent(120, 76, "rule"); agent(110, 86, "rule"); agent(100, 96, "teal");
+text(100, 128, "AGENT", "muted", "t-s");
+text(100, 146, "+ HOW MANY MORE?", "faint", "t-s");
+
+server(338, 68, "faint");
+text(375, 152, "SERVICE", "muted", "t-s");
+text(375, 166, "9 TOOLS EXPOSED", "faint", "t-s");
+
+arrow(140, 100, 330, 100, "alarm", 1.5, "7 8");
+text(236, 86, "shared credential", "alarm", "t-l");
+
+text(240, 226, "NO REGISTER · NO OWNER", "alarm", "t-s");
+text(240, 244, "NO EXPIRY · NO SCOPE", "alarm", "t-s");
+text(240, 262, "NO WAY TO SWITCH IT OFF", "alarm", "t-s");
+
+/* ---------- divider ---------- */
+line(500, 16, 500, 292, "rule", 1.5, "9 9");
+
+/* ---------- panel B: with a contract on the path ---------- */
+text(530, 24, "WITH A CONTRACT ON THE PATH", "teal", "t-s", "start");
+
+agent(578, 100, "teal");
+text(578, 132, "AGENT", "muted", "t-s");
+shield(704, 96, 1.7, "brass");
+text(704, 152, "IN-PATH CHECK", "brass", "t-s");
+server(858, 68, "faint");
+text(895, 152, "SERVICE", "muted", "t-s");
+
+/* the contracted call goes through */
+arrow(606, 92, 674, 92, "teal", 1.5);
+arrow(736, 92, 850, 92, "teal", 1.5);
+
+/* the uncontracted call is stopped at the check, and never reaches the service */
+line(606, 196, 682, 196, "teal", 1.4, "6 7");
+line(698, 190, 712, 204, "alarm", 2.1); line(712, 190, 698, 204, "alarm", 2.1);
+line(728, 196, 850, 196, "rule", 1.2, "4 8");
+text(604, 184, "UNCONTRACTED CALL", "muted", "t-s", "start");
+text(742, 190, "REFUSED HERE.", "alarm", "t-s", "start");
+text(742, 206, "THE SERVICE IS NEVER CALLED.", "alarm", "t-s", "start");
+
+/* the contract itself, and the one verb that cancels it */
+rect(560, 242, 196, 48, "brass", 1.7);
+text(658, 262, "SIGNED CONTRACT · 2 OF 9", "brass", "t-s");
+text(658, 280, "expires · named approver", "ink", "t-l");
+
+rect(800, 242, 108, 48, "alarm", 1.6);
+text(854, 264, "REVOKE", "alarm", "t-l");
+text(854, 280, "ONE VERB", "faint", "t-s");
+arrow(796, 266, 764, 266, "alarm", 1.5);
+
+/* ---------- render ---------- */
+const COLOR = { ink: "var(--ink)", muted: "var(--muted)", faint: "var(--faint)",
+                rule: "var(--rule)", brass: "var(--brass)", teal: "var(--teal)", alarm: "var(--alarm)" };
+const total = items.length;
+items.forEach((it, i) => {
+  let el;
+  if (it.k === "p") {
+    el = document.createElementNS(NS, "path");
+    el.setAttribute("d", it.d); el.setAttribute("fill", "none");
+    el.setAttribute("stroke", COLOR[it.c]); el.setAttribute("stroke-width", it.sw);
+    el.setAttribute("stroke-linecap", "round"); el.setAttribute("stroke-linejoin", "round");
+    if (it.dash) el.setAttribute("stroke-dasharray", it.dash);
+  } else {
+    el = document.createElementNS(NS, "text");
+    el.setAttribute("x", it.x); el.setAttribute("y", it.y);
+    el.setAttribute("text-anchor", it.anchor); el.setAttribute("fill", COLOR[it.c]);
+    el.setAttribute("class", it.cls); el.textContent = it.s;
+  }
+  el.style.setProperty("--d", ((i / total) * 1.1).toFixed(2) + "s");
+  svg.appendChild(el);
+});
+
+if (!reduce) {
+  const style = document.createElement("style");
+  style.textContent =
+    "#fig path{stroke-dasharray:var(--len);stroke-dashoffset:var(--len);animation:dr .6s ease forwards var(--d)}" +
+    "#fig text{opacity:0;animation:fd .4s ease forwards calc(var(--d) + .15s)}" +
+    "@keyframes dr{to{stroke-dashoffset:0}}@keyframes fd{to{opacity:1}}";
+  document.head.appendChild(style);
+  svg.querySelectorAll("path").forEach(el => {
+    let L = 0; try { L = el.getTotalLength(); } catch (e) {}
+    el.style.setProperty("--len", Math.ceil(L) || 1);
+  });
+  /* if the animation never starts, the figure must still be visible */
+  setTimeout(() => {
+    svg.querySelectorAll("path").forEach(el => { el.style.strokeDashoffset = "0"; });
+    svg.querySelectorAll("text").forEach(el => { el.style.opacity = "1"; });
+  }, 3000);
+}
+})();
+</script>
