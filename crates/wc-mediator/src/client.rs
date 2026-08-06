@@ -454,6 +454,23 @@ pub fn apply_revocations(
         expected += 1;
     }
 
+    // Failing closed is not left to the caller. A report that says "this arrived
+    // corrupted" and a set that answers questions anyway is a control nobody has to
+    // ignore deliberately in order to lose — they only have to not read the report.
+    // So the verdict travels inside the set.
+    if report.is_clean() {
+        // Verified and contiguous from `since` — the only evidence that justifies
+        // trusting the set again after a bad pull.
+        set.trust();
+    } else {
+        let why = if report.contiguous {
+            format!("{} feed entries failed verification", report.rejected.len())
+        } else {
+            format!("feed is not contiguous after seq {}", report.applied_seq)
+        };
+        set.distrust(why);
+    }
+
     report.set = Some(set);
     report
 }
@@ -542,6 +559,59 @@ mod tests {
         assert!(!report.is_clean());
         assert_eq!(report.rejected.len(), 1);
         assert_eq!(report.applied, 0, "an unauthorised order is not applied");
+    }
+
+    #[test]
+    fn a_corrupted_feed_poisons_the_set_so_nothing_is_admitted() {
+        // The old shape of this: the report said "one entry failed verification",
+        // the set was installed anyway, and the containment order in that entry was
+        // simply never applied. A control that only reports is a control you lose to
+        // by not reading it.
+        let mut events = vec![party(1, "spiffe://org/ns/agents/sa/recon")];
+        events[0].jws = "not.a.signature".to_string();
+        let report = apply_revocations(&delta(events), &revocation_keys(), &Revocations::new(), 0);
+        let set = report.set.unwrap();
+        assert!(set.distrusted().is_some(), "an unverifiable feed must not be trusted");
+        assert!(set.is_empty(), "and nothing was applied from it");
+    }
+
+    #[test]
+    fn a_hole_in_the_sequence_poisons_the_set() {
+        // seq 2 is missing, so the order it carried is unknown. Applying 1 and 3 and
+        // recording seq 3 would tell the control plane this mediator is current when
+        // it has missed a cut.
+        let report = apply_revocations(
+            &delta(vec![
+                party(1, "spiffe://org/ns/agents/sa/recon"),
+                connection(3, "conn_00000003"),
+            ]),
+            &revocation_keys(),
+            &Revocations::new(),
+            0,
+        );
+        assert!(!report.contiguous);
+        assert_eq!(report.applied_seq, 1, "the sequence stops at the hole");
+        let set = report.set.unwrap();
+        assert_eq!(set.distrusted(), Some("feed is not contiguous after seq 1"));
+    }
+
+    #[test]
+    fn a_clean_pull_clears_an_earlier_distrust() {
+        // Failing closed for ever is an outage, not a control. Verified and
+        // contiguous from `since` is the evidence that justifies serving again.
+        let mut previous = Revocations::new();
+        previous.distrust("an earlier pull was corrupt");
+
+        let report = apply_revocations(
+            &delta(vec![party(1, "spiffe://org/ns/agents/sa/recon")]),
+            &revocation_keys(),
+            &previous,
+            0,
+        );
+        assert!(report.is_clean());
+        let set = report.set.unwrap();
+        assert_eq!(set.distrusted(), None);
+        assert_eq!(set.len(), 1);
     }
 
     #[test]

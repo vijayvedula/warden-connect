@@ -338,7 +338,7 @@ fn uc04_connection() {
     // --- the mediator, over the real stub server ---------------------------
     let (stub, recorder) = StubServer::new(&surface);
     let cache = Arc::new(Cache::new());
-    cache.install(Snapshot::build(&[artifact.clone()], &keys, MEDIATOR, e.now));
+    cache.install(Snapshot::build(std::slice::from_ref(&artifact), &keys, MEDIATOR, e.now));
 
     let mut cfg = GateCfg::new(
         MEDIATOR,
@@ -447,7 +447,7 @@ fn uc06_drift() {
     let issued = e.connect(&agent.id, &server.id, &["get_balance"], 30 * DAY);
 
     let old_pin = e.entity(&server.id).pin.clone();
-    let contracted = Contracted::from_contracts(&[issued.record.clone()]);
+    let contracted = Contracted::from_contracts(std::slice::from_ref(&issued.record));
 
     // --- material: a contracted tool's description moves -------------------
     let mut poisoned = surface.clone();

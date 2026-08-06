@@ -249,10 +249,24 @@ pub struct Estate {
 
 impl Estate {
     pub fn new(label: &str) -> Estate {
+        Estate::with_event_sinks(label, Vec::new())
+    }
+
+    /// The same estate with evidence sinks attached from the start.
+    ///
+    /// From the start rather than added later, because `chain.jsonl` is
+    /// single-writer: a second `Evidence::open` on a live estate is refused, and
+    /// rightly so.
+    pub fn with_event_sinks(
+        label: &str,
+        sinks: Vec<Arc<dyn wc_control::sink::EventSink>>,
+    ) -> Estate {
         let root = Root::new(label);
         let (store, report) = Store::open(root.state()).expect("store opens");
         assert!(report.is_clean(), "a fresh store must rebuild clean");
-        let evidence = Evidence::open(root.evidence()).expect("chain opens");
+        let evidence = Evidence::open(root.evidence())
+            .expect("chain opens")
+            .with_event_sinks(sinks);
         Estate {
             root,
             store,
@@ -260,6 +274,13 @@ impl Estate {
             policy: policy(),
             now: NOW,
         }
+    }
+
+    /// The state log's first segment, as a failure-injection scenario needs it.
+    pub fn state_log(&self) -> PathBuf {
+        self.root
+            .state()
+            .join(format!("{}-000001.jsonl", wc_control::store::STATE_LOG_NAME))
     }
 
     /// Register a party through the real admission pipeline.
@@ -389,6 +410,20 @@ impl Estate {
     pub fn request(&mut self, caller: &EntityId, callee: &EntityId, tools: &[&str], ttl: u64)
         -> Outcome
     {
+        self.try_request(caller, callee, tools, ttl)
+            .expect("request evaluates")
+    }
+
+    /// The same, keeping the error. Failure-injection scenarios need the code the
+    /// issuer refused with, and — more importantly — need to go on to assert that
+    /// nothing partial survived the refusal.
+    pub fn try_request(
+        &mut self,
+        caller: &EntityId,
+        callee: &EntityId,
+        tools: &[&str],
+        ttl: u64,
+    ) -> wc_core::error::Result<Outcome> {
         let key = signer();
         let input = RequestInput {
             caller: caller.clone(),
@@ -420,7 +455,7 @@ impl Estate {
             now,
             Actor::Human { id: priya() },
         );
-        issuer.request(&input).expect("request evaluates")
+        issuer.request(&input)
     }
 
     /// Approve a pending request with one or two humans.

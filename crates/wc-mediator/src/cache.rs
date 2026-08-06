@@ -26,6 +26,7 @@ pub struct Revocations {
     jtis: HashSet<String>,
     cids: HashSet<String>,
     parties: HashSet<String>,
+    distrusted: Option<String>,
 }
 
 impl Revocations {
@@ -48,6 +49,36 @@ impl Revocations {
     /// Revoke every connection naming a party, in either direction.
     pub fn revoke_party(&mut self, party: impl Into<String>) {
         self.parties.insert(party.into());
+    }
+
+    /// Mark the set unusable, so nothing may be admitted against it.
+    ///
+    /// A revocation set is only ever consulted to answer *is this still allowed?*,
+    /// so an answer it cannot give is not "no revocations" — it is "unknown", and
+    /// unknown must read as revoked. Without this a corrupted feed, or one with a
+    /// hole in its sequence, leaves the mediator serving happily against whatever
+    /// it last managed to verify: the containment order that landed in the missing
+    /// range is simply never applied, and the report saying so goes nowhere
+    /// (§8.15.5, WC-6002).
+    ///
+    /// Deliberately not clearable by hand. It clears when a pull verifies clean and
+    /// contiguous, which is the only evidence that would justify clearing it.
+    pub fn distrust(&mut self, reason: impl Into<String>) {
+        self.distrusted = Some(reason.into());
+    }
+
+    /// Clear the distrust. `pub(crate)` on purpose: the only thing entitled to do
+    /// this is [`crate::client::apply_revocations`] after a pull that verified clean
+    /// and contiguous, and a knob an operator could turn to make the alarm stop is
+    /// not a control.
+    pub(crate) fn trust(&mut self) {
+        self.distrusted = None;
+    }
+
+    /// Why this set may not be relied on, if it may not.
+    #[must_use]
+    pub fn distrusted(&self) -> Option<&str> {
+        self.distrusted.as_deref()
     }
 
     /// How many subjects are revoked.
@@ -248,6 +279,14 @@ impl Cache {
         })?;
 
         let revoked = self.revocations();
+        if let Some(why) = revoked.distrusted() {
+            // Not "no revocations known" — *revocation status unknown*, which is the
+            // one condition that must read as revoked.
+            return Err(WcError::with_detail(
+                Code::CONTRACT_REVOKED,
+                format!("revocation state cannot be relied on ({why}), so nothing is admitted"),
+            ));
+        }
         let p = &contract.payload;
         for (what, hit) in [
             ("artifact", revoked.jti_revoked(p.jti.as_str())),

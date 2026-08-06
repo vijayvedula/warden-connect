@@ -303,7 +303,12 @@ impl MediatedUpstream {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    if self.cfg.mode == Mode::Observe {
+                    // Only an *absent* contract softens. `resolve` also refuses when
+                    // the revocation set cannot be relied on, and that is a
+                    // containment failure rather than a shadow connection — softening
+                    // it would mean an observe-mode mediator keeps serving a party
+                    // somebody has revoked.
+                    if self.cfg.mode == Mode::Observe && e.code() == Code::NO_CONTRACT {
                         self.state = State::Observed(e.code(), e.detail().to_string());
                         self.log.findings.push(Finding {
                             code: e.code(),
