@@ -59,6 +59,29 @@ document with a different field group lit each time**, rather than five cards: t
 section's claim is *the same artifact, read five ways*, so it should be visibly the
 same artifact.
 
+### The five readings are five pictures
+
+One document with a different row lit was conceptually tidy and visually five
+identical slides. Each role cares about a genuinely different property of the same
+object, so each gets the image that states its property in a glance — and the caption
+becomes confirmation rather than explanation.
+
+The test each one is built to pass: **cover the caption and the slide still says which
+role it is for.**
+
+| Role | The image | Why it is the right one |
+|---|---|---|
+| **Group Chief Architect** | Three systems stacked with **no line between them**, and one artifact in its own column that all three read | The message is an *absence*. Drawing the missing connectors is what "not a shared library, cluster or release train" looks like |
+| **AI / Agent Architect** | The same tool description on **Tuesday and Friday**, one clause different, two different digests | Nine-into-two is the headline everyone quotes; the hash is the part only this role cares about, and it needs the one image nothing else in the film uses |
+| **CTO** | **Twenty-one day-marks against one**, and `MANIFESTS CHANGED 0` | The asymmetry *is* the argument. Nothing has to be read for it to land |
+| **CIO** | Three columns of acknowledgements, one stopping early, with a **measurement bracket around the empty space** | The idea is that a missed update is a number, not an absence — so the picture has to show the absence with a measurement on it |
+| **CISO** | The blast radius as an actual radius — agent, three services, nine downstream — then **one red line cutting every edge at once** | Blast radius and the kill switch are the same picture, which is the point: you see the cost before you pay it |
+
+Two of the chapter motifs do the same double duty. The cables appear twice — red and
+crossing in *The Connection*, then the same forty-four green and parallel in *On the
+Path*. Nothing about the number changed, only whether anybody knows what they are,
+and that is the whole pitch in one cut.
+
 ### What the frames taught, which is the useful part
 
 Every one of these was invisible in the code and obvious in a still. The habit worth
@@ -90,6 +113,16 @@ defects in the Rust this week.
   a tangle. More is not busier, it is flatter.
 - **A capped label list measured no faster than an uncapped one**, so that complexity
   never got written. Measuring first is how you avoid building things.
+- **A label centred on the frame is not centred on the thing it describes.** The
+  CIO figure's `LAG 4m 12s` measured the right-hand column and sat over the middle
+  one, because `plate()` always centres on the frame. `plate_at()` takes an x.
+- **Three arrows pointing at where an object used to be say the opposite of the
+  intended thing.** The architect's read-lines were drawn to a moving artifact, so two
+  of them addressed empty space — "they never agree" rather than "they agree on one
+  object". A dotted spine at the artifact's own column fixed the sentence.
+- **The same number twice is one number wasted.** The CISO slide showed
+  `12 / 13 confirmed` in both the figure and the tagline; the figure now carries the
+  half people do not expect — *nothing is assumed successful*.
 
 ## Journey videos
 
