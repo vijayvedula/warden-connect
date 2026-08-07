@@ -3,7 +3,7 @@
 ## The film, vertical — for phones
 
 [`warden-connect-mobile.mp4`](warden-connect-mobile.mp4) · 1080×1920 · 9:16 ·
-30 fps · **2:57** · no audio track. Poster:
+30 fps · **3:45** · no audio track. Poster:
 [`warden-connect-mobile-poster.jpg`](warden-connect-mobile-poster.jpg).
 
 The web presentation *"Why agent connections need a control plane"* as a video a
@@ -176,6 +176,12 @@ defects in the Rust this week.
 - **A fixed offset under wrapped text puts a rule through it.** The second question
   wraps to two lines, so its bracket landed on the second line. `centred()` already
   returns the y after the last line; use it.
+- **A shrinking container does not shrink its contents.** `document()` spaces its
+  rows by `(height - 150) / rows`, so when the page collapsed to a lintel that became
+  12 px of step for 25 px type — eight lines of contract in an unreadable pile. The
+  rows now fade at better than twice the shrink rate, so they are gone before the
+  spacing gets tight. Found only because a longer hold meant the frame was on screen
+  long enough to notice.
 - **The same number twice is one number wasted.** The CISO slide showed
   `12 / 13 confirmed` in both the figure and the tagline; the figure now carries the
   half people do not expect — *nothing is assumed successful*.
