@@ -74,6 +74,18 @@ pub enum EventKind {
     Export,
     /// A time-boxed emergency connection was issued.
     BreakGlass,
+    /// The **break-glass revocation key** signed a containment order (P0 #5c).
+    ///
+    /// Its own kind rather than a `Quarantine` with a raised severity, for two reasons.
+    /// `Quarantine` is already `Critical`, so severity cannot distinguish this from any
+    /// other containment — an override there would have read as an escalation and changed
+    /// nothing. And `BreakGlass` already means emergency *issuance*: `key-custody.md` is
+    /// explicit that colliding the vocabulary of emergency-grant and emergency-revoke is
+    /// how a runbook gets followed wrongly at 03:00.
+    ///
+    /// A distinct dotted name is what lets a sink alert on exactly this. The offline key
+    /// is expected to be used approximately never, so one occurrence is a page.
+    BreakGlassKeyUsed,
 }
 
 impl EventKind {
@@ -102,6 +114,7 @@ impl EventKind {
             EventKind::MediatorUnconfirmed => "mediator.unconfirmed",
             EventKind::Export => "evidence.export",
             EventKind::BreakGlass => "contract.breakglass",
+            EventKind::BreakGlassKeyUsed => "containment.breakglass_key",
         }
     }
 
@@ -129,6 +142,8 @@ impl EventKind {
             EventKind::Discover | EventKind::Request | EventKind::Export => 6003,
             // Application Lifecycle
             EventKind::MediatorAck | EventKind::MediatorUnconfirmed | EventKind::BreakGlass => 6002,
+            // Account Change: a key was exercised, not a connection changed.
+            EventKind::BreakGlassKeyUsed => 3001,
         }
     }
 
@@ -136,7 +151,7 @@ impl EventKind {
     #[must_use]
     pub const fn severity(self) -> Severity {
         match self {
-            EventKind::Quarantine => Severity::Critical,
+            EventKind::Quarantine | EventKind::BreakGlassKeyUsed => Severity::Critical,
             EventKind::DriftMaterial
             | EventKind::MediatorUnconfirmed
             | EventKind::BreakGlass
@@ -163,7 +178,14 @@ impl EventKind {
     pub const fn is_containment(self) -> bool {
         matches!(
             self,
-            EventKind::Revoke | EventKind::Quarantine | EventKind::QuarantineCleared
+            EventKind::Revoke
+                | EventKind::Quarantine
+                | EventKind::QuarantineCleared
+                // A containment order signed with the break-glass key is a containment
+                // event. Left out, a sink filtered to `Filter::Revocation` — which is
+                // exactly where an operator points containment alerting — would be the
+                // one destination that never heard about the emergency path being used.
+                | EventKind::BreakGlassKeyUsed
         )
     }
 
@@ -988,6 +1010,7 @@ mod tests {
             EventKind::MediatorUnconfirmed,
             EventKind::Export,
             EventKind::BreakGlass,
+            EventKind::BreakGlassKeyUsed,
         ];
         let mut names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         names.sort_unstable();
@@ -1014,5 +1037,62 @@ mod tests {
             evidence.record(&mint_event(), 1).unwrap();
         }
         assert!(tmp.path().join(CHAIN_FILE).exists());
+    }
+}
+
+#[cfg(test)]
+mod break_glass_key {
+    //! The break-glass revocation key's own event kind (P0 #5c).
+    //!
+    //! The requirement is that *use of the offline `kid` is itself a high-severity
+    //! event*, because it is expected approximately never and one occurrence is a page.
+    //!
+    //! The first attempt at this recorded a `Quarantine` with `.with_severity(Critical)`
+    //! and was a no-op: `Quarantine` is **already** `Critical`, so the override changed
+    //! nothing and the event was indistinguishable from every other containment. Severity
+    //! cannot carry this signal. A distinct kind can.
+
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn it_is_critical_and_distinguishable_from_an_ordinary_containment() {
+        assert_eq!(EventKind::BreakGlassKeyUsed.severity(), Severity::Critical);
+        // The point: a *different dotted name*, so a filter can name exactly this.
+        assert_ne!(
+            EventKind::BreakGlassKeyUsed.as_str(),
+            EventKind::Quarantine.as_str()
+        );
+        // And not confused with emergency *issuance*, which `key-custody.md` is explicit
+        // about: colliding emergency-grant and emergency-revoke vocabulary is how a
+        // runbook gets followed wrongly at 03:00.
+        assert_ne!(
+            EventKind::BreakGlassKeyUsed.as_str(),
+            EventKind::BreakGlass.as_str()
+        );
+        assert!(!EventKind::BreakGlassKeyUsed.as_str().contains("contract"));
+    }
+
+    #[test]
+    fn both_sink_filters_an_operator_would_use_receive_it() {
+        // `HighRisk` catches it on severity. `Revocation` catches it because it *is* a
+        // containment event — and that one is the trap: a revocation-focused sink is
+        // precisely where containment alerting is pointed, and it was the destination
+        // that would have missed the emergency path being exercised.
+        assert!(EventKind::BreakGlassKeyUsed.is_containment());
+        let event = LifecycleEvent::new(EventKind::BreakGlassKeyUsed, "human:v");
+        assert!(event.severity() >= Severity::High);
+        assert!(event.is_containment());
+    }
+
+    #[test]
+    fn it_survives_into_the_chain_draft_and_the_ocsf_projection() {
+        // An event that is loud in memory and unnamed on disk would be a control that
+        // works until somebody reads the record.
+        let event = LifecycleEvent::new(EventKind::BreakGlassKeyUsed, "human:v")
+            .with_reason("KMS unreachable".to_string());
+        assert_eq!(event.to_draft().kind, "containment.breakglass_key");
+        assert_eq!(event.to_ocsf(1)["severity_id"], 5);
     }
 }

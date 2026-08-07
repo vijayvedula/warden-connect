@@ -40,6 +40,7 @@ use wc_control::attest;
 use wc_control::broker;
 use wc_control::contain;
 use wc_control::cpolicy::{self as cpolicy, ConnectPolicy, StandingState};
+use wc_control::custody;
 use wc_control::evidence::{EventKind, Evidence, LifecycleEvent};
 use wc_control::export;
 use wc_control::federate;
@@ -280,6 +281,10 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "reason",
             "approver",
             "revocation-key",
+            "revocation-signer",
+            "revocation-kid",
+            "break-glass-kid",
+            "break-glass",
             "kid",
             "mediators",
             "federate",
@@ -301,6 +306,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "mediator",
             "keyring",
             "signing-key",
+            "envelope-signer",
             "kid",
             "ttl",
             "out",
@@ -384,7 +390,9 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "id",
             "approvers",
             "approver-key",
+            "approver-signer",
             "second-key",
+            "second-signer",
             "second",
             "ticket",
             "policy",
@@ -422,8 +430,10 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "mediator",
             "by",
             "approver-key",
+            "approver-signer",
             "second",
             "second-key",
+            "second-signer",
             "issuer-key",
             "signer",
             "kid",
@@ -1219,6 +1229,69 @@ fn activate(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// The revocation key for a containment, with its declared role.
+#[derive(Debug)]
+struct RevocationSigning {
+    kid: String,
+    role: custody::Role,
+    key: IssuerKey,
+}
+
+/// Resolve the revocation key and which of the two roles it is signing in (P0 #5c).
+///
+/// Two keys, not two copies of one: `revoke-online` lives in the KMS and does the routine
+/// work, `revoke-offline` is non-exportable on a hardware token with its PIN split M-of-N
+/// and exists so containment still works when the KMS or this control plane does not.
+///
+/// The verification side already supported both — a feed entry carries its own `kid` and
+/// resolves it against an `IssuerKeys` map, so a mediator can trust two at once. What was
+/// missing was on this side: **nothing knew which `kid` was the break-glass one**, so
+/// nothing could refuse to reach for it out of habit, and nothing could escalate when it
+/// was used.
+///
+/// Returns `None` when no revocation key was given at all, which is the control-plane-only
+/// topology: the registry records the quarantine and no fan-out is attempted. That is a
+/// supported deployment, and it is reported rather than mistaken for a successful push.
+fn resolve_revocation_custody(args: &Args) -> Result<Option<RevocationSigning>> {
+    let declared =
+        custody::RevocationCustody::new(args.get("revocation-kid"), args.get("break-glass-kid"))?;
+
+    if args.get("revocation-key").is_none() && args.get("revocation-signer").is_none() {
+        return Ok(None);
+    }
+
+    // `--break-glass` selects the emergency key; it does not merely permit it. One flag
+    // flipping to the offline key is the shape a runbook can be followed under pressure —
+    // an operator at 03:00 should not have to type the same kid into two flags and get
+    // the pairing right.
+    let kid = if args.has("break-glass") {
+        declared.offline_kid.clone().ok_or_else(|| {
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "--break-glass needs --break-glass-kid KID to name the offline key; \
+                     without it there is nothing to switch to",
+            )
+        })?
+    } else {
+        args.get("revocation-kid")
+            .or_else(|| args.get("kid"))
+            .ok_or_else(|| {
+                WcError::with_detail(
+                    Code::CONFIG_INVALID,
+                    "--kid or --revocation-kid names the key signing the revocation feed",
+                )
+            })?
+            .to_string()
+    };
+
+    // Still authorised rather than assumed. `--break-glass` implies consent, but an
+    // operator who names the offline kid directly in `--revocation-kid` has not consented
+    // to anything, and that is the reach-for-it-out-of-habit case the guard is for.
+    let role = declared.authorise(&kid, args.has("break-glass"))?;
+    let key = custody_key(args, role, &kid, args.get("alg"))?;
+    Ok(Some(RevocationSigning { kid, role, key }))
+}
+
 fn quarantine(args: &Args) -> Result<()> {
     let id = EntityId::new(positional_or_flag(args, "id")?)?;
     let reason = require(args, "reason")?.to_string();
@@ -1228,6 +1301,15 @@ fn quarantine(args: &Args) -> Result<()> {
         .into_iter()
         .map(HumanRef::new)
         .collect::<Result<Vec<_>>>()?;
+
+    // --- revocation custody, before anything is written (P0 #5c) ----------
+    //
+    // Resolved here rather than at the fan-out below, because the registry transition
+    // is a state write: a misdeclared key would otherwise quarantine the party in the
+    // control plane, fail, and leave the mediators never told — a half-applied
+    // containment that reads in the register as done. Same reasoning as `open_evidence`
+    // refusing on posture before it locks the chain.
+    let revocation = resolve_revocation_custody(args)?;
 
     let ts = now();
     let mut store = open_store(args)?;
@@ -1239,7 +1321,7 @@ fn quarantine(args: &Args) -> Result<()> {
     let recorded = evidence.record(
         &LifecycleEvent::new(EventKind::Quarantine, actor_id(args))
             .with_entities([id.as_str()])
-            .with_reason(reason)
+            .with_reason(reason.clone())
             .with_detail(json!({
                 "revoked": outcome.revoked.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
                 "impacted_services": outcome.impacted_services,
@@ -1257,9 +1339,9 @@ fn quarantine(args: &Args) -> Result<()> {
         Some(path) => contain::MediatorSet::load(std::path::Path::new(path))?,
         None => contain::MediatorSet::default(),
     };
-    let containment = match args.get("revocation-key") {
-        Some(key_path) => {
-            let key = load_issuer_key(key_path, require(args, "kid")?, args.get("alg"))?;
+    let containment = if let Some(revocation) = &revocation {
+        {
+            let (kid, signing_role, key) = (&revocation.kid, revocation.role, &revocation.key);
             let p = paths(args);
             let mut feed = contain::RevocationFeed::open(&p.revocations)?;
             let mut ledger = contain::AckLedger::open(&p.acks)?;
@@ -1282,7 +1364,7 @@ fn quarantine(args: &Args) -> Result<()> {
                     ledger: &mut ledger,
                     mediators: &mediator_set,
                     push: push.as_ref(),
-                    key: &key,
+                    key,
                     ack_deadline: deadline,
                 };
                 contain::contain(
@@ -1295,9 +1377,42 @@ fn quarantine(args: &Args) -> Result<()> {
                 )?
             };
             ledger.save(&p.acks)?;
+
+            // Break-glass use is itself the event. It happens approximately never, so
+            // one use is a page — and recorded at `Critical` rather than left to whoever
+            // reads the feed to notice which `kid` signed. `Severity` and the blocking
+            // sinks already carried this; nothing was raising it.
+            //
+            // Written through the chain handle already open above, not through a second
+            // `open_evidence`. The chain is single-writer by design (§8.5.2), so opening
+            // it twice fails with `WC-8003` — and it would have failed *only* on the
+            // break-glass path, which is the one path that must not have a bug in it. The
+            // first version of this did exactly that.
+            if signing_role == custody::Role::RevokeOffline {
+                evidence.record(
+                    &LifecycleEvent::new(EventKind::BreakGlassKeyUsed, actor_id(args))
+                        .with_entities([id.as_str()])
+                        .with_reason(format!(
+                            "break-glass revocation key {kid} was used: {reason}"
+                        ))
+                        .with_detail(json!({
+                            "break_glass": true,
+                            "kid": kid,
+                            "key_custody": key.custody().as_str(),
+                            "why_this_is_loud": "the offline revocation key is for when the \
+                                KMS or the control plane is unavailable; its use is expected \
+                                approximately never",
+                        })),
+                    ts,
+                )?;
+                eprintln!(
+                    "connect: BREAK-GLASS revocation signed with {kid} — recorded at Critical"
+                );
+            }
             Some(report)
         }
-        None => None,
+    } else {
+        None
     };
 
     println!("quarantined {}", outcome.party);
@@ -1962,8 +2077,13 @@ fn caep_ingest(args: &Args) -> Result<()> {
 /// Cut a signed bundle for one mediator.
 fn bundle_export(args: &Args) -> Result<()> {
     let mediator = require(args, "mediator")?.to_string();
-    let key = load_issuer_key(
-        require(args, "signing-key")?,
+    // 5e: the envelope key follows the issuer key's custody, so it goes through the same
+    // resolution and honours `--require-external-signing`. It did not before: an estate
+    // with the posture set could export a bundle signed by a PEM on this disk, which is
+    // the artifact most likely to be carried physically into somewhere the KMS is not.
+    let key = custody_key(
+        args,
+        custody::Role::Envelope,
         require(args, "kid")?,
         args.get("alg"),
     )?;
@@ -3670,6 +3790,46 @@ fn external_signing_required(args: &Args) -> bool {
             .is_ok_and(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
 }
 
+/// What an operator supplied for a signing role, as `custody` wants it.
+fn custody_request<'a>(args: &'a Args, role: custody::Role) -> custody::Request<'a> {
+    let (pem_flag, signer_flag) = role.flags();
+    custody::Request {
+        pem_path: args.get(pem_flag.trim_start_matches('-')),
+        signer_command: args.get(signer_flag.trim_start_matches('-')),
+    }
+}
+
+/// Load a signing key for a role, with the custody posture applied.
+///
+/// Every signing site goes through here rather than through `load_issuer_key`, which is
+/// what makes `--require-external-signing` mean what it says. It used to be checked in
+/// exactly two places out of six.
+fn custody_key(
+    args: &Args,
+    role: custody::Role,
+    kid: &str,
+    alg: Option<&str>,
+) -> Result<IssuerKey> {
+    let alg = match alg.unwrap_or("ES256") {
+        "ES256" => Algorithm::ES256,
+        "ES384" => Algorithm::ES384,
+        "EdDSA" | "Ed25519" => Algorithm::EdDSA,
+        other => {
+            return Err(WcError::with_detail(
+                Code::ALG_NOT_ASYMMETRIC,
+                format!("{other:?} is not an accepted algorithm"),
+            ))
+        }
+    };
+    custody::resolve(
+        role,
+        custody_request(args, role),
+        kid,
+        alg,
+        external_signing_required(args),
+    )
+}
+
 fn issuer_key(args: &Args) -> Result<IssuerKey> {
     let kid = require(args, "kid")?;
 
@@ -3920,19 +4080,27 @@ fn approve_cmd(args: &Args) -> Result<()> {
     let registry = load_approvers(args)?;
 
     let approver = HumanRef::new(require(args, "by")?)?;
-    let key_path = require(args, "approver-key")?;
-    let signing = approver_signing_key(&approver, key_path)?;
+    // The service's keys first, so an approver key that is one of them is refused before
+    // anything signs (P0 #5d).
+    let mut sep = service_key_separation(args)?;
+    let signing = approver_signing_key(args, &approver, "approver-key", &mut sep)?;
 
-    let second = match (args.get("second"), args.get("second-key")) {
-        (Some(id), Some(path)) => {
+    let second = match (
+        args.get("second"),
+        args.get("second-key").or_else(|| args.get("second-signer")),
+    ) {
+        (Some(id), Some(_)) => {
             let who = HumanRef::new(id)?;
-            Some((approver_signing_key(&who, path)?, who))
+            Some((
+                approver_signing_key(args, &who, "second-key", &mut sep)?,
+                who,
+            ))
         }
         (None, None) => None,
         _ => {
             return Err(WcError::with_detail(
                 Code::CONFIG_INVALID,
-                "--second and --second-key must be given together",
+                "--second and --second-key (or --second-signer) must be given together",
             ))
         }
     };
@@ -3967,9 +4135,10 @@ fn breakglass_cmd(args: &Args) -> Result<()> {
     let registry = load_approvers(args)?;
 
     let first = HumanRef::new(require(args, "by")?)?;
-    let first_key = approver_signing_key(&first, require(args, "approver-key")?)?;
+    let mut sep = service_key_separation(args)?;
+    let first_key = approver_signing_key(args, &first, "approver-key", &mut sep)?;
     let second = HumanRef::new(require(args, "second")?)?;
-    let second_key = approver_signing_key(&second, require(args, "second-key")?)?;
+    let second_key = approver_signing_key(args, &second, "second-key", &mut sep)?;
     if first == second {
         // Caught here as well as in the issuer, so the operator hears it before
         // typing a second passphrase.
@@ -4248,11 +4417,51 @@ fn toml_from_str<T: serde::de::DeserializeOwned>(text: &str, path: &str) -> Resu
 }
 
 /// An approver's private key, for signing in this process.
-fn approver_signing_key(who: &HumanRef, path: &str) -> Result<IssuerKey> {
-    let pem = std::fs::read(path).map_err(|e| {
-        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
-    })?;
-    IssuerKey::ec_pem(who.as_str(), &pem, Algorithm::ES256)
+/// An approver's signing key, with the separation rule applied (P0 #5d).
+///
+/// `sep` carries what the service's own keys fingerprint to, so an approver key that is
+/// the same material is refused here rather than producing a valid approval proof that
+/// nobody can later distinguish from real dual control.
+///
+/// `which` is `approver-key` or `second-key`, so the two holders in dual control resolve
+/// their own flags and can each be delegated independently — an approver's key belongs on
+/// their own hardware token, which is the whole point of the role.
+fn approver_signing_key(
+    args: &Args,
+    who: &HumanRef,
+    which: &str,
+    sep: &mut custody::Separation,
+) -> Result<IssuerKey> {
+    let request = custody::Request {
+        pem_path: args.get(which),
+        signer_command: args.get(match which {
+            "second-key" => "second-signer",
+            _ => "approver-signer",
+        }),
+    };
+    sep.observe_request(custody::Role::Approver, who.as_str(), request)?;
+    custody::resolve(
+        custody::Role::Approver,
+        request,
+        who.as_str(),
+        Algorithm::ES256,
+        external_signing_required(args),
+    )
+}
+
+/// The service's own signing keys, fingerprinted, so an approver key cannot be one.
+///
+/// Fingerprinting does not load or use the key, so this is safe to call on a command that
+/// may not sign anything itself.
+fn service_key_separation(args: &Args) -> Result<custody::Separation> {
+    let mut sep = custody::Separation::new();
+    for (role, label) in [
+        (custody::Role::Issuer, "control-plane"),
+        (custody::Role::Anchor, "evidence-anchor"),
+    ] {
+        sep.observe_request(role, label, custody_request(args, role))?;
+    }
+    Ok(sep)
 }
 
 // ---------------------------------------------------------------------------
@@ -4731,8 +4940,9 @@ ESTATE
   posture [--unattested] [--expiring] [--score] [--json]
   blast-radius <id> [--depth 3] [--services] [--json]   exit 1 if truncated
   quarantine <id> --reason R [--approver human:a --approver human:b]
-                  [--revocation-key PEM --kid KID] [--mediators FILE]
-                  [--ack-deadline 60] [--push-token TOKEN]
+                  [--revocation-key PEM | --revocation-signer CMD] [--kid KID]
+                  [--revocation-kid KID] [--break-glass-kid KID] [--break-glass]
+                  [--mediators FILE] [--ack-deadline 60] [--push-token TOKEN]
   mediators       [--mediators FILE] [--revocation-pub PEM --kid KID] [--json]
   tenants         [--registry tenants.toml] [--json]   what exists on this root
 
@@ -4746,7 +4956,8 @@ KEYS  (--keyring keys.toml, default: keys.toml)
   keys jwks       [--out FILE]                    what mediators verify against
 
 AIR-GAPPED
-  bundle export   --mediator ID --signing-key PEM --kid KID [--ttl 7d] [--out FILE]
+  bundle export   --mediator ID (--signing-key PEM | --envelope-signer CMD) --kid KID
+                  [--ttl 7d] [--out FILE]
   bundle verify   <bundle.wcb> --envelope-pub PEM --kid KID --mediator ID
                   [--issuer-pub PEM]              exit 4 if it does not verify
 
@@ -4820,12 +5031,33 @@ KEY CUSTODY  (docs/key-custody.md)
   --anchor-signer CMD   ...or delegated. Move this one first: a checkpoint signed
                         by a key this host holds proves only that the host agrees
                         with itself
+  --revocation-key PEM  the containment key, on this disk
+  --revocation-signer   ...or delegated. Two revocation keys are supported and
+                        wanted: --revocation-kid names the routine one (KMS), and
+                        --break-glass-kid names the offline one (hardware token,
+                        PIN split M-of-N) for when the KMS or this control plane
+                        is unavailable. Signing with the break-glass kid needs
+                        --break-glass and is recorded at Critical, because it is
+                        expected approximately never
+  --approver-signer CMD an approver's key, delegated. --second-signer for the
+                        second holder. An approver key belongs on that person's
+                        own token, and it may never be key material this service
+                        holds — if the control plane can sign its own approvals,
+                        dual control is theatre and the evidence chain cannot tell
+                        the difference afterwards. Refused structurally, on key
+                        material rather than on filenames
+  --envelope-signer CMD the air-gapped bundle envelope, delegated
+
   --require-external-signing
                         refuse to start if any signing key would be read from this
-                        disk (env WARDEN_CONNECT_REQUIRE_EXTERNAL_SIGNING). Every
-                        mint also records which kid signed and where it lives, so a
-                        local signature after the move is answerable from the
-                        evidence chain, not only from configuration
+                        disk (env WARDEN_CONNECT_REQUIRE_EXTERNAL_SIGNING). Covers
+                        every role that signs — issuer, anchor, both revocation
+                        keys, approvers and the bundle envelope. `connect bench` is
+                        the one exemption and says so: it measures the cost of
+                        signing and discards the signature. Every mint also records
+                        which kid signed and where it lives, so a local signature
+                        after the move is answerable from the evidence chain, not
+                        only from configuration
 
 GLOBAL
   --root PATH        state and evidence root (env WARDEN_CONNECT_ROOT, default {DEFAULT_ROOT})
@@ -5128,6 +5360,113 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_key_flag_has_a_delegated_partner_on_every_command_that_takes_it() {
+        // The generalisation of the test above, and the one that would have caught
+        // P0 #5c–5e. `--issuer-key` had `--signer` from the start; `--revocation-key`,
+        // `--signing-key`, `--approver-key` and `--second-key` had nothing, so four of
+        // the six signing operations could only ever use a key on local disk. Custody
+        // that is reachable for one role and not the others is custody an estate cannot
+        // actually adopt.
+        let pairs = [
+            ("issuer-key", "signer"),
+            ("anchor-key", "anchor-signer"),
+            ("revocation-key", "revocation-signer"),
+            ("signing-key", "envelope-signer"),
+            ("approver-key", "approver-signer"),
+            ("second-key", "second-signer"),
+        ];
+        for command in COMMANDS {
+            let flags = accepted_flags(command);
+            for (pem, delegated) in pairs {
+                // `bench` signs synthetically and is exempt by `Role::Benchmark`; it
+                // takes `--signing-key` for a key it throws away.
+                if *command == "bench" {
+                    continue;
+                }
+                if flags.contains(&pem) {
+                    assert!(
+                        flags.contains(&delegated) || GLOBAL_FLAGS.contains(&delegated),
+                        "`{command}` accepts --{pem} but not --{delegated}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_external_signing_posture_reaches_every_role_from_the_command_line() {
+        // Asserted through the CLI's own resolution, not only through `custody::resolve`,
+        // because the defect was never in the rule — it was that four call sites did not
+        // ask. A regression here looks like somebody reaching for `load_issuer_key`.
+        for (role, expect_flag) in [
+            (custody::Role::RevokeOnline, "--revocation-signer"),
+            (custody::Role::RevokeOffline, "--revocation-signer"),
+            (custody::Role::Envelope, "--envelope-signer"),
+            (custody::Role::Approver, "--approver-signer"),
+        ] {
+            let (pem_flag, _) = role.flags();
+            let args = argv(&[
+                "quarantine",
+                pem_flag,
+                &fixture_key(),
+                "--require-external-signing",
+            ]);
+            let err = custody_key(&args, role, "k1", None).unwrap_err();
+            assert_eq!(err.code(), Code::CONFIG_INVALID, "{role:?}");
+            assert!(
+                err.detail().contains(expect_flag),
+                "{role:?}: {}",
+                err.detail()
+            );
+        }
+    }
+
+    #[test]
+    fn break_glass_selects_the_offline_key_and_refuses_to_be_reached_by_accident() {
+        // Three behaviours the runbook depends on, and each was absent: nothing knew
+        // which kid was break-glass, so nothing could switch to it deliberately, refuse
+        // it casually, or record that it happened.
+        let base = |extra: &[&str]| {
+            let mut v = vec![
+                "quarantine",
+                "--revocation-key",
+                "K",
+                "--kid",
+                "revoke-online",
+            ];
+            v.extend_from_slice(extra);
+            argv(&v)
+        };
+
+        // 1 · `--break-glass` switches the signing kid, so the operator types one flag.
+        let args = base(&["--break-glass", "--break-glass-kid", "revoke-offline"]);
+        let declared = custody::RevocationCustody::new(
+            args.get("revocation-kid"),
+            args.get("break-glass-kid"),
+        )
+        .unwrap();
+        assert_eq!(declared.offline_kid.as_deref(), Some("revoke-offline"));
+        assert!(declared.is_break_glass("revoke-offline"));
+
+        // 2 · naming the offline kid without consenting is refused — the habit case.
+        let habit = base(&["--break-glass-kid", "revoke-online"]);
+        let declared = custody::RevocationCustody::new(None, habit.get("break-glass-kid")).unwrap();
+        let err = declared.authorise("revoke-online", false).unwrap_err();
+        assert!(err.detail().contains("--break-glass"), "{}", err.detail());
+
+        // 3 · `--break-glass` with nothing declared to switch to is refused rather than
+        //     quietly signing with the routine key, which would be the worst outcome:
+        //     an operator believing they used the offline path when they did not.
+        let empty = base(&["--break-glass"]);
+        let err = resolve_revocation_custody(&empty).unwrap_err();
+        assert!(
+            err.detail().contains("nothing to switch to"),
+            "{}",
+            err.detail()
+        );
     }
 
     #[test]

@@ -76,6 +76,12 @@ between here and a release.
   `--require-external-signing` makes a regression to a local key a startup failure.
 - Every mint records which `kid` signed and where that key lives, so a local signature is
   answerable from the evidence chain rather than from configuration.
+- **Custody is enforced per role, in one place** (`wc_control::custody`). Six signing roles
+  with their own rules: `--require-external-signing` applies to all of them (`connect
+  bench` is the one stated exemption); an approver key may never be the service's key
+  material, and two approvers may not share one; the break-glass revocation key is
+  declared, selected by a single `--break-glass` flag, refused when reached without
+  consent, and recorded as its own event kind so a sink can alert on exactly it.
 - **JWKS ingest** (`IssuerKeys::add_jwks`) and a TTL-cached `JwksSource`, so issuer trust
   rotates by publishing rather than by redeploying every mediator. A refresh **replaces**
   the trust set, so a withdrawn key stops verifying; a failed refresh keeps serving the
@@ -90,7 +96,7 @@ between here and a release.
 
 ### Tests and CI
 
-- **869 tests** across unit, e2e, failure-injection, property, fuzz and attestation-interop
+- **891 tests** across unit, e2e, failure-injection, property, fuzz and attestation-interop
   tiers, plus the conformance vectors.
 - CI: fmt, clippy with `-D warnings`, the full suite, MSRV 1.89, the §8.10.3 latency gates
   via `connect bench`, screening calibration, `cargo deny`, and per-crate dependency
@@ -117,6 +123,24 @@ mode this component exists to prevent, occurring inside it:
   and the keys checking them never did.
 - **A non-loopback listener accepted bearer tokens in clear.** The deployment contract was
   documented and unenforced.
+- **`--require-external-signing` reached one signing role in six.** It was checked in the
+  issuer path and the anchor path and nowhere else, so both revocation keys, the approver
+  keys and the bundle envelope could only ever use a key on local disk — while the estate
+  believed the posture covered them.
+- **Nothing kept approver keys away from the service's keys.** `cp issuer.pem
+  approver.pem` satisfied every check and produced a valid approval proof that nothing
+  afterwards could distinguish from real dual control.
+- **A severity escalation that escalated nothing.** Break-glass revocation recorded a
+  `Quarantine` at `Critical`; `Quarantine` is already `Critical`, so the override was a
+  no-op and the event was indistinguishable from any other containment.
+- **The break-glass alert would have missed the sink it was for.** The new event kind was
+  outside `is_containment()`, so a sink filtered to `Filter::Revocation` — where operators
+  point containment alerting — was the one destination that never heard.
+- **The break-glass path opened a second writer on a single-writer log**, failing with
+  `WC-8003` only when used, on the one path that must not have a bug in it.
+- **A misdeclared revocation key half-applied a containment** — the registry recorded the
+  quarantine, then the run failed, leaving mediators never told and the register reading
+  as done.
 - **Screening refused every localised tool server** — the S1 rule read localisation
   controls in complex scripts as concealment.
 - **A latency gate pointed at a benchmark that did not exist**, so it silently never ran.
