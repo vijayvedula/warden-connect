@@ -33,6 +33,7 @@ pub mod keys;
 pub mod lock;
 pub mod registry;
 pub mod screen;
+pub mod signer;
 pub mod sink;
 pub mod store;
 pub mod tenant;

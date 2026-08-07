@@ -35,10 +35,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use wc_core::contract::IssuerKey;
 use wc_core::error::{Code, Result, WcError};
 use wc_core::util::{canonical_json, sha256_hex};
 
@@ -51,6 +52,13 @@ pub const ENTRY_SCHEMA: u16 = 1;
 pub const CHAIN_FILE: &str = "chain.jsonl";
 /// Anchor file name.
 pub const ANCHOR_FILE: &str = "anchor.jsonl";
+
+/// The `kid` an anchor stamps into its checkpoints.
+///
+/// A checkpoint is verified with a key the caller supplies (`--anchor-pub`), not one
+/// resolved from the header, so this is a label rather than a lookup. It is fixed so
+/// that a checkpoint says which role signed it when read by hand.
+pub const ANCHOR_KID: &str = "wc-anchor";
 
 // ---------------------------------------------------------------------------
 // Entry
@@ -179,25 +187,43 @@ pub struct Checkpoint {
 
 /// Signs chain checkpoints. The key belongs offline or in an HSM: an attacker who
 /// controls the control plane must not be able to re-sign a forged chain.
+///
+/// That sentence used to be aspirational — the key was an in-process `EncodingKey`
+/// read from a PEM, so whoever held the box held the key. It now goes through
+/// [`IssuerKey`], which means custody is a deployment choice
+/// (`docs/key-custody.md`), and this is the **first** key that should move: a
+/// checkpoint is periodic and off the request path, so there is no latency argument
+/// against putting it behind a token, and it is the one key whose compromise makes
+/// the evidence chain rewritable by the party the chain exists to constrain.
 #[derive(Debug)]
 pub struct Anchor {
-    key: EncodingKey,
+    key: IssuerKey,
     path: PathBuf,
     interval: u64,
 }
 
 impl Anchor {
     /// Build a signer from an EC private key in PEM form.
+    ///
+    /// The weakest custody available, kept because it is the only one that needs no
+    /// setup. Prefer [`Anchor::with_signer`] anywhere the chain is evidence somebody
+    /// outside the operating team will be asked to rely on.
     pub fn from_ec_pem(key_pem: &[u8], path: impl Into<PathBuf>, interval: u64) -> Result<Anchor> {
-        let key = EncodingKey::from_ec_pem(key_pem).map_err(|e| {
+        let key = IssuerKey::ec_pem(ANCHOR_KID, key_pem, Algorithm::ES256).map_err(|e| {
             WcError::with_detail(Code::CHAIN_APPEND_FAILED, "anchor key is not an EC PEM")
                 .with_source(e)
         })?;
-        Ok(Anchor {
+        Ok(Anchor::with_signer(key, path, interval))
+    }
+
+    /// Build a signer around a key whose private half may be elsewhere.
+    #[must_use]
+    pub fn with_signer(key: IssuerKey, path: impl Into<PathBuf>, interval: u64) -> Anchor {
+        Anchor {
             key,
             path: path.into(),
             interval: interval.max(1),
-        })
+        }
     }
 
     /// Whether a given head sequence is due a checkpoint.
@@ -218,11 +244,16 @@ impl Anchor {
             row_hash: row_hash.to_string(),
             ts,
         };
-        let jwt = jsonwebtoken::encode(&Header::new(Algorithm::ES256), &checkpoint, &self.key)
-            .map_err(|e| {
-                WcError::with_detail(Code::CHAIN_APPEND_FAILED, "cannot sign checkpoint")
-                    .with_source(e)
-            })?;
+        let jwt = wc_core::contract::sign_detached(&checkpoint, &self.key).map_err(|e| {
+            // Keep the detail: with an external signer the useful part of the failure
+            // is the signer's, and "cannot sign checkpoint" alone would send an
+            // operator looking at the chain instead of at their token.
+            WcError::with_detail(
+                Code::CHAIN_APPEND_FAILED,
+                format!("cannot sign checkpoint: {}", e.detail()),
+            )
+            .with_source(e)
+        })?;
 
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -344,6 +375,18 @@ impl Chain {
     ) -> Result<Chain> {
         self.anchor = Some(Anchor::from_ec_pem(key_pem, path, interval)?);
         Ok(self)
+    }
+
+    /// Attach an anchor whose signing key may be held outside this process.
+    #[must_use]
+    pub fn with_anchor_signer(
+        mut self,
+        key: IssuerKey,
+        path: impl Into<PathBuf>,
+        interval: u64,
+    ) -> Chain {
+        self.anchor = Some(Anchor::with_signer(key, path, interval));
+        self
     }
 
     /// The current head.
@@ -846,6 +889,116 @@ mod tests {
         assert!(report.is_intact(), "{report:?}");
         assert_eq!(report.anchors_verified, 2);
         assert!(report.anchor_mismatches.is_empty());
+    }
+
+    #[test]
+    fn a_checkpoint_written_before_the_custody_change_still_verifies() {
+        // Routing the anchor through `IssuerKey` added a `kid` to the checkpoint
+        // header. An estate upgrading in place has an `anchor.jsonl` full of the old
+        // shape, and evidence that stops verifying on upgrade is indistinguishable
+        // from evidence somebody tampered with — the worst possible false alarm.
+        //
+        // It holds because `verify_anchors` resolves its key from the caller, never
+        // from the header. This test is what keeps that true.
+        let tmp = TmpDir::new("anchor-legacy");
+        let anchor_path = tmp.path().join(ANCHOR_FILE);
+        let head = {
+            let mut chain = Chain::open(tmp.path()).unwrap();
+            let entry = chain.append(draft("e"), 1_000).unwrap();
+            (entry.seq, entry.row_hash)
+        };
+
+        // A checkpoint in the pre-change shape: no `kid`, signed the old way.
+        let legacy = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(Algorithm::ES256),
+            &Checkpoint {
+                seq: head.0,
+                row_hash: head.1.clone(),
+                ts: 1_000,
+            },
+            &jsonwebtoken::EncodingKey::from_ec_pem(PRIV).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !legacy.contains("a2lk"),
+            "the fixture must actually lack a kid, or it proves nothing"
+        );
+        std::fs::write(&anchor_path, format!("{legacy}\n")).unwrap();
+
+        let report = Chain::verify(tmp.path(), Some(PUB)).unwrap();
+        assert!(report.is_intact(), "{report:?}");
+        assert_eq!(report.anchors_verified, 1, "an old checkpoint must still verify");
+        assert!(report.anchor_mismatches.is_empty());
+    }
+
+    #[test]
+    fn an_anchor_can_be_signed_by_a_key_this_process_does_not_hold() {
+        // The point of the change: the key that proves the control plane did not
+        // rewrite its own evidence should not be a file the control plane can read.
+        #[derive(Debug)]
+        struct Elsewhere(jsonwebtoken::EncodingKey);
+        impl wc_core::contract::Signer for Elsewhere {
+            fn sign(&self, input: &[u8]) -> Result<Vec<u8>> {
+                use base64::Engine as _;
+                let b64 = jsonwebtoken::crypto::sign(input, &self.0, Algorithm::ES256)
+                    .map_err(|e| WcError::with_detail(Code::CHAIN_APPEND_FAILED, "sign").with_source(e))?;
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(b64)
+                    .map_err(|e| WcError::with_detail(Code::CHAIN_APPEND_FAILED, "b64").with_source(e))
+            }
+        }
+
+        let tmp = TmpDir::new("anchor-external");
+        let anchor_path = tmp.path().join(ANCHOR_FILE);
+        let key = IssuerKey::external(
+            ANCHOR_KID,
+            Algorithm::ES256,
+            Box::new(Elsewhere(
+                jsonwebtoken::EncodingKey::from_ec_pem(PRIV).unwrap(),
+            )),
+        )
+        .unwrap();
+        {
+            let mut chain = Chain::open(tmp.path())
+                .unwrap()
+                .with_anchor_signer(key, &anchor_path, 1);
+            chain.append(draft("e"), 1_000).unwrap();
+        }
+
+        let report = Chain::verify(tmp.path(), Some(PUB)).unwrap();
+        assert!(report.is_intact(), "{report:?}");
+        assert_eq!(report.anchors_verified, 1);
+    }
+
+    #[test]
+    fn an_anchor_signer_that_fails_stops_the_append_and_says_whose_fault_it_is() {
+        // A checkpoint that silently did not get written is the one failure an
+        // anchor cannot afford: the chain would look anchored and be unanchored.
+        #[derive(Debug)]
+        struct Broken;
+        impl wc_core::contract::Signer for Broken {
+            fn sign(&self, _input: &[u8]) -> Result<Vec<u8>> {
+                Err(WcError::with_detail(
+                    Code::CHAIN_APPEND_FAILED,
+                    "token not present",
+                ))
+            }
+        }
+
+        let tmp = TmpDir::new("anchor-broken");
+        let key =
+            IssuerKey::external(ANCHOR_KID, Algorithm::ES256, Box::new(Broken)).unwrap();
+        let mut chain = Chain::open(tmp.path())
+            .unwrap()
+            .with_anchor_signer(key, tmp.path().join(ANCHOR_FILE), 1);
+
+        let err = chain.append(draft("e"), 1_000).unwrap_err();
+        assert_eq!(err.code(), Code::CHAIN_APPEND_FAILED);
+        assert!(
+            err.detail().contains("token not present"),
+            "the signer's own reason must survive: {}",
+            err.detail()
+        );
     }
 
     #[test]

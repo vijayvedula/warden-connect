@@ -75,20 +75,26 @@ by what unblocks the others.
   by more than the threshold's own margin), the number gated in CI, then a shipped
   ruleset with `calibrated = true` and a documented basis for it.
 
-- [ ] **5. Signing keys are PEM files on a filesystem.** See
+- [~] **5. Signing keys are PEM files on a filesystem.** The seam and the first
+  key are done; the remaining sub-items are custody *deployments*, not code. See
   [key-custody.md](key-custody.md) for the decision and its reasoning. Six
   operations sign, `IssuerKey` is the seam for five of them, and they do **not**
   all want the same custody — so this is five sub-items, not one:
 
   | | Key | Custody | Why |
   |---|---|---|---|
-  | 5a | **Anchor** (chain checkpoints) | HSM or offline | [`chain.rs`](../crates/wc-control/src/chain.rs) already says the key "belongs offline or in an HSM"; periodic and off-path, so there is no cost to doing it. **Do this first.** |
+  | 5a | **Anchor** (chain checkpoints) | HSM or offline | **Done in code** — `Anchor` holds an `IssuerKey`, `connect --anchor-signer CMD` delegates it, and an existing `anchor.jsonl` written before the change still verifies. What remains is procuring the token and writing the procedure |
   | 5b | **Issuer** (contract mint) | KMS, no local copy | Highest-value target: a stolen issuer key mints authority, and that is unrecoverable until rotation reaches every mediator. Raise the `contract::mint` gate (§8.10.3) and say why — mint is once per connection at approval time, not on the request path |
   | 5c | **Revocation** | two `kid`s: online in KMS, offline on a hardware token | Deny-only, so its failure mode is availability, not forged authority. Must work when the KMS does not. Detail below |
   | 5d | **Approver** | never the service's KMS | If the control plane can sign its own approvals, dual control is theatre. Wants a hardware token or the approver's IdP-backed key. Separate PEMs today, kept apart by the operator rather than by anything structural |
   | 5e | **Bundle envelope, CAEP sink** | follow the issuer key | Low volume, latency irrelevant |
 
-  **The `Signer` trait** replaces "hand me an `EncodingKey`" with
+  **The `Signer` trait is in place.** [`wc_core::contract::Signer`],
+  `IssuerKey::external`, and [`wc_control::signer::CommandSigner`] — which
+  delegates to an operator-supplied command, so an HSM or KMS needs no new
+  dependency. `--signer` and `--anchor-signer` on every command that signs;
+  supplying both a PEM and a delegated form is an error rather than a silent
+  preference. It replaced "hand me an `EncodingKey`" with
   `sign(signing_input) -> signature`, so `mint` and `sign_detached` stop calling
   `jsonwebtoken::encode` and construct the JWS compact form themselves. The
   pattern already exists here — `pae()` and `card_signing_input()` in
