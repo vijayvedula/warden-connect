@@ -189,6 +189,17 @@ class Canvas:
         self.line((x, y - 24 * s), (x, y - 44 * s), fill, a, max(2, int(4 * s)))
         self.dot(x, y - 48 * s, 5.5 * s, fill, a)
 
+    def person(self, x, y, s, fill=GREEN, a=1.0):
+        """A head and shoulders. The chain needs a human at the top or the point of
+        it is invisible."""
+        if a <= 0.01:
+            return
+        c = max(2, int(4 * s))
+        self.ring(x, y - 16 * s, 11 * s, fill, a, c)
+        self.line((x - 20 * s, y + 22 * s), (x - 13 * s, y - 1 * s), fill, a, c)
+        self.line((x + 20 * s, y + 22 * s), (x + 13 * s, y - 1 * s), fill, a, c)
+        self.line((x - 13 * s, y - 1 * s), (x + 13 * s, y - 1 * s), fill, a, c)
+
     def service(self, x, y, s, fill=DIM, a=1.0):
         if a <= 0.01:
             return
@@ -460,8 +471,8 @@ PERSONAS = [
      "12 / 13 confirmed - 41s", RED),
 ]
 
-CHAPTERS = ["The Two Layers", "The Connection", "The Obvious Fix", "The Idea",
-            "On the Path", "Five Readings", "Plainly"]
+CHAPTERS = ["What Changed", "The Two Layers", "The Connection", "The Obvious Fix",
+            "The Idea", "On the Path", "Five Readings", "Plainly"]
 
 
 # --- the deterministic swarm, re-laid out for a tall frame -----------------
@@ -644,6 +655,159 @@ def readout(c, y0, rows, appear, step=52):
 # ---------------------------------------------------------------------------
 # Scenes
 # ---------------------------------------------------------------------------
+
+def scene_changed(c, p, beat, n_beats):
+    """One path becomes every path, and the same request takes two of them.
+
+    The film's premise, and the only chapter that argues for the *existence* of the
+    problem rather than describing it. It has to be a picture rather than a claim,
+    because "agents are non-deterministic" is a sentence people nod at without
+    changing their mind about anything.
+
+    A program is one line: reviewable once, true for ever. An agent is the whole
+    tree, and which branch it takes is decided at runtime — so the line stays on
+    screen as one faint branch among many, which is the before and after in a single
+    frame.
+    """
+    top, bot = STAGE_Y0 + 60, STAGE_Y1 - 150
+    levels = [[W // 2],
+              [W // 2 - 210, W // 2 + 210],
+              [STAGE_X0 + 130 + i * 226 for i in range(4)],
+              [STAGE_X0 + 46 + i * 121 for i in range(8)]]
+    ys = [top, lerp(top, bot, 0.34), lerp(top, bot, 0.67), bot]
+
+    # 1 · the straight line: what software used to be
+    a0 = smooth(clamp(sub(p, n_beats, 0) * 2.6))
+    grown = smooth(clamp(sub(p, n_beats, 1) * 1.5))
+    spine = a0 * (1 - grown * 0.72)
+    c.line((W // 2, top), (W // 2, bot), INK, spine, 5)
+    c.dot(W // 2, top, 11, INK, a0)
+    c.dot(W // 2, bot, 11, INK, a0)
+    if beat == 0:
+        c.text((W // 2 + 34, top - 12), "IN", "mono", 24, DIM, a0)
+        c.text((W // 2 + 34, bot - 12), "OUT", "mono", 24, DIM, a0)
+        c.plate(bot + 74, "ONE PATH  ·  REVIEWED ONCE", "mono", 28, DIM, a0)
+
+    # 2 · the tree: what it is now
+    if grown > 0:
+        for li in range(3):
+            for pi_, px in enumerate(levels[li]):
+                kids = levels[li + 1]
+                span = len(kids) // len(levels[li])
+                for k in range(span):
+                    kx = kids[pi_ * span + k]
+                    t = clamp(grown * 2.4 - li * 0.5 - k * 0.06)
+                    if t <= 0:
+                        continue
+                    c.line((px, ys[li]), (lerp(px, kx, ease_out(t)),
+                                          lerp(ys[li], ys[li + 1], ease_out(t))),
+                           FAINT, t * 0.7, 2)
+        for li in (1, 2, 3):
+            for x in levels[li]:
+                t = clamp(grown * 2.4 - li * 0.5)
+                c.dot(x, ys[li], 8 if li < 3 else 6, FAINT, t * 0.8)
+
+    # 3 · two runs of the same request, taking different branches
+    def route(picks, col, a, w=6):
+        node = W // 2
+        for li, idx in enumerate(picks):
+            nxt = levels[li + 1][idx]
+            c.line((node, ys[li]), (nxt, ys[li + 1]), col, a, w)
+            c.dot(nxt, ys[li + 1], 10, col, a)
+            node = nxt
+
+    r1 = smooth(clamp(sub(p, n_beats, 1) * 1.6 - 0.55))
+    r2 = smooth(clamp(sub(p, n_beats, 2) * 1.9))
+    if r1 > 0:
+        route([0, 1, 2], BLUE, r1 * (1 - r2 * 0.55))
+    if r2 > 0:
+        route([1, 3, 6], YELLOW, r2)
+        c.plate(bot + 74, "THE SAME REQUEST, TWICE", "serif", 44, YELLOW, r2)
+    elif grown > 0.5 and beat == 1:
+        c.plate(bot + 74, "CHOOSES AT RUNTIME", "mono", 28, DIM,
+                smooth(clamp(grown * 2 - 1)))
+
+    # 4 · the enterprise shape: it is never one hop
+    # Gated on the beat, not on the fade. `sub(...) == 1` for every beat *after* this
+    # one too, so an early return keyed to the fade held the hop chain on screen
+    # through the closing beat and the two questions never drew at all.
+    hops = smooth(clamp(sub(p, n_beats, 3) * 2.0))
+    if beat == 3 and hops > 0:
+        # Cover the tree rather than fading each element: this beat is a different
+        # picture, not a state of the previous one.
+        c.rect((STAGE_X0 - 6, STAGE_Y0 - 14, STAGE_X1 + 6, STAGE_Y1 + 14), None,
+               hops * 0.95, 0, BG, r=0)
+        CHAIN = [
+            ("person", "somebody asks", "human:priya@org", GREEN, ""),
+            ("agent", "orchestrator", "svc:orchestrator", BLUE, "hop 1"),
+            ("agent", "research agent", "svc:research", BLUE, "hop 2"),
+            ("service", "payments mcp", "svc:research", DIM, "hop 3"),
+            ("agent", "summary agent", "svc:summary", DIM, "hop 4"),
+        ]
+        x = STAGE_X0 + 96
+        y0, step = STAGE_Y0 + 56, 158
+        c.text((STAGE_X1, y0 - 46), "ACTING AS", "mono", 21, FAINT, hops,
+               anchor="ra")
+        for i, (kind, name, ident, col, hop) in enumerate(CHAIN):
+            a = clamp(hops * 3.0 - i * 0.42)
+            if a <= 0:
+                continue
+            y = y0 + i * step
+            if i:
+                c.arrow((x, y - step + 40), (x, y - 34), FAINT, a * 0.8, 3)
+                c.text((x + 26, y - step + 66), hop, "mono", 21, FAINT, a * 0.9)
+            if kind == "person":
+                c.person(x, y, 1.5, col, a)
+            elif kind == "agent":
+                c.agent(x, y, 1.05, col, a)
+            else:
+                c.service(x, y, 0.62, col, a)
+            c.text((x + 92, y - 22), name, "serif", 40, INK, a)
+            # The column that carries the argument: by hop 3 the person the request
+            # was made for is not in the identity any more.
+            c.text((STAGE_X1, y - 18), ident, "mono", 24,
+                   col if i < 2 else FAINT, a, anchor="ra")
+        # One fork, so it reads as a graph rather than a queue.
+        f = clamp(hops * 3.0 - 1.4)
+        if f > 0:
+            fx, fy = STAGE_X1 - 300, y0 + 2 * step + 76
+            c.line((x, y0 + step + 40), (fx, fy - 26), FAINT, f * 0.5, 2,
+                   dash=(9, 11))
+            c.agent(fx, fy, 0.8, BLUE, f * 0.75)
+            c.text((fx, fy + 46), "and three more", "mono", 20, FAINT, f * 0.8,
+                   anchor="ma")
+        g = clamp(hops * 2.4 - 1.5)
+        c.plate(STAGE_Y1 - 40, "FOUR HOPS FROM THE PERSON WHO ASKED", "serif", 40,
+                RED, g)
+        return
+
+    # 5 · the two questions, drawn as the answers that are missing
+    q = smooth(clamp(sub(p, n_beats, 4) * 2.2))
+    if q > 0:
+        # The tree recedes; two empty brackets take the frame. They sit where the
+        # next chapter's two planes will, so the shape is already familiar when the
+        # answer arrives.
+        c.rect((STAGE_X0 - 4, STAGE_Y0 - 10, STAGE_X1 + 4, STAGE_Y1 + 10), None,
+               q * 0.92, 0, BG, r=0)
+        for i, (label, col) in enumerate([
+                ("may these two things be connected at all?", YELLOW),
+                ("may this action proceed, and who is answerable?", BLUE)]):
+            a = clamp(q * 2.2 - i * 0.7)
+            if a <= 0:
+                continue
+            y = STAGE_Y0 + 170 + i * 300
+            # `centred` returns the y after the last line, and the second question
+            # wraps to two. A fixed offset put the bracket through the text.
+            end = c.centred(y, label, STAGE_W - 40, "serif", 42, col, a)
+            by = end + 34
+            c.line((STAGE_X0 + 120, by), (STAGE_X1 - 120, by), col, a * 0.35, 2,
+                   dash=(12, 14))
+            for sgn in (-1, 1):
+                x = W // 2 + sgn * (STAGE_W / 2 - 120)
+                c.line((x, by - 22), (x, by + 22), col, a * 0.5, 3)
+            c.text((W // 2, by + 34), "NOBODY OWNS THIS ONE", "mono", 24, FAINT, a,
+                   anchor="ma")
+
 
 def scene_planes(c, p, beat, n_beats):
     """Two boundaries as two planes, then the five capabilities as full-width bars.
@@ -919,8 +1083,8 @@ def scene_path(c, p, beat, n_beats):
                        anchor="ra")
 
 
-SCENES = {0: scene_planes, 1: scene_threads, 2: scene_wall, 3: scene_document,
-          4: scene_path}
+SCENES = {0: scene_changed, 1: scene_planes, 2: scene_threads, 3: scene_wall,
+          4: scene_document, 5: scene_path}
 
 
 
@@ -1149,7 +1313,24 @@ PERSONA_FIGS = [fig_architect, fig_ai_architect, fig_cto, fig_cio, fig_ciso]
 
 def build():
     v = Video(OUT / "warden-connect-mobile.mp4")
-    chapter_caps = [CAPS["two_layers"] + CAPS["caps"] + [CAPS["caps_end"]],
+    # The premise first. Without it the film opens by describing a solution to a
+    # problem the viewer has not yet agreed exists.
+    CH0 = [("Software used to do what it was told.", None,
+            {"what it was told.": BLUE}),
+           ("Now it decides.",
+            "An agent picks its own tools at runtime, on somebody's behalf, "
+            "thousands of times an hour.", {"Now it decides.": YELLOW}),
+           ("Run the same request twice and it may not take the same route.",
+            "Which is the whole point of it — and the reason reviewing a build "
+            "tells you nothing about what it will do.", {"may not": YELLOW}),
+           ("In an enterprise it is never one hop.",
+            "A person asks an agent, which delegates to another, which calls a "
+            "tool, which feeds a third. Each hop decides the next one.",
+            {"never one hop.": YELLOW}),
+           ("So two questions have nobody to answer them.", None,
+            {"nobody to answer them.": RED})]
+
+    chapter_caps = [CH0, CAPS["two_layers"] + CAPS["caps"] + [CAPS["caps_end"]],
                     None, None, None, None]
 
     CH1 = [("An agent needs to read a customer's balance.", None, {}),
@@ -1196,8 +1377,8 @@ def build():
             "thirteenth says it could not confirm, rather than reporting success.",
             {"a single command": YELLOW})]
 
-    chapter_caps[1], chapter_caps[2] = CH1, CH2
-    chapter_caps[3], chapter_caps[4] = CH3, CH4
+    chapter_caps[2], chapter_caps[3] = CH1, CH2
+    chapter_caps[4], chapter_caps[5] = CH3, CH4
 
     n_ch = len(CHAPTERS)
 
@@ -1251,7 +1432,7 @@ def build():
             # The figure carries the argument now, so the caption carries the words:
             # the role's own headline, then its own sentence.
             c.caption(head, body, 1.0, {})
-            c.progress(5, n_ch, (pi + p) / 5)
+            c.progress(6, n_ch, (pi + p) / 5)
             c.mark(0.45)
 
     # --- close ---
@@ -1305,7 +1486,7 @@ def build():
                           "edited afterwards.", W - PAD * 2 - 80, "serif", 42, INK,
                           a)
             c.caption(main, sub_, 1.0, accent)
-            c.progress(6, n_ch, (k + p) / 3)
+            c.progress(7, n_ch, (k + p) / 3)
             c.mark(0.45)
 
     return v
@@ -1386,7 +1567,16 @@ if __name__ == "__main__":
                 "dc-legacy", "LAG 4m 12s", "A GAP YOU CAN MEASURE", "agent:recon",
                 "DEPTH 3", "17 CONNECTIONS  ·  4 SERVICES",
                 "connect quarantine agent:recon",
-                "NOTHING IS ASSUMED SUCCESSFUL"]
+                "NOTHING IS ASSUMED SUCCESSFUL",
+                "IN", "OUT", "ONE PATH  ·  REVIEWED ONCE", "CHOOSES AT RUNTIME",
+                "THE SAME REQUEST, TWICE", "NOBODY OWNS THIS ONE",
+                "may these two things be connected at all?",
+                "may this action proceed, and who is answerable?",
+                "ACTING AS", "somebody asks", "human:priya@org", "orchestrator",
+                "svc:orchestrator", "research agent", "svc:research",
+                "payments mcp", "summary agent", "svc:summary", "and three more",
+                "hop 1", "hop 2", "hop 3", "hop 4",
+                "FOUR HOPS FROM THE PERSON WHO ASKED"]
     n = check_fonts([s for s in strings if s])
     print(f"  font check ok — {n} distinct glyphs across 3 faces")
 
