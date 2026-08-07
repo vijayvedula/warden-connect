@@ -1,23 +1,33 @@
 # Production-readiness plan
 
-> **Status (2026-08-07): feature-complete against [08-lld.md](08-lld.md), not
+> **Status (2026-08-08): feature-complete against [08-lld.md](08-lld.md), not
 > production-ready.** Every module in the P0–P4 build order (§8.16) exists and is
-> tested. What is missing is almost entirely the operational layer around it —
-> starting with the fact that **there is no CI**, so nothing below is verified
-> anywhere except one laptop.
+> tested. What is missing is almost entirely the operational layer around it.
 >
 > Same shape as Warden core's
 > [production-readiness checklist](../../warden/docs/production-readiness.md), and
 > the same rule: an item is only checked off when something *runs* that proves it.
+> `[~]` means partly landed with the remainder named in the entry.
+>
+> **P0: six of eight done.** #5 (key custody) and #3 (real attestation material) are
+> partial and say what is left. Working through them in order turned up six defects the
+> tests as written could not see — a gate pointing at a benchmark that did not exist, a
+> blocking detector that refused every localised tool server, a verifier reading the
+> system clock, a listener accepting bearer tokens in clear, a JWKS path that could
+> emit and never ingest, and a refresh loop holding boot-time trust. Every one is the
+> same species: a control that reads as configured and does nothing. The full list
+> across the whole build is in [CHANGELOG.md](../CHANGELOG.md).
 
 ## Where the build actually is
 
 | | Evidence |
 |---|---|
 | Modules delivered | All of P0–P4 (§8.16). `wc-core` 7 modules, `wc-control` 23, `wc-mediator` 8, `wc-cli` |
-| Tests | 791 green — 685 unit, 44 integration, 15 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2) |
+| Tests | **869 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
 | Conformance | 19 vectors in `fixtures/contracts/`, driven off `expected.json`; `connect verify` is the ground truth (§8.15.3) |
-| Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expected_used` warned workspace-wide |
+| Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expect_used` warned workspace-wide |
+| CI | [`ci.yml`](../.github/workflows/ci.yml) — 5 jobs: stable, MSRV 1.89, release-mode latency gates, supply chain + dependency ceilings, nightly fuzz build |
+| Supply chain | `cargo deny check` green; one argued advisory exception with a review date |
 | Fuzz | 5 libfuzzer targets compile on nightly; **no campaign has been run** — `cargo-fuzz` is not installed |
 
 Four §8.16 acceptance criteria **are** met and demonstrated: conformance vectors
@@ -32,11 +42,11 @@ exercised in e2e. The rest of the criteria are listed under P1 #9 below, unmet.
 Nothing ships to a real estate until every one of these is done. They are ordered
 by what unblocks the others.
 
-- [x] **1. CI.** `.github/` does not exist. Every claim in this
-  repository — the 791 tests, clippy clean, the conformance vectors, the bench
-  gates — is true on one machine, today, and nothing keeps it true. This is the
-  largest gap in the project and it blocks everything below it, because the value
-  of the rest is that it *stays* proven.
+- [x] **1. CI.** As written, this said: *`.github/` does not exist. Every claim in
+  this repository — the tests, clippy clean, the conformance vectors, the bench gates —
+  is true on one machine, today, and nothing keeps it true.* It was the largest gap in
+  the project and it blocked everything below it, because the value of the rest is that
+  it *stays* proven.
 
   [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — five jobs: `fmt` +
   `clippy -D warnings` + test on stable; the same tests on the pinned MSRV; the
@@ -97,17 +107,29 @@ by what unblocks the others.
   `cargo test -p wc-mediator --release gate_filter` and `connect bench` explicitly**,
   or those two gates read as covered by a debug test run.
 
-- [ ] **3. Real attestation material, end to end.**
-  [`attest.rs`](../crates/wc-control/src/attest.rs) has the verifiers —
-  `JwtSvidIdentity`, `JwksCardVerifier`, `DsseProvenanceVerifier` — and
-  `admission` runs on **P0 stand-ins** unless an operator supplies material for
-  each stage. Nothing proves the real path against a real SPIRE SVID, a real
-  signed agent card, or real SLSA provenance from an actual builder. Until it
-  does, every party in a real estate is `Unattested`, and P2's whole posture model
-  is untested against reality rather than against fixtures.
+- [~] **3. Real attestation material, end to end.**
 
-  Needs: an integration environment with SPIRE and a signing builder, and the
-  four-stage happy path asserted against material this repo did not mint.
+  **What landed:** `admission` is now driven through the real verifiers —
+  `JwtSvidIdentity`, `JwksCardVerifier`, `DsseProvenanceVerifier` — rather than
+  through P0 stand-ins, so a party can actually reach `Attested`
+  (`crates/wc-e2e/tests/attest.rs`). The material is minted by
+  [`scripts/gen-attest-fixtures.py`](../scripts/gen-attest-fixtures.py) using
+  `cryptography` and assembling ES256 `R‖S` from scratch — **a different
+  implementation of the same specifications**, with three distinct keypairs because a
+  SPIFFE bundle key, a card key and a builder key are three roles. Agreement between
+  it and our verifiers is two readings of a spec rather than one implementation
+  talking to itself. It also surfaced a defect: `JwtSvidIdentity` read the system
+  clock, so its expiry check could not be tested at all.
+
+  Since P0 #6, a SPIRE JWT bundle is readable as it comes — `spire-agent api fetch
+  jwtbundles` returns a JWKS and `IssuerKeys::add_jwks` ingests it, so the
+  convert-to-PEM step between here and a real SPIRE is gone.
+
+  **What is still missing:** the material did not come out of a SPIRE server or a
+  build pipeline. Replacing the three files with real output and re-running
+  `cargo test -p wc-e2e --test attest` is the remaining step, and it is why they are
+  files on disk rather than constants in the test. Needs an integration environment
+  with SPIRE and a signing builder.
 
 - [x] **4. Screening precision and recall are gated, and the corpus could not see
   its worst false-positive class.** This entry was wrong when written: precision
@@ -305,16 +327,46 @@ by what unblocks the others.
   Thirteen new tests: eight over a real socket, because the peer address comes from the
   accepted socket and a handler-level test would have to invent the thing being checked.
 
-- [~] **8. Nothing that a shipped repository needs exists.** No `README.md`, no
-  `LICENSE`, no `SECURITY.md`, no `CONTRIBUTING.md`, no `CHANGELOG.md`.
-  `docs/twelve-factor.md` is referenced by the LLD and is not there.
+- [x] **8. A repository anyone outside this conversation can read.**
 
-  `deny.toml` **is** now there, and it found a real advisory on its first run —
-  see below. It also settled the dependency-count question: the LLD claimed 30
-  crates for `wc-core` and 61 for `wc-control`; the tree resolves to **80 and 110**,
-  of which `jsonwebtoken`'s `rust_crypto` feature is 75 on its own. Ceilings are now
-  asserted by [`scripts/dep-count.sh`](../scripts/dep-count.sh) at the measured truth
-  plus headroom, so the next addition is visible rather than silent.
+  `README.md`, `LICENSE` + `LICENSE-APACHE` (FSL-1.1-ALv2, converting to Apache 2.0),
+  `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md` and
+  [twelve-factor.md](twelve-factor.md) all now exist. Every local link in them is
+  checked to resolve.
+
+  Three of them are worth more than their genre usually is:
+
+  - **`SECURITY.md`** is scoped against the real threat model — the eleven threats in
+    §7.8, not a generic list. It puts **"a control that is configured and does
+    nothing"** in scope explicitly, even where no single request can be shown to bypass
+    anything, because that is the defect class this repository actually produces. And it
+    names what is *out* of scope with the reason: prompt injection inside the agent's
+    reasoning, semantic drift within an unchanged declared surface (A4's stated
+    residual), `--insecure-plaintext` doing what it says.
+  - **`twelve-factor.md` opens by contradicting the LLD.** §1 claims config resolves
+    *"flag over file over env"*; there is no general config file, so the chain is two
+    layers, not three. Recorded rather than quietly satisfied — a component whose own
+    design document overstates its configurability is the same species of defect as a
+    control that reads as enforced and is not consulted. It also states the deviation
+    from factor VI plainly: `connect serve` **requires** durable storage, because an
+    evidence chain that restarts on reschedule has no history.
+  - **`CHANGELOG.md`** carries a *"notable defects found and fixed during the build"*
+    section listing ten silent-control failures, each with what it read as versus what
+    it did. That list is the most useful thing in the file for anyone deciding whether
+    to trust this.
+
+  `docs/README.md` said *"Status: design / definition"* and omitted the four documents
+  written after the build; both fixed.
+
+  `deny.toml` was already there, and it found a real advisory on its first run — see
+  below. It also settled the dependency-count question: the LLD claimed 30 crates for
+  `wc-core` and 61 for `wc-control`; the tree resolves to **80 and 110**, of which
+  `jsonwebtoken`'s `rust_crypto` feature is 75 on its own. Ceilings are asserted by
+  [`scripts/dep-count.sh`](../scripts/dep-count.sh) at the measured truth plus
+  headroom, so the next addition is visible rather than silent.
+
+  **Not done here:** issue and PR templates, and a release process — packaging is P1
+  #13, and every crate is `publish = false` until it exists.
 
 ---
 
@@ -356,11 +408,16 @@ by what unblocks the others.
   nobody has written down: ACK lag, mediators reported unconfirmed, a **distrusted
   revocation set**, and blocking-sink failures.
 
-- [ ] **12. Config is flags plus two TOML sections.** `connect.toml` covers
+- [~] **12. Config is flags plus two TOML sections.** `connect.toml` covers
   `[[sink]]` and `[assurance]`; everything else is command-line flags. The LLD
   claims twelve-factor config with a stated precedence (flag over file over env)
-  and the binaries do not implement it — which is also why `docs/twelve-factor.md`
-  is missing rather than merely unwritten.
+  and the binaries do not implement it: there are four `WARDEN_CONNECT_*` variables
+  and no general config file, so the chain is **flag over env**, two layers.
+
+  [twelve-factor.md](twelve-factor.md) now exists and opens by saying so, which is
+  the part that was actually urgent — the gap was documented as satisfied. What is
+  still missing is the `--config FILE` layer itself, so a deployment with many flags
+  carries them in a unit file or a pod spec. Workable, and not what §1 claims.
 
 - [ ] **13. Packaging.** No Dockerfile, no published image, no release process, no
   SBOM. Worth naming plainly: `export::cyclonedx_bom` produces a CycloneDX BOM of
