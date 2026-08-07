@@ -50,6 +50,13 @@ pub struct Request {
     pub headers: BTreeMap<String, String>,
     /// Body bytes.
     pub body: Vec<u8>,
+    /// The address the connection came from.
+    ///
+    /// From the accepted socket, never from a header — the whole point of it is to
+    /// decide whether a forwarding header may be believed, so taking it from a header
+    /// would be circular. `None` only when the OS could not report it, which is
+    /// treated as untrusted.
+    pub peer: Option<std::net::IpAddr>,
 }
 
 impl Request {
@@ -242,8 +249,12 @@ pub fn serve<H: Handler + 'static>(
         let inflight = Arc::clone(&inflight);
         inflight.fetch_add(1, Ordering::SeqCst);
         std::thread::spawn(move || {
+            let peer = stream.peer_addr().ok().map(|a| a.ip());
             let response = match read_request(&stream) {
-                Ok(req) => handler.handle(&req),
+                Ok(mut req) => {
+                    req.peer = peer;
+                    handler.handle(&req)
+                }
                 Err(status) => Response::json(
                     status,
                     format!(r#"{{"error":"malformed request","status":{status}}}"#),
@@ -299,6 +310,8 @@ fn read_request(stream: &TcpStream) -> Result<Request, u16> {
     }
 
     Ok(Request {
+        // Filled in by the accept loop, which is the only place that knows it.
+        peer: None,
         method,
         path_segments: path
             .split('/')
@@ -430,6 +443,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             body: Vec::new(),
+            peer: None,
         };
         assert_eq!(req.header("Authorization"), Some("Bearer abc"));
         assert_eq!(req.bearer(), Some("abc"));

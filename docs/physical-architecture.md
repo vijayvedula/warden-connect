@@ -340,8 +340,13 @@ substitute for separation *across* them.
 These are code facts, not platform choices, and they constrain every variant.
 Tracked in [production-readiness.md](production-readiness.md).
 
-**`connect serve` has no TLS.** Bearer tokens over plaintext HTTP. A terminating
-proxy is mandatory for any non-loopback listener, in all four variants. P0 #7.
+**`connect serve` has no TLS, and now refuses to pretend otherwise.** A non-loopback
+listener will not start unless the operator asserts that TLS is terminated in front
+(`--behind-tls-proxy`), and that assertion is then checked on every authenticated
+request as `x-forwarded-proto: https` from a `--trusted-proxy` address. So the
+terminating proxy in each variant above is not advice — the binary will not run
+without one. Fixed; the row remains because the *deployment* requirement is
+unchanged.
 
 **JWKS is read from a file.** Rotating the issuer key means delivering a new
 `jwks.json` to every mediator — a ConfigMap update, a file sync, a redeploy. There is

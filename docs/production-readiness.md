@@ -226,12 +226,46 @@ by what unblocks the others.
   Needs: HTTP fetch with a TTL cache, and a rotation drill that proves a mediator
   picks up a new `kid` without a restart.
 
-- [ ] **7. No TLS on `connect serve`, and bearer tokens do not require it.** The
-  default listener is `127.0.0.1:8787`, which is fine; nothing stops an operator
-  binding `0.0.0.0` and shipping approval tokens in plaintext. Warden's answer is
-  TLS at a front proxy — that needs to be the documented answer here *and* the
-  binary should refuse bearer-token auth on a non-loopback listener unless the
-  operator asserts a terminating proxy.
+- [x] **7. A non-loopback listener no longer accepts credentials in clear.**
+
+  In-process TLS is deliberately **not** implemented, and that is the decision rather
+  than the omission: every topology in
+  [physical-architecture.md](physical-architecture.md) terminates TLS at an ALB, an
+  Ingress, HAProxy or Front Door, so a rustls listener in this binary would be a
+  security-critical code path almost nobody runs. `rustls` is already in the tree
+  transitively via `ureq`, so the cost would have been code and risk, not a dependency.
+
+  What *was* the defect: the plan said "a terminating proxy is mandatory" and the
+  binary had no opinion. A pod bound to `0.0.0.0` came up, served, and shipped approval
+  tokens in plaintext with nothing objecting — a control that existed in a document.
+
+  **The contract is now enforced, and enforced per request.** A startup flag says only
+  what an operator intended, so `--behind-tls-proxy` is an assertion that has to be
+  *paid for* on every authenticated request: `x-forwarded-proto: https`, believed only
+  from an address named by `--trusted-proxy`. A request that reaches the listener
+  directly — bypassing the ingress, which is the actual attack — carries no such header
+  and is refused. Same reasoning as `wc_mediator::peer::MeshTrust`: a forwarding header
+  is worth exactly as much as the hop that set it.
+
+  | | |
+  |---|---|
+  | Loopback bind | Admitted with no assertion. The default |
+  | Non-loopback, no assertion | **Refuses to start**, naming the two flags that would fix it |
+  | `--behind-tls-proxy [--trusted-proxy ADDR]` | Per-request `x-forwarded-proto` check |
+  | `--insecure-plaintext` | Accepts anything, and says `INSECURE` in the banner and on every start |
+
+  The check hangs off token resolution rather than the router, because a check a route
+  can forget to call is one that a route eventually will — and `/healthz` still answers,
+  since a liveness probe failing on a credential policy would take a pod down for the
+  wrong reason. Refusals are counted (`transport_refused`), so "nothing can
+  authenticate" is a number rather than a discovery. The posture prints at startup.
+
+  Loopback is decided by parsing the host and asking `is_loopback`, never
+  `starts_with("127.")` — `127.0.0.1.evil.example` passes the string test, which is a
+  bug this codebase already fixed once in `peer`. There is a test for the hostname.
+
+  Thirteen new tests: eight over a real socket, because the peer address comes from the
+  accepted socket and a handler-level test would have to invent the thing being checked.
 
 - [~] **8. Nothing that a shipped repository needs exists.** No `README.md`, no
   `LICENSE`, no `SECURITY.md`, no `CONTRIBUTING.md`, no `CHANGELOG.md`.

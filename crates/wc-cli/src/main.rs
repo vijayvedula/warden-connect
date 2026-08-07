@@ -396,6 +396,9 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "deny" => &["id", "reason", "policy"],
         "serve" => &[
             "listen",
+            "behind-tls-proxy",
+            "trusted-proxy",
+            "insecure-plaintext",
             "policy",
             "issuer-key",
             "signer",
@@ -635,6 +638,71 @@ fn open_store(args: &Args) -> Result<Store> {
         }
     }
     Ok(store)
+}
+
+/// What the transport must prove before a bearer token is believed.
+///
+/// `connect serve` speaks plain HTTP, deliberately: TLS is terminated in front of it in
+/// every topology `docs/physical-architecture.md` describes, and an in-process listener
+/// would be a security-critical code path almost nobody would use.
+///
+/// What was not deliberate is that nothing stopped a non-loopback bind from accepting
+/// approval tokens in clear. The plan said a terminating proxy was mandatory and the
+/// binary had no opinion, which is the shape of every other defect found in this
+/// repository: a control that exists in a document.
+fn transport_policy(args: &Args, listen: &str) -> Result<wc_control::api::Transport> {
+    if args.has("insecure-plaintext") {
+        // Offered, because a test rig and a local demo are real, and an operator who
+        // cannot say "yes I mean it" reaches for something worse. Named so it appears
+        // in the process list and in the banner.
+        return Ok(wc_control::api::Transport::Insecure);
+    }
+
+    let trusted: Vec<std::net::IpAddr> = args
+        .list("trusted-proxy")
+        .iter()
+        .map(|raw| {
+            raw.parse().map_err(|_| {
+                WcError::with_detail(
+                    Code::CONFIG_INVALID,
+                    format!("--trusted-proxy {raw:?} is not an IP address"),
+                )
+            })
+        })
+        .collect::<Result<_>>()?;
+
+    if args.has("behind-tls-proxy") {
+        return Ok(wc_control::api::Transport::TlsProxy { trusted });
+    }
+    if !trusted.is_empty() {
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            "--trusted-proxy is only meaningful with --behind-tls-proxy; \
+             a trusted address that is not trusted for anything is a typo",
+        ));
+    }
+
+    // The refusal. Parsed and asked `is_loopback`, never string-matched: `127.0.0.1
+    // .evil.example` starts with "127." and is not loopback, which is a bug this
+    // codebase has already fixed once in `wc_mediator::peer`.
+    let host = listen.rsplit_once(':').map_or(listen, |(h, _)| h);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let loopback = host
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false);
+    if !loopback {
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!(
+                "--listen {listen} is not loopback, and bearer tokens would cross the \
+                 network in clear. Terminate TLS in front and pass --behind-tls-proxy \
+                 (with --trusted-proxy ADDR for the proxy), or --insecure-plaintext if \
+                 you mean it"
+            ),
+        ));
+    }
+    Ok(wc_control::api::Transport::Loopback)
 }
 
 /// The evidence chain, with an anchor key when one is configured.
@@ -4191,8 +4259,10 @@ fn serve_cmd(args: &Args) -> Result<()> {
         .unwrap_or("https://connect.internal")
         .to_string();
 
-    let mut cp =
-        ControlPlane::new(store, evidence, policy, signer, &iss, now).with_mode(mode(args));
+    let transport = transport_policy(args, &listen)?;
+    let mut cp = ControlPlane::new(store, evidence, policy, signer, &iss, now)
+        .with_mode(mode(args))
+        .with_transport(transport.clone());
 
     if let Some(path) = args.get("jwks") {
         let text = std::fs::read_to_string(path).map_err(|e| {
@@ -4218,6 +4288,7 @@ fn serve_cmd(args: &Args) -> Result<()> {
     println!("  policy   {}", load_policy(args)?.version);
     println!("  mode     {:?}", mode(args));
     println!("  tokens   {}", tokens.len());
+    println!("  transport {}", transport.describe());
     println!("\n  GET  /healthz /readyz /metrics /v1/jwks.json");
     println!("  GET  /v1/entities /v1/posture /v1/connections /v1/requests /v1/mediators");
     println!("  POST /v1/connections /v1/requests/<id>/approve|deny /v1/quarantine");
@@ -4677,7 +4748,24 @@ TOOLS
 
 SERVE
   serve [--listen 127.0.0.1:8787] --issuer-key PEM --kid KID
+        [--behind-tls-proxy [--trusted-proxy ADDR]...] | [--insecure-plaintext]
         [--tokens tokens.toml] [--approvers approvers.toml] [--jwks FILE]
+
+TRANSPORT  (serve speaks plain HTTP; TLS is terminated in front of it)
+  A non-loopback listener refuses to start rather than accept bearer tokens in
+  clear. That is the whole control: the deployment contract was documented and
+  unenforced, so a pod bound to 0.0.0.0 shipped approval tokens in plaintext and
+  nothing objected.
+
+  --behind-tls-proxy    TLS is terminated in front. Every authenticated request
+                        must then carry `x-forwarded-proto: https`, so a request
+                        that reaches the port directly — bypassing the ingress —
+                        is refused rather than trusted
+  --trusted-proxy ADDR  believe that header only from this address. Repeatable.
+                        Omitted means any source, which is correct only if nothing
+                        else can reach the port
+  --insecure-plaintext  accept tokens over plaintext from anywhere. Named so it is
+                        visible in the process list and in the startup banner
 
 KEY CUSTODY  (docs/key-custody.md)
   Every signing flag has a PEM form and a delegated form. The delegated form runs
@@ -5106,6 +5194,105 @@ mod tests {
         assert_eq!(
             issuer_key(&local).unwrap().custody(),
             wc_core::contract::Custody::Local
+        );
+    }
+
+    #[test]
+    fn a_non_loopback_listener_will_not_accept_credentials_in_clear() {
+        // The control this whole item is about. Nothing stopped it before, and the
+        // failure was silent: the pod came up, served, and shipped approval tokens in
+        // plaintext.
+        for listen in ["0.0.0.0:8787", "10.0.0.5:8787", "[::]:8787"] {
+            let err = transport_policy(&argv(&["serve"]), listen).unwrap_err();
+            assert_eq!(err.code(), Code::CONFIG_INVALID, "{listen}");
+            assert!(
+                err.detail().contains("--behind-tls-proxy"),
+                "{listen}: {}",
+                err.detail()
+            );
+        }
+        // Loopback is fine without any assertion, in both families.
+        for listen in ["127.0.0.1:8787", "[::1]:8787"] {
+            assert_eq!(
+                transport_policy(&argv(&["serve"]), listen).unwrap(),
+                wc_control::api::Transport::Loopback,
+                "{listen}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hostname_that_merely_starts_with_127_is_not_loopback() {
+        // The bug this codebase already fixed once in `wc_mediator::peer`:
+        // `starts_with("127.")` accepts `127.0.0.1.evil.example`. Parsed and asked
+        // `is_loopback` instead, so an unparseable host is not loopback either.
+        for listen in ["127.0.0.1.evil.example:8787", "localhost:8787", "notanip:1"] {
+            assert!(
+                transport_policy(&argv(&["serve"]), listen).is_err(),
+                "{listen} must not be taken for loopback"
+            );
+        }
+    }
+
+    #[test]
+    fn a_trusted_proxy_that_is_trusted_for_nothing_is_a_typo() {
+        let err = transport_policy(
+            &argv(&["serve", "--trusted-proxy", "10.0.0.1"]),
+            "127.0.0.1:8787",
+        )
+        .unwrap_err();
+        assert!(err.detail().contains("only meaningful"), "{}", err.detail());
+
+        let bad = transport_policy(
+            &argv(&[
+                "serve",
+                "--behind-tls-proxy",
+                "--trusted-proxy",
+                "not-an-ip",
+            ]),
+            "0.0.0.0:8787",
+        )
+        .unwrap_err();
+        assert!(
+            bad.detail().contains("is not an IP address"),
+            "{}",
+            bad.detail()
+        );
+    }
+
+    #[test]
+    fn asserting_a_proxy_permits_a_non_loopback_bind() {
+        let t = transport_policy(
+            &argv(&["serve", "--behind-tls-proxy", "--trusted-proxy", "10.0.0.1"]),
+            "0.0.0.0:8787",
+        )
+        .unwrap();
+        assert_eq!(
+            t,
+            wc_control::api::Transport::TlsProxy {
+                trusted: vec!["10.0.0.1".parse().unwrap()]
+            }
+        );
+        // And the escape hatch, which has to exist or an operator reaches for worse.
+        assert_eq!(
+            transport_policy(&argv(&["serve", "--insecure-plaintext"]), "0.0.0.0:8787").unwrap(),
+            wc_control::api::Transport::Insecure
+        );
+    }
+
+    #[test]
+    fn the_transport_flags_are_documented() {
+        let text = usage();
+        for flag in [
+            "--behind-tls-proxy",
+            "--trusted-proxy ADDR",
+            "--insecure-plaintext",
+        ] {
+            assert!(text.contains(flag), "usage does not mention {flag}");
+        }
+        assert!(
+            text.contains("x-forwarded-proto"),
+            "the per-request requirement has to be in the help, not only the source"
         );
     }
 
