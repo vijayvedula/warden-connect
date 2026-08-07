@@ -331,8 +331,8 @@ class Canvas:
 # came to 0.8 s, which is not long enough to read anything — the number that matters
 # to a reader is "how many seconds is this frame in front of me", so that is the
 # number the code holds.
-BUILD = 1.5          # seconds of animation, then it stops moving
-MIN_STILL = 2.3      # seconds the finished frame is held, at minimum
+BUILD = 1.2          # seconds of animation, then it stops moving
+MIN_STILL = 3.0      # seconds the finished frame is held, at minimum
 FADE_IN = 0.13       # seconds
 FADE_OUT = 0.12      # seconds
 
@@ -345,10 +345,16 @@ class Video:
         self.scenes = []
 
     def scene(self, seconds):
-        """`seconds` is a reading estimate; the shot is at least long enough to build
-        and then hold still for `MIN_STILL`."""
+        """`seconds` is the reading estimate for this shot's caption.
+
+        The still *is* the reading time, so it scales with the text and is floored at
+        `MIN_STILL`. Written as `max(seconds, BUILD + MIN_STILL)` instead, every shot
+        came out at exactly 4.5 s — the floor swallowed the variation and forty-two
+        identical shots is a metronome. `FADE_OUT` is added on top so the floor is
+        3 s of *fully opaque* frame rather than 3 s ending in a dip.
+        """
         def deco(fn):
-            total = max(seconds, BUILD + MIN_STILL)
+            total = BUILD + max(MIN_STILL, seconds) + FADE_OUT
             self.scenes.append((max(1, int(total * FPS)), fn))
             return fn
         return deco
@@ -367,7 +373,8 @@ class Video:
         for count, fn in self.scenes:
             # The build finishes here, not at the last frame. Everything after is the
             # same picture, held — at least MIN_STILL of it.
-            build = max(1, min(int(BUILD * FPS), count - int(MIN_STILL * FPS)) - 1)
+            build = max(1, min(int(BUILD * FPS),
+                                count - int((MIN_STILL + FADE_OUT) * FPS)) - 1)
             for i in range(count):
                 c = Canvas()
                 fn(c, clamp(i / build))
@@ -993,8 +1000,14 @@ def scene_document(c, p, beat, n_beats):
         return
 
     # It becomes the ceiling: shrunk to the top, three apertures beneath it.
-    document(c, STAGE_Y0 + 10, lerp(820, 250, shrink), 1.0, 1.0, None,
-             1 - shrink * 0.9)
+    #
+    # The rows have to go as it shrinks. `document` spaces them by `(height - 150) /
+    # rows`, so at 250px that is 12px of step for 25px type — eight lines of contract
+    # collapsing into an unreadable pile. Faded out at better than twice the shrink
+    # rate, so they are gone before the spacing gets tight and the page reads as the
+    # lintel it has become.
+    document(c, STAGE_Y0 + 10, lerp(820, 250, shrink), 1.0,
+             clamp(1 - shrink * 2.4), None, 1 - shrink * 0.9)
     b4 = smooth(sub(p, n_beats, 4))
     y0 = STAGE_Y0 + 300
     for k, (label, wfrac, col) in enumerate([
@@ -1003,7 +1016,10 @@ def scene_document(c, p, beat, n_beats):
             ("the contract's ceiling", 1.00, YELLOW),
             ("narrowed by the token's scope", 0.66, BLUE),
             ("narrowed again by policy, per call", 0.38, GREEN)]):
-        t = clamp((b4 if beat >= 4 else shrink) * 3.2 - k * 0.6)
+        # Held back until the page has mostly collapsed — otherwise the apertures
+        # draw *inside* the document that is still shrinking over them.
+        prog = b4 if beat >= 4 else clamp((shrink - 0.32) / 0.68)
+        t = clamp(prog * 3.2 - k * 0.6)
         if t <= 0:
             continue
         half = (STAGE_W - 40) * wfrac / 2
@@ -1017,7 +1033,7 @@ def scene_document(c, p, beat, n_beats):
             for sgn in (-1, 1):
                 c.line((W // 2 + sgn * half, yy + 26),
                        (W // 2 + sgn * nxt, yy + 150), col, t * 0.35, 2)
-    t = clamp((b4 if beat >= 4 else shrink) * 3.2 - 2.4)
+    t = clamp((b4 if beat >= 4 else clamp((shrink - 0.32) / 0.68)) * 3.2 - 2.4)
     if t > 0:
         c.plate(y0 + 470, "EACH LAYER ONLY NARROWS", "serif", 46, INK, t)
 
