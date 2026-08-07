@@ -6,6 +6,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Not published. `warden` is a path dependency by design (§8.3) — it is vendored
+# beside this repo rather than fetched — so this crate could not resolve from
+# crates.io anyway, and P1 #13 (packaging and a release process) is not built. Marking
+# it explicitly also stops an accidental `cargo publish` of an unfinished component,
+# and lets `deny.toml` keep `wildcards = "deny"` meaningful for registry crates while
+# exempting path dependencies.
+publish = false
 
 [[bin]]
 name = "connect"

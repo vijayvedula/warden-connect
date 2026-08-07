@@ -1,0 +1,112 @@
+# cargo-deny: the file that makes §8.3's thin-dependency argument checkable.
+#
+# The claim is central to how this component is sold — "no async runtime, no ORM, no
+# graph database, no ML runtime" — and until now nothing verified it. A claim about a
+# dependency tree that CI does not check is a claim about the day somebody wrote it
+# down.
+#
+#   cargo deny check                       all of the below
+#   cargo deny check advisories            known vulnerabilities and unmaintained crates
+#   cargo deny check licenses              every licence in the tree is one we accept
+#   cargo deny check bans                  nothing on the banned list, no needless duplicates
+#   cargo deny check sources               crates come from crates.io, not a random git URL
+
+[graph]
+# The fuzz crate is deliberately outside the workspace and pulls libfuzzer, which is
+# nightly-only. It gets checked by its own CI job rather than distorting this one.
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+# No blanket ignores. An advisory that genuinely does not apply gets an entry here
+# with a reason and a date, so the exception is reviewable rather than invisible.
+ignore = [
+    # RUSTSEC-2023-0071 — the Marvin attack. `rsa` 0.9.x is not constant-time, so an
+    # attacker who can observe the timing of a *private-key* operation can recover the
+    # key. There is no patched release.
+    #
+    # Why it is in the tree: `jsonwebtoken`'s `rust_crypto` feature is a bundle —
+    # `ed25519-dalek, hmac, p256, p384, rand, rsa, sha2` — with no way to select the
+    # curves without RSA. The only alternative backend is `aws_lc_rs`, a linked C
+    # library, which §8.3 rules out precisely so this component builds in a scratch
+    # container without a system dependency.
+    #
+    # Why it does not apply: **this codebase performs no RSA private-key operation.**
+    # `IssuerKey` has exactly three constructors — `ec_pem`, `ed_pem` and `external` —
+    # and none can produce an RSA signer; `every_contract_algorithm_has_a_key_loader`
+    # in `wc-core::contract` is the test that keeps that true. Marvin is a signing and
+    # decryption side channel, not a verification one, so the linked-but-unreachable
+    # code is not an exposure.
+    #
+    # What would change this: adding an RSA signing path, or `IssuerKeys` gaining an
+    # `add_rsa_pem` for third-party verification — verification alone is still fine,
+    # but it would be the moment to re-read this rather than assume it.
+    #
+    # Reviewed 2026-08-07. Re-check when jsonwebtoken splits the feature or `rsa`
+    # ships a constant-time release.
+    { id = "RUSTSEC-2023-0071", reason = "no RSA private-key operation exists in this tree; see the note above" },
+]
+
+[licenses]
+version = 2
+# Permissive only, plus the two exceptions below. Deliberately no GPL/AGPL/LGPL: this
+# component is meant to be embedded in other people's egress layers (§8.3), and a
+# copyleft dependency would make that a legal question rather than a technical one.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    # Our own crates. Not an SPDX identifier cargo-deny can evaluate, and `private.
+    # ignore` does not reach workspace members that are publishable, so it is named.
+    "LicenseRef-FSL-1.1-ALv2",
+]
+# Our own crates carry LicenseRef-FSL-1.1-ALv2, which is not an SPDX identifier
+# cargo-deny can evaluate. They are first-party, so they are not the subject here.
+private = { ignore = true }
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies have no version requirement, which reads as a wildcard. That is
+# what a path dependency *is*, and `warden` is one by design (§8.3), so paths are
+# exempt while a wildcard on a registry crate stays an error.
+allow-wildcard-paths = true
+# The four categories §8.3 rules out by name. Listed as bans rather than as prose, so
+# "we do not depend on an async runtime" is enforced rather than remembered — the
+# whole design rests on this staying true, because an async runtime in `wc-core` would
+# make the crate unembeddable in somebody else's proxy.
+deny = [
+    # async runtimes
+    { crate = "tokio", reason = "§8.3: no async runtime. wc-core must stay embeddable in a caller's own event loop" },
+    { crate = "async-std", reason = "§8.3: no async runtime" },
+    { crate = "smol", reason = "§8.3: no async runtime" },
+    # ORMs and database drivers — §8.16b ships no SQL Store adapter on purpose
+    { crate = "diesel", reason = "§8.16b: persistence beyond the evidence chain is an integration, not a feature" },
+    { crate = "sqlx", reason = "§8.16b: no database adapter" },
+    { crate = "sea-orm", reason = "§8.16b: no ORM" },
+    { crate = "rusqlite", reason = "§8.16b: no embedded database" },
+    # openssl: a C dependency with a build-time system requirement, on a crate that
+    # has to build in a scratch container. jsonwebtoken's rust_crypto feature is
+    # selected precisely to avoid it.
+    { crate = "openssl", reason = "§8.3: rust_crypto, not a linked C library" },
+    { crate = "openssl-sys", reason = "§8.3: rust_crypto, not a linked C library" },
+]
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Warden core is a path dependency, not a git one — it is vendored beside this repo by
+# the deployment model (§8.3), so there is no git source to allow.
+allow-git = []

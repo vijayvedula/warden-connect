@@ -32,16 +32,32 @@ exercised in e2e. The rest of the criteria are listed under P1 #9 below, unmet.
 Nothing ships to a real estate until every one of these is done. They are ordered
 by what unblocks the others.
 
-- [ ] **1. CI. There is none.** `.github/` does not exist. Every claim in this
+- [x] **1. CI.** `.github/` does not exist. Every claim in this
   repository — the 791 tests, clippy clean, the conformance vectors, the bench
   gates — is true on one machine, today, and nothing keeps it true. This is the
   largest gap in the project and it blocks everything below it, because the value
   of the rest is that it *stays* proven.
 
-  Needs: `fmt` + `clippy -D warnings` + build + test on the pinned MSRV (1.89) and
-  stable; `connect bench` on a reference runner (§8.10.3 thresholds are the
-  design's, not the machine's, so a slow runner must report honest failures rather
-  than recalibrate); the conformance vectors; the fuzz mirror; `cargo-deny`.
+  [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — five jobs: `fmt` +
+  `clippy -D warnings` + test on stable; the same tests on the pinned MSRV; the
+  release-mode latency gates; `cargo-deny` plus a dependency-count ceiling; and the
+  fuzz targets compiling on nightly. Every step was run locally before it was
+  committed, including `cargo +1.89 test --workspace` against a real 1.89 toolchain —
+  a CI job nobody has executed is the same species of claim as the gate that pointed
+  at a test that did not exist.
+
+  Three things it does that a default workflow would not:
+
+  * **The release-mode gates are named.** `cargo test` defaults to debug, where a
+    latency ceiling measures the debug build; `gate_filter` asserts a 12× tripwire
+    there and says loudly that it is not the real gate, so `--release` is invoked
+    explicitly.
+  * **It lays the tree out the way `warden` expects.** Core is a path dependency at
+    `../warden` by design (§8.3), so CI checks out both repositories side by side.
+    Needs a `WARDEN_CORE_TOKEN` secret while core is private.
+  * **No global `RUSTFLAGS: -D warnings`.** It applies to dependencies too, so a
+    warning from a new compiler version in somebody else's crate would fail the build
+    for a reason nobody here can fix. `-D warnings` goes on the clippy invocation.
 
 - [x] **2. Every §8.10.3 gate now runs.** Both missing gates are implemented, and
   running them for the first time found a defect and moved a threshold.
@@ -177,12 +193,16 @@ by what unblocks the others.
   binary should refuse bearer-token auth on a non-loopback listener unless the
   operator asserts a terminating proxy.
 
-- [ ] **8. Nothing that a shipped repository needs exists.** No `README.md`, no
+- [~] **8. Nothing that a shipped repository needs exists.** No `README.md`, no
   `LICENSE`, no `SECURITY.md`, no `CONTRIBUTING.md`, no `CHANGELOG.md`.
-  `docs/twelve-factor.md` is referenced by the LLD and is not there. No
-  `deny.toml` — for a component whose central operational argument is a thin
-  dependency tree (30 crates for `wc-core`, 61 for `wc-control`), not asserting
-  that in CI with advisory and licence policy is a strange omission.
+  `docs/twelve-factor.md` is referenced by the LLD and is not there.
+
+  `deny.toml` **is** now there, and it found a real advisory on its first run —
+  see below. It also settled the dependency-count question: the LLD claimed 30
+  crates for `wc-core` and 61 for `wc-control`; the tree resolves to **80 and 110**,
+  of which `jsonwebtoken`'s `rust_crypto` feature is 75 on its own. Ceilings are now
+  asserted by [`scripts/dep-count.sh`](../scripts/dep-count.sh) at the measured truth
+  plus headroom, so the next addition is visible rather than silent.
 
 ---
 
