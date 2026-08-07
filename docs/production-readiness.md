@@ -43,14 +43,21 @@ by what unblocks the others.
   design's, not the machine's, so a slow runner must report honest failures rather
   than recalibrate); the conformance vectors; the fuzz mirror; `cargo-deny`.
 
-- [ ] **2. Two named performance gates do not run.** §8.10.3 names six.
-  `connect bench` implements `contract::mint`, `gate::verify warm`,
-  `gate::verify cold`, `assurance::blast_radius`, `canon::wcs1` and `screen` —
-  which means **`filter_tools_list` at 256 tools and `Projection::rebuild` at 10⁵
-  contracts are named in [`bench.rs`](../crates/wc-control/src/bench.rs)'s own doc
-  comments and never measured.** A named gate that does not run is exactly the
-  species this codebase keeps hunting, and `bench` is the module that argues
-  loudest that a skipped gate must fail the run.
+- [ ] **2. Two named performance gates do not run, and one of them lies about it.**
+  §8.10.3 names six. `connect bench` measures `contract::mint`, `gate::verify warm`,
+  `gate::verify cold`, `assurance::blast_radius`, `canon::wcs1`, `screen`, and now
+  `contract::mint overhead`. Missing:
+
+  * **`Projection::rebuild` at 10⁵ contracts** — a `REBUILD` threshold exists in
+    `bench.rs` and nothing measures against it. A plain missing gate.
+  * **`filter_tools_list` at 256 tools** — worse. The report *does* list it, as a
+    skip with a reason and a pointer: `run cargo test -p wc-mediator --release
+    gate_filter`. **There is no `gate_filter` test.** So the harness that exists to
+    stop a skipped gate reporting green tells an operator where to look, and there is
+    nothing there — which reads as covered.
+
+  `bench` is the module that argues loudest that a skipped gate must fail the run,
+  which makes this the most on-brand defect in the repository.
 
 - [ ] **3. Real attestation material, end to end.**
   [`attest.rs`](../crates/wc-control/src/attest.rs) has the verifiers —
@@ -84,7 +91,7 @@ by what unblocks the others.
   | | Key | Custody | Why |
   |---|---|---|---|
   | 5a | **Anchor** (chain checkpoints) | HSM or offline | **Done in code** — `Anchor` holds an `IssuerKey`, `connect --anchor-signer CMD` delegates it, and an existing `anchor.jsonl` written before the change still verifies. What remains is procuring the token and writing the procedure |
-  | 5b | **Issuer** (contract mint) | KMS, no local copy | Highest-value target: a stolen issuer key mints authority, and that is unrecoverable until rotation reaches every mediator. Raise the `contract::mint` gate (§8.10.3) and say why — mint is once per connection at approval time, not on the request path |
+  | 5b | **Issuer** (contract mint) | KMS, no local copy | **Done in code** — `--signer`, `--require-external-signing` enforcing it, and `key_custody` recorded in every mint event so the posture is auditable backwards. The `contract::mint` gate did **not** need raising: measured p99 is 677 µs against 20 ms, so ~19 ms of signing already fits. A new `contract::mint overhead` gate (1.9 µs / 50 µs) separates our cost from the signer's, so a slow delegated mint is attributable. What remains is procuring the KMS key and the mint-volume alerting that bounds a held host |
   | 5c | **Revocation** | two `kid`s: online in KMS, offline on a hardware token | Deny-only, so its failure mode is availability, not forged authority. Must work when the KMS does not. Detail below |
   | 5d | **Approver** | never the service's KMS | If the control plane can sign its own approvals, dual control is theatre. Wants a hardware token or the approver's IdP-backed key. Separate PEMs today, kept apart by the operator rather than by anything structural |
   | 5e | **Bundle envelope, CAEP sink** | follow the issuer key | Low volume, latency irrelevant |

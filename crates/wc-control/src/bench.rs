@@ -230,8 +230,31 @@ pub mod thresholds {
     pub const VERIFY_COLD: Duration = Duration::from_micros(3_000);
     /// `filter_tools_list` with 256 tools.
     pub const FILTER_256: Duration = Duration::from_micros(50);
-    /// `contract::mint`.
+    /// `contract::mint`, end to end including the signature.
+    ///
+    /// Not raised for delegated custody, and that is a measurement rather than a
+    /// preference: mint with a local ES256 key runs at a p99 of ~0.7 ms against this
+    /// 20 ms ceiling, so a signing call of up to ~19 ms already fits. A KMS slower
+    /// than that *should* fail this gate — a mint that takes 50 ms is worth knowing
+    /// about, and silently widening the ceiling to accommodate it would be the
+    /// "recalibrate to the machine" mistake this module refuses elsewhere.
+    ///
+    /// What delegated custody needs is not a looser ceiling but [`MINT_OVERHEAD`],
+    /// so a failure here is attributable.
     pub const MINT: Duration = Duration::from_millis(20);
+    /// `contract::mint` **excluding the signature** — coherence checks, canonical
+    /// serialisation, base64, size check.
+    ///
+    /// The number that makes a slow mint diagnosable. With the key in an HSM the
+    /// end-to-end figure is ours plus the operator's, and without separating them an
+    /// operator seeing 15 ms cannot tell a slow token from a regression in this code.
+    ///
+    /// Measured at a p99 of ~2 µs, so 50 µs is ~24× headroom: loose enough not to be
+    /// flaky on a busy runner, tight enough to catch a real regression. The first
+    /// draft of this was 500 µs, which measurement showed to be a rubber stamp — a
+    /// gate with 200× headroom asserts nothing, which is the same failure as one with
+    /// 2%, in the other direction.
+    pub const MINT_OVERHEAD: Duration = Duration::from_micros(50);
     /// `blast_radius` over 10⁵ edges.
     pub const BLAST_RADIUS: Duration = Duration::from_millis(40);
     /// `Projection::rebuild` with 10⁵ contracts.

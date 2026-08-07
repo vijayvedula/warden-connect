@@ -212,6 +212,7 @@ const GLOBAL_FLAGS: &[&str] = &[
     "anchor-key",
     "anchor-signer",
     "anchor-interval",
+    "require-external-signing",
 ];
 
 /// Flags accepted per command, beyond the global ones.
@@ -620,8 +621,23 @@ fn open_store(args: &Args) -> Result<Store> {
 /// The evidence chain, with an anchor key when one is configured.
 fn open_evidence(args: &Args) -> Result<Evidence> {
     let p = paths(args);
-    let evidence = Evidence::open(&p.evidence)?;
     let interval = args.number("anchor-interval").unwrap_or(100);
+
+    // Posture before I/O. A refusal to run with a key on disk must not require first
+    // opening — and locking — the chain it is refusing to sign.
+    if external_signing_required(args) {
+        if let Some(key_path) = args.get("anchor-key") {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!(
+                    "--require-external-signing is set and --anchor-key {key_path} is a key \
+                     on this disk; use --anchor-signer COMMAND"
+                ),
+            ));
+        }
+    }
+
+    let evidence = Evidence::open(&p.evidence)?;
 
     // The anchor is the first key that should leave this host: a checkpoint signed by
     // a key the control plane holds proves only that the control plane agrees with
@@ -2023,7 +2039,12 @@ fn bench_cmd(args: &Args) -> Result<()> {
         _ => None,
     };
 
-    for name in ["contract::mint", "gate::verify warm", "gate::verify cold"] {
+    for name in [
+        "contract::mint",
+        "contract::mint overhead",
+        "gate::verify warm",
+        "gate::verify cold",
+    ] {
         if !wanted(name) {
             report.skip(name, "not selected by --gate", true);
         } else if signer.is_none() {
@@ -2047,6 +2068,28 @@ fn bench_cmd(args: &Args) -> Result<()> {
                 5,
                 || {
                     let _ = contract::mint(&payload, key);
+                },
+            ));
+        }
+
+        // Mint through a signer that returns a fixed, correctly-shaped signature: the
+        // difference between this and `contract::mint` is what the signature costs,
+        // and this figure is the part an operator can hold us to once the key is in a
+        // token (`docs/key-custody.md`).
+        if wanted("contract::mint overhead") {
+            let free = IssuerKey::external(
+                args.get("kid").unwrap_or("k1"),
+                Algorithm::ES256,
+                Box::new(FreeSigner),
+            )?;
+            report.gates.push(measure(
+                "contract::mint overhead",
+                "everything except the signature",
+                thresholds::MINT_OVERHEAD,
+                iterations.min(200),
+                5,
+                || {
+                    let _ = contract::mint(&payload, &free);
                 },
             ));
         }
@@ -3390,6 +3433,18 @@ fn load_issuer_key(path: &str, kid: &str, alg: Option<&str>) -> Result<IssuerKey
 }
 
 /// The issuer signing key, and the `kid` stamped into every artifact.
+/// Whether this estate forbids signing keys on local disk.
+///
+/// The posture that makes "KMS, no local copy" a control rather than a wiki page.
+/// Enforced at construction, so a run that would have signed with a PEM does not
+/// start — the alternative is discovering it in the evidence chain afterwards, which
+/// [`Custody`] makes possible but which is a worse place to find out.
+fn external_signing_required(args: &Args) -> bool {
+    args.has("require-external-signing")
+        || std::env::var("WARDEN_CONNECT_REQUIRE_EXTERNAL_SIGNING")
+            .is_ok_and(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+}
+
 fn issuer_key(args: &Args) -> Result<IssuerKey> {
     let kid = require(args, "kid")?;
 
@@ -3408,6 +3463,15 @@ fn issuer_key(args: &Args) -> Result<IssuerKey> {
             CommandSigner::parse(command)?.into_issuer_key(kid, Algorithm::ES256)
         }
         (None, Some(path)) => {
+            if external_signing_required(args) {
+                return Err(WcError::with_detail(
+                    Code::CONFIG_INVALID,
+                    format!(
+                        "--require-external-signing is set and --issuer-key {path} is a key on \
+                         this disk; use --signer COMMAND"
+                    ),
+                ));
+            }
             let pem = std::fs::read(path).map_err(|e| {
                 WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}"))
                     .with_source(e)
@@ -4507,6 +4571,12 @@ KEY CUSTODY  (docs/key-custody.md)
   --anchor-signer CMD   ...or delegated. Move this one first: a checkpoint signed
                         by a key this host holds proves only that the host agrees
                         with itself
+  --require-external-signing
+                        refuse to start if any signing key would be read from this
+                        disk (env WARDEN_CONNECT_REQUIRE_EXTERNAL_SIGNING). Every
+                        mint also records which kid signed and where it lives, so a
+                        local signature after the move is answerable from the
+                        evidence chain, not only from configuration
 
 GLOBAL
   --root PATH        state and evidence root (env WARDEN_CONNECT_ROOT, default {DEFAULT_ROOT})
@@ -4774,6 +4844,14 @@ mod tests {
         Args::parse(tokens.iter().map(|t| (*t).to_string()))
     }
 
+    /// Tests run with the crate directory as cwd, so fixture paths must be absolute.
+    fn fixture_key() -> String {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/keys/test_issuer_es256_priv.pem")
+            .to_string_lossy()
+            .into_owned()
+    }
+
     #[test]
     fn every_command_that_takes_an_issuer_key_also_takes_a_delegated_signer() {
         // The gap this closes: custody reachable from the library and not from the
@@ -4829,6 +4907,67 @@ mod tests {
     }
 
     #[test]
+    fn require_external_signing_refuses_a_key_on_this_disk() {
+        // What makes "KMS, no local copy" a control rather than a wiki page. Refused
+        // at construction, so a run that would have signed with a PEM never starts.
+        let args = argv(&[
+            "request",
+            "--issuer-key",
+            &fixture_key(),
+            "--kid",
+            "k1",
+            "--require-external-signing",
+        ]);
+        let err = issuer_key(&args).unwrap_err();
+        assert_eq!(err.code(), Code::CONFIG_INVALID);
+        assert!(err.detail().contains("--signer COMMAND"), "{}", err.detail());
+
+        // The same posture applies to the anchor: a checkpoint key on disk defeats
+        // the anchor's whole purpose, so it cannot be the one exception.
+        let anchored = argv(&[
+            "entities",
+            "--anchor-key",
+            &fixture_key(),
+            "--require-external-signing",
+        ]);
+        let err = open_evidence(&anchored).unwrap_err();
+        assert_eq!(err.code(), Code::CONFIG_INVALID);
+        assert!(err.detail().contains("--anchor-signer"), "{}", err.detail());
+    }
+
+    #[test]
+    fn require_external_signing_permits_a_delegated_key() {
+        // The posture must not be a way to refuse everything: a delegated key is the
+        // point of it, so it has to be accepted.
+        let args = argv(&[
+            "request",
+            "--signer",
+            "/usr/local/bin/wc-sign",
+            "--kid",
+            "k1",
+            "--require-external-signing",
+        ]);
+        let key = issuer_key(&args).expect("a delegated key must be accepted");
+        assert_eq!(key.custody(), wc_core::contract::Custody::Delegated);
+        assert_eq!(key.kid(), "k1");
+    }
+
+    #[test]
+    fn custody_is_recorded_on_the_key_it_describes() {
+        let local = argv(&[
+            "request",
+            "--issuer-key",
+            &fixture_key(),
+            "--kid",
+            "k1",
+        ]);
+        assert_eq!(
+            issuer_key(&local).unwrap().custody(),
+            wc_core::contract::Custody::Local
+        );
+    }
+
+    #[test]
     fn the_custody_flags_are_documented() {
         // A flag the tool accepts and never mentions is a flag nobody uses.
         let text = usage();
@@ -4862,5 +5001,20 @@ mod tests {
                 "{command} flag list looks wrong"
             );
         }
+    }
+}
+
+/// A signer that returns a correctly-shaped signature at no cost.
+///
+/// Only for the `contract::mint overhead` gate: subtracting this from
+/// `contract::mint` is what the signature costs, which is the figure that makes a
+/// slow delegated mint attributable to the token rather than to this code.
+#[derive(Debug)]
+struct FreeSigner;
+
+impl wc_core::contract::Signer for FreeSigner {
+    fn sign(&self, _signing_input: &[u8]) -> Result<Vec<u8>> {
+        // 64 bytes, because ES256 needs exactly that and `IssuerKey` checks.
+        Ok(vec![0u8; 64])
     }
 }

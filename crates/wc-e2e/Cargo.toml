@@ -18,6 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 
 [dev-dependencies]
+base64.workspace = true
 wc-core = { path = "../wc-core" }
 wc-control = { path = "../wc-control" }
 wc-mediator = { path = "../wc-mediator" }
