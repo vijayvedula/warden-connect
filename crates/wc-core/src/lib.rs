@@ -15,5 +15,6 @@ pub mod canon;
 pub mod contract;
 pub mod error;
 pub mod model;
+pub mod thresholds;
 pub mod util;
 pub mod zone;

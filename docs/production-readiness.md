@@ -43,21 +43,43 @@ by what unblocks the others.
   design's, not the machine's, so a slow runner must report honest failures rather
   than recalibrate); the conformance vectors; the fuzz mirror; `cargo-deny`.
 
-- [ ] **2. Two named performance gates do not run, and one of them lies about it.**
-  §8.10.3 names six. `connect bench` measures `contract::mint`, `gate::verify warm`,
-  `gate::verify cold`, `assurance::blast_radius`, `canon::wcs1`, `screen`, and now
-  `contract::mint overhead`. Missing:
+- [x] **2. Every §8.10.3 gate now runs.** Both missing gates are implemented, and
+  running them for the first time found a defect and moved a threshold.
 
-  * **`Projection::rebuild` at 10⁵ contracts** — a `REBUILD` threshold exists in
-    `bench.rs` and nothing measures against it. A plain missing gate.
-  * **`filter_tools_list` at 256 tools** — worse. The report *does* list it, as a
-    skip with a reason and a pointer: `run cargo test -p wc-mediator --release
-    gate_filter`. **There is no `gate_filter` test.** So the harness that exists to
-    stop a skipped gate reporting green tells an operator where to look, and there is
-    nothing there — which reads as covered.
+  * **`store::rebuild` at 10⁵ contracts** — implemented in `connect bench`, which
+    writes the fixture once and replays it. Passes at **p99 293 ms against 600 ms**.
+    The fixture is asserted to have replayed what was written, because a gate timing
+    a rebuild that produced an empty projection would report an excellent number for
+    doing nothing.
+  * **`filter_tools_list` at 256 tools** — implemented as `gate_filter_tools_list_
+    256_tools` in `wc-mediator`'s suite, because measuring it needs a crate the CLI
+    does not link (§8.3). The skip message `connect bench` prints is now built from
+    `thresholds::FILTER_GATE_COMMAND`, and a test asserts that command selects this
+    test — the previous pointer named `gate_filter` and no such test existed.
 
-  `bench` is the module that argues loudest that a skipped gate must fail the run,
-  which makes this the most on-brand defect in the repository.
+  **The defect.** `filter_catalog` deep-cloned every *permitted* entry into a new
+  vector, so filtering a 256-tool catalogue cost a nested-object clone per surviving
+  tool: p99 189 µs. Retaining in place instead is ~40 µs. Found by the gate, on its
+  first run.
+
+  **The threshold.** 50 µs was written down without ever being measured. Post-fix
+  the p99 is 35–45 µs, which passes — but with margins between 9% and 31% across
+  runs, because the residual is dominated by *deallocating* removed entries and is
+  allocator-noise bound. `bench.rs` says a gate passing at thin margin is worse than
+  one that fails outright, and that has to hold when it is inconvenient, so
+  `FILTER_256` is now 100 µs (~2.2× the measured p99: stable, and still tight enough
+  to catch the 4.7× regression class this gate just caught). Recorded on the
+  constant, in §8.10.3, and pinned by a test.
+
+  Not a recalibration to the machine — the same measurement pass moved
+  `MINT_OVERHEAD` the *other* way, from a 500 µs rubber stamp to 50 µs. A threshold
+  nobody has run is a guess, and which direction it moves is not predictable.
+
+  Remaining, for CI (#1): the latency gates only mean anything in a release build.
+  `cargo test` defaults to debug, so `gate_filter` asserts a 12× tripwire there and
+  says loudly that it is **not** the §8.10.3 gate. **CI must run
+  `cargo test -p wc-mediator --release gate_filter` and `connect bench` explicitly**,
+  or those two gates read as covered by a debug test run.
 
 - [ ] **3. Real attestation material, end to end.**
   [`attest.rs`](../crates/wc-control/src/attest.rs) has the verifiers —

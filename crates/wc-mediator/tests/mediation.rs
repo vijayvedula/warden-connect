@@ -897,3 +897,119 @@ fn observe_mode_still_closes_when_a_contract_exists_and_fails_a_closed_check() {
     assert_eq!(blocked_with(&listed), Some("WC-3108".to_string()));
     assert!(f.mediated.log().findings.iter().any(|x| !x.allowed));
 }
+
+// ---------------------------------------------------------------------------
+// The §8.10.3 gate that only this crate can measure
+// ---------------------------------------------------------------------------
+
+/// `filter_tools_list`, 256 tools, p99 ≤ 50 µs (§8.10.3).
+///
+/// It lives here and not in `connect bench` because measuring it needs
+/// `wc-mediator`, and the CLI deliberately does not link that crate (§8.3) so a
+/// control-plane-only deployment never pulls in Warden core. `connect bench`
+/// therefore reports this gate as a skip and names the command that runs it — and
+/// for a while the command it named did not exist, which is a skipped gate reporting
+/// green with extra steps. Hence the last assertion in this test.
+///
+/// Timed inline rather than through `wc_control::bench::measure` for the same
+/// dependency reason. Ten lines of percentile is a smaller price than the crate
+/// dependency that would undo the split.
+#[test]
+fn gate_filter_tools_list_256_tools() {
+    use std::collections::BTreeSet;
+    use std::time::Instant;
+    use wc_core::thresholds;
+    use wc_mediator::filter::{self, Catalog};
+
+    const N: usize = 256;
+    let permitted: BTreeSet<String> = (0..N)
+        .filter(|i| i % 2 == 0)
+        .map(|i| format!("tool_{i:03}"))
+        .collect();
+    let response = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+            "tools": (0..N).map(|i| json!({
+                "name": format!("tool_{i:03}"),
+                "description": format!("Operation {i} on the ledger, returning a record."),
+                "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}}
+            })).collect::<Vec<_>>()
+        }
+    });
+
+    // 200 warm-up iterations, not 20. The first draft used 20 and reported a p99 of
+    // 88 µs against a 50 µs ceiling; the same code in steady state measures ~40 µs.
+    // The difference is a cold allocator, and the mediator is a long-lived process,
+    // so steady state is the honest thing to gate on. Measuring the cold path would
+    // be measuring process startup.
+    let iterations = 400;
+    let mut timings = Vec::with_capacity(iterations);
+    for _ in 0..200 {
+        let mut resp = response.clone();
+        let _ = filter::filter_catalog(Catalog::Tools, &permitted, &mut resp);
+    }
+    for _ in 0..iterations {
+        // The clone is outside the measurement: the gate is the filter's cost, not
+        // serde's, and a figure that included rebuilding the input would flatter or
+        // punish the filter for something it does not do.
+        let mut resp = response.clone();
+        let start = Instant::now();
+        let stat = filter::filter_catalog(Catalog::Tools, &permitted, &mut resp);
+        timings.push(start.elapsed());
+        assert_eq!(stat.hidden, N / 2, "the gate must measure real filtering work");
+        assert!(!stat.failed_closed);
+    }
+    timings.sort_unstable();
+    let p50 = timings[timings.len() / 2];
+    let p99 = timings[(timings.len() * 99) / 100];
+
+    // A latency ceiling means nothing in an unoptimised build, and `cargo test`
+    // defaults to one. Two ceilings rather than skipping: the §8.10.3 number in
+    // release, and a loose tripwire in debug that still catches an algorithmic
+    // regression — the clone this test found on its first run was 4.7× the fixed
+    // cost, which a 12× ceiling catches in either build. A gate that silently does
+    // not run in the mode most people invoke is the failure this file is full of
+    // warnings about.
+    let (ceiling, label) = if cfg!(debug_assertions) {
+        (thresholds::FILTER_256 * 12, "debug tripwire, NOT the §8.10.3 gate")
+    } else {
+        (thresholds::FILTER_256, "§8.10.3")
+    };
+
+    // Printed either way: a gate that only speaks when it fails gives nobody the
+    // trend that predicts the failure. The margin matters as much as the pass —
+    // `bench::Gate::margin` exists for the same reason.
+    let margin = 1.0 - p99.as_secs_f64() / ceiling.as_secs_f64();
+    println!(
+        "filter_tools_list ({N} tools)  p50 {p50:?} · p99 {p99:?} / {ceiling:?} ({label})  \
+         margin {:.0}%",
+        margin * 100.0
+    );
+    if cfg!(debug_assertions) {
+        println!(
+            "  the §8.10.3 ceiling of {:?} is NOT asserted here — run `{}`",
+            thresholds::FILTER_256,
+            thresholds::FILTER_GATE_COMMAND
+        );
+    }
+
+    // What the residual is, so a future failure is diagnosable rather than a
+    // mystery: roughly 9 µs is the permitted-set lookup and the rest is dropping the
+    // removed entries. That deallocation is not extra work — those objects are freed
+    // when the response is dropped either way — so this gate is conservative about
+    // its own subject.
+    assert!(
+        p99 <= ceiling,
+        "p99 {p99:?} exceeds the {label} ceiling of {ceiling:?}"
+    );
+
+    // The pointer `connect bench` prints must name this test, or the skip sends an
+    // operator somewhere empty. Tied to the shared constant so removing either end
+    // is a compile error rather than a silent drift.
+    assert!(
+        thresholds::FILTER_GATE_COMMAND.contains("gate_filter"),
+        "the advertised command `{}` no longer selects this test",
+        thresholds::FILTER_GATE_COMMAND
+    );
+}
