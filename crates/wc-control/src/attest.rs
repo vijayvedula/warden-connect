@@ -111,6 +111,12 @@ fn checked_alg(header: &Map<String, Value>, registered: Algorithm, code: Code) -
 struct SvidClaims {
     /// The SPIFFE ID.
     sub: String,
+    /// Expiry. Required by the SPIFFE spec, and checked here against the injected
+    /// clock rather than by `jsonwebtoken` — see [`JwtSvidIdentity::now`].
+    exp: u64,
+    /// Not-before, when the token carries one.
+    #[serde(default)]
+    nbf: Option<u64>,
 }
 
 /// Stage 1 via a JWT-SVID.
@@ -129,6 +135,19 @@ pub struct JwtSvidIdentity<'a> {
     pub token: String,
     /// Clock leeway in seconds.
     pub leeway: u64,
+    /// The instant to judge validity at.
+    ///
+    /// Injected, like every other clock in this codebase — `AdmissionCtx::now`,
+    /// `GateCfg::now`, `VerifyOpts::now`. This one used to be the exception: it left
+    /// `jsonwebtoken` to validate `exp`, and `jsonwebtoken` has no way to inject a
+    /// clock, so it read `SystemTime::now()`.
+    ///
+    /// Two things followed from that. Point-in-time replay was wrong — re-running an
+    /// admission through `Projection::as_of` judged a historical token against today.
+    /// And a fixture with a fixed `exp` could not be tested at all, because the test
+    /// would pass until the token expired and fail every day after; which is a large
+    /// part of why nothing had ever driven this verifier through `admission::admit`.
+    pub now: u64,
 }
 
 impl std::fmt::Debug for JwtSvidIdentity<'_> {
@@ -187,11 +206,13 @@ impl JwtSvidIdentity<'_> {
 
         let mut validation = Validation::new(*alg);
         validation.leeway = self.leeway;
-        validation.validate_exp = true;
-        validation.validate_nbf = true;
+        // Signature, algorithm and audience are `jsonwebtoken`'s to check. The window
+        // is not: it has no clock to inject, so it would read `SystemTime::now()` and
+        // ignore `self.now`. Required claims still include `exp`, so a token without
+        // one is refused here rather than treated as never expiring.
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
         validation.set_audience(&[self.audience.as_str()]);
-        // `sub` and `exp` are both load-bearing here, so require them rather than
-        // treating an absent claim as a satisfied one.
         validation.set_required_spec_claims(&["exp", "aud", "sub"]);
 
         let data =
@@ -199,6 +220,30 @@ impl JwtSvidIdentity<'_> {
                 WcError::with_detail(Code::IDENTITY_UNVERIFIABLE, "SVID verification failed")
                     .with_source(e)
             })?;
+
+        // The validity window, against the injected clock. Same shape as
+        // `contract::verify_artifact`: leeway bounds clock skew and is not a grace
+        // period, so a token is dead at `exp + leeway` rather than merely late.
+        if self.now >= data.claims.exp.saturating_add(self.leeway) {
+            return Err(WcError::with_detail(
+                Code::IDENTITY_UNVERIFIABLE,
+                format!(
+                    "SVID expired at {} and it is now {} (leeway {}s)",
+                    data.claims.exp, self.now, self.leeway
+                ),
+            ));
+        }
+        if let Some(nbf) = data.claims.nbf {
+            if self.now.saturating_add(self.leeway) < nbf {
+                return Err(WcError::with_detail(
+                    Code::IDENTITY_UNVERIFIABLE,
+                    format!(
+                        "SVID is not valid before {nbf} and it is now {} (leeway {}s)",
+                        self.now, self.leeway
+                    ),
+                ));
+            }
+        }
 
         if !data.claims.sub.starts_with("spiffe://") {
             return Err(WcError::with_detail(
@@ -828,12 +873,67 @@ mod tests {
     }
 
     fn identity<'a>(keys: &'a IssuerKeys, token: String, aud: &str) -> JwtSvidIdentity<'a> {
+        // `now()` here is the wall clock, because these tests mint their tokens
+        // relative to it. That was fine while the verifier read the wall clock too —
+        // and it is precisely why the wall-clock dependency survived: the unit tests
+        // could not have caught it. The fixed-fixture test in `wc-e2e::attest` is what
+        // does.
+        identity_at(keys, token, aud, now())
+    }
+
+    fn identity_at<'a>(
+        keys: &'a IssuerKeys,
+        token: String,
+        aud: &str,
+        now: u64,
+    ) -> JwtSvidIdentity<'a> {
         JwtSvidIdentity {
             keys,
             audience: aud.to_string(),
             token,
             leeway: 60,
+            now,
         }
+    }
+
+    #[test]
+    fn the_validity_window_is_judged_against_the_injected_clock() {
+        // The property the wall-clock version could not have: one token, three
+        // instants, three answers. This is what makes a fixed fixture testable and a
+        // point-in-time replay correct.
+        let keys = trust();
+        let id = "spiffe://org/ns/agents/sa/recon";
+        let issued_at = now();
+        let token = svid(id, "warden-connect:apac", issued_at + 3600);
+        let req = request(Some(id));
+
+        assert!(
+            identity_at(&keys, token.clone(), "warden-connect:apac", issued_at)
+                .verify_identity(&req)
+                .is_ok(),
+            "valid inside the window"
+        );
+
+        // Past `exp`, but inside the leeway: still accepted, because leeway bounds
+        // clock skew.
+        assert!(
+            identity_at(
+                &keys,
+                token.clone(),
+                "warden-connect:apac",
+                issued_at + 3600 + 30
+            )
+            .verify_identity(&req)
+            .is_ok(),
+            "leeway absorbs skew"
+        );
+
+        // Past `exp + leeway`: dead. Leeway is a bound on skew, not a grace period.
+        let err = identity_at(&keys, token, "warden-connect:apac", issued_at + 3600 + 61)
+            .verify_identity(&req)
+            .unwrap_err();
+        assert_eq!(err.code(), Code::IDENTITY_UNVERIFIABLE);
+        assert!(err.detail().contains("expired at"), "{}", err.detail());
     }
 
     #[test]
