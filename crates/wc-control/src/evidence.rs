@@ -457,6 +457,21 @@ impl Evidence {
         Ok(self)
     }
 
+    /// Attach an anchor whose signing key may be held outside this process — an
+    /// HSM, a smartcard, a KMS (`docs/key-custody.md`). This is the custody the
+    /// anchor is *for*: a checkpoint signed by a key the control plane holds proves
+    /// only that the control plane agrees with itself.
+    #[must_use]
+    pub fn with_anchor_signer(
+        mut self,
+        key: wc_core::contract::IssuerKey,
+        path: impl Into<std::path::PathBuf>,
+        interval: u64,
+    ) -> Evidence {
+        self.chain = self.chain.with_anchor_signer(key, path, interval);
+        self
+    }
+
     /// Attach sinks.
     #[must_use]
     pub fn with_sinks(mut self, sinks: Vec<Sink>) -> Evidence {

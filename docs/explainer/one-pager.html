@@ -123,6 +123,15 @@
     color: var(--faint); display: block; padding-top: .4rem; border-top: 1px solid var(--rule);
   }
   .rung figure { min-width: 0; }
+  .rung-right { min-width: 0; }
+  .cmd {
+    font-family: var(--mono); font-size: .7rem; line-height: 1.62;
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 2px;
+    padding: .5rem .65rem; margin: .65rem 0 0; overflow-x: auto; white-space: pre; color: var(--ink);
+  }
+  .cmd .c { color: var(--faint); }
+  .cmd .out { color: var(--teal); }
+  .cmd .bad { color: var(--alarm); }
   .stopline {
     font-family: var(--serif); font-size: 1rem; color: var(--ink);
     margin: .7rem 0 0; padding-left: .9rem; border-left: 2px solid var(--brass);
@@ -179,6 +188,7 @@
     .page { background: #fff; color: #000; padding: 0; font-size: 9.5pt; }
     section { margin-bottom: 12pt; page-break-inside: avoid; }
     .role li, .rung p { font-size: 8pt; }
+    .cmd { font-size: 6.5pt; }
     .rung { page-break-inside: avoid; }
   }
 </style>
@@ -230,7 +240,12 @@
           <p>Turn a tool manifest into a hash over exactly the fields that were contracted. Run it twice: if a tool <b>description</b> changed — where injection payloads live — the digest moves and names the tool.</p>
           <span class="cost">cost: one command</span>
         </div>
-        <figure><svg class="ink" id="f1" role="img" aria-label="The same tool manifest read on two different days, each hashed by the same function, producing two different digests; the difference is a changed tool description that nobody shipped a release for."></svg></figure>
+        <div class="rung-right">
+          <figure><svg class="ink" id="f1" role="img" aria-label="The same tool manifest read on two different days, each hashed by the same function, producing two different digests; the difference is a changed tool description that nobody shipped a release for."></svg></figure>
+          <div class="cmd">connect canon tools.json --kind mcp
+<span class="out">surface_digest  sha256:230c1f4acb7bf…</span>
+<span class="out">get_balance  sha256:8a1e…    list_transactions  sha256:c40b…</span></div>
+        </div>
       </div>
 
       <div class="rung">
@@ -241,7 +256,13 @@
           <p>Register the agents and services that already exist, with named owners, in a tamper-evident log. Nothing is enforced. What you gain is <b>a list</b> — and it declares its own gaps rather than treating a claim as a fact.</p>
           <span class="cost">cost: a pipeline step</span>
         </div>
-        <figure><svg class="ink" id="f2" role="img" aria-label="A row of registered agents and services with owners, two of them marked unattested with a question mark, above a hash chain that an audit command verifies."></svg></figure>
+        <div class="rung-right">
+          <figure><svg class="ink" id="f2" role="img" aria-label="A row of registered agents and services with owners, two of them marked unattested with a question mark, above a hash chain that an audit command verifies."></svg></figure>
+          <div class="cmd">connect register server --endpoint https://payments.internal/mcp \
+  --owner team:payments --zone internal --surface tools.json
+connect entities
+connect posture --unattested        <span class="c"># who cannot prove what they claim</span></div>
+        </div>
       </div>
 
       <div class="rung">
@@ -252,7 +273,14 @@
           <p>Policy answers instantly whether a request auto-approves. Everything else reaches a named human, whose approval is <b>a signature, not a ticket</b>. The exit code lets a pipeline act on the difference.</p>
           <span class="cost">cost: an issuer key</span>
         </div>
-        <figure><svg class="ink" id="f3" role="img" aria-label="A request evaluated by policy, escalated to a human approver who signs it with a key, producing a contract naming two tools with an expiry; three exit codes are shown beneath."></svg></figure>
+        <div class="rung-right">
+          <figure><svg class="ink" id="f3" role="img" aria-label="A request evaluated by policy, escalated to a human approver who signs it with a key, producing a contract naming two tools with an expiry; three exit codes are shown beneath."></svg></figure>
+          <div class="cmd">connect request --from agent:recon --to server:payments \
+  --tools get_balance,list_transactions --ttl 30d
+<span class="out">req_7f3c  →  require_approval</span>
+connect approve req_7f3c --by human:vijay --approver-key vijay.pem
+<span class="out">minted conn_1a9b  →  contract.jws    exp +30d</span></div>
+        </div>
       </div>
 
       <div class="rung">
@@ -263,7 +291,12 @@
           <p>The service offers nine tools; the agent is shown two. The wrong tool cannot be called by accident because <b>it is not in the list</b> — and an uncontracted call is refused before the service is spoken to.</p>
           <span class="cost">cost: a sidecar</span>
         </div>
-        <figure><svg class="ink" id="f4" role="img" aria-label="A service offering three tools through an in-path check; two reach the agent and appear in its tool list, the third is refused with error WC-4002 before the service is called."></svg></figure>
+        <div class="rung-right">
+          <figure><svg class="ink" id="f4" role="img" aria-label="A service offering three tools through an in-path check; two reach the agent and appear in its tool list, the third is refused with error WC-4002 before the service is called."></svg></figure>
+          <div class="cmd">connect-mediate --upstream "python payments_server.py" \
+  --caller agent:recon --callee server:payments \
+  --contract contract.jws <span class="c">--observe</span>   <span class="c"># record findings; deny nothing</span></div>
+        </div>
       </div>
 
       <div class="rung">
@@ -274,7 +307,14 @@
           <p>Nodes <b>pull</b> and acknowledge what they applied, so a missed update is visible lag rather than silence. Containment is one dual-controlled command — and a node that cannot confirm is reported unconfirmed, never assumed.</p>
           <span class="cost">cost: a service to operate</span>
         </div>
-        <figure><svg class="ink" id="f5" role="img" aria-label="Four enforcement nodes pulling from a control plane and acknowledging; three confirm and one is reported unconfirmed. Below, a single dual-controlled quarantine command."></svg></figure>
+        <div class="rung-right">
+          <figure><svg class="ink" id="f5" role="img" aria-label="Four enforcement nodes pulling from a control plane and acknowledging; three confirm and one is reported unconfirmed. Below, a single dual-controlled quarantine command."></svg></figure>
+          <div class="cmd">connect serve --listen 0.0.0.0:8443 --issuer-key issuer.pem --kid k1
+connect-mediate … --contracts https://connect.internal --refresh 5
+<span class="out">1 contract(s) installed, seq 8, acked</span>
+connect quarantine agent:recon --approver human:sam --approver human:dev
+<span class="out">mediators confirmed 12 / 13</span>   <span class="bad">unconfirmed 1</span>   <span class="out">41s</span></div>
+        </div>
       </div>
 
     </div>

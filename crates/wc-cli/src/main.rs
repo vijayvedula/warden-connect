@@ -31,7 +31,8 @@ use std::sync::Arc;
 use wc_control::admission::{
     self, AdmissionRequest, Declared, InlineSurface, McpHttpSurface, SurfaceSource,
 };
-use wc_control::chain::ANCHOR_FILE;
+use wc_control::chain::{ANCHOR_FILE, ANCHOR_KID};
+use wc_control::signer::CommandSigner;
 
 use wc_control::api::{Api, ControlPlane};
 use wc_control::contain;
@@ -209,6 +210,7 @@ const GLOBAL_FLAGS: &[&str] = &[
     "by",
     "json",
     "anchor-key",
+    "anchor-signer",
     "anchor-interval",
 ];
 
@@ -350,6 +352,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "jurisdictions",
             "policy",
             "issuer-key",
+            "signer",
             "kid",
             "iss",
             "out",
@@ -364,6 +367,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "ticket",
             "policy",
             "issuer-key",
+            "signer",
             "kid",
             "iss",
             "out",
@@ -373,6 +377,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "listen",
             "policy",
             "issuer-key",
+            "signer",
             "kid",
             "iss",
             "jwks",
@@ -395,6 +400,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "second",
             "second-key",
             "issuer-key",
+            "signer",
             "kid",
             "out",
             "max-ttl",
@@ -615,6 +621,23 @@ fn open_store(args: &Args) -> Result<Store> {
 fn open_evidence(args: &Args) -> Result<Evidence> {
     let p = paths(args);
     let evidence = Evidence::open(&p.evidence)?;
+    let interval = args.number("anchor-interval").unwrap_or(100);
+
+    // The anchor is the first key that should leave this host: a checkpoint signed by
+    // a key the control plane holds proves only that the control plane agrees with
+    // itself, which is precisely what an anchor exists to rule out.
+    if let Some(command) = args.get("anchor-signer") {
+        if args.get("anchor-key").is_some() {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "--anchor-signer and --anchor-key both given; which key anchors the \
+                 evidence must not be a guess",
+            ));
+        }
+        let key = CommandSigner::parse(command)?.into_issuer_key(ANCHOR_KID, Algorithm::ES256)?;
+        return Ok(evidence.with_anchor_signer(key, p.evidence.join(ANCHOR_FILE), interval));
+    }
+
     match args.get("anchor-key") {
         Some(key_path) => {
             let key = std::fs::read(key_path).map_err(|e| {
@@ -624,7 +647,6 @@ fn open_evidence(args: &Args) -> Result<Evidence> {
                 )
                 .with_source(e)
             })?;
-            let interval = args.number("anchor-interval").unwrap_or(100);
             evidence.with_anchor(&key, p.evidence.join(ANCHOR_FILE), interval)
         }
         None => Ok(evidence),
@@ -3369,12 +3391,34 @@ fn load_issuer_key(path: &str, kid: &str, alg: Option<&str>) -> Result<IssuerKey
 
 /// The issuer signing key, and the `kid` stamped into every artifact.
 fn issuer_key(args: &Args) -> Result<IssuerKey> {
-    let path = require(args, "issuer-key")?;
     let kid = require(args, "kid")?;
-    let pem = std::fs::read(path).map_err(|e| {
-        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
-    })?;
-    IssuerKey::ec_pem(kid, &pem, Algorithm::ES256)
+
+    // `--signer` is the custody choice: the private key lives in an HSM, a
+    // smartcard or a KMS and this process never sees it (`docs/key-custody.md`).
+    // Checked before `--issuer-key` so that supplying both is an error rather than a
+    // silent preference — an operator who believes their key is in a token and finds
+    // a PEM was used instead has the worst possible outcome here.
+    match (args.get("signer"), args.get("issuer-key")) {
+        (Some(_), Some(_)) => Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            "--signer and --issuer-key both given; one names a key held elsewhere \
+             and the other a key on this disk, so which is in force must not be a guess",
+        )),
+        (Some(command), None) => {
+            CommandSigner::parse(command)?.into_issuer_key(kid, Algorithm::ES256)
+        }
+        (None, Some(path)) => {
+            let pem = std::fs::read(path).map_err(|e| {
+                WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}"))
+                    .with_source(e)
+            })?;
+            IssuerKey::ec_pem(kid, &pem, Algorithm::ES256)
+        }
+        (None, None) => Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            "--issuer-key PEM or --signer COMMAND is required",
+        )),
+    }
 }
 
 /// Where artifacts are written. One file per mediator, because one contract is
@@ -4448,11 +4492,27 @@ SERVE
   serve [--listen 127.0.0.1:8787] --issuer-key PEM --kid KID
         [--tokens tokens.toml] [--approvers approvers.toml] [--jwks FILE]
 
+KEY CUSTODY  (docs/key-custody.md)
+  Every signing flag has a PEM form and a delegated form. The delegated form runs
+  a command you supply, so the private key can live in an HSM, a smartcard or a
+  KMS and never reach this process. Giving both forms is an error, never a
+  preference: believing a key is in a token while a file was used is the worst
+  outcome available here.
+
+  --issuer-key PEM      the contract signing key, on this disk
+  --signer COMMAND      ...or delegated. stdin: base64url signing input,
+                        stdout: base64url signature. JWS ECDSA is raw R‖S, and
+                        every KMS returns DER — convert in the wrapper
+  --anchor-key PEM      the evidence checkpoint key, on this disk
+  --anchor-signer CMD   ...or delegated. Move this one first: a checkpoint signed
+                        by a key this host holds proves only that the host agrees
+                        with itself
+
 GLOBAL
   --root PATH        state and evidence root (env WARDEN_CONNECT_ROOT, default {DEFAULT_ROOT})
   --tenant NAME      tenant (default: default)
   --by human:x       the accountable operator (env WARDEN_CONNECT_ACTOR)
-  --anchor-key PEM   sign evidence checkpoints as they are written
+  --anchor-interval N checkpoint every N appends (default 100)
   --approvers FILE   approver registry (default: approvers.toml)
   --json             machine-readable output
 
@@ -4704,6 +4764,79 @@ mod tests {
         for command in TWO_WORD {
             assert!(COMMANDS.contains(command), "{command} is not dispatchable");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Key custody (docs/key-custody.md)
+    // -----------------------------------------------------------------------
+
+    fn argv(tokens: &[&str]) -> Args {
+        Args::parse(tokens.iter().map(|t| (*t).to_string()))
+    }
+
+    #[test]
+    fn every_command_that_takes_an_issuer_key_also_takes_a_delegated_signer() {
+        // The gap this closes: custody reachable from the library and not from the
+        // tool would be custody nobody uses. Any command that can sign with a PEM
+        // must be able to sign with a token.
+        for command in COMMANDS {
+            let flags = accepted_flags(command);
+            if flags.contains(&"issuer-key") {
+                assert!(
+                    flags.contains(&"signer"),
+                    "`{command}` accepts --issuer-key but not --signer"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn supplying_both_key_forms_is_an_error_rather_than_a_preference() {
+        // Silently preferring one would leave an operator believing their key is in a
+        // token while a file on disk did the signing — the one outcome worse than
+        // refusing to start.
+        let args = argv(&[
+            "request",
+            "--issuer-key",
+            "k.pem",
+            "--signer",
+            "/usr/local/bin/wc-sign",
+            "--kid",
+            "k1",
+        ]);
+        let err = issuer_key(&args).unwrap_err();
+        assert_eq!(err.code(), Code::CONFIG_INVALID);
+        assert!(err.detail().contains("must not be a guess"), "{}", err.detail());
+
+        // And neither form is also an error, with both named.
+        let neither = argv(&["request", "--kid", "k1"]);
+        let err = issuer_key(&neither).unwrap_err();
+        assert!(err.detail().contains("--signer"), "{}", err.detail());
+    }
+
+    #[test]
+    fn the_anchor_refuses_two_custody_choices_too() {
+        let args = argv(&[
+            "entities",
+            "--anchor-key",
+            "a.pem",
+            "--anchor-signer",
+            "/usr/local/bin/wc-anchor",
+        ]);
+        let err = open_evidence(&args).unwrap_err();
+        assert_eq!(err.code(), Code::CONFIG_INVALID);
+        assert!(err.detail().contains("must not be a guess"), "{}", err.detail());
+    }
+
+    #[test]
+    fn the_custody_flags_are_documented() {
+        // A flag the tool accepts and never mentions is a flag nobody uses.
+        let text = usage();
+        for flag in ["--signer COMMAND", "--anchor-signer CMD"] {
+            assert!(text.contains(flag), "usage does not mention {flag}");
+        }
+        // And the trap has to be in the help, not only in the source.
+        assert!(text.contains("DER"), "usage does not warn about DER signatures");
     }
 
     #[test]

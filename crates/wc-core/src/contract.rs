@@ -10,6 +10,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 
 // Re-exported because it appears in this module's public signatures: a caller
@@ -653,12 +655,74 @@ impl ContractPayload {
 // Keys
 // ---------------------------------------------------------------------------
 
-/// An issuer's signing key.
+/// Something that can produce a signature over given bytes.
+///
+/// The point of the trait is that **the private key need not be in this process**.
+/// A signing key on disk is the weakest custody this system supports and the only
+/// one it can offer with no dependencies, so it is the default rather than the
+/// design (`docs/key-custody.md`): the issuer key is the root of authority for
+/// every contract in an estate, and a host compromise should not be an estate
+/// compromise.
+///
+/// Two obligations an implementation carries, both easy to get wrong and both
+/// checked by [`IssuerKey`] rather than trusted:
+///
+/// * **The signature must be in JWS form, not DER.** JWS ECDSA is the raw `R‖S`
+///   concatenation — 64 bytes for ES256, 96 for ES384. Most HSM and KMS interfaces
+///   return DER, and a DER signature here produces artifacts that verify nowhere.
+/// * **It must be deterministic in its failure.** An implementation that returns a
+///   short or empty signature rather than an error would mint an artifact that
+///   silently verifies nowhere, which is worse than refusing.
+pub trait Signer: std::fmt::Debug + Send + Sync {
+    /// Sign the JWS signing input — `b64(header) + "." + b64(payload)`.
+    fn sign(&self, signing_input: &[u8]) -> Result<Vec<u8>>;
+}
+
+/// A signing key held in this process, from a PEM on disk.
+#[derive(Debug)]
+struct LocalSigner {
+    alg: Algorithm,
+    key: EncodingKey,
+}
+
+impl Signer for LocalSigner {
+    fn sign(&self, signing_input: &[u8]) -> Result<Vec<u8>> {
+        // `crypto::sign` hands back base64url; decoding it costs one pass and keeps
+        // the trait's contract in raw bytes, which is the shape every external
+        // signer speaks.
+        let b64 = jsonwebtoken::crypto::sign(signing_input, &self.key, self.alg).map_err(|e| {
+            WcError::with_detail(Code::SIGNATURE_INVALID, "cannot sign").with_source(e)
+        })?;
+        URL_SAFE_NO_PAD.decode(b64.as_bytes()).map_err(|e| {
+            WcError::with_detail(Code::SIGNATURE_INVALID, "signature is not base64url")
+                .with_source(e)
+        })
+    }
+}
+
+/// The signature length JWS requires for an algorithm, where it is fixed.
+///
+/// `None` for RSA, whose signature length follows the modulus rather than the
+/// algorithm.
+#[must_use]
+fn jws_signature_len(alg: Algorithm) -> Option<usize> {
+    match alg {
+        Algorithm::ES256 | Algorithm::EdDSA => Some(64),
+        Algorithm::ES384 => Some(96),
+        _ => None,
+    }
+}
+
+/// An issuer's signing key: a `kid`, an algorithm, and something that can sign.
+///
+/// Custody is a construction-time choice and nothing downstream changes: every
+/// signing site in the estate takes `&IssuerKey`, whether the private key is a PEM
+/// in this process or lives in an HSM behind [`IssuerKey::external`].
 #[derive(Debug)]
 pub struct IssuerKey {
     kid: String,
     alg: Algorithm,
-    key: EncodingKey,
+    signer: Box<dyn Signer>,
 }
 
 impl IssuerKey {
@@ -670,28 +734,51 @@ impl IssuerKey {
                 format!("{alg:?} is not an accepted contract algorithm"),
             ));
         }
+        let key = EncodingKey::from_ec_pem(pem).map_err(|e| {
+            WcError::with_detail(Code::SIGNATURE_INVALID, "issuer key is not an EC PKCS#8 PEM")
+                .with_source(e)
+        })?;
         Ok(IssuerKey {
             kid: kid.to_string(),
             alg,
-            key: EncodingKey::from_ec_pem(pem).map_err(|e| {
-                WcError::with_detail(
-                    Code::SIGNATURE_INVALID,
-                    "issuer key is not an EC PKCS#8 PEM",
-                )
-                .with_source(e)
-            })?,
+            signer: Box::new(LocalSigner { alg, key }),
         })
     }
 
     /// An EdDSA signer from a PKCS#8 Ed25519 private key.
     pub fn ed_pem(kid: &str, pem: &[u8]) -> Result<IssuerKey> {
+        let key = EncodingKey::from_ed_pem(pem).map_err(|e| {
+            WcError::with_detail(Code::SIGNATURE_INVALID, "issuer key is not an Ed25519 PEM")
+                .with_source(e)
+        })?;
         Ok(IssuerKey {
             kid: kid.to_string(),
             alg: Algorithm::EdDSA,
-            key: EncodingKey::from_ed_pem(pem).map_err(|e| {
-                WcError::with_detail(Code::SIGNATURE_INVALID, "issuer key is not an Ed25519 PEM")
-                    .with_source(e)
-            })?,
+            signer: Box::new(LocalSigner {
+                alg: Algorithm::EdDSA,
+                key,
+            }),
+        })
+    }
+
+    /// A key whose private half is somewhere else — an HSM, a KMS, a smartcard.
+    ///
+    /// The algorithm is still declared here because it goes in the JWS header and a
+    /// verifier resolves it before any signature is checked. An external signer that
+    /// disagrees with the declared algorithm produces artifacts that fail closed,
+    /// and the length check in [`IssuerKey::sign_input`] is what turns that from a
+    /// mystery into a named error.
+    pub fn external(kid: &str, alg: Algorithm, signer: Box<dyn Signer>) -> Result<IssuerKey> {
+        if !ASYMMETRIC_ALGS.contains(&alg) {
+            return Err(WcError::with_detail(
+                Code::ALG_NOT_ASYMMETRIC,
+                format!("{alg:?} is not an accepted contract algorithm"),
+            ));
+        }
+        Ok(IssuerKey {
+            kid: kid.to_string(),
+            alg,
+            signer,
         })
     }
 
@@ -699,6 +786,65 @@ impl IssuerKey {
     #[must_use]
     pub fn kid(&self) -> &str {
         &self.kid
+    }
+
+    /// The algorithm this key signs with.
+    #[must_use]
+    pub fn alg(&self) -> Algorithm {
+        self.alg
+    }
+
+    /// Sign a JWS signing input, checking what came back before it is used.
+    ///
+    /// The check exists because the most likely external-signer misconfiguration —
+    /// a DER-encoded ECDSA signature, which is what most HSM and KMS interfaces
+    /// return — produces a well-formed artifact that verifies nowhere. Caught here
+    /// it is one error message; uncaught it is a contract distributed to every
+    /// mediator in the estate that all of them reject for no visible reason.
+    fn sign_input(&self, signing_input: &[u8]) -> Result<Vec<u8>> {
+        let sig = self.signer.sign(signing_input)?;
+        if let Some(expected) = jws_signature_len(self.alg) {
+            if sig.len() != expected {
+                let der = sig.first() == Some(&0x30);
+                return Err(WcError::with_detail(
+                    Code::SIGNATURE_INVALID,
+                    format!(
+                        "{:?} needs a {expected}-byte JWS signature, signer returned {}{}",
+                        self.alg,
+                        sig.len(),
+                        if der {
+                            " — this looks DER-encoded; JWS ECDSA is the raw R‖S concatenation"
+                        } else {
+                            ""
+                        }
+                    ),
+                ));
+            }
+        } else if sig.is_empty() {
+            return Err(WcError::with_detail(
+                Code::SIGNATURE_INVALID,
+                "signer returned an empty signature",
+            ));
+        }
+        Ok(sig)
+    }
+
+    /// Build the JWS compact serialisation over `payload`, under `header`.
+    ///
+    /// Deliberately not `jsonwebtoken::encode`: that takes the private key by value
+    /// and so cannot reach a key this process does not hold. The bytes are identical
+    /// — same `Header` struct, same `serde_json`, same `URL_SAFE_NO_PAD` — and
+    /// `local_and_jsonwebtoken_agree_byte_for_byte` is the test that keeps them so.
+    fn encode_jws<T: Serialize>(&self, header: &Header, payload: &T) -> Result<String> {
+        let head = URL_SAFE_NO_PAD.encode(serde_json::to_vec(header).map_err(|e| {
+            WcError::with_detail(Code::SIGNATURE_INVALID, "cannot encode JWS header").with_source(e)
+        })?);
+        let body = URL_SAFE_NO_PAD.encode(serde_json::to_vec(payload).map_err(|e| {
+            WcError::with_detail(Code::SIGNATURE_INVALID, "cannot encode JWS payload").with_source(e)
+        })?);
+        let signing_input = format!("{head}.{body}");
+        let sig = self.sign_input(signing_input.as_bytes())?;
+        Ok(format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(sig)))
     }
 }
 
@@ -772,9 +918,7 @@ pub fn mint(payload: &ContractPayload, signer: &IssuerKey) -> Result<String> {
     header.kid = Some(signer.kid.clone());
     header.typ = Some(CONTRACT_TYP.to_string());
 
-    let jws = jsonwebtoken::encode(&header, payload, &signer.key).map_err(|e| {
-        WcError::with_detail(Code::SIGNATURE_INVALID, "cannot sign contract").with_source(e)
-    })?;
+    let jws = signer.encode_jws(&header, payload)?;
 
     if jws.len() > MAX_CONTRACT_BYTES {
         return Err(WcError::with_detail(
@@ -800,8 +944,13 @@ pub fn mint(payload: &ContractPayload, signer: &IssuerKey) -> Result<String> {
 pub fn sign_detached<T: Serialize>(claims: &T, signer: &IssuerKey) -> Result<String> {
     let mut header = Header::new(signer.alg);
     header.kid = Some(signer.kid.clone());
-    jsonwebtoken::encode(&header, claims, &signer.key).map_err(|e| {
-        WcError::with_detail(Code::APPROVAL_SIGNATURE_INVALID, "cannot sign").with_source(e)
+    signer.encode_jws(&header, claims).map_err(|e| {
+        // Re-code, but keep the detail. The interesting failures here come from the
+        // signer — a DER-encoded signature, a helper that timed out — and replacing
+        // that text with "cannot sign" throws away the only part an operator can act
+        // on, leaving it reachable solely by walking the source chain.
+        WcError::with_detail(Code::APPROVAL_SIGNATURE_INVALID, e.detail().to_string())
+            .with_source(e)
     })
 }
 
@@ -1766,6 +1915,152 @@ mod conformance {
             tools: vec!["get_balance".to_string(), "list_transactions".to_string()],
             skills: Vec::new(),
             resources: vec!["ledger://apac/*".to_string()],
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Custody: the `Signer` seam (docs/key-custody.md)
+    // -----------------------------------------------------------------------
+
+    /// The whole risk of routing signing through a trait: the bytes must not move.
+    ///
+    /// `Ed25519` is deterministic, so this is an exact comparison against
+    /// `jsonwebtoken::encode` — the path every artifact in `fixtures/contracts/` and
+    /// every deployed mediator was built against. If the header serialisation, the
+    /// base64 alphabet, the padding or the segment order ever diverge, this fails
+    /// here rather than as "a contract nobody can verify" in an estate.
+    #[test]
+    fn our_jws_and_jsonwebtokens_agree_byte_for_byte() {
+        let p = payload();
+        let key = IssuerKey::ed_pem(KID_ED, ED_PRIV).unwrap();
+
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(KID_ED.to_string());
+        header.typ = Some(CONTRACT_TYP.to_string());
+
+        let theirs =
+            jsonwebtoken::encode(&header, &p, &EncodingKey::from_ed_pem(ED_PRIV).unwrap()).unwrap();
+        let ours = mint(&p, &key).unwrap();
+        assert_eq!(ours, theirs, "the JWS bytes moved");
+
+        // And the detached form, whose header carries no `typ`.
+        let claims = json!({"req": "req_1", "digest": "sha256:aa", "iat": NOW});
+        let mut detached_header = Header::new(Algorithm::EdDSA);
+        detached_header.kid = Some(KID_ED.to_string());
+        assert_eq!(
+            sign_detached(&claims, &key).unwrap(),
+            jsonwebtoken::encode(
+                &detached_header,
+                &claims,
+                &EncodingKey::from_ed_pem(ED_PRIV).unwrap()
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn es256_agrees_on_everything_a_random_nonce_does_not_touch() {
+        // ECDSA may use a fresh nonce per signature, so the third segment is not
+        // comparable. The first two are, and they are where a serialisation change
+        // would show up.
+        let p = payload();
+        let ours = mint(&p, &es256()).unwrap();
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some(KID_ES.to_string());
+        header.typ = Some(CONTRACT_TYP.to_string());
+        let theirs =
+            jsonwebtoken::encode(&header, &p, &EncodingKey::from_ec_pem(ES256_PRIV).unwrap())
+                .unwrap();
+
+        let head_and_body = |jws: &str| jws.rsplit_once('.').map(|(a, _)| a.to_string()).unwrap();
+        assert_eq!(head_and_body(&ours), head_and_body(&theirs));
+
+        // Both verify, which is the property the signature segment actually owes.
+        let keys = trusted_keys();
+        let opts = VerifyOpts::new(&keys, MEDIATOR, NOW);
+        assert!(verify_artifact(&ours, &opts).is_ok());
+        assert!(verify_artifact(&theirs, &opts).is_ok());
+    }
+
+    /// A signer that hands back whatever it is told to.
+    #[derive(Debug)]
+    struct Canned(Vec<u8>);
+
+    impl Signer for Canned {
+        fn sign(&self, _input: &[u8]) -> Result<Vec<u8>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn a_der_signature_from_an_external_signer_is_named_not_shipped() {
+        // The most likely HSM/KMS misconfiguration by a wide margin: those
+        // interfaces return DER, JWS wants raw R‖S. Uncaught, it mints a
+        // well-formed contract that every mediator in the estate rejects for no
+        // visible reason — so the error has to say what is wrong, not just that
+        // something is.
+        let der = {
+            let mut v = vec![0x30, 0x44];
+            v.extend(std::iter::repeat_n(0xAB, 68));
+            v
+        };
+        let key =
+            IssuerKey::external(KID_ES, Algorithm::ES256, Box::new(Canned(der))).unwrap();
+        let err = mint(&payload(), &key).unwrap_err();
+        assert_eq!(err.code(), Code::SIGNATURE_INVALID);
+        assert!(err.detail().contains("DER-encoded"), "{}", err.detail());
+        assert!(err.detail().contains("R‖S"), "{}", err.detail());
+    }
+
+    #[test]
+    fn a_short_or_empty_signature_is_refused_rather_than_minted() {
+        // A signer that fails by returning nothing must not produce an artifact.
+        // "It signed successfully" and "it produced 3 bytes" have to be different
+        // outcomes, or the failure is silent all the way to the mediator.
+        for sig in [vec![], vec![1, 2, 3], vec![0u8; 63], vec![0u8; 65]] {
+            let key = IssuerKey::external(KID_ES, Algorithm::ES256, Box::new(Canned(sig.clone())))
+                .unwrap();
+            let err = mint(&payload(), &key).unwrap_err();
+            assert_eq!(err.code(), Code::SIGNATURE_INVALID, "{} bytes", sig.len());
+            assert!(err.detail().contains("64-byte"), "{}", err.detail());
+        }
+    }
+
+    #[test]
+    fn an_external_signer_produces_a_verifiable_artifact() {
+        // The seam is only worth anything if a key held elsewhere really works. This
+        // signer happens to be local, but it reaches `mint` through exactly the path
+        // a PKCS#11 or KMS signer would.
+        #[derive(Debug)]
+        struct Indirect(EncodingKey);
+        impl Signer for Indirect {
+            fn sign(&self, input: &[u8]) -> Result<Vec<u8>> {
+                use base64::Engine as _;
+                let b64 =
+                    jsonwebtoken::crypto::sign(input, &self.0, Algorithm::ES256).unwrap();
+                Ok(URL_SAFE_NO_PAD.decode(b64).unwrap())
+            }
+        }
+
+        let key = IssuerKey::external(
+            KID_ES,
+            Algorithm::ES256,
+            Box::new(Indirect(EncodingKey::from_ec_pem(ES256_PRIV).unwrap())),
+        )
+        .unwrap();
+        let jws = mint(&payload(), &key).unwrap();
+        let keys = trusted_keys();
+        let verified = verify_artifact(&jws, &VerifyOpts::new(&keys, MEDIATOR, NOW)).unwrap();
+        assert_eq!(verified.payload.cid, payload().cid);
+    }
+
+    #[test]
+    fn an_external_key_still_refuses_a_symmetric_algorithm() {
+        // Custody must not become a way around the asymmetric-only stance: a shared
+        // secret held in an HSM is still a shared secret.
+        for alg in [Algorithm::HS256, Algorithm::HS384, Algorithm::HS512] {
+            let err = IssuerKey::external(KID_ES, alg, Box::new(Canned(vec![0u8; 64]))).unwrap_err();
+            assert_eq!(err.code(), Code::ALG_NOT_ASYMMETRIC);
         }
     }
 
