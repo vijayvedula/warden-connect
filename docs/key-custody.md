@@ -106,18 +106,46 @@ Three properties this has that a second copy of one key does not:
 
 1. compromise of either does not imply the other;
 2. `revoke-offline` can be rotated without touching normal operation;
-3. use of the offline `kid` is a high-severity event in its own right — the
-   evidence chain, `Severity` and blocking sinks already carry it, and because that
+3. use of the offline `kid` is a high-severity event in its own right — because that
    `kid` is used approximately never, one use is a page rather than a log line.
+
+**Correction, from building it.** This section originally said the third property was
+already carried by *"the evidence chain, `Severity` and blocking sinks"*. That was
+wrong, and wrong in the way that matters: the first implementation recorded a
+`Quarantine` event with `.with_severity(Critical)` and **changed nothing**, because
+`EventKind::Quarantine` is already `Critical`. Severity cannot distinguish "the
+emergency key signed this" from "a party was contained", so an override there reads as
+an escalation and is a no-op.
+
+What carries it is a **distinct event kind**: `EventKind::BreakGlassKeyUsed`, dotted
+name `containment.breakglass_key`. That gives a sink something to name. It is also in
+`is_containment()`, which was the second trap — a sink filtered to `Filter::Revocation`
+is exactly where an operator points containment alerting, and it would otherwise have
+been the one destination that never heard the emergency path was used.
 
 ### The rest
 
 | Key | Custody | Note |
 |---|---|---|
-| **Anchor** | HSM or offline | Do this first. `chain.rs` already states the requirement — *"the key belongs offline or in an HSM: an attacker who controls the control plane must not be able to re-sign a forged chain"* — and does not implement it. Periodic and off-path, so there is no latency argument against it |
+| **Anchor** | HSM or offline | **Done in code** (`--anchor-signer`). Do this first in a deployment too: `chain.rs` states the requirement — *"the key belongs offline or in an HSM: an attacker who controls the control plane must not be able to re-sign a forged chain"* — and it is periodic and off-path, so there is no latency argument against it |
 | **Issuer** | KMS, no local copy | **Done in code.** The gate did *not* need raising — see below |
-| **Approver** | Never the service's KMS | See below |
-| **Bundle envelope, CAEP sink** | Follow the issuer key | Low volume, latency irrelevant |
+| **Approver** | Never the service's KMS | **Done in code**, structurally. See below |
+| **Bundle envelope, CAEP sink** | Follow the issuer key | **Done in code** (`--envelope-signer`). Low volume, latency irrelevant |
+
+### The posture reached one role in six
+
+Worth stating separately, because it was the largest thing wrong here and it was
+invisible: `--require-external-signing` was checked inside the CLI's `issuer_key()` and
+inside the anchor path, **and nowhere else.** Four of the six signing operations —
+both revocation keys, the approvers, the bundle envelope — could only ever use a key on
+local disk, and an estate that set the posture and believed otherwise had no way to
+find out except by reading the source.
+
+Every signing site now resolves through `wc_control::custody::resolve`, which applies
+the rule per `Role`. `connect bench` is the one exemption and says so on the role
+itself: it measures the cost of signing and discards the signature. Stating the
+exemption is the point — the other five were exempt by accident, which is how this
+happens.
 
 ### Approver keys are a finding, not a trade-off
 
@@ -126,15 +154,36 @@ own connections, and dual control becomes theatre. The approval signature is the
 entire mechanism behind *the approval is the enforcement* — it is what makes an
 approval an artifact rather than a row in a ticket system.
 
-Today `--issuer-key` and `--approver-key` are separate files and `ApproverRegistry`
-verifies against separate public keys, so the separation holds. It holds because
-the operator keeps them apart, **not because anything structural prevents
-collapsing them** — which is the same species of gap this codebase keeps finding
-elsewhere. A KMS design that lumps them would be a regression that no test would
-currently catch.
+This used to hold because the operator kept the files apart, **not because anything
+structural prevented collapsing them** — the same species of gap this codebase keeps
+finding elsewhere. `cp issuer.pem approver.pem` satisfied every check in the system and
+produced a valid approval proof that nothing afterwards could distinguish from real
+dual control.
+
+It is now refused, on **key material rather than on filenames**. `custody::Separation`
+fingerprints what each role was given and refuses two combinations:
+
+* a human's key that is also a key the service holds, in either direction;
+* two approvers holding one key — two human ids and one key satisfies every id check
+  in the system and defeats the control they exist for.
+
+A delegated signer is fingerprinted on its **command**, because two roles pointing at
+one KMS key is the same arrangement and the command is all this process can see of it.
+Whitespace is collapsed so an extra space cannot bypass the check.
+
+What it deliberately does *not* refuse: the envelope key following the issuer key. That
+is documented custody (`5e`), and a blanket "every role needs its own key" rule would
+have been easier to write and wrong.
+
+**Honest limit.** The fingerprint is over the PEM's base64 payload, so it catches a
+copied key and a re-armoured one. It cannot equate the same key in two different
+*encodings* — PKCS#8 versus SEC1 — because that needs an ASN.1 parse this deliberately
+does not do. It raises the cost of the mistake; it does not make sharing a key
+impossible.
 
 Human keys want a different mechanism anyway: a hardware token the approver
-carries, or a key the approver's IdP holds.
+carries, or a key the approver's IdP holds. `--approver-signer` and `--second-signer`
+are how that arrives, and each holder delegates independently.
 
 ## The mint gate did not need raising
 

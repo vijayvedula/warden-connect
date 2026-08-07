@@ -24,6 +24,7 @@ pub mod caep;
 pub mod chain;
 pub mod contain;
 pub mod cpolicy;
+pub mod custody;
 pub mod evidence;
 pub mod export;
 pub mod federate;

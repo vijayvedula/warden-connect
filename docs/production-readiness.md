@@ -9,21 +9,28 @@
 > the same rule: an item is only checked off when something *runs* that proves it.
 > `[~]` means partly landed with the remainder named in the entry.
 >
-> **P0: six of eight done.** #5 (key custody) and #3 (real attestation material) are
-> partial and say what is left. Working through them in order turned up six defects the
-> tests as written could not see — a gate pointing at a benchmark that did not exist, a
-> blocking detector that refused every localised tool server, a verifier reading the
-> system clock, a listener accepting bearer tokens in clear, a JWKS path that could
-> emit and never ingest, and a refresh loop holding boot-time trust. Every one is the
-> same species: a control that reads as configured and does nothing. The full list
-> across the whole build is in [CHANGELOG.md](../CHANGELOG.md).
+> **P0: six of eight done, and the two partials are code-complete.** #5 (key custody)
+> and #3 (real attestation material) now need procurement and an integration
+> environment, not commits.
+>
+> Working through P0 in order turned up **ten** defects the tests as written could not
+> see: a gate pointing at a benchmark that did not exist; a blocking detector that
+> refused every localised tool server; a verifier reading the system clock; a listener
+> accepting bearer tokens in clear; a JWKS path that could emit and never ingest; a
+> refresh loop holding boot-time trust; `--require-external-signing` reaching one
+> signing role in six; a severity escalation that was a no-op because the kind was
+> already Critical; an alert that would have missed the sink it was for; and an
+> emergency path that opened a second writer on a single-writer log, failing only when
+> used. Every one is the same species: **a control that reads as configured and does
+> nothing.** The full list across the whole build is in
+> [CHANGELOG.md](../CHANGELOG.md).
 
 ## Where the build actually is
 
 | | Evidence |
 |---|---|
 | Modules delivered | All of P0–P4 (§8.16). `wc-core` 7 modules, `wc-control` 23, `wc-mediator` 8, `wc-cli` |
-| Tests | **869 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
+| Tests | **891 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
 | Conformance | 19 vectors in `fixtures/contracts/`, driven off `expected.json`; `connect verify` is the ground truth (§8.15.3) |
 | Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expect_used` warned workspace-wide |
 | CI | [`ci.yml`](../.github/workflows/ci.yml) — 5 jobs: stable, MSRV 1.89, release-mode latency gates, supply chain + dependency ceilings, nightly fuzz build |
@@ -182,8 +189,11 @@ by what unblocks the others.
   estate against that estate's own surfaces (§8.9), and our corpus is evidence for our
   detectors, not for somebody else's tool servers.
 
-- [~] **5. Signing keys are PEM files on a filesystem.** The seam and the first
-  key are done; the remaining sub-items are custody *deployments*, not code. See
+- [~] **5. Signing keys are PEM files on a filesystem.** All five sub-items are now
+  done **in code**; what remains is procurement and procedure — a token to buy, a KMS
+  key to create, a runbook to write, a drill to run. That was the original claim about
+  5c–5e ("custody *deployments*, not code") and it was wrong: building them found three
+  defects, two of them in the enforcement of what 5a and 5b had already shipped. See
   [key-custody.md](key-custody.md) for the decision and its reasoning. Six
   operations sign, `IssuerKey` is the seam for five of them, and they do **not**
   all want the same custody — so this is five sub-items, not one:
@@ -192,9 +202,38 @@ by what unblocks the others.
   |---|---|---|---|
   | 5a | **Anchor** (chain checkpoints) | HSM or offline | **Done in code** — `Anchor` holds an `IssuerKey`, `connect --anchor-signer CMD` delegates it, and an existing `anchor.jsonl` written before the change still verifies. What remains is procuring the token and writing the procedure |
   | 5b | **Issuer** (contract mint) | KMS, no local copy | **Done in code** — `--signer`, `--require-external-signing` enforcing it, and `key_custody` recorded in every mint event so the posture is auditable backwards. The `contract::mint` gate did **not** need raising: measured p99 is 677 µs against 20 ms, so ~19 ms of signing already fits. A new `contract::mint overhead` gate (1.9 µs / 50 µs) separates our cost from the signer's, so a slow delegated mint is attributable. What remains is procuring the KMS key and the mint-volume alerting that bounds a held host |
-  | 5c | **Revocation** | two `kid`s: online in KMS, offline on a hardware token | Deny-only, so its failure mode is availability, not forged authority. Must work when the KMS does not. Detail below |
-  | 5d | **Approver** | never the service's KMS | If the control plane can sign its own approvals, dual control is theatre. Wants a hardware token or the approver's IdP-backed key. Separate PEMs today, kept apart by the operator rather than by anything structural |
-  | 5e | **Bundle envelope, CAEP sink** | follow the issuer key | Low volume, latency irrelevant |
+  | 5c | **Revocation** | two `kid`s: online in KMS, offline on a hardware token | **Done in code** — `--revocation-signer`, `--break-glass-kid` declaring which `kid` is offline, `--break-glass` selecting it, and `EventKind::BreakGlassKeyUsed` so its use is alertable. Detail below |
+  | 5d | **Approver** | never the service's KMS | **Done in code**, structurally — `custody::Separation` refuses an approver key that is the service's key material, and two approvers holding one key. `--approver-signer` / `--second-signer` for hardware tokens |
+  | 5e | **Bundle envelope, CAEP sink** | follow the issuer key | **Done in code** — `--envelope-signer`, and the envelope now honours `--require-external-signing`, which it did not |
+
+  **The largest thing wrong was invisible: `--require-external-signing` reached one
+  role in six.** It was checked inside the CLI's `issuer_key()` and inside the anchor
+  path and nowhere else, so both revocation keys, the approvers and the bundle envelope
+  could only ever use a key on local disk — and an estate that set the posture and
+  believed no signing key was read from disk had no way to find out except by reading
+  the source. A posture that covers a third of what it claims is worse than none,
+  because it is believed. Every signing site now resolves through
+  [`wc_control::custody`](../crates/wc-control/src/custody.rs), which applies the rule
+  per `Role`; `connect bench` is the one exemption and the role says so, because the
+  other five were exempt by accident.
+
+  **Two more defects, both found by running it rather than by testing it:**
+
+  * The first break-glass implementation recorded a `Quarantine` event with
+    `.with_severity(Critical)` — **a no-op**, because `EventKind::Quarantine` is already
+    `Critical`. Severity cannot distinguish "the emergency key signed this" from "a
+    party was contained". It needed its own kind, `containment.breakglass_key`, and that
+    kind needed adding to `is_containment()` — otherwise a sink filtered to
+    `Filter::Revocation`, which is exactly where containment alerting is pointed, would
+    have been the one destination that never heard the emergency path was used.
+  * The escalation opened a *second* evidence handle while the first was still held. The
+    chain is single-writer by design (§8.5.2), so it failed with `WC-8003` — **only on
+    the break-glass path**, the one path that must not have a bug in it.
+
+  Also fixed while in there: a misdeclared revocation key used to quarantine the party
+  in the registry, *then* fail, leaving a half-applied containment that reads in the
+  register as done. Custody is now resolved before any state is written, the way
+  `open_evidence` already refuses on posture before it locks the chain.
 
   **The `Signer` trait is in place.** [`wc_core::contract::Signer`],
   `IssuerKey::external`, and [`wc_control::signer::CommandSigner`] — which
@@ -211,9 +250,16 @@ by what unblocks the others.
   are for.
 
   **Two revocation keys, not a copy of one (5c).** The verification side already
-  supports this and needs no change: `SignedRevocation` carries a per-entry `kid`
+  supported this and needed no change: `SignedRevocation` carries a per-entry `kid`
   and `verify` resolves it against an `IssuerKeys` map, so mediators can trust two
-  revocation keys at once and the feed records which one signed each order.
+  revocation keys at once and the feed records which one signed each order. What was
+  missing was on the signing side — **nothing knew which `kid` was the offline one**, so
+  nothing could switch to it deliberately, refuse it casually, or record that it
+  happened. `--break-glass` now selects the offline key rather than merely permitting it,
+  because an operator at 03:00 should type one flag, not get a pairing right; naming the
+  offline `kid` without `--break-glass` is refused, which is the reach-for-it-out-of-habit
+  case; and one `kid` declared for both roles is refused outright, because two names for
+  one key reads in a runbook as two keys and buys none of the three properties below.
 
   - `revoke-online` — in the KMS, used by `connect quarantine` in normal
     operation. Fast, scriptable, no ceremony.
