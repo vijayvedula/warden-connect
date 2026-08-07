@@ -75,15 +75,56 @@ by what unblocks the others.
   by more than the threshold's own margin), the number gated in CI, then a shipped
   ruleset with `calibrated = true` and a documented basis for it.
 
-- [ ] **5. Signing keys are PEM files on a filesystem.** Issuer keys, approver
-  keys, revocation keys, anchor keys. The issuer key is the root of authority for
-  every contract in the estate: a host compromise is an estate compromise, and
-  nothing in the design limits the blast radius of that one file.
+- [ ] **5. Signing keys are PEM files on a filesystem.** See
+  [key-custody.md](key-custody.md) for the decision and its reasoning. Six
+  operations sign, `IssuerKey` is the seam for five of them, and they do **not**
+  all want the same custody — so this is five sub-items, not one:
 
-  Needs a decision, then either half of it: a `Signer` trait with a KMS/HSM
-  implementation behind it, **or** an explicit `SECURITY.md` boundary that puts
-  host compromise out of scope, as Warden core does. Shipping without picking one
-  is the gap, not the choice.
+  | | Key | Custody | Why |
+  |---|---|---|---|
+  | 5a | **Anchor** (chain checkpoints) | HSM or offline | [`chain.rs`](../crates/wc-control/src/chain.rs) already says the key "belongs offline or in an HSM"; periodic and off-path, so there is no cost to doing it. **Do this first.** |
+  | 5b | **Issuer** (contract mint) | KMS, no local copy | Highest-value target: a stolen issuer key mints authority, and that is unrecoverable until rotation reaches every mediator. Raise the `contract::mint` gate (§8.10.3) and say why — mint is once per connection at approval time, not on the request path |
+  | 5c | **Revocation** | two `kid`s: online in KMS, offline on a hardware token | Deny-only, so its failure mode is availability, not forged authority. Must work when the KMS does not. Detail below |
+  | 5d | **Approver** | never the service's KMS | If the control plane can sign its own approvals, dual control is theatre. Wants a hardware token or the approver's IdP-backed key. Separate PEMs today, kept apart by the operator rather than by anything structural |
+  | 5e | **Bundle envelope, CAEP sink** | follow the issuer key | Low volume, latency irrelevant |
+
+  **The `Signer` trait** replaces "hand me an `EncodingKey`" with
+  `sign(signing_input) -> signature`, so `mint` and `sign_detached` stop calling
+  `jsonwebtoken::encode` and construct the JWS compact form themselves. The
+  pattern already exists here — `pae()` and `card_signing_input()` in
+  [`attest.rs`](../crates/wc-control/src/attest.rs) do exactly this. The risk is
+  byte-exactness: a hand-rolled header must match `jsonwebtoken`'s serialisation or
+  every existing artifact stops verifying, which is what the 19 conformance vectors
+  are for.
+
+  **Two revocation keys, not a copy of one (5c).** The verification side already
+  supports this and needs no change: `SignedRevocation` carries a per-entry `kid`
+  and `verify` resolves it against an `IssuerKeys` map, so mediators can trust two
+  revocation keys at once and the feed records which one signed each order.
+
+  - `revoke-online` — in the KMS, used by `connect quarantine` in normal
+    operation. Fast, scriptable, no ceremony.
+  - `revoke-offline` — private key **non-exportable on a hardware token** (PIV /
+    YubiKey / Nitrokey), token in a tamper-evident bag in a safe, activation PIN
+    split M-of-N across named holders in separate locations. Used only when the
+    KMS or the control plane is unavailable.
+
+  Not named `breakglass`: [`connect breakglass`](../crates/wc-cli/src/main.rs)
+  already means time-boxed emergency *issuance*, and colliding the vocabulary of
+  emergency-grant and emergency-revoke is how a runbook gets followed wrongly at
+  03:00.
+
+  Three properties this buys that a second copy of one key does not: compromise of
+  either does not imply the other; `revoke-offline` can be rotated without touching
+  normal operation; and **use of the offline `kid` is itself a high-severity
+  event** — it happens approximately never, so one use is a page. The evidence
+  chain, `Severity` and blocking sinks already carry that.
+
+  **And it must be rehearsed.** A break-glass key nobody has used is a key that
+  probably does not work: flat token, forgotten PIN, share-holder who left in
+  March. This is what the quarterly containment drill in §8.16's P3 is for — see
+  P1 #9, where it is listed as missing. The drill must exercise the offline path,
+  not only the online one.
 
 - [ ] **6. JWKS is file-only.** `keys.rs` has the keyring, rotation lifecycle and
   retirement guard, and `connect keys jwks` writes the document. A mediator is
