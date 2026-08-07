@@ -1,4 +1,59 @@
-# Journey videos
+# Videos
+
+## The film, vertical — for phones
+
+[`warden-connect-mobile.mp4`](warden-connect-mobile.mp4) · 1080×1920 · 9:16 ·
+30 fps · **2:29** · no audio track. Poster:
+[`warden-connect-mobile-poster.jpg`](warden-connect-mobile-poster.jpg).
+
+The web presentation *"Why agent connections need a control plane"* as a video a
+phone can actually show. Same script, same palette, same figures — three things
+change, and all three are about how it is *seen* rather than what it says:
+
+**Re-composed, not letterboxed.** The web stage is 1200×560, a 2.14:1 strip. Fitted
+into 9:16 that is a 1080×504 band with 70% of the frame empty and labels eight pixels
+tall. Every scene is authored portrait instead, and three of them read *better* for
+it — an agent above a service with the in-path check between them is what the request
+path actually looks like, which the landscape version had to lay out sideways.
+
+**Captions are the primary channel, and they are burned in.** Phone video is watched
+muted, so the narration is 56 px serif in a fixed band rather than a thin strip under
+the figure. The test it is built to pass: sound off, picture ignored, script still
+lands.
+
+**Fixed pacing, derived from the words.** The web version has a transport bar and is
+self-paced. Here each beat is held for its own reading time — 3.8 words/second,
+floored at 2.0 s so short beats do not flash and capped at 4.4 s so long ones do not
+stall. A viewer who needs longer can scrub; one who is bored leaves.
+
+Platform-safe margins throughout: feed UI covers roughly the top 8% and bottom 12% of
+a 9:16 frame, and nothing that carries meaning goes there.
+
+```sh
+cd ../src && python3 film_mobile.py
+cp out/warden-connect-mobile.mp4 ../video/
+```
+
+### What the frames taught, which is the useful part
+
+Every collision below was invisible in the code and obvious in a still. The habit
+worth keeping is extracting frames and *looking at them* — the same habit that found
+five defects in the Rust this week.
+
+- **Text over line art is a smudge.** Three labels landed on the very connection
+  curves they described. `Canvas.plate()` draws them on an opaque ground; red serif
+  over a red 11 px stroke had no contrast ratio that would save it.
+- **Paint order is not source order in your head.** The `AGENT` label got its plate,
+  and then the link line was drawn *after* it, straight back through the text. The
+  scene now draws the line first and everything that must sit on top of it second.
+- **Two things fading in the same place is one illegible thing.** *On the Path* drew
+  the agent/check/service trio and the forty-connection swarm simultaneously. The
+  trio now fades as the swarm arrives.
+- **The first cut was 3:45.** Not because there was too much content but because the
+  reading-time formula was tuned for a document. Two passes on words-per-second and a
+  cap got it to 2:29 with nothing removed.
+
+## Journey videos
 
 Five animated explainers, one per persona in
 [`../../06-journey-maps.md`](../../06-journey-maps.md). 1920×1080, 30 fps, H.264,
