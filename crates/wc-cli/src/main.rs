@@ -2253,13 +2253,33 @@ fn bench_cmd(args: &Args) -> Result<()> {
         report.skip("screen (256 tools)", "not selected by --gate", true);
     }
 
+    // Projection::rebuild at 10⁵ contracts — the startup path. A control plane that
+    // takes a minute to become answerable after a restart is one an operator reboots
+    // during an incident and then waits on.
+    if wanted("store::rebuild") {
+        match bench_rebuild(scale) {
+            Ok(gate) => report.gates.push(gate),
+            Err(e) => report.skip(
+                "store::rebuild",
+                &format!("could not build the fixture: {}", e.detail()),
+                // Not deliberate: a gate that could not run because writing a
+                // temporary log failed is an incomplete job reporting green.
+                false,
+            ),
+        }
+    } else {
+        report.skip("store::rebuild", "not selected by --gate", true);
+    }
+
     // The one gate this binary cannot run, stated rather than omitted: measuring
     // it needs `wc-mediator`, and the CLI deliberately does not link it (§8.3) so
     // that a control-plane-only deployment never pulls in Warden core.
     report.skip(
         "filter_tools_list (256 tools)",
-        "lives in wc-mediator, which the CLI does not link by design; run \
-         `cargo test -p wc-mediator --release gate_filter`",
+        &format!(
+            "lives in wc-mediator, which the CLI does not link by design; run `{}`",
+            thresholds::FILTER_GATE_COMMAND
+        ),
         true,
     );
 
@@ -5017,4 +5037,89 @@ impl wc_core::contract::Signer for FreeSigner {
         // 64 bytes, because ES256 needs exactly that and `IssuerKey` checks.
         Ok(vec![0u8; 64])
     }
+}
+
+/// Measure `Projection::rebuild` over a log of `contracts` contracts (§8.10.3).
+///
+/// The fixture is written once and replayed several times, because what the gate is
+/// about is *startup*: the cost of turning a log on disk back into an answerable
+/// projection. Building the log is not part of the measurement — an estate does not
+/// write its history on every boot.
+fn bench_rebuild(contracts: usize) -> Result<wc_control::bench::Gate> {
+    use wc_control::bench::{measure, thresholds};
+    use wc_control::store::{Durability, Event, Projection, Store, STATE_LOG_NAME};
+
+    let dir = std::env::temp_dir().join(format!("wc-bench-rebuild-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| WcError::with_detail(Code::CONFIG_INVALID, "cannot create a scratch dir").with_source(e))?;
+
+    // Removed on the way out however this returns, including on the error paths
+    // below — a benchmark that leaves a 100 MB log in the temp directory is a
+    // benchmark somebody disables.
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _scratch = Scratch(dir.clone());
+
+    let projection = bench_estate(contracts)?;
+    let actor = Actor::Service {
+        id: "bench".to_string(),
+    };
+    {
+        let (mut store, _) = Store::open(&dir)?;
+        // Batched, not Durable. `fsync` per record would make the fixture take
+        // minutes and would measure the disk rather than the replay; durability of a
+        // throwaway fixture buys nothing.
+        for entity in projection.entities.values() {
+            store.commit(
+                Event::EntityPut {
+                    entity: Box::new(entity.clone()),
+                    actor: actor.clone(),
+                },
+                0,
+                Durability::Batched,
+            )?;
+        }
+        for record in projection.contracts.values() {
+            store.commit(
+                Event::ContractMint {
+                    record: Box::new(record.clone()),
+                },
+                0,
+                Durability::Batched,
+            )?;
+        }
+    }
+
+    // Replay once outside the measurement, and assert it rebuilt what was written. A
+    // gate that timed a rebuild producing an empty projection would report a very
+    // good number for doing nothing.
+    let (rebuilt, report) = Projection::rebuild(&dir, STATE_LOG_NAME)?;
+    if rebuilt.contracts.len() != projection.contracts.len() || !report.is_clean() {
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!(
+                "fixture replayed {} of {} contracts ({} unknown, {} inconsistent)",
+                rebuilt.contracts.len(),
+                projection.contracts.len(),
+                report.unknown,
+                report.inconsistent.len()
+            ),
+        ));
+    }
+
+    Ok(measure(
+        "store::rebuild",
+        &format!("{} contracts, {} parties", projection.contracts.len(), projection.entities.len()),
+        thresholds::REBUILD,
+        5,
+        1,
+        || {
+            let _ = Projection::rebuild(&dir, STATE_LOG_NAME);
+        },
+    ))
 }

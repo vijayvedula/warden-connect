@@ -1898,13 +1898,20 @@ regression:
 |---|---|
 | `gate::verify` steady state | p99 ≤ 1.5 ms |
 | `gate::verify` cold | p99 ≤ 3.0 ms |
-| `filter_tools_list`, 256 tools | p99 ≤ 50 µs |
+| `filter_tools_list`, 256 tools | p99 ≤ 100 µs (revised from 50 µs by measurement — see `wc_core::thresholds`) |
 | `contract::mint` | p99 ≤ 20 ms |
+| `contract::mint` overhead, excluding the signature | p99 ≤ 50 µs |
 | `blast_radius`, 10⁵ edges | p99 ≤ 40 ms |
 | `Projection::rebuild`, 10⁵ contracts | ≤ 600 ms |
 
 A latency claim in a design document that is not asserted by a test is a
-marketing claim.
+marketing claim. Two of these were marketing claims until 2026-08-07:
+`filter_tools_list` was reported as a skip pointing at a test that did not exist, and
+`Projection::rebuild` had a threshold and no measurement. Running them for the first
+time found a defect (a deep clone per permitted tool, 4.7× the fixed cost) and moved
+one threshold. **A threshold nobody has run is a guess**, and the direction it moves
+when finally measured is not predictable — the same pass tightened
+`contract::mint` overhead from 500 µs to 50 µs.
 
 `connect bench` runs them and exits non-zero on regression. Three properties of
 the harness:

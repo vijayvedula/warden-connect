@@ -122,8 +122,15 @@ pub fn filter_catalog(
         return stat;
     };
 
-    let mut kept: Vec<Value> = Vec::with_capacity(entries.len());
-    for entry in entries.iter() {
+    // `retain` rather than building a kept list: the previous version cloned every
+    // *permitted* entry, and a tool entry is a nested object, so filtering a
+    // 256-tool catalogue meant a deep clone per surviving tool. That put this at a
+    // p99 of ~190 µs against §8.10.3's 50 µs ceiling. Retaining moves the `Value`
+    // enum — 128 memmoves of a tagged union instead of 128 deep copies of the heap
+    // behind it. Found by the gate that measures this, the first time it ran.
+    let mut hidden = 0usize;
+    let mut hidden_names: Vec<String> = Vec::new();
+    entries.retain(|entry| {
         // An entry we cannot name is dropped, not passed. A malformed entry is
         // exactly what an upstream would send to smuggle a tool past a filter
         // keyed on names.
@@ -132,21 +139,23 @@ pub fn filter_catalog(
             .and_then(Value::as_str)
             .filter(|n| !n.is_empty())
         else {
-            stat.hidden += 1;
-            stat.hidden_names.push("<unnamed>".to_string());
-            continue;
+            hidden += 1;
+            hidden_names.push("<unnamed>".to_string());
+            return false;
         };
 
         if permitted.contains(name) {
-            kept.push(entry.clone());
+            true
         } else {
-            stat.hidden += 1;
-            stat.hidden_names.push(name.to_string());
+            hidden += 1;
+            hidden_names.push(name.to_string());
+            false
         }
-    }
+    });
 
-    stat.exposed = kept.len();
-    *entries = kept;
+    stat.hidden = hidden;
+    stat.hidden_names = hidden_names;
+    stat.exposed = entries.len();
     stat
 }
 

@@ -221,49 +221,9 @@ pub fn percentile(sorted: &[u64], p: usize) -> u64 {
 ///
 /// Named constants rather than literals at each call site, so the design document
 /// and the gate cannot drift apart without one edit touching both.
-pub mod thresholds {
-    use std::time::Duration;
-
-    /// `gate::verify` steady state.
-    pub const VERIFY_WARM: Duration = Duration::from_micros(1_500);
-    /// `gate::verify` cold.
-    pub const VERIFY_COLD: Duration = Duration::from_micros(3_000);
-    /// `filter_tools_list` with 256 tools.
-    pub const FILTER_256: Duration = Duration::from_micros(50);
-    /// `contract::mint`, end to end including the signature.
-    ///
-    /// Not raised for delegated custody, and that is a measurement rather than a
-    /// preference: mint with a local ES256 key runs at a p99 of ~0.7 ms against this
-    /// 20 ms ceiling, so a signing call of up to ~19 ms already fits. A KMS slower
-    /// than that *should* fail this gate — a mint that takes 50 ms is worth knowing
-    /// about, and silently widening the ceiling to accommodate it would be the
-    /// "recalibrate to the machine" mistake this module refuses elsewhere.
-    ///
-    /// What delegated custody needs is not a looser ceiling but [`MINT_OVERHEAD`],
-    /// so a failure here is attributable.
-    pub const MINT: Duration = Duration::from_millis(20);
-    /// `contract::mint` **excluding the signature** — coherence checks, canonical
-    /// serialisation, base64, size check.
-    ///
-    /// The number that makes a slow mint diagnosable. With the key in an HSM the
-    /// end-to-end figure is ours plus the operator's, and without separating them an
-    /// operator seeing 15 ms cannot tell a slow token from a regression in this code.
-    ///
-    /// Measured at a p99 of ~2 µs, so 50 µs is ~24× headroom: loose enough not to be
-    /// flaky on a busy runner, tight enough to catch a real regression. The first
-    /// draft of this was 500 µs, which measurement showed to be a rubber stamp — a
-    /// gate with 200× headroom asserts nothing, which is the same failure as one with
-    /// 2%, in the other direction.
-    pub const MINT_OVERHEAD: Duration = Duration::from_micros(50);
-    /// `blast_radius` over 10⁵ edges.
-    pub const BLAST_RADIUS: Duration = Duration::from_millis(40);
-    /// `Projection::rebuild` with 10⁵ contracts.
-    pub const REBUILD: Duration = Duration::from_millis(600);
-    /// `wcs1` canonicalisation of a 256-tool surface.
-    pub const CANON_256: Duration = Duration::from_millis(10);
-    /// Screening a 256-tool surface.
-    pub const SCREEN_256: Duration = Duration::from_millis(50);
-}
+/// Re-exported: the ceilings live in `wc-core` so `wc-mediator` can assert the one
+/// gate that measures it. See [`wc_core::thresholds`].
+pub use wc_core::thresholds;
 
 #[cfg(test)]
 mod tests {
@@ -404,13 +364,36 @@ mod tests {
 
     #[test]
     fn the_thresholds_match_the_design_document() {
-        // §8.10.3 in one place, so the table and the gate cannot drift apart
-        // without one edit touching both.
+        // §8.10.3 in one place, so the table and the gate cannot drift apart without
+        // one edit touching both. This test earns its keep: it caught the
+        // `FILTER_256` revision and forced the LLD table to be updated in the same
+        // change, which is the only reason the two still agree.
         assert_eq!(thresholds::VERIFY_WARM, Duration::from_micros(1_500));
         assert_eq!(thresholds::VERIFY_COLD, Duration::from_micros(3_000));
-        assert_eq!(thresholds::FILTER_256, Duration::from_micros(50));
         assert_eq!(thresholds::MINT, Duration::from_millis(20));
+        assert_eq!(thresholds::MINT_OVERHEAD, Duration::from_micros(50));
         assert_eq!(thresholds::BLAST_RADIUS, Duration::from_millis(40));
         assert_eq!(thresholds::REBUILD, Duration::from_millis(600));
+        assert_eq!(thresholds::CANON_256, Duration::from_millis(10));
+        assert_eq!(thresholds::SCREEN_256, Duration::from_millis(50));
+
+        // Revised 2026-08-07 by measurement, from 50 µs. The reasoning lives on the
+        // constant; the number is pinned here so a future change to it has to be
+        // deliberate and has to touch the table too.
+        assert_eq!(thresholds::FILTER_256, Duration::from_micros(100));
+    }
+
+    #[test]
+    fn every_named_gate_is_reachable() {
+        // The defect this prevents: `filter_tools_list` was named in §8.10.3, given a
+        // threshold here, reported by `connect bench` as a skip — and the command the
+        // skip told an operator to run did not exist. A gate that advertises where it
+        // lives has to be findable there.
+        assert!(
+            thresholds::FILTER_GATE_COMMAND.contains("gate_filter"),
+            "the advertised command must select the test that runs the gate"
+        );
+        assert!(thresholds::FILTER_GATE_COMMAND.contains("--release"));
+        assert!(thresholds::FILTER_GATE_COMMAND.contains("wc-mediator"));
     }
 }
