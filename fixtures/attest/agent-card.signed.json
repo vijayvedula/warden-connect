@@ -1,0 +1,17 @@
+{
+  "name": "recon-agent",
+  "description": "Nightly ledger reconciliation.",
+  "version": "2.4.1",
+  "skills": [
+    {
+      "id": "reconcile",
+      "description": "Reconcile the ledger."
+    }
+  ],
+  "signatures": [
+    {
+      "protected": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImNhcmQtc2lnbmVyLTEifQ",
+      "signature": "U68Yie3v0SEgFJcAGuqu0SFO58F2Gk_8B3t71pm7K8fiAytncIUNl2zhqueDyRPmXdOmkJ66M48Pa2EsO31Rvg"
+    }
+  ]
+}

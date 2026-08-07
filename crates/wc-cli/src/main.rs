@@ -948,6 +948,11 @@ fn admit_and_record(
                 audience: args.get("aud").unwrap_or_default().to_string(),
                 token,
                 leeway: args.number("leeway").unwrap_or(60),
+                // The same instant the rest of admission is judged at, not the wall
+                // clock. `ctx.now` is what a replay would supply, and a validity
+                // window checked against a different clock than the stages around it
+                // is a window checked against nothing in particular.
+                now: ctx.now,
             })
         }
         None => None,

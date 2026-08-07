@@ -63,9 +63,27 @@ jobs:
         working-directory: warden-connect
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # Minted by `cryptography`, not by our Rust, so the attestation test is two
+      # readings of SPIFFE/JOSE/DSSE agreeing rather than one implementation talking to
+      # itself. Regenerated in CI so a drift between the script and the verifiers is a
+      # build failure rather than a stale committed fixture.
+      - name: Regenerate the attestation fixtures
+        working-directory: warden-connect
+        run: |
+          python3 -m pip install --quiet 'cryptography>=42'
+          rm -rf fixtures/attest
+          python3 scripts/gen-attest-fixtures.py
+
       - name: cargo test
         working-directory: warden-connect
         run: cargo test --workspace
+
+      # §8.7.1 stages 1-5 through the real verifiers, to Attested. Named because it is
+      # the only thing that proves a party can become attested using the code that
+      # ships — `admission`'s own test reaches Attested through stand-ins.
+      - name: Attestation, real verifiers (§8.7.1)
+        working-directory: warden-connect
+        run: cargo test -p wc-e2e --test attest -- --nocapture
 
       # Named separately from the run above even though it is inside it: the §8.15.3
       # conformance vectors are the ground truth a third party implements against, and
