@@ -474,7 +474,29 @@ pub const MAX_CONTRACT_BYTES: usize = 64 * 1024;
 /// for algorithms invented after it shipped — so letting it parse the header first
 /// would report an unsigned token as "signature invalid" rather than as the
 /// algorithm attack it is. The error taxonomy is ours, not the library's.
+/// Algorithms accepted on a **third-party** JOSE object: a JWT-SVID, an agent card,
+/// a CAEP event, a federation statement, a mesh peer assertion.
+///
+/// Broader than [`CONTRACT_ALG_NAMES`] on purpose, and the difference is not an
+/// oversight. We do not choose what an identity provider signs with, and RS256 is what
+/// most of them use — a Kubernetes projected service-account token and a typical OIDC
+/// issuer are both RS256. Refusing it here would mean refusing to verify the tokens
+/// that attestation exists to check.
 pub const ACCEPTED_ALG_NAMES: &[&str] = &["ES256", "ES384", "EdDSA", "PS256", "RS256"];
+
+/// Algorithms a **contract** may carry.
+///
+/// Narrower, because we mint contracts and therefore choose. Dropping RSA from this
+/// set costs nothing — [`IssuerKeys`] has only `add_ec_pem` and `add_ed_pem`, so an
+/// RSA contract could never have resolved a key anyway — and it buys two things:
+///
+/// * The list stops advertising two algorithms the key loader cannot satisfy. An
+///   `RS256` contract used to pass the algorithm check and then fail at key
+///   resolution, which reports the wrong reason for the right refusal.
+/// * It puts the `rsa` crate outside the contract path entirely. That crate carries
+///   RUSTSEC-2023-0071, the Marvin timing attack, with no patch available — see
+///   `deny.toml` for why it is still in the tree and why it does not apply to us.
+pub const CONTRACT_ALG_NAMES: &[&str] = &["ES256", "ES384", "EdDSA"];
 
 /// Signature algorithms a contract may carry.
 ///
@@ -482,13 +504,7 @@ pub const ACCEPTED_ALG_NAMES: &[&str] = &["ES256", "ES384", "EdDSA", "PS256", "R
 /// contract also mint one, which is the algorithm-confusion attack (§7.8 A1).
 /// Rejecting the algorithm before any signature work is the first check for that
 /// reason.
-pub const ASYMMETRIC_ALGS: &[Algorithm] = &[
-    Algorithm::ES256,
-    Algorithm::ES384,
-    Algorithm::EdDSA,
-    Algorithm::PS256,
-    Algorithm::RS256,
-];
+pub const ASYMMETRIC_ALGS: &[Algorithm] = &[Algorithm::ES256, Algorithm::ES384, Algorithm::EdDSA];
 
 /// One end of a connection, as named in the artifact.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1148,7 +1164,9 @@ pub fn verify_artifact(jws: &str, opts: &VerifyOpts<'_>) -> Result<VerifiedContr
 
     // 1 · algorithm, by name, before any library parses the artifact.
     let alg_name = header_alg(jws)?;
-    if !ACCEPTED_ALG_NAMES.contains(&alg_name.as_str()) {
+    // The *contract* set, not the third-party one. A contract is minted by us, so
+    // there is no reason to accept an algorithm we never sign with.
+    if !CONTRACT_ALG_NAMES.contains(&alg_name.as_str()) {
         return Err(WcError::with_detail(
             Code::ALG_NOT_ASYMMETRIC,
             format!("{alg_name:?} is not an accepted contract algorithm"),
@@ -1988,6 +2006,57 @@ mod conformance {
     /// every deployed mediator was built against. If the header serialisation, the
     /// base64 alphabet, the padding or the segment order ever diverge, this fails
     /// here rather than as "a contract nobody can verify" in an estate.
+    #[test]
+    fn the_contract_algorithm_set_is_narrower_than_the_third_party_one() {
+        // The divergence is deliberate and easy to erase by accident, so it is pinned.
+        // Contracts are ours to choose; third-party tokens are not, and RS256 is what
+        // most identity providers sign with.
+        assert_eq!(CONTRACT_ALG_NAMES, &["ES256", "ES384", "EdDSA"]);
+        for name in CONTRACT_ALG_NAMES {
+            assert!(
+                ACCEPTED_ALG_NAMES.contains(name),
+                "{name} is accepted on a contract but not on a third-party token, \
+                 which cannot be right in that direction"
+            );
+        }
+        assert!(
+            ACCEPTED_ALG_NAMES.len() > CONTRACT_ALG_NAMES.len(),
+            "if these ever match, either RSA came back to contracts or third-party \
+             verification just lost the algorithm most IdPs use"
+        );
+        // And no HMAC in either, which is the algorithm-confusion defence (§7.8 A1).
+        for name in ACCEPTED_ALG_NAMES.iter().chain(CONTRACT_ALG_NAMES) {
+            assert!(!name.starts_with("HS"), "{name} is symmetric");
+        }
+    }
+
+    #[test]
+    fn every_contract_algorithm_has_a_key_loader() {
+        // The gap this closes: `RS256` sat in the accepted set while `IssuerKeys` had
+        // only `add_ec_pem` and `add_ed_pem`, so an RS256 contract passed the
+        // algorithm check and then failed at key resolution — the right refusal for
+        // the wrong stated reason. An algorithm we advertise must be one we can load
+        // a key for.
+        let mut keys = IssuerKeys::new();
+        assert!(keys.add_ec_pem("es", ES256_PUB, Algorithm::ES256).is_ok());
+        assert!(keys.add_ed_pem("ed", ED_PUB).is_ok());
+
+        for alg in ASYMMETRIC_ALGS {
+            let loadable = matches!(alg, Algorithm::ES256 | Algorithm::ES384 | Algorithm::EdDSA);
+            assert!(
+                loadable,
+                "{alg:?} is a contract algorithm with no `IssuerKeys` loader"
+            );
+        }
+        // The signing side agrees: there is no RSA constructor to reach.
+        assert_eq!(
+            IssuerKey::ec_pem(KID_ES, ES256_PRIV, Algorithm::RS256)
+                .unwrap_err()
+                .code(),
+            Code::ALG_NOT_ASYMMETRIC
+        );
+    }
+
     #[test]
     fn our_jws_and_jsonwebtokens_agree_byte_for_byte() {
         let p = payload();

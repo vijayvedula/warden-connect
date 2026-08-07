@@ -1,0 +1,184 @@
+# CI. Until this existed, every claim in the repository — the tests, clippy, the
+# conformance vectors, the §8.10.3 latency gates — was true on one laptop and nothing
+# kept it true. That was P0 #1 in docs/production-readiness.md, and the largest gap in
+# the project, because the value of everything else is that it *stays* proven.
+#
+# Two rules this file is built around, both learned from the code it guards:
+#
+#   1. A job that could not run its check must fail, not skip. `connect bench` already
+#      separates "deliberately not selected" from "could not run for want of a key"
+#      for exactly this reason.
+#   2. A latency gate means nothing in a debug build, and `cargo test` defaults to one.
+#      The release-mode gates are named explicitly rather than assumed to be covered.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # No global `RUSTFLAGS: -D warnings`. It applies to dependencies as well as to us,
+  # so a warning introduced by a new compiler version in somebody else's crate would
+  # fail this build for a reason nobody here can fix — and it invalidates the cargo
+  # cache between steps that set it and steps that do not. `-D warnings` goes on the
+  # clippy invocation, where it belongs.
+
+jobs:
+  # ---------------------------------------------------------------------------
+  check:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: warden-connect }
+
+      # `warden` is a path dependency at ../warden by design (§8.3): the mediator
+      # compiles into the proxy, so the coupling is the deployment model rather than a
+      # dependency choice. CI has to lay the tree out the same way.
+      - name: Check out Warden core beside it
+        uses: actions/checkout@v4
+        with:
+          repository: vijayvedula/warden
+          path: warden
+          token: ${{ secrets.WARDEN_CORE_TOKEN || github.token }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: warden-connect }
+
+      # `--all` does not reach fuzz/, which is deliberately outside the workspace, so
+      # it gets its own check or it drifts silently.
+      - name: cargo fmt
+        working-directory: warden-connect
+        run: |
+          cargo fmt --all --check
+          (cd fuzz && cargo fmt --check)
+
+      - name: cargo clippy
+        working-directory: warden-connect
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: warden-connect
+        run: cargo test --workspace
+
+      # Named separately from the run above even though it is inside it: the §8.15.3
+      # conformance vectors are the ground truth a third party implements against, and
+      # a green summary line is not the same as knowing they ran.
+      - name: Conformance vectors (§8.15.3)
+        working-directory: warden-connect
+        run: cargo test -p wc-core --lib conformance -- --nocapture
+
+  # ---------------------------------------------------------------------------
+  msrv:
+    name: MSRV 1.89
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: warden-connect }
+      - uses: actions/checkout@v4
+        with:
+          repository: vijayvedula/warden
+          path: warden
+          token: ${{ secrets.WARDEN_CORE_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: warden-connect, key: msrv }
+      # Build and test, not just build: `rust-version` is a promise about what
+      # compiles, and a promise nobody exercises is a guess.
+      - name: cargo test on the pinned MSRV
+        working-directory: warden-connect
+        run: cargo test --workspace
+
+  # ---------------------------------------------------------------------------
+  gates:
+    name: latency gates (§8.10.3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: warden-connect }
+      - uses: actions/checkout@v4
+        with:
+          repository: vijayvedula/warden
+          path: warden
+          token: ${{ secrets.WARDEN_CORE_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: warden-connect, key: gates }
+
+      # Release, because a latency ceiling in a debug build measures the debug build.
+      # `gate_filter` asserts a 12x tripwire in debug and says loudly that it is not
+      # the real gate, so this line is the only place the real one is checked.
+      - name: filter_tools_list, 256 tools
+        working-directory: warden-connect
+        run: cargo test -p wc-mediator --release --test mediation gate_filter -- --nocapture
+
+      # Seven gates, and a non-zero exit on regression or on a gate that could not run.
+      # The thresholds are the design's, not the runner's — a slow runner reports an
+      # honest failure rather than recalibrating, which is the whole point of them.
+      - name: connect bench
+        working-directory: warden-connect
+        run: |
+          cargo build --release -p wc-cli
+          ./target/release/connect bench \
+            --iterations 400 \
+            --signing-key fixtures/keys/test_issuer_es256_priv.pem \
+            --verify-pub  fixtures/keys/test_issuer_es256_pub.pem \
+            --kid wc-test-es256
+
+  # ---------------------------------------------------------------------------
+  supply-chain:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: warden-connect }
+      - uses: actions/checkout@v4
+        with:
+          repository: vijayvedula/warden
+          path: warden
+          token: ${{ secrets.WARDEN_CORE_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-deny
+      # §8.3's thin-dependency argument is central to how this component is sold, and
+      # nothing verified it until deny.toml existed. The bans list encodes the four
+      # categories the design rules out by name, so "no async runtime" is enforced
+      # rather than remembered.
+      - name: cargo deny check
+        working-directory: warden-connect
+        run: cargo deny check
+
+      # A count, because cargo-deny cannot express one and the LLD quotes numbers.
+      # They were 30 and 61 in the document and 80 and 110 in reality — a claim that
+      # drifts silently is worse than no claim.
+      - name: Dependency-count ceilings (§8.3)
+        working-directory: warden-connect
+        run: ./scripts/dep-count.sh
+
+  # ---------------------------------------------------------------------------
+  fuzz:
+    name: fuzz targets compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: warden-connect }
+      - uses: actions/checkout@v4
+        with:
+          repository: vijayvedula/warden
+          path: warden
+          token: ${{ secrets.WARDEN_CORE_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: warden-connect/fuzz, key: fuzz }
+      # Compile only. A coverage-guided campaign belongs on a schedule, not on every
+      # push — but a target that has quietly stopped compiling is a fuzz directory
+      # that reads as coverage while providing none, which is the failure the stable
+      # mirror in wc-e2e/tests/fuzz.rs also exists to prevent.
+      - name: cargo check the fuzz targets
+        working-directory: warden-connect/fuzz
+        run: cargo check --all-targets
