@@ -421,325 +421,460 @@ CHAPTERS = ["The Two Layers", "The Connection", "The Obvious Fix", "The Idea",
 
 # --- the deterministic swarm, re-laid out for a tall frame -----------------
 
-def _swarm():
-    def rng(seed):
-        a = seed & 0xFFFFFFFF
+# ---------------------------------------------------------------------------
+# Portrait-native motifs
+# ---------------------------------------------------------------------------
+# The first cut of this film took the web version's figures and moved them about.
+# Some of them never fitted: a forty-node network and a thirteen-lane array are
+# *wide* ideas, and a 936px-wide stage gives them 78px of separation, which is a
+# smudge on a phone. These five motifs are built for a tall frame instead — and
+# each is used more than once, so the film has a visual vocabulary rather than a
+# scene-by-scene scramble.
+#
+#   plane      a full-width horizontal boundary, seen slightly edge-on
+#   threads    connections as cables descending the frame
+#   wall       a barrier across the frame with one door in it
+#   document   the contract as what it is — a tall page with a seal
+#   readout    a vertical status list, one row per node
 
-        def nxt():
-            nonlocal a
-            a = (a + 0x6D2B79F5) & 0xFFFFFFFF
-            t = (a ^ (a >> 15)) * (1 | a) & 0xFFFFFFFF
-            t = (t + ((t ^ (t >> 7)) * (61 | t) & 0xFFFFFFFF)) ^ t & 0xFFFFFFFF
-            return ((t ^ (t >> 14)) & 0xFFFFFFFF) / 4294967296
-        return nxt
-
-    r = rng(424242)
-    # Portrait: agents in a band across the top, services across the bottom, so the
-    # tangle runs down the frame rather than across a strip.
-    agents, svcs, links = [], [], []
-    for i in range(40):
-        agents.append((PAD + 30 + r() * (W - 2 * PAD - 60),
-                       STAGE_Y0 + 40 + r() * 210))
-    for i in range(11):
-        svcs.append((PAD + 50 + (i / 10) * (W - 2 * PAD - 100),
-                     STAGE_Y1 - 90 - r() * 60))
-    for i, _ in enumerate(agents):
-        for _ in range(1 + int(r() * 3)):
-            links.append((i, int(r() * len(svcs)), r()))
-    return agents, svcs, links
+STAGE_X0, STAGE_X1 = PAD, W - PAD
+STAGE_W = STAGE_X1 - STAGE_X0
 
 
-AGENTS, SVCS, LINKS = _swarm()
+def plane(c, y, label, sub_, col, a=1.0, lit=1.0):
+    """A boundary, drawn as a plane seen almost edge-on.
+
+    Two offset lines rather than one: a single rule reads as a divider, and a pair
+    reads as a surface with a thickness — which is what a boundary is.
+    """
+    if a <= 0.01:
+        return
+    c.line((STAGE_X0, y), (STAGE_X1, y), col, a * lit, 4)
+    c.line((STAGE_X0 + 26, y + 13), (STAGE_X1 - 26, y + 13), col, a * lit * 0.35, 2)
+    # 46px serif set at y-58 has its descender at y-12, which is exactly where the
+    # sub-label was. Two lines of type need the height of the first one between them.
+    c.text((STAGE_X0, y - 96), label, "serif", 46, col, a * lit)
+    c.text((STAGE_X0, y - 34), sub_, "mono", 22, DIM, a * lit * 0.9)
 
 
-def draw_swarm(c, appear, colour=None, lw=2):
-    n = len(LINKS)
-    for i, (ai, si, bow) in enumerate(LINKS):
-        t = clamp(appear * n * 1.6 - i * 0.6)
+def threads(c, appear, n=44, seed=7, col=RED, a=0.30, lw=2, tangle=1.0, y0=None,
+            y1=None):
+    """Connections as cables running down the frame.
+
+    This is the replacement for the network graph. A tall frame has room for depth
+    rather than breadth, so the mess is expressed as *crossing* — every cable drifts
+    laterally on the way down, and forty of them crossing reads as a tangle at any
+    size. `tangle=0` gives parallel cables, which is the same picture under control
+    and is exactly the contrast chapter four needs.
+    """
+    y0 = STAGE_Y0 + 40 if y0 is None else y0
+    y1 = STAGE_Y1 - 30 if y1 is None else y1
+    r = _rand(seed)
+    for i in range(n):
+        t = clamp(appear * 2.2 - (i / n) * 1.2)
         if t <= 0:
             continue
-        ax, ay = AGENTS[ai]
-        sx, sy = SVCS[si]
-        e = ease_out(t)
-        col, a = (colour(i) if colour else (RED, 0.30))
-        # A quadratic bow, sampled — Pillow has no quadratic curve primitive.
-        cx, cy = (ax + sx) / 2 + (bow - 0.5) * 150, (ay + sy) / 2
-        prev = (ax, ay)
-        steps = 9
-        for k in range(1, steps + 1):
-            u = (k / steps) * e
-            x = (1 - u) ** 2 * ax + 2 * (1 - u) * u * cx + u * u * sx
-            y = (1 - u) ** 2 * ay + 2 * (1 - u) * u * cy + u * u * sy
-            c.line(prev, (x, y), col, a, lw)
+        # Ends are staggered vertically as well as horizontally. Ninety-six cables
+        # between two perfectly straight rows read as a flat mesh, not a tangle — the
+        # variation is what makes it look like cabling nobody planned.
+        x_top = STAGE_X0 + 14 + r() * (STAGE_W - 28)
+        drift = (r() - 0.5) * 700 * tangle
+        bow = (r() - 0.5) * 340 * tangle
+        x_bot = clamp(x_top + drift, STAGE_X0 + 10, STAGE_X1 - 10)
+        jt = r() * 70 * tangle
+        jb = r() * 70 * tangle
+        # A touch of per-cable weight variation. Forty-four identical strokes read as
+        # a barcode; the same forty-four at mixed weights read as cabling.
+        wob = lw if r() > 0.45 else max(1, lw - 1)
+        prev = None
+        steps = 10
+        for k in range(steps + 1):
+            u = (k / steps) * ease_out(t)
+            x = ((1 - u) ** 2 * x_top + 2 * (1 - u) * u * ((x_top + x_bot) / 2 + bow)
+                 + u * u * x_bot)
+            y = lerp(y0 + jt, y1 - jb, u)
+            if prev:
+                c.line(prev, (x, y), col, a, wob)
             prev = (x, y)
-    for i, (ax, ay) in enumerate(AGENTS):
-        t = clamp(appear * 3 - i / len(AGENTS))
-        if t > 0:
-            c.dot(ax, ay, 8, BLUE, t * 0.95)
-    for sx, sy in SVCS:
-        if appear > 0.05:
-            c.dot(sx, sy, 10, DIM, clamp(appear * 3))
+        c.dot(x_top, y0 + jt, 5, BLUE, t * 0.7)
+        if ease_out(t) > 0.98:
+            c.dot(x_bot, y1 - jb, 6, DIM, 0.6)
+
+
+def _rand(seed):
+    a = seed & 0xFFFFFFFF
+
+    def nxt():
+        nonlocal a
+        a = (a * 1103515245 + 12345) & 0x7FFFFFFF
+        return a / 0x7FFFFFFF
+    return nxt
+
+
+def wall(c, y, door_x, door_w, a=1.0, col=YELLOW, dim=0.0):
+    """A barrier across the frame with one opening.
+
+    Chapter two's traffic used to bend sideways in a narrow frame, which looked
+    squashed. A wall you can see the whole width of, with one visible door, says the
+    same thing in a shape a phone can hold.
+    """
+    if a <= 0.01:
+        return
+    c.rect((STAGE_X0, y, door_x, y + 104), col, a * (1 - dim * 0.55), 3, BG2, r=4)
+    c.rect((door_x + door_w, y, STAGE_X1, y + 104), col, a * (1 - dim * 0.55), 3,
+           BG2, r=4)
+
+
+CONTRACT = [
+    ("caller", "agent:recon", "id"),
+    ("callee", "server:payments", "id"),
+    ("surface", "get_balance", "surface"),
+    ("", "list_transactions", "surface"),
+    ("expires", "30 days, then nothing", "expiry"),
+    ("approval", "human:cecil + human:dana", "approval"),
+    ("mediator", "warden:mediator:apac", "mediator"),
+    ("revocable", "one verb, per-node proof", "revoke"),
+]
+
+
+def document(c, top, height, a=1.0, written=1.0, highlight=None, seal=1.0):
+    """The contract, drawn as the thing it is: a page.
+
+    A signed document is already a portrait shape, which is why it carries three
+    scenes here. `highlight` dims every field group except one — which is how the
+    five readings are shown, on one object, without drawing five different pictures.
+    """
+    if a <= 0.01:
+        return
+    x0 = STAGE_X0 + 64
+    x1 = STAGE_X1 - 64
+    c.rect((x0, top, x1, top + height), YELLOW, a * 0.75, 3, BG2, r=8)
+    c.line((x0, top + 74), (x1, top + 74), YELLOW, a * 0.3, 2)
+    c.text((x0 + 34, top + 24), "CONNECTION CONTRACT", "mono", 26, YELLOW, a)
+    c.text((x1 - 34, top + 24), "conn_7f3a91c4", "mono", 24, DIM, a, anchor="ra")
+
+    rows = len(CONTRACT)
+    step = (height - 150) / rows
+    for i, (label, value, group) in enumerate(CONTRACT):
+        t = clamp(written * (rows + 2) - i)
+        if t <= 0:
+            continue
+        y = top + 104 + i * step
+        lit = 1.0 if (highlight is None or group == highlight) else 0.40
+        if label:
+            c.text((x0 + 34, y), label, "mono", 23, DIM, a * t * lit)
+        col = GREEN if group in ("expiry", "revoke") else INK
+        c.text((x0 + 210, y), value, "mono", 25, col, a * t * lit)
+        if highlight and group == highlight:
+            c.line((x0 + 200, y + 34), (x1 - 34, y + 34), YELLOW, a * t * 0.45, 2)
+    # the seal: a signature is what makes this an artifact rather than a row
+    if seal > 0.01:
+        sx, sy = x1 - 84, top + height - 74
+        c.ring(sx, sy, 40, YELLOW, a * seal, 3)
+        c.ring(sx, sy, 27, YELLOW, a * seal * 0.6, 2)
+        c.text((sx, sy - 12), "ES256", "mono", 19, YELLOW, a * seal, anchor="ma")
+
+
+def readout(c, y0, rows, appear, step=52):
+    """A vertical status list — one row per node.
+
+    Thirteen ticks in a row across 936px is thirteen specks. Thirteen rows down a
+    tall frame is a status page, which is the thing an operator actually reads at
+    03:00 anyway.
+    """
+    for i, (name, ok, note) in enumerate(rows):
+        t = clamp(appear * (len(rows) + 3) * 1.6 - i)
+        if t <= 0:
+            continue
+        y = y0 + i * step
+        col = GREEN if ok else RED
+        if ok:
+            c.tick(STAGE_X0 + 30, y + 4, 13, GREEN, t, 5)
+        else:
+            c.cross(STAGE_X0 + 30, y + 4, 13, RED, t, 5)
+        c.text((STAGE_X0 + 72, y - 12), name, "mono", 26, INK if ok else RED, t)
+        c.text((STAGE_X1, y - 12), note, "mono", 24, col, t, anchor="ra")
 
 
 # ---------------------------------------------------------------------------
 # Scenes
 # ---------------------------------------------------------------------------
 
-def scene_two_layers(c, p, beat, n_beats):
-    """Stacked cards, then the ladder. Side-by-side does not survive 9:16."""
+def scene_planes(c, p, beat, n_beats):
+    """Two boundaries as two planes, then the five capabilities as full-width bars.
+
+    The web version put the layers side by side. In portrait they can be what they
+    actually are: one above the other, with a call descending through both — which
+    is also the only picture that makes "neither can widen the other" obvious.
+    """
     if beat < 3:
-        a = smooth(clamp(p * 1.6))
-        # warden-connect on top: it is the subject, and the eye starts there.
-        for i, (name, kicker, q, when, col) in enumerate([
-            ("warden-connect", "THE RELATIONSHIP BOUNDARY",
-             "may these two parties be introduced at all?",
-             "DECIDED ONCE - ADOPTED ONE AT A TIME", YELLOW),
-            ("warden", "THE ACTION BOUNDARY",
-             "may this specific call proceed right now?",
-             "DECIDED EVERY CALL - DEPLOYED TODAY", BLUE),
-        ]):
-            y = STAGE_Y0 + 60 + i * 390
-            live = 1.0 if beat == 0 else (1.0 if (beat == 2) == (i == 0) else 0.34)
-            aa = a * live
-            c.rect((PAD, y, W - PAD, y + 330), col, aa * 0.55, 2, BG2, r=8)
-            c.text((W // 2, y + 46), name, "serif", 62, col, aa, anchor="ma")
-            c.text((W // 2, y + 132), kicker, "mono", 26, DIM, aa, anchor="ma")
-            c.centred(y + 186, q, W - PAD * 2 - 80, "serif", 42, INK, aa)
-            c.text((W // 2, y + 286), when, "mono", 22, FAINT, aa, anchor="ma")
+        # `p` is progress across the whole chapter, so a fade written against it is
+        # ~0 for the whole of beat 0. Every entry here goes through `sub()`, which is
+        # what converts chapter progress into this beat's progress. The first cut of
+        # this scene rendered an empty stage for four seconds and the code looked
+        # right, which is why the frames get looked at.
+        a = smooth(clamp(sub(p, n_beats, 0) * 2.4))
+        rel_lit = 1.0 if beat != 1 else 0.3
+        act_lit = 1.0 if beat != 2 else 0.3
+        plane(c, STAGE_Y0 + 280, "warden-connect", "MAY THESE TWO PARTIES MEET AT ALL",
+              YELLOW, a, rel_lit)
+        plane(c, STAGE_Y0 + 620, "warden", "MAY THIS CALL PROCEED, RIGHT NOW",
+              BLUE, a, act_lit)
+
+        # A call, descending through both. It is stopped by whichever plane is lit.
+        # The descending call restarts per beat — it is the thing being demonstrated,
+        # unlike the planes, which must simply stay put.
+        d = smooth(clamp((sub(p, n_beats, beat) - 0.18) / 0.5))
+        top = STAGE_Y0 + 40
+        stop = (STAGE_Y0 + 280 if beat == 2 else
+                STAGE_Y0 + 620 if beat == 1 else STAGE_Y1 - 30)
+        if d > 0:
+            c.arrow((W // 2, top), (W // 2, lerp(top, stop, d)), INK, a * 0.8, 4)
+        if beat and d > 0.9:
+            col = YELLOW if beat == 2 else BLUE
+            c.ring(W // 2, stop, 26, col, a, 4)
+            c.text((W // 2, stop + 46), "CHECKED HERE", "mono", 24, col, a,
+                   anchor="ma")
+        if beat == 0:
+            c.plate(STAGE_Y1 - 44, "ONE CALL, TWO BOUNDARIES", "mono", 26, DIM, a)
         return
 
-    # The ladder: five rungs, arriving one at a time, with the command below.
+    # Five full-width bars, stacking. Chunky on purpose: a thin ladder rung is a
+    # hairline on a phone.
     active = beat - 3
     summing = beat >= n_beats - 1
     for i, (title, cost) in enumerate(LADDER):
-        t = smooth(clamp((p * n_beats) - (i + 3)))
+        # ×2.4: the caption says "Four." at the start of the beat, so the fourth bar
+        # has to be there by then. A build that finishes as the beat ends reads as a
+        # frame that failed to draw.
+        t = smooth(clamp(((p * n_beats) - (i + 3)) * 2.4))
         if t <= 0:
             continue
-        y = STAGE_Y0 + 40 + i * 104
+        y = STAGE_Y0 + 30 + i * 122
         live = summing or i == active
-        a = t * (1.0 if live else 0.42)
-        c.ring(PAD + 34, y + 26, 26, YELLOW, a, 3)
-        c.text((PAD + 34, y + 26), str(i + 1), "serif", 36, YELLOW, a, anchor="mm")
-        c.text((PAD + 84, y + 4), title, "serif", 44,
-               INK if live else DIM, a)
-        c.text((PAD + 84, y + 58), cost, "mono", 22, FAINT, a)
-        c.line((PAD, y + 92), (PAD + (W - 2 * PAD) * t, y + 92), YELLOW, a * 0.28, 2)
+        a = t * (1.0 if live else 0.34)
+        c.rect((STAGE_X0, y, STAGE_X0 + STAGE_W * ease_out(t), y + 104),
+               YELLOW if live else RULE, a, 3, BG2 if live else None, r=6)
+        c.ring(STAGE_X0 + 56, y + 52, 28, YELLOW, a, 3)
+        c.text((STAGE_X0 + 56, y + 52), str(i + 1), "serif", 38, YELLOW, a,
+               anchor="mm")
+        c.text((STAGE_X0 + 108, y + 14), title, "serif", 46, INK if live else DIM, a)
+        c.text((STAGE_X0 + 108, y + 68), cost, "mono", 22, FAINT, a)
 
     if 0 <= active < len(SNIPS) and not summing:
-        # One card, cleared before the next arrives, so two never double-expose.
-        inn = smooth(clamp((sub(p, n_beats, active + 3) - 0.28) / 0.42))
-        out = smooth(clamp(sub(p, n_beats, active + 4) / 0.25))
+        inn = smooth(clamp((sub(p, n_beats, active + 3) - 0.16) / 0.26))
+        out = smooth(clamp(sub(p, n_beats, active + 4) / 0.22))
         a = inn * (1 - out)
-        y = STAGE_Y0 + 596
-        c.rect((PAD, y, W - PAD, y + 168), RULE, a, 2, BG2, r=8)
+        y = STAGE_Y0 + 660
+        c.rect((STAGE_X0, y, STAGE_X1, y + 152), RULE, a, 2, BG2, r=8)
         for k, ln in enumerate(SNIPS[active]):
-            col = GREEN if ln[0] not in "$ " and k else YELLOW
-            if ln.startswith("$"):
-                col = YELLOW
-            elif ln.startswith("  "):
-                col = DIM
-            elif k:
-                col = GREEN
-            c.text((PAD + 34, y + 40 + k * 58), ln, "mono", 27, col, a)
+            col = (YELLOW if ln.startswith("$") else
+                   DIM if ln.startswith("  ") else GREEN)
+            c.text((STAGE_X0 + 30, y + 34 + k * 56), ln, "mono", 26, col, a)
 
 
-def scene_connection(c, p, beat, n_beats):
-    """Agent above, service below — which is what a request actually looks like."""
-    zoom = smooth(sub(p, n_beats, 3))
+def scene_threads(c, p, beat, n_beats):
+    """One cable, then the frame full of them."""
+    ay, sy = STAGE_Y0 + 130, STAGE_Y1 - 110
     if beat < 3:
-        fade = 1 - smooth(clamp(sub(p, n_beats, 3) * 1.4))
-        ay, sy = STAGE_Y0 + 200, STAGE_Y1 - 150
-
-        # The link goes down first, then everything that must sit on top of it.
-        # Painted the other way round, the line drew straight through the labels
-        # describing it — which is the one thing this beat has to be able to read.
+        fade = 1 - smooth(clamp(sub(p, n_beats, 3) * 1.8))
         g = smooth(sub(p, n_beats, 1))
+        bad = smooth(clamp(sub(p, n_beats, 2) * 1.6))
         if g > 0:
-            y1, y2 = ay + 62, sy - 118
-            bad = smooth(sub(p, n_beats, 2))
-            c.line((W // 2, y1), (W // 2, lerp(y1, y2, g)),
-                   RED if bad > 0.05 else BLUE, fade * (1.0 if bad > 0.05 else 0.8),
-                   int(lerp(5, 11, bad)))
-
-        c.agent(W // 2, ay, 2.1, BLUE, fade)
-        c.plate(ay + 118, "AGENT", "mono", 28, DIM, fade, pad=(22, 8))
-        c.service(W // 2, sy, 2.1, DIM, fade)
-        c.text((W // 2, sy + 145), "PAYMENTS SERVICE", "mono", 28, DIM, fade,
+            c.line((W // 2, ay + 58), (W // 2, lerp(ay + 58, sy - 112, g)),
+                   RED if bad > 0.05 else BLUE, fade * 0.9, int(lerp(6, 14, bad)))
+        c.agent(W // 2, ay, 2.0, BLUE, fade)
+        c.plate(ay + 108, "AGENT", "mono", 26, DIM, fade, pad=(22, 8))
+        c.service(W // 2, sy, 2.0, DIM, fade)
+        c.text((W // 2, sy + 138), "PAYMENTS SERVICE", "mono", 26, DIM, fade,
                anchor="ma")
-
-        b2 = sub(p, n_beats, 2)
-        if b2 > 0:
-            # Plated: these land on the very line they describe, and red serif over
-            # a red 11px stroke is a smudge at phone size.
-            for k, s in enumerate(["a shared credential", "no expiry",
-                                   "no record it exists"]):
-                t = smooth(clamp(b2 * 3 - k * 0.7))
-                c.plate(ay + 178 + k * 60, s, "serif", 40, RED, t * fade)
+        if bad > 0:
+            for k, txt in enumerate(["a shared credential", "no expiry",
+                                     "no record it exists"]):
+                t = smooth(clamp(bad * 3 - k * 0.7))
+                c.plate(ay + 190 + k * 62, txt, "serif", 40, RED, t * fade)
         return
 
-    draw_swarm(c, zoom, lw=2)
+    app = smooth(sub(p, n_beats, 3))
+    threads(c, app, n=44, seed=11, col=RED, a=0.32, lw=2)
     b4 = sub(p, n_beats, 4)
     if b4 > 0:
-        pulse = 0.35 + 0.3 * math.sin(b4 * 12)
-        draw_swarm(c, 1.0, colour=lambda i: (RED, 0.16 + pulse * 0.22), lw=3)
+        # A second pass, brighter and pulsing: the same cables, now the problem.
+        pulse = 0.30 + 0.26 * math.sin(b4 * 11)
+        threads(c, 1.0, n=44, seed=11, col=RED, a=pulse * 0.55, lw=3)
         a = smooth(b4)
-        c.plate(STAGE_Y1 - 140, "400+ CONNECTIONS", "serif", 54, RED, a)
-        c.plate(STAGE_Y1 - 68, "0 RECORDED ANYWHERE", "serif", 54, RED, a)
+        c.plate(STAGE_Y0 + 300, "400+ CONNECTIONS", "serif", 58, RED, a)
+        c.plate(STAGE_Y0 + 392, "0 RECORDED ANYWHERE", "serif", 58, RED, a)
 
 
-def scene_gate(c, p, beat, n_beats):
-    """Traffic runs down the frame; the gate is a bar across it."""
-    gy = (STAGE_Y0 + STAGE_Y1) // 2
-    g = smooth(sub(p, n_beats, 0))
-    lanes = 11
+def scene_wall(c, p, beat, n_beats):
+    """A wall across the frame with one door, and the traffic that goes round it."""
+    wy = STAGE_Y0 + 430
+    door_x, door_w = W // 2 - 62, 124
+    g = smooth(clamp(sub(p, n_beats, 0) * 2.2))
+    bend = smooth(sub(p, n_beats, 2))
+    dim = smooth(sub(p, n_beats, 3))
+
+    lanes = 9
     for i in range(lanes):
-        x = PAD + 40 + i * ((W - 2 * PAD - 80) / (lanes - 1))
-        through = i == 5
-        appear = clamp(g * 2 - i * 0.05)
+        x = STAGE_X0 + 60 + i * ((STAGE_W - 120) / (lanes - 1))
+        through = i == 4
+        appear = clamp(g * 2 - i * 0.06)
         if appear <= 0:
             continue
-        bend = 0.0 if through else smooth(clamp(sub(p, n_beats, 2) * 1.6
-                                               - abs(i - 5) * 0.06))
-        dodge = (-1 if x < W / 2 else 1) * bend * (170 + abs(i - 5) * 16)
+        # The ones that cannot pass bow out to the margins and rejoin below: the
+        # wall spans most of the frame, so "around" has to be visible as going wide.
+        out = 0.0 if through else bend
+        side = -1 if x < W / 2 else 1
+        edge = (STAGE_X0 - 40) if side < 0 else (STAGE_X1 + 40)
         col = GREEN if through else BLUE
-        a = 0.85 if through else (0.30 + bend * 0.32)
-        c.dot(x, STAGE_Y0 + 20, 7, BLUE, appear * 0.8)
-        prev = (x, STAGE_Y0 + 28)
-        for k in range(1, 13):
-            u = k / 12
-            xx = (1 - u) ** 2 * x + 2 * (1 - u) * u * (x + dodge) + u * u * x
-            yy = lerp(STAGE_Y0 + 28, STAGE_Y1 - 20, u)
-            c.line(prev, (xx, yy), col, a, 5 if through else 3)
+        a = 0.9 if through else (0.28 + out * 0.34)
+        prev = (x, STAGE_Y0 + 30)
+        c.dot(x, STAGE_Y0 + 24, 7, BLUE, appear * 0.85)
+        for k in range(1, 15):
+            u = k / 14
+            xx = x + (edge - x) * out * math.sin(u * math.pi) ** 1.4
+            yy = lerp(STAGE_Y0 + 30, STAGE_Y1 - 20, u)
+            c.line(prev, (xx, yy), col, a, 6 if through else 3)
             prev = (xx, yy)
-        c.dot(x, STAGE_Y1 - 14, 8, DIM, appear * 0.7)
+        c.dot(x, STAGE_Y1 - 16, 8, DIM, appear * 0.7)
 
+    wall(c, wy, door_x, door_w, g, YELLOW, dim)
     if g > 0:
-        c.line((PAD, gy), (W - PAD, gy), YELLOW, 0.5, 4, dash=(18, 20))
-        dim = smooth(sub(p, n_beats, 3))
-        col = FAINT if dim > 0.05 else YELLOW
-        c.rect((W // 2 - 190, gy - 78, W // 2 + 190, gy + 78), col,
-               g if dim <= 0.05 else 0.7, 4, BG, r=8)
-        c.text((W // 2, gy - 52), "APPROVAL", "serif", 46, col, g, anchor="ma")
-        c.text((W // 2, gy + 4), "GATE", "serif", 46, col, g, anchor="ma")
+        col = FAINT if dim > 0.5 else YELLOW
+        c.text((STAGE_X0 + 34, wy + 32), "APPROVAL GATE", "serif", 40, col, g)
+        c.text((W // 2, wy - 76), "ONE DOOR", "mono", 24, col, g, anchor="ma")
 
-    b1 = sub(p, n_beats, 1)
+    b1 = smooth(clamp(sub(p, n_beats, 1) * 2.2))
     if b1 > 0:
-        f = smooth(b1)
-        c.plate(gy - 210, "3 WEEKS", "serif", 56, RED, f)
-        c.plate(gy - 132, "UNCLEAR APPROVER", "mono", 26, DIM, f)
-        c.plate(gy + 176, "SHARED CREDENTIAL AT THE END", "mono", 26, DIM, f)
-
-    b2 = sub(p, n_beats, 2)
-    if b2 > 0.35:
-        f = smooth(clamp((b2 - 0.35) / 0.65))
-        c.plate(STAGE_Y1 - 56, "1 THROUGH   ·   12 AROUND", "serif", 44, GREEN, f)
+        c.plate(wy + 150, "3 WEEKS  ·  UNCLEAR APPROVER", "serif", 46, RED, b1)
+        c.plate(wy + 226, "SHARED CREDENTIAL AT THE END", "mono", 25, DIM, b1)
+    if bend > 0.4:
+        f = smooth(clamp((bend - 0.4) / 0.6))
+        c.plate(STAGE_Y1 - 76, "1 THROUGH  ·  8 AROUND", "serif", 44, RED, f)
 
 
-def scene_idea(c, p, beat, n_beats):
-    """The contract, then the ceiling it describes."""
-    lift = smooth(sub(p, n_beats, 3))
-    pair_y = lerp(STAGE_Y0 + 210, STAGE_Y0 + 70, lift)
-    f0 = smooth(sub(p, n_beats, 0))
-    c.agent(PAD + 130, pair_y, 1.7, BLUE, f0 * (1 - lift * 0.55))
-    c.service(W - PAD - 130, pair_y, 1.7, DIM, f0 * (1 - lift * 0.55))
-    c.line((PAD + 200, pair_y), (W - PAD - 210, pair_y), BLUE,
-           f0 * 0.5 * (1 - lift * 0.6), 4)
+def scene_document(c, p, beat, n_beats):
+    """The pair becomes a page; the page becomes a ceiling."""
+    shrink = smooth(sub(p, n_beats, 3))
 
-    b1 = smooth(sub(p, n_beats, 1))
-    if b1 > 0 and lift < 0.2:
-        c.plate(pair_y + 140, "GOVERN THE RELATIONSHIP", "serif", 46, YELLOW, b1)
+    if beat < 2:
+        a = smooth(clamp(sub(p, n_beats, 0) * 2.4))
+        y = STAGE_Y0 + 260
+        c.agent(STAGE_X0 + 150, y, 2.0, BLUE, a)
+        c.service(STAGE_X1 - 150, y, 2.0, DIM, a)
+        c.line((STAGE_X0 + 214, y), (STAGE_X1 - 240, y), BLUE, a * 0.5, 5)
+        b1 = smooth(sub(p, n_beats, 1))
+        if b1 > 0:
+            c.plate(y + 170, "GOVERN THE RELATIONSHIP", "serif", 48, YELLOW, b1)
+        return
 
-    b2 = smooth(sub(p, n_beats, 2))
-    if b2 > 0:
-        y = lerp(STAGE_Y0 + 380, STAGE_Y0 + 210, lift)
-        c.rect((PAD + 30, y, W - PAD - 30, y + 250), YELLOW, b2 * 0.8, 3, BG2, r=8)
-        c.text((PAD + 66, y + 34), "CONNECTION CONTRACT", "mono", 24, YELLOW, b2)
-        for k, ln in enumerate([
-                "caller   agent:recon",
-                "callee   server:payments",
-                "surface  get_balance, list_transactions",
-                "expires  30d - signed - revocable"]):
-            t = clamp(b2 * 3 - k * 0.4)
-            c.text((PAD + 66, y + 86 + k * 40), ln, "mono", 26,
-                   GREEN if k == 3 else INK, t)
+    if beat == 2:
+        # The page writes itself in, full height. A contract is a portrait object.
+        lp = sub(p, n_beats, 2)
+        document(c, STAGE_Y0 + 20, 820, 1.0, smooth(clamp(lp * 2.1)), None,
+                 smooth(clamp(lp * 2.0 - 0.75)))
+        return
 
-    # The narrowing: three bands, each inside the last.
+    # It becomes the ceiling: shrunk to the top, three apertures beneath it.
+    document(c, STAGE_Y0 + 10, lerp(820, 250, shrink), 1.0, 1.0, None,
+             1 - shrink * 0.9)
     b4 = smooth(sub(p, n_beats, 4))
-    if b4 > 0:
-        y0 = STAGE_Y0 + 520
-        for k, (label, wfrac, col) in enumerate([
-                ("what the contract allows", 1.00, YELLOW),
-                ("intersected with the token's scope", 0.72, BLUE),
-                ("intersected with policy, per call", 0.44, GREEN)]):
-            t = clamp(b4 * 3 - k * 0.55)
-            if t <= 0:
-                continue
-            half = (W - 2 * PAD - 60) * wfrac / 2
-            yy = y0 + k * 100
-            c.rect((W // 2 - half, yy, W // 2 + half, yy + 74), col, t * 0.85, 3,
-                   None, r=6)
-            c.text((W // 2, yy + 22), label, "mono", 24, col, t, anchor="ma")
-        t = clamp(b4 * 3 - 2.0)
-        c.text((W // 2, y0 + 322), "EACH LAYER ONLY NARROWS", "serif", 44, INK, t,
-               anchor="ma")
+    y0 = STAGE_Y0 + 300
+    for k, (label, wfrac, col) in enumerate([
+            # Words, not set notation: the mono face has no U+2229, which the font
+            # guard caught — and "narrowed by" is plainer on a phone regardless.
+            ("the contract's ceiling", 1.00, YELLOW),
+            ("narrowed by the token's scope", 0.66, BLUE),
+            ("narrowed again by policy, per call", 0.38, GREEN)]):
+        t = clamp((b4 if beat >= 4 else shrink) * 3.2 - k * 0.6)
+        if t <= 0:
+            continue
+        half = (STAGE_W - 40) * wfrac / 2
+        yy = y0 + k * 150
+        # An aperture: two bars with a gap, and the beam that gets through it.
+        c.rect((STAGE_X0, yy, W // 2 - half, yy + 26), col, t * 0.9, 0, col, r=3)
+        c.rect((W // 2 + half, yy, STAGE_X1, yy + 26), col, t * 0.9, 0, col, r=3)
+        c.text((W // 2, yy - 44), label, "mono", 26, col, t, anchor="ma")
+        if k < 2:
+            nxt = [0.66, 0.38][k] * (STAGE_W - 40) / 2
+            for sgn in (-1, 1):
+                c.line((W // 2 + sgn * half, yy + 26),
+                       (W // 2 + sgn * nxt, yy + 150), col, t * 0.35, 2)
+    t = clamp((b4 if beat >= 4 else shrink) * 3.2 - 2.4)
+    if t > 0:
+        c.plate(y0 + 470, "EACH LAYER ONLY NARROWS", "serif", 46, INK, t)
+
+
+NODES = [("mediator apac-01", True, "0.4s"), ("mediator apac-02", True, "0.6s"),
+         ("mediator apac-03", True, "0.9s"), ("mediator emea-01", True, "1.2s"),
+         ("mediator emea-02", True, "2.0s"), ("mediator emea-03", True, "3.1s"),
+         ("mediator us-01", True, "4.8s"), ("mediator us-02", True, "7.2s"),
+         ("mediator us-03", True, "11s"), ("mediator apj-01", True, "19s"),
+         ("mediator apj-02", True, "28s"), ("mediator apj-03", True, "41s"),
+         ("mediator dc-legacy", False, "UNCONFIRMED")]
+
+TOOLS = [("get_balance", 1), ("list_transactions", 1), ("wire_funds", -1),
+         ("create_payee", 0), ("reverse_posting", 0), ("close_batch", 0),
+         ("set_limit", 0), ("void_transaction", 0), ("export_ledger", 0)]
 
 
 def scene_path(c, p, beat, n_beats):
-    """Agent, check, service — stacked. Portrait suits this better than landscape."""
-    ay, gyy, sy = STAGE_Y0 + 130, STAGE_Y0 + 420, STAGE_Y1 - 160
-    # The trio fades out as the swarm arrives. Drawing both at once put a shield on
-    # top of forty connections and neither could be read.
-    a0 = smooth(sub(p, n_beats, 0)) * (1 - smooth(clamp(sub(p, n_beats, 3) * 1.5)))
-    c.agent(W // 2, ay, 1.9, BLUE, a0)
-    c.shield(W // 2, gyy, 1.9, YELLOW, a0)
-    c.text((W // 2, gyy + 104), "IN-PATH CHECK", "mono", 26, YELLOW, a0, anchor="ma")
-    c.service(W // 2, sy, 1.9, DIM, a0)
-    c.text((W // 2, sy + 134), "OFFERS NINE TOOLS", "mono", 26, DIM, a0, anchor="ma")
+    """Agent, check, service — and the manifest, which is the whole point."""
+    if beat >= 4:
+        # Containment as a status page, not thirteen specks in a row.
+        readout(c, STAGE_Y0 + 40, NODES, smooth(sub(p, n_beats, 4)))
+        return
 
+    if beat == 3:
+        # The same cables as chapter one, parallel instead of crossing. The contrast
+        # is the argument: nothing about the number changed, only whether it is known.
+        # The same forty-four cables, parallel instead of crossing. Nothing about
+        # the number changed — only whether anybody knows what they are.
+        threads(c, smooth(clamp(sub(p, n_beats, 3) * 1.8)), n=44, seed=11,
+                col=GREEN, a=0.40, lw=3, tangle=0.13)
+        f = smooth(clamp(sub(p, n_beats, 3) * 2.2))
+        c.plate(STAGE_Y0 + 320, "EVERY ONE HAS AN OWNER", "serif", 50, GREEN, f)
+        c.plate(STAGE_Y0 + 404, "A SCOPE, AND AN EXPIRY", "serif", 50, GREEN, f)
+        return
+
+    a0 = smooth(clamp(sub(p, n_beats, 0) * 2.4))
+    ay, gyy = STAGE_Y0 + 90, STAGE_Y0 + 250
+    c.agent(W // 2, ay, 1.7, BLUE, a0)
+    c.shield(W // 2, gyy, 1.7, YELLOW, a0)
+    c.text((W // 2, gyy + 92), "IN-PATH CHECK", "mono", 25, YELLOW, a0, anchor="ma")
+
+    # The manifest: nine rows, because "nine offered, two shown" is a list, and a
+    # list down a tall frame is the one thing portrait does better than anything.
     b1 = sub(p, n_beats, 1)
-    if b1 > 0 and beat < 3:
-        rows = [("get_balance", True), ("list_transactions", True),
-                ("wire_funds", False)]
-        for k, (name, ok) in enumerate(rows):
-            t = smooth(clamp(b1 * 2 - k * 0.3))
+    b2 = smooth(sub(p, n_beats, 2))
+    if b1 > 0:
+        c.text((STAGE_X0 + 20, STAGE_Y0 + 372), "THE SERVICE OFFERS NINE", "mono", 24,
+               DIM, smooth(clamp(b1 * 2.2)))
+        for i, (name, kind) in enumerate(TOOLS):
+            t = smooth(clamp(b1 * 3.2 - i * 0.16))
             if t <= 0:
                 continue
-            y = sy - 200 + k * 62
-            col = GREEN if ok else FAINT
-            c.text((PAD + 20, y), name, "mono", 30, col, t)
-            c.arrow((W - PAD - 210, y + 14), (W - PAD - 60, y + 14), col, t, 3)
-            if not ok:
-                b2 = smooth(sub(p, n_beats, 2))
-                if b2 > 0:
-                    c.cross(W - PAD - 135, y + 14, 20, RED, b2, 6)
-                    c.text((PAD + 20, y + 44), "WC-4002  REFUSED HERE", "mono", 22,
-                           RED, b2)
-
-    if beat >= 3:
-        fade = smooth(sub(p, n_beats, 3))
-        draw_swarm(c, fade, colour=lambda i: (GREEN, 0.22), lw=2)
-        c.plate(STAGE_Y1 - 132, "EVERY ONE HAS AN OWNER", "serif", 46, GREEN, fade)
-        c.plate(STAGE_Y1 - 66, "A SCOPE, AND AN EXPIRY", "serif", 46, GREEN, fade)
-
-    b4 = sub(p, n_beats, 4)
-    if b4 > 0:
-        f = smooth(b4)
-        # Thirteen nodes; twelve tick, one says it could not confirm.
-        for i in range(13):
-            x = PAD + 30 + i * ((W - 2 * PAD - 60) / 12)
-            t = clamp(f * 3 - i * 0.12)
-            if t <= 0:
-                continue
-            y = STAGE_Y0 + 250
-            if i == 12:
-                c.cross(x, y, 15, RED, t, 5)
+            y = STAGE_Y0 + 414 + i * 47
+            if kind == 1:
+                c.tick(STAGE_X0 + 34, y + 14, 13, GREEN, t, 5)
+                c.text((STAGE_X0 + 80, y), name, "mono", 30, GREEN, t)
+                c.text((STAGE_X1, y), "IN THE LIST", "mono", 22, GREEN, t,
+                       anchor="ra")
+            elif kind == -1:
+                c.cross(STAGE_X0 + 34, y + 14, 13, RED, t * b2, 5)
+                c.text((STAGE_X0 + 80, y), name, "mono", 30,
+                       RED if b2 > 0.1 else FAINT, t)
+                c.text((STAGE_X1, y), "WC-4002 REFUSED", "mono", 22, RED, t * b2,
+                       anchor="ra")
             else:
-                c.tick(x, y, 14, GREEN, t, 5)
-        c.plate(y + 54, "12 / 13 CONFIRMED IN 41s", "serif", 48, GREEN, f)
-        c.plate(y + 130, "THE 13th SAYS IT COULD NOT CONFIRM", "mono", 26, RED, f)
+                c.dot(STAGE_X0 + 34, y + 14, 5, FAINT, t * 0.7)
+                c.text((STAGE_X0 + 80, y), name, "mono", 30, FAINT, t * 0.55)
+                c.text((STAGE_X1, y), "NOT VISIBLE", "mono", 22, FAINT, t * 0.55,
+                       anchor="ra")
 
 
-SCENES = {0: scene_two_layers, 1: scene_connection, 2: scene_gate, 3: scene_idea,
+SCENES = {0: scene_planes, 1: scene_threads, 2: scene_wall, 3: scene_document,
           4: scene_path}
 
 
@@ -836,27 +971,25 @@ def build():
             v.scene(secs)(make())
 
     # --- the five readings ---
+    HILITE = ["id", "surface", "approval", "mediator", "revoke"]
     for pi, (who, head, body, line, col) in enumerate(PERSONAS):
         @v.scene(reading_seconds(head, body))
-        def _p(c, p, who=who, head=head, body=body, line=line, col=col, pi=pi):
+        def _p(c, p, who=who, head=head, body=body, line=line, col=col, pi=pi,
+               hl=HILITE[pi]):
             a = smooth(clamp(p * 4))
             c.eyebrow("Five Readings", a)
-            y = STAGE_Y0 + 150
-            c.rect((PAD, y, W - PAD, y + 560), col, a * 0.5, 2, BG2, r=8)
-            c.text((W // 2, y + 52), who, "mono", 28, col, a, anchor="ma")
-            c.centred(y + 122, head, W - PAD * 2 - 90, "serif", 58, INK, a)
-            c.centred(y + 270, body, W - PAD * 2 - 100, "sans", 34, DIM, a,
-                      leading=1.44)
-            c.line((PAD + 60, y + 486), (W - PAD - 60, y + 486), col, a * 0.35, 2)
-            c.text((W // 2, y + 512), line, "mono", 26, col, a, anchor="ma")
-            # Which of the five, so the section has a shape.
+            # The same page every time, with one field group lit. Five cards would
+            # have been five pictures; this is the claim itself — one artifact, read
+            # five ways — and the viewer can see it is the same object.
+            document(c, STAGE_Y0 + 10, 520, a, 1.0, hl, 0.8)
+            c.text((W // 2, STAGE_Y0 + 570), who, "mono", 28, col, a, anchor="ma")
+            c.centred(STAGE_Y0 + 616, head, W - PAD * 2 - 90, "serif", 54, INK, a)
+            c.centred(STAGE_Y0 + 730, line, W - PAD * 2 - 120, "mono", 26, col, a)
             for k in range(5):
                 x = W // 2 - 68 + k * 34
-                c.dot(x, STAGE_Y1 - 30, 7, col if k == pi else RULE,
+                c.dot(x, STAGE_Y1 - 20, 7, col if k == pi else RULE,
                       a if k == pi else a * 0.8)
-            c.caption("The same artifact, read five different ways.",
-                      "Nobody adopts anybody else's workflow. They agree on one "
-                      "object.", 1.0,
+            c.caption("The same artifact, read five different ways.", body, 1.0,
                       {"five different ways.": YELLOW})
             c.progress(5, n_ch, (pi + p) / 5)
             c.mark(0.45)
@@ -964,6 +1097,24 @@ if __name__ == "__main__":
                 "Nobody adopts anybody else's workflow. They agree on one object.",
                 "A register with owners that can prove it was not edited "
                 "afterwards."]
+    # Every string added by the portrait rewrite. The guard is only worth what it
+    # covers, and a rewrite that adds copy without adding it here turns the guard
+    # into decoration — which is the failure it was written to prevent.
+    strings += ["MAY THESE TWO PARTIES MEET AT ALL",
+                "MAY THIS CALL PROCEED, RIGHT NOW", "CHECKED HERE",
+                "ONE CALL, TWO BOUNDARIES", "APPROVAL GATE", "ONE DOOR",
+                "3 WEEKS  ·  UNCLEAR APPROVER", "1 THROUGH  ·  8 AROUND",
+                "CONNECTION CONTRACT", "conn_7f3a91c4", "ES256",
+                "THE SERVICE OFFERS NINE", "IN THE LIST", "WC-4002 REFUSED",
+                "NOT VISIBLE", "UNCONFIRMED",
+                "the contract's ceiling", "narrowed by the token's scope",
+                "narrowed again by policy, per call"]
+    for label, value, _ in CONTRACT:
+        strings += [label, value]
+    for name, _, note in NODES:
+        strings += [name, note]
+    for name, _ in TOOLS:
+        strings.append(name)
     n = check_fonts([s for s in strings if s])
     print(f"  font check ok — {n} distinct glyphs across 3 faces")
 

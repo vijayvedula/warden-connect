@@ -34,24 +34,62 @@ cd ../src && python3 film_mobile.py
 cp out/warden-connect-mobile.mp4 ../video/
 ```
 
+### The scenes are portrait-native, not portrait-fitted
+
+The first attempt moved the web version's figures around and some of them never
+fitted. A forty-node network and a thirteen-lane array are **wide** ideas; a 936 px
+stage gives them 78 px of separation, which is a smudge on a phone. So the second
+attempt threw the compositions away and built five motifs for a tall frame instead —
+each used more than once, so the film has a vocabulary rather than a scene-by-scene
+scramble.
+
+| Motif | Replaces | Why it suits a tall frame |
+|---|---|---|
+| **plane** — a boundary seen almost edge-on | two columns side by side | The layers can be *stacked*, which is what they are, with one call descending through both. It is the only composition that makes "neither can widen the other" self-evident |
+| **threads** — cables running down the frame | the node graph | A tall frame has depth rather than breadth, so the mess is expressed as *crossing*. Forty-four cables that drift laterally read as a tangle at any size |
+| **wall** — a barrier with one door | nine lanes bending sideways | You can see the whole width of the wall and the single door in it, and the traffic that bows out to the margins to get past |
+| **document** — the contract as a page | a card of bullet points | A signed document is already a portrait shape. It carries three scenes: the idea, the ceiling, and all five readings |
+| **readout** — a vertical status list | thirteen ticks in a row | Thirteen ticks across 936 px is thirteen specks. Thirteen rows down a tall frame is the status page an operator actually reads at 03:00 |
+
+Two of these do double duty as an argument. The cables appear twice — red and
+crossing in *The Connection*, then the same forty-four green and parallel in *On the
+Path*. Nothing about the number changed, only whether anybody knows what they are,
+and that is the whole pitch in one cut. And the five role readings are now **one
+document with a different field group lit each time**, rather than five cards: the
+section's claim is *the same artifact, read five ways*, so it should be visibly the
+same artifact.
+
 ### What the frames taught, which is the useful part
 
-Every collision below was invisible in the code and obvious in a still. The habit
-worth keeping is extracting frames and *looking at them* — the same habit that found
-five defects in the Rust this week.
+Every one of these was invisible in the code and obvious in a still. The habit worth
+keeping is extracting frames and *looking at them* — the same habit that found five
+defects in the Rust this week.
 
-- **Text over line art is a smudge.** Three labels landed on the very connection
-  curves they described. `Canvas.plate()` draws them on an opaque ground; red serif
-  over a red 11 px stroke had no contrast ratio that would save it.
+- **A four-second blank stage that the code said was fine.** The scene functions get
+  progress across the whole *chapter*, and two of them faded in against that raw
+  value instead of converting it with `sub()`. At beat 0 of a nine-beat chapter that
+  is `p ≈ 0.05`, so the planes drew at 3% alpha. The code read correctly and the
+  frame was empty.
+- **And then the opposite mistake.** Fixed to fade per beat, the stage went blank at
+  *every* cut inside a chapter. Consecutive beats share a scene, so the stage fades
+  in once — keyed to beat 0 — while only the thing being demonstrated restarts.
+- **Text over line art is a smudge.** Labels landed on the very cables they
+  described. `Canvas.plate()` puts them on an opaque ground; red serif over a red
+  11 px stroke has no contrast ratio that saves it.
 - **Paint order is not source order in your head.** The `AGENT` label got its plate,
-  and then the link line was drawn *after* it, straight back through the text. The
-  scene now draws the line first and everything that must sit on top of it second.
-- **Two things fading in the same place is one illegible thing.** *On the Path* drew
-  the agent/check/service trio and the forty-connection swarm simultaneously. The
-  trio now fades as the swarm arrives.
-- **The first cut was 3:45.** Not because there was too much content but because the
-  reading-time formula was tuned for a document. Two passes on words-per-second and a
-  cap got it to 2:29 with nothing removed.
+  and then the link line was drawn *after* it, straight back through the text.
+- **A reveal that lags its own caption reads as a bug.** The caption said "Four." and
+  the fourth bar was still at 2% opacity, because a stagger tuned to finish by the
+  end of a beat is invisible at the start of it. Builds now land in the first third.
+- **The font guard earned its keep again.** The narrowing diagram was drawn with `∩`,
+  and the mono face has no U+2229 — caught before a frame was rendered rather than
+  discovered as three missing symbols. Replaced with "narrowed by", which is plainer
+  on a phone anyway.
+- **Ninety-six cables were worse than forty-four.** The dense version filled the
+  frame with a flat red mesh; halving the count and staggering the endpoints made it
+  a tangle. More is not busier, it is flatter.
+- **A capped label list measured no faster than an uncapped one**, so that complexity
+  never got written. Measuring first is how you avoid building things.
 
 ## Journey videos
 
