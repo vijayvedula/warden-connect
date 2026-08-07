@@ -3,7 +3,7 @@
 ## The film, vertical — for phones
 
 [`warden-connect-mobile.mp4`](warden-connect-mobile.mp4) · 1080×1920 · 9:16 ·
-30 fps · **3:00** · no audio track. Poster:
+30 fps · **2:57** · no audio track. Poster:
 [`warden-connect-mobile-poster.jpg`](warden-connect-mobile-poster.jpg).
 
 The web presentation *"Why agent connections need a control plane"* as a video a
@@ -49,20 +49,30 @@ cp out/warden-connect-mobile.mp4 ../video/
 
 ### It opens by earning the problem
 
+*The Assumption* — the chapter that has to work hardest, because everything after it
+is a solution to a problem the viewer has not yet agreed exists.
+
 The film used to begin with the solution. *What Changed* now comes between the title
 and the two layers, and it is the only chapter that argues the problem **exists**
 rather than describing it — because "agents are non-deterministic" is a sentence
 people nod at without changing their mind about anything.
 
-Five beats, and each one is a picture rather than a claim:
+The first script for it stated facts about software: true, and a lecture. It is now an
+assumption, its quiet death, the turn where the feature *is* the problem, the chain
+that loses the human, and then the consequence — and it addresses the viewer directly,
+because *"every control you own"* is a claim people want to argue with, and arguing is
+a form of paying attention.
+
+Five beats, each a picture rather than a sentence:
 
 1. **One straight line.** A program: one path in, one path out, reviewable once and
    true for ever.
 2. **The line becomes a tree.** An agent chooses its tools at runtime. The straight
    line stays on screen as one faint branch among many, so the before and after are
    in the same frame.
-3. **The same request, twice, taking different branches.** Which is the whole point of
-   an agent, and the reason reviewing a build tells you nothing about what it will do.
+3. **The same request, twice, taking different branches.** *"Which is why you bought
+   it"* — the feature and the problem are the same property, which is the turn the
+   chapter needs to avoid sounding like a complaint about agents.
 4. **The enterprise shape: a chain of hops.** A person asks an agent, which delegates
    to another, which calls a tool, which feeds a third. The column on the right is the
    argument — `human:priya@org` at the top, `svc:orchestrator` at hop 1,
