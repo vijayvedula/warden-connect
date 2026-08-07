@@ -4,9 +4,14 @@
 > Warden decides whether an action may happen. **warden-connect decides whether
 > the relationship that enables it may exist at all.**
 
-Status: **design / definition**. Companion to the Warden core docs
-(`../../warden/docs/`) — this set defines the first of three new family members:
-`warden-connect`, `warden-delegate`, `warden-trace`.
+Status: **built, pre-1.0**. The design set below defined it; the code implements it
+and [production-readiness.md](production-readiness.md) is the honest list of what
+still stands between here and a release. Start at the
+[repository README](../README.md) if you want to run it rather than read it.
+
+Companion to the Warden core docs (`../../warden/docs/`) — this set defines the
+first of three new family members: `warden-connect`, `warden-delegate`,
+`warden-trace`.
 
 ---
 
@@ -40,6 +45,15 @@ recorder, joined up across agents**.
 | 9 | [warden-connect-logical-architecture.svg](warden-connect-logical-architecture.svg) | Logical architecture diagram (same visual language as `warden-logical-architecture.svg`) |
 | — | [explainer/](explainer/) | Twelve self-contained HTML pages: a capability hub, one per use case, and the adoption ladder. A *rendering* of 05 and 08 for sharing, not a second specification |
 | — | [explainer/video/](explainer/video/) | Five animated journey explainers, one per persona in 06. 1080p, 53 s each |
+
+Written after the build, and downstream of what the code turned out to need:
+
+| Document | What it gives you |
+|---|---|
+| [physical-architecture.md](physical-architecture.md) | Four deployment variants — on-prem VMs, on-prem Kubernetes, AWS, Azure — with topologies, a cross-variant mapping table, and the gaps that shape the design |
+| [key-custody.md](key-custody.md) | The six signing operations, which key loss is unrecoverable and which is merely an outage, and why the revocation key is the odd one out |
+| [twelve-factor.md](twelve-factor.md) | Config, state, logs, disposability — and the two places this deliberately deviates, including the one where §1 of the LLD overstates what exists |
+| [production-readiness.md](production-readiness.md) | Nineteen items in P0/P1/P2 plus a hardening pass, in working order. Written before anyone asked |
 
 Read them in order; 01 and 02 are the positioning, 03–06 are the product
 definition, 07–09 are the build. 07 decides *what* the components are; 08 decides
