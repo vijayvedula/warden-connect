@@ -327,10 +327,14 @@ class Canvas:
 # was always reading something mid-assembly. `HOLD` is the fraction of each shot
 # spent on the completed frame, and it is carved out of the existing duration
 # rather than added to it, so most of this costs no runtime at all.
-HOLD = 0.34          # of each shot, static and fully drawn
+# The still is an absolute duration, not a fraction. As a fraction of a 2.4 s shot it
+# came to 0.8 s, which is not long enough to read anything — the number that matters
+# to a reader is "how many seconds is this frame in front of me", so that is the
+# number the code holds.
+BUILD = 1.5          # seconds of animation, then it stops moving
+MIN_STILL = 2.3      # seconds the finished frame is held, at minimum
 FADE_IN = 0.13       # seconds
-FADE_OUT = 0.11      # seconds
-SETTLE = 0.30        # seconds added per shot, purely to breathe
+FADE_OUT = 0.12      # seconds
 
 _GROUND = Image.new("RGB", (W, H), BG)
 
@@ -341,8 +345,11 @@ class Video:
         self.scenes = []
 
     def scene(self, seconds):
+        """`seconds` is a reading estimate; the shot is at least long enough to build
+        and then hold still for `MIN_STILL`."""
         def deco(fn):
-            self.scenes.append((max(1, int((seconds + SETTLE) * FPS)), fn))
+            total = max(seconds, BUILD + MIN_STILL)
+            self.scenes.append((max(1, int(total * FPS)), fn))
             return fn
         return deco
 
@@ -359,8 +366,8 @@ class Video:
         fin, fout = int(FPS * FADE_IN), int(FPS * FADE_OUT)
         for count, fn in self.scenes:
             # The build finishes here, not at the last frame. Everything after is the
-            # same picture, held.
-            build = max(1, int(round(count * (1 - HOLD))) - 1)
+            # same picture, held — at least MIN_STILL of it.
+            build = max(1, min(int(BUILD * FPS), count - int(MIN_STILL * FPS)) - 1)
             for i in range(count):
                 c = Canvas()
                 fn(c, clamp(i / build))
@@ -471,7 +478,7 @@ PERSONAS = [
      "12 / 13 confirmed - 41s", RED),
 ]
 
-CHAPTERS = ["What Changed", "The Two Layers", "The Connection", "The Obvious Fix",
+CHAPTERS = ["The Assumption", "The Two Layers", "The Connection", "The Obvious Fix",
             "The Idea", "On the Path", "Five Readings", "Plainly"]
 
 
@@ -1315,20 +1322,26 @@ def build():
     v = Video(OUT / "warden-connect-mobile.mp4")
     # The premise first. Without it the film opens by describing a solution to a
     # problem the viewer has not yet agreed exists.
-    CH0 = [("Software used to do what it was told.", None,
-            {"what it was told.": BLUE}),
-           ("Now it decides.",
-            "An agent picks its own tools at runtime, on somebody's behalf, "
-            "thousands of times an hour.", {"Now it decides.": YELLOW}),
-           ("Run the same request twice and it may not take the same route.",
-            "Which is the whole point of it — and the reason reviewing a build "
-            "tells you nothing about what it will do.", {"may not": YELLOW}),
-           ("In an enterprise it is never one hop.",
-            "A person asks an agent, which delegates to another, which calls a "
-            "tool, which feeds a third. Each hop decides the next one.",
-            {"never one hop.": YELLOW}),
-           ("So two questions have nobody to answer them.", None,
-            {"nobody to answer them.": RED})]
+    # Re-scripted. The first version stated facts about software — true, and a
+    # lecture. This one is an assumption, its quiet death, the turn where the feature
+    # *is* the problem, the chain that loses the human, and then the consequence. The
+    # viewer is addressed directly, because "every control you own" is a claim people
+    # want to argue with, and arguing is a form of paying attention.
+    CH0 = [("Every control you own assumes software cannot surprise you.", None,
+            {"cannot surprise you.": BLUE}),
+           ("That assumption died quietly, and fairly recently.",
+            "An agent chooses its own tools, at runtime, on somebody's behalf — "
+            "thousands of times an hour.", {"died quietly": YELLOW}),
+           ("Ask it the same thing twice and it may not do the same thing twice.",
+            "Which is why you bought it. It is also why reviewing the build tells "
+            "you nothing about what it will run.",
+            {"Which is why you bought it.": YELLOW}),
+           ("And it is never one agent.",
+            "A person asks one. It delegates to another. That one calls a tool. The "
+            "answer starts a fourth. By hop four the person who asked is not in the "
+            "request any more.", {"never one agent.": YELLOW}),
+           ("Then something goes wrong, and two questions have no owner.", None,
+            {"two questions have no owner.": RED})]
 
     chapter_caps = [CH0, CAPS["two_layers"] + CAPS["caps"] + [CAPS["caps_end"]],
                     None, None, None, None]
