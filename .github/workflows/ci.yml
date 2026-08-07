@@ -74,6 +74,14 @@ jobs:
         working-directory: warden-connect
         run: cargo test -p wc-core --lib conformance -- --nocapture
 
+      # §8.16's P2 exit criterion is a number: screening precision >= 0.98 on the
+      # labelled corpus. Named here, with output, because a criterion buried in a
+      # green summary line is a criterion nobody reads. Recall is gated too — a false
+      # positive is loud, a false negative ships.
+      - name: Screening calibration (§8.16 P2 exit criterion)
+        working-directory: warden-connect
+        run: cargo test -p wc-control --lib calibration -- --nocapture
+
   # ---------------------------------------------------------------------------
   msrv:
     name: MSRV 1.89

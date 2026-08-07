@@ -1005,46 +1005,143 @@ fn walk_text(v: &Value, path: &str, out: &mut Vec<(String, String)>, depth: usiz
 // S1 · invisible and bidi characters
 // ---------------------------------------------------------------------------
 
-/// Characters that render as nothing, or reorder what follows them.
+/// Characters that conceal or reorder text, and have no legitimate place in a
+/// human-readable description.
 ///
-/// `wcs1` deliberately preserves these — normalisation must never launder an
-/// attack — which is exactly what makes this detector possible.
-fn is_invisible(c: char) -> bool {
+/// `wcs1` deliberately preserves these — normalisation must never launder an attack —
+/// which is exactly what makes this detector possible.
+///
+/// # What is deliberately **not** here
+///
+/// The first version of this blocked `U+200B..U+200F` and `U+2066..U+2069` wholesale,
+/// which meant S1 — a *blocking* detector — refused any tool server whose descriptions
+/// were localised. Measured, not theorised: Arabic mixed with a Latin tool name uses
+/// `U+200F` RLM, Hebrew uses `U+200E` LRM, and the modern way to embed a mixed-direction
+/// run is the isolates. Persian and Urdu **require** `U+200C` ZWNJ; every multi-person
+/// emoji contains `U+200D` ZWJ. All of that blocked, on a product whose own documents
+/// lead with multi-market residency.
+///
+/// So the legitimate directional and joining controls moved to
+/// [`is_localisation_control`] and no longer block. What remains here can hide text
+/// (zero-width, no shaping role) or arbitrarily reorder it (the deprecated embedding
+/// and override family, which is the Trojan Source primitive).
+///
+/// Removing them from the blocking set would have opened an evasion — a ZWJ inside
+/// `ignore previous instructions` breaks the phrase for a `contains` matcher — so
+/// [`matchable`] strips *both* sets before any phrase matching. That is the half of
+/// this change that makes the other half safe.
+fn is_concealing(c: char) -> bool {
     matches!(c,
-        '\u{00AD}'                 // soft hyphen
-        | '\u{061C}'               // Arabic letter mark
-        | '\u{180E}'               // Mongolian vowel separator
-        | '\u{200B}'..='\u{200F}'  // ZWSP, ZWNJ, ZWJ, LRM, RLM
-        | '\u{202A}'..='\u{202E}'  // bidi embedding and override
-        | '\u{2060}'..='\u{2064}'  // word joiner, invisible operators
-        | '\u{2066}'..='\u{2069}'  // bidi isolates
-        | '\u{FEFF}'               // BOM / ZWNBSP
-        | '\u{FFF9}'..='\u{FFFB}'  // interlinear annotation
+        '\u{00AD}'                 // soft hyphen — invisible, no role in prose
+        | '\u{180E}'               // Mongolian vowel separator — deprecated format
+        | '\u{200B}'               // ZWSP — a break opportunity, not a shaping control
+        | '\u{202A}'..='\u{202E}' // LRE RLE PDF LRO RLO — can reorder arbitrarily
+        | '\u{2060}'..='\u{2064}' // word joiner, invisible operators
+        | '\u{FEFF}'               // BOM / ZWNBSP mid-string
+        | '\u{FFF9}'..='\u{FFFB}' // interlinear annotation
+        | '\u{E0000}'..='\u{E007F}' // tag characters — invisible, and the carrier
+                                      // for ASCII smuggling. Not detected at all
+                                      // before this; a recall gap, not a trade-off.
     )
+}
+
+/// Directional and joining controls that real languages require.
+///
+/// Legitimacy here is **contextual**, which is what lets precision and recall both
+/// stay where they should. A ZWJ between two Devanagari letters is doing a job; the
+/// same ZWJ between `Amount.` and ` Ignore limits.` is not — it has no shaping role in
+/// Latin text, and the only thing it can be doing is hiding the join. So S1 blocks one
+/// and not the other, on the evidence of [`has_complex_script`].
+///
+/// They are stripped by [`matchable`] either way, so they can never be used to break a
+/// phrase for a `contains` matcher.
+fn is_localisation_control(c: char) -> bool {
+    matches!(c,
+        '\u{061C}'                 // Arabic letter mark
+        | '\u{200C}'               // ZWNJ — required in Persian, Urdu, Indic
+        | '\u{200D}'               // ZWJ — required in Indic, and in emoji sequences
+        | '\u{200E}'..='\u{200F}' // LRM, RLM — standard in mixed-direction text
+        | '\u{2066}'..='\u{2069}' // isolates — the recommended embedding mechanism
+    )
+}
+
+/// Whether this text contains a script that needs joining or directional controls.
+///
+/// Deliberately coarse and dependency-free — the question is not "which language is
+/// this" but "could a ZWJ or an RLM plausibly be doing typographic work here". Ranges
+/// rather than a Unicode property table, because §8.3 does not spend a dependency on
+/// this and a false *positive* here only costs a block that becomes a flag.
+fn has_complex_script(text: &str) -> bool {
+    text.chars().any(|c| {
+        matches!(c,
+            '\u{0590}'..='\u{08FF}'     // Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan
+            | '\u{0900}'..='\u{0DFF}'   // Devanagari through Sinhala
+            | '\u{FB1D}'..='\u{FDFF}'   // Hebrew and Arabic presentation forms A
+            | '\u{FE70}'..='\u{FEFC}'   // Arabic presentation forms B
+            | '\u{2600}'..='\u{27BF}'   // misc symbols and dingbats — emoji
+            | '\u{1F000}'..='\u{1FAFF}' // pictographs — ZWJ sequences live here
+        )
+    })
+}
+
+/// Text as a matcher should see it: no invisible characters, lowercased.
+///
+/// Every phrase and substring check goes through this. Without it, one zero-width
+/// character inside `ignore previous instructions` defeats a `contains` — and once the
+/// legitimate controls stopped blocking, that stopped being hypothetical.
+///
+/// Strips *both* categories, because the question a matcher asks is "what does this say
+/// to a human", and a human sees neither.
+fn matchable(text: &str) -> String {
+    text.chars()
+        .filter(|c| !is_concealing(*c) && !is_localisation_control(*c))
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn s1_invisible(item: &str, fields: &[(String, String)], out: &mut Vec<Hit>) {
     for (field, text) in fields {
+        // The same codepoint is a shaping control or a hiding place depending on what
+        // it sits next to, so the decision is made per field rather than per character.
+        let complex = has_complex_script(text);
+        let hides = |c: char| is_concealing(c) || (!complex && is_localisation_control(c));
+
         let found: Vec<String> = text
             .chars()
-            .filter(|c| is_invisible(*c))
+            .filter(|c| hides(*c))
             .map(|c| format!("U+{:04X}", c as u32))
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        if !found.is_empty() {
-            out.push(Hit {
-                detector: Detector::S1,
-                item: item.to_string(),
-                field: field.clone(),
-                detail: format!(
-                    "{} invisible/bidi codepoint(s): {}",
-                    text.chars().filter(|c| is_invisible(*c)).count(),
-                    found.join(" ")
-                ),
-                accepted: false,
-            });
+        if found.is_empty() {
+            continue;
         }
+        // Controls excused by context are still named: an operator looking at a genuine
+        // hit should see everything invisible in the text, or the next investigation
+        // starts by rediscovering it.
+        let excused = if complex {
+            text.chars().filter(|c| is_localisation_control(*c)).count()
+        } else {
+            0
+        };
+        let mut detail = format!(
+            "{} concealing codepoint(s): {}",
+            text.chars().filter(|c| hides(*c)).count(),
+            found.join(" ")
+        );
+        if excused > 0 {
+            detail.push_str(&format!(
+                " (plus {excused} directional/joining control(s), \
+                 legitimate in this script and not blocking)"
+            ));
+        }
+        out.push(Hit {
+            detector: Detector::S1,
+            item: item.to_string(),
+            field: field.clone(),
+            detail,
+            accepted: false,
+        });
     }
 }
 
@@ -1166,7 +1263,7 @@ fn edit_distance_at_most_1(a: &str, b: &str) -> bool {
 
 fn s3_payloads(item: &str, fields: &[(String, String)], rules: &ScreenRules, out: &mut Vec<Hit>) {
     for (field, text) in fields {
-        let lower = text.to_lowercase();
+        let lower = matchable(text);
         if let Some(at) = lower.find("data:") {
             // A `data:` URI in a description has no honest purpose: the text is
             // read by a model, not rendered by a browser.
@@ -1217,7 +1314,7 @@ fn encoded_blob(text: &str, min_len: usize) -> Option<String> {
         if t.len() < min_len {
             continue;
         }
-        let low = token.to_lowercase();
+        let low = matchable(token);
         if low.starts_with("http://") || low.starts_with("https://") || low.contains("://") {
             continue;
         }
@@ -1253,7 +1350,7 @@ fn encoded_blob(text: &str, min_len: usize) -> Option<String> {
 fn s4_egress(item: &str, fields: &[(String, String)], rules: &ScreenRules, out: &mut Vec<Hit>) {
     for (field, text) in fields {
         for sentence in sentences(text) {
-            let lower = sentence.to_lowercase();
+            let lower = matchable(sentence);
             let noun = rules
                 .secret_nouns
                 .iter()
@@ -1320,7 +1417,7 @@ fn sentences(text: &str) -> Vec<&str> {
 
 fn s5_override(item: &str, fields: &[(String, String)], rules: &ScreenRules, out: &mut Vec<Hit>) {
     for (field, text) in fields {
-        let lower = text.to_lowercase();
+        let lower = matchable(text);
         let found: Vec<&String> = rules
             .override_phrases
             .iter()
@@ -1356,7 +1453,7 @@ fn s6_cross_entity(
     out: &mut Vec<Hit>,
 ) {
     for (field, text) in fields {
-        let lower = text.to_lowercase();
+        let lower = matchable(text);
         let mut reasons: Vec<String> = Vec::new();
 
         if lower.contains("http://") || lower.contains("https://") {
@@ -1390,7 +1487,7 @@ fn s7_params(item: &str, canonical: &Value, rules: &ScreenRules, out: &mut Vec<H
         return;
     };
     for (pname, pschema) in props {
-        let lower_name = pname.to_lowercase();
+        let lower_name = matchable(pname.as_str());
         let is_secret_shaped = rules
             .secret_params
             .iter()
@@ -2232,6 +2329,15 @@ mod tests {
         detectors: Vec<Detector>,
         #[serde(default)]
         estate_names: BTreeMap<String, String>,
+        /// A `block` case the detectors are known not to catch.
+        ///
+        /// The escape hatch that lets recall be gated at 1.0. Without it, adding a
+        /// newly-understood attack the detectors miss would fail the build, and the
+        /// pressure would be to lower the threshold instead — which is how a detector
+        /// set accumulates silent misses. With it, a gap is a reviewable line in a
+        /// fixture rather than a number quietly drifting down.
+        #[serde(default)]
+        known_miss: bool,
         #[serde(default)]
         note: String,
         tools: Value,
@@ -2280,17 +2386,26 @@ mod tests {
     }
 
     #[test]
-    fn calibration_precision_is_perfect_on_the_corpus() {
+    fn calibration_precision_and_recall_hold_on_the_corpus() {
         let c = corpus();
         let mut tp = 0usize;
         let mut fp: Vec<(String, String, Vec<String>)> = Vec::new();
-        let mut fnr: Vec<(String, String)> = Vec::new();
+        let mut missed: Vec<(String, String)> = Vec::new();
+        let mut documented: Vec<String> = Vec::new();
 
         for case in &c.cases {
             let r = judge(case);
             let should_block = case.expect == "block";
             match (should_block, r.blocked()) {
-                (true, true) => tp += 1,
+                (true, true) => {
+                    assert!(
+                        !case.known_miss,
+                        "{}: marked known_miss but the detectors catch it — \
+                         remove the marker rather than leaving a stale exception",
+                        case.id
+                    );
+                    tp += 1;
+                }
                 (false, true) => fp.push((
                     case.id.clone(),
                     case.note.clone(),
@@ -2299,7 +2414,8 @@ mod tests {
                         .map(|h| format!("{} {}:{}", h.detector.as_str(), h.item, h.field))
                         .collect(),
                 )),
-                (true, false) => fnr.push((case.id.clone(), case.note.clone())),
+                (true, false) if case.known_miss => documented.push(case.id.clone()),
+                (true, false) => missed.push((case.id.clone(), case.note.clone())),
                 (false, false) => {}
             }
         }
@@ -2310,7 +2426,10 @@ mod tests {
         } else {
             tp as f64 / blocks as f64
         };
-        let positives = tp + fnr.len();
+        // Documented gaps are excluded from the denominator, which is the whole point
+        // of documenting them — and they are printed every run so the exclusion is not
+        // a way to forget.
+        let positives = tp + missed.len();
         let recall = if positives == 0 {
             1.0
         } else {
@@ -2318,23 +2437,39 @@ mod tests {
         };
 
         println!(
-            "\n{} · {} cases · precision {:.3} · recall {:.3} (measured, not gated)",
+            "\n{} · {} cases ({} block, {} pass) · precision {precision:.3} · \
+             recall {recall:.3} · both gated",
             c.corpus_version,
             c.cases.len(),
-            precision,
-            recall
+            c.cases.iter().filter(|x| x.expect == "block").count(),
+            c.cases.iter().filter(|x| x.expect == "pass").count(),
         );
-        for (id, note, _) in &fnr.iter().map(|(a, b)| (a, b, ())).collect::<Vec<_>>() {
-            println!("  missed: {id} — {note}");
+        for id in &documented {
+            println!("  known gap: {id}");
         }
 
-        // Precision is the gate. Any false positive fails the build, because a
-        // false positive is what gets the whole screener switched off.
+        // Precision is the gate that decides whether anyone leaves the screener on. A
+        // false positive refuses an honest tool server, and the operator's next move is
+        // to switch screening off entirely.
         assert!(
             fp.is_empty(),
             "false positives (precision {precision:.3}, target >= 0.98): {fp:#?}"
         );
+        // Kept even though `fp.is_empty()` is strictly stronger at this corpus size —
+        // 28 block cases means one false positive is already 0.964. The threshold
+        // starts doing its own work past 50, and stating it keeps the §8.16 exit
+        // criterion checkable against the number the design quotes.
         assert!(precision >= 0.98, "precision {precision:.3} below 0.98");
+
+        // Recall was measured and not gated, which is the more dangerous half to leave
+        // open: a false positive is loud and a false negative ships. Anything the
+        // detectors stop catching now fails the build unless somebody marks it
+        // `known_miss` and says why.
+        assert!(
+            missed.is_empty(),
+            "undocumented false negatives (recall {recall:.3}): {missed:#?}"
+        );
+        assert!(recall >= 0.98, "recall {recall:.3} below 0.98");
     }
 
     #[test]
