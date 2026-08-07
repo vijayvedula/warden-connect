@@ -115,7 +115,7 @@ Three properties this has that a second copy of one key does not:
 | Key | Custody | Note |
 |---|---|---|
 | **Anchor** | HSM or offline | Do this first. `chain.rs` already states the requirement — *"the key belongs offline or in an HSM: an attacker who controls the control plane must not be able to re-sign a forged chain"* — and does not implement it. Periodic and off-path, so there is no latency argument against it |
-| **Issuer** | KMS, no local copy | Raise the `contract::mint` gate and record why: minting is once per connection at human-approval time, so a 10–50 ms KMS round trip is invisible. The gate exists to protect the *verify* path, which is untouched |
+| **Issuer** | KMS, no local copy | **Done in code.** The gate did *not* need raising — see below |
 | **Approver** | Never the service's KMS | See below |
 | **Bundle envelope, CAEP sink** | Follow the issuer key | Low volume, latency irrelevant |
 
@@ -135,6 +135,48 @@ currently catch.
 
 Human keys want a different mechanism anyway: a hardware token the approver
 carries, or a key the approver's IdP holds.
+
+## The mint gate did not need raising
+
+The plan said to raise it. Measurement said otherwise, and the measurement wins:
+
+```
+contract::mint             p50  320.8 µs · p99  676.7 µs / 20.00 ms   ok
+contract::mint overhead    p50    1.8 µs · p99    1.9 µs / 50.0 µs    ok
+```
+
+Two things follow. **The 20 ms ceiling has ~30× headroom**, so a signing call of up
+to roughly 19 ms already fits inside the gate as written. And a KMS slower than that
+*should* fail it — a 50 ms mint is worth knowing about, and quietly widening the
+ceiling to accommodate one would be the "recalibrate to the machine" mistake
+[`bench.rs`](../crates/wc-control/src/bench.rs) refuses everywhere else.
+
+What delegated custody actually needed was **attribution**, not headroom. Our own
+work is 1.9 µs — 0.3% of a local mint; the rest is the ES256 signature. So
+`contract::mint overhead` measures everything except the signature, and an operator
+who moves the key to a token and sees 15 ms mints can tell a slow token from a
+regression in this code. Without that split, a failing mint gate would point at the
+wrong team.
+
+The first draft of the overhead threshold was 500 µs, which measurement showed to be
+a rubber stamp: a gate with 200× headroom asserts nothing, which is the same failure
+as one passing at 2%, in the other direction. It is 50 µs.
+
+## Making "no local copy" checkable
+
+Two halves, because a posture that can only be asserted prospectively cannot be
+audited:
+
+**Refused going forward.** `--require-external-signing` (or
+`WARDEN_CONNECT_REQUIRE_EXTERNAL_SIGNING`) makes `--issuer-key` and `--anchor-key` a
+startup error. Checked before any I/O — a refusal to run with a key on disk must not
+depend on first opening, and locking, the chain it is refusing to sign.
+
+**Answerable afterwards.** Every mint records `signing_kid` and `key_custody`
+(`local` | `delegated`) in the evidence event, inside the row hash. So the question
+an auditor asks after a migration — *was anything signed with an on-disk key after
+we moved?* — is answered from the chain rather than from configuration, and
+rewriting the answer breaks the chain.
 
 ## Honest limits
 

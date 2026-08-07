@@ -1208,6 +1208,13 @@ impl<'a> Issuer<'a> {
                     "approval_mode": format!("{:?}", record.approval.mode),
                     "surface_digest": record.surface_digest,
                     "jws_sha256": record.jws_sha256,
+                    // Which key signed this, and where that key lives. `kid` alone
+                    // would not answer the question an auditor actually asks after a
+                    // migration to an HSM — *was anything signed with an on-disk key
+                    // after we moved?* A posture that can only be asserted going
+                    // forward is one nobody can check backwards.
+                    "signing_kid": self.signer.kid(),
+                    "key_custody": self.signer.custody().as_str(),
                 })),
             self.now,
         )?;

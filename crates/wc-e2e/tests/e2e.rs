@@ -908,6 +908,96 @@ fn uc10_export() {
 }
 
 // ===========================================================================
+// Key custody, which UC-04's mint depends on (docs/key-custody.md)
+// ===========================================================================
+
+#[test]
+fn uc04_alt_the_chain_records_which_key_signed_and_where_it_lived() {
+    // `--require-external-signing` refuses a key on disk going forward. This is the
+    // other half: after a migration to an HSM, an auditor asks whether anything was
+    // signed locally *after* the move — and a posture that can only be asserted
+    // prospectively cannot answer that.
+    let mut e = Estate::new("uc04custody");
+    let agent = e.register(AGENT, Kind::Agent, "internal.apac-ops", &agent_card(),
+                           SurfaceKind::A2aCard, Some("payments-recon"));
+    let server = e.register(SERVER, Kind::McpServer, "internal.payments", &surface_of(6),
+                            SurfaceKind::McpTools, Some("payments-core"));
+    e.activate(&agent.id);
+    e.activate(&server.id);
+    let issued = e.connect(&agent.id, &server.id, &["get_balance"], 30 * DAY);
+
+    let mint = e
+        .root
+        .chain_entries()
+        .into_iter()
+        .find(|entry| entry["kind"] == "contract.mint")
+        .expect("a mint event");
+    assert_eq!(mint["detail"]["signing_kid"], KID);
+    assert_eq!(
+        mint["detail"]["key_custody"], "local",
+        "the harness signs with a PEM, and the record must say so"
+    );
+    assert_eq!(mint["cid"], issued.record.cid.as_str());
+
+    // And it is inside the hash, not beside it — so it cannot be edited afterwards
+    // without breaking the chain, which is the only reason recording it is worth
+    // anything.
+    let verified = wc_control::evidence::Evidence::verify(e.root.evidence(), None).unwrap();
+    assert_eq!(verified.broken_at, None);
+
+    let chain = e.root.evidence().join("chain.jsonl");
+    let text = std::fs::read_to_string(&chain).unwrap();
+    std::fs::write(&chain, text.replace(r#""key_custody":"local""#, r#""key_custody":"hsm!""#))
+        .unwrap();
+    let tampered = wc_control::evidence::Evidence::verify(e.root.evidence(), None).unwrap();
+    assert!(
+        tampered.broken_at.is_some(),
+        "rewriting the recorded custody must break the chain, or the record is decoration"
+    );
+}
+
+#[test]
+fn uc04_alt_a_delegated_key_is_recorded_as_delegated() {
+    // The value of the field is that the two cases differ. A field that reads
+    // "local" whatever happened would be worse than no field.
+    use wc_core::contract::{Algorithm, Custody, IssuerKey, Signer};
+
+    /// A signer that holds the key "somewhere else" — reached through the trait,
+    /// exactly as a PKCS#11 or KMS signer would be.
+    #[derive(Debug)]
+    struct Elsewhere;
+
+    impl Signer for Elsewhere {
+        fn sign(&self, input: &[u8]) -> wc_core::error::Result<Vec<u8>> {
+            // A local key reached the long way round, which is the point: the caller
+            // cannot tell this from a token, and neither can a verifier.
+            let enc = jsonwebtoken::EncodingKey::from_ec_pem(PRIV).unwrap();
+            let b64 = jsonwebtoken::crypto::sign(input, &enc, Algorithm::ES256).unwrap();
+            use base64::Engine as _;
+            Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(b64)
+                .expect("our own base64"))
+        }
+    }
+
+    let delegated =
+        IssuerKey::external(KID, Algorithm::ES256, Box::new(Elsewhere)).unwrap();
+    assert_eq!(delegated.custody(), Custody::Delegated);
+    assert_eq!(signer().custody(), Custody::Local, "the PEM path is local");
+
+    // The same public half verifies both, which is what makes moving the key a
+    // *custody* change rather than a key rotation — no mediator has to be told.
+    let claims = json!({"sub": "custody", "iat": NOW});
+    let keys = verifier();
+    for key in [&delegated, &signer()] {
+        let jws = contract::sign_detached(&claims, key).unwrap();
+        let back: serde_json::Value =
+            contract::verify_detached(&jws, KID, &keys).unwrap();
+        assert_eq!(back["sub"], "custody");
+    }
+}
+
+// ===========================================================================
 // The air-gapped path, which UC-04's distribution has an alternative for
 // ===========================================================================
 

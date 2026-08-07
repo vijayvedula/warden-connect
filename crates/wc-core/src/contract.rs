@@ -678,6 +678,35 @@ pub trait Signer: std::fmt::Debug + Send + Sync {
     fn sign(&self, signing_input: &[u8]) -> Result<Vec<u8>>;
 }
 
+/// Where a signing key actually lives.
+///
+/// Recorded in the mint event, not merely known at startup. `--require-external-
+/// signing` refuses a key on disk *going forward*; this is what answers the
+/// question an auditor asks afterwards — **was anything signed with an on-disk key
+/// after we moved to the HSM?** A posture that can only be asserted prospectively
+/// is one nobody can check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Custody {
+    /// The private key is in this process, read from a PEM. The weakest custody
+    /// this system supports: a host compromise is a key compromise.
+    Local,
+    /// The private key is elsewhere — an HSM, a smartcard, a KMS. A host compromise
+    /// can ask it to sign for as long as the host is held, but cannot take it.
+    Delegated,
+}
+
+impl Custody {
+    /// The word that appears in evidence and in operator output.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Custody::Local => "local",
+            Custody::Delegated => "delegated",
+        }
+    }
+}
+
 /// A signing key held in this process, from a PEM on disk.
 #[derive(Debug)]
 struct LocalSigner {
@@ -722,6 +751,7 @@ fn jws_signature_len(alg: Algorithm) -> Option<usize> {
 pub struct IssuerKey {
     kid: String,
     alg: Algorithm,
+    custody: Custody,
     signer: Box<dyn Signer>,
 }
 
@@ -741,6 +771,7 @@ impl IssuerKey {
         Ok(IssuerKey {
             kid: kid.to_string(),
             alg,
+            custody: Custody::Local,
             signer: Box::new(LocalSigner { alg, key }),
         })
     }
@@ -754,6 +785,7 @@ impl IssuerKey {
         Ok(IssuerKey {
             kid: kid.to_string(),
             alg: Algorithm::EdDSA,
+            custody: Custody::Local,
             signer: Box::new(LocalSigner {
                 alg: Algorithm::EdDSA,
                 key,
@@ -778,6 +810,7 @@ impl IssuerKey {
         Ok(IssuerKey {
             kid: kid.to_string(),
             alg,
+            custody: Custody::Delegated,
             signer,
         })
     }
@@ -792,6 +825,12 @@ impl IssuerKey {
     #[must_use]
     pub fn alg(&self) -> Algorithm {
         self.alg
+    }
+
+    /// Where the private half lives.
+    #[must_use]
+    pub fn custody(&self) -> Custody {
+        self.custody
     }
 
     /// Sign a JWS signing input, checking what came back before it is used.

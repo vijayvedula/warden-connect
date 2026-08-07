@@ -81,6 +81,14 @@ impl Root {
             .collect()
     }
 
+    /// Every chain entry, parsed. What an auditor reads.
+    pub fn chain_entries(&self) -> Vec<Value> {
+        self.chain_text()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect()
+    }
+
     pub fn chain_has(&self, kind: &str) -> bool {
         self.chain_kinds().iter().any(|k| k == kind)
     }
