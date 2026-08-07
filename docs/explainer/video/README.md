@@ -3,7 +3,7 @@
 ## The film, vertical — for phones
 
 [`warden-connect-mobile.mp4`](warden-connect-mobile.mp4) · 1080×1920 · 9:16 ·
-30 fps · **2:40** · no audio track. Poster:
+30 fps · **3:00** · no audio track. Poster:
 [`warden-connect-mobile-poster.jpg`](warden-connect-mobile-poster.jpg).
 
 The web presentation *"Why agent connections need a control plane"* as a video a
@@ -46,6 +46,32 @@ a 9:16 frame, and nothing that carries meaning goes there.
 cd ../src && python3 film_mobile.py
 cp out/warden-connect-mobile.mp4 ../video/
 ```
+
+### It opens by earning the problem
+
+The film used to begin with the solution. *What Changed* now comes between the title
+and the two layers, and it is the only chapter that argues the problem **exists**
+rather than describing it — because "agents are non-deterministic" is a sentence
+people nod at without changing their mind about anything.
+
+Five beats, and each one is a picture rather than a claim:
+
+1. **One straight line.** A program: one path in, one path out, reviewable once and
+   true for ever.
+2. **The line becomes a tree.** An agent chooses its tools at runtime. The straight
+   line stays on screen as one faint branch among many, so the before and after are
+   in the same frame.
+3. **The same request, twice, taking different branches.** Which is the whole point of
+   an agent, and the reason reviewing a build tells you nothing about what it will do.
+4. **The enterprise shape: a chain of hops.** A person asks an agent, which delegates
+   to another, which calls a tool, which feeds a third. The column on the right is the
+   argument — `human:priya@org` at the top, `svc:orchestrator` at hop 1,
+   `svc:research` at hop 2, and by hop 4 **the person the request was made for is not
+   in the identity any more**. That is the accountability gap in one look, and it is
+   the enterprise reality the single-call diagram never shows.
+5. **Two questions with nobody to answer them**, drawn as two empty brackets — sitting
+   exactly where the next chapter's two planes will, so the shape is already familiar
+   when the answer arrives.
 
 ### The scenes are portrait-native, not portrait-fitted
 
@@ -133,6 +159,13 @@ defects in the Rust this week.
   intended thing.** The architect's read-lines were drawn to a moving artifact, so two
   of them addressed empty space — "they never agree" rather than "they agree on one
   object". A dotted spine at the artifact's own column fixed the sentence.
+- **An early return keyed to a fade, not to a beat.** The hop chain's block returned
+  when its fade was non-zero — and `sub()` reads 1 for every *later* beat too, so the
+  chain stayed on screen through the closing beat and the two questions never drew at
+  all. Gated on the beat instead.
+- **A fixed offset under wrapped text puts a rule through it.** The second question
+  wraps to two lines, so its bracket landed on the second line. `centred()` already
+  returns the y after the last line; use it.
 - **The same number twice is one number wasted.** The CISO slide showed
   `12 / 13 confirmed` in both the figure and the tagline; the figure now carries the
   half people do not expect — *nothing is assumed successful*.
