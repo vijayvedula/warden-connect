@@ -20,6 +20,7 @@
 //! body is a conflict, because that is a client bug rather than a retry.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -107,6 +108,8 @@ pub struct Metrics {
     pub replays: AtomicU64,
     /// Contract-set pulls served.
     pub pulls: AtomicU64,
+    /// Credentials refused because the transport could not be trusted.
+    pub transport_refused: AtomicU64,
 }
 
 impl Metrics {
@@ -133,6 +136,8 @@ pub struct ControlPlane {
     pub mode: Mode,
     /// Bearer token → roles.
     pub tokens: HashMap<String, Vec<String>>,
+    /// What the transport must prove before a bearer token is believed.
+    pub transport: Transport,
     /// Public JWKS served at `/v1/jwks.json`, as pre-rendered JSON.
     pub jwks: String,
     /// Mediator acknowledgements.
@@ -181,12 +186,20 @@ impl ControlPlane {
             iss: iss.to_string(),
             mode: Mode::Observe,
             tokens: HashMap::new(),
+            transport: Transport::default(),
             jwks: r#"{"keys":[]}"#.to_string(),
             acks: Mutex::new(HashMap::new()),
             metrics: Metrics::default(),
             idempotency: Mutex::new(HashMap::new()),
             now,
         }
+    }
+
+    /// Set what the transport must prove before a bearer token is believed.
+    #[must_use]
+    pub fn with_transport(mut self, transport: Transport) -> ControlPlane {
+        self.transport = transport;
+        self
     }
 
     /// Register a bearer token and the roles it carries.
@@ -253,13 +266,120 @@ impl ControlPlane {
     }
 
     /// Resolve a bearer token to a caller.
+    ///
+    /// The transport check lives here rather than in the router because every
+    /// authenticated route goes through this one function, and a check a route can
+    /// forget to call is a check that one route eventually will.
     fn authenticate(&self, req: &Request) -> Option<Caller> {
         let token = req.bearer()?;
+        if let Err(why) = self.transport.admits(req) {
+            // Counted, so "nobody can authenticate" is visible as a number rather than
+            // discovered by an operator reading logs after the fact.
+            Metrics::bump(&self.metrics.transport_refused);
+            let _ = why;
+            return None;
+        }
         let roles = self.tokens.get(token)?;
         Some(Caller {
             subject: format!("token:{}", &sha256_hex(token)[..12]),
             roles: roles.clone(),
         })
+    }
+}
+
+/// What the transport must prove before a bearer token is believed.
+///
+/// `connect serve` speaks plain HTTP. That is deliberate — TLS is terminated in front
+/// of it in every topology `docs/physical-architecture.md` describes, and an
+/// in-process listener would be a security-critical code path almost nobody would
+/// use. What was **not** deliberate is that nothing stopped an operator binding
+/// `0.0.0.0` and shipping approval tokens in plaintext: the plan said "a terminating
+/// proxy is mandatory" and the binary had no opinion.
+///
+/// So the requirement is enforced, and enforced per request rather than as a promise
+/// made once at startup. `--behind-tls-proxy` asserts termination happens in front;
+/// this then requires every authenticated request to *carry the evidence* — an
+/// `X-Forwarded-Proto: https` from an address the operator named. A request that
+/// reaches the listener directly, bypassing the proxy, has no such header and is
+/// refused. Which is the actual attack: something already inside the network talking
+/// to the pod rather than through the ingress.
+///
+/// The same shape as `wc_mediator::peer::MeshTrust`, and for the same reason: a
+/// forwarding header is worth exactly as much as the hop that set it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Transport {
+    /// Loopback only. No forwarding header needed, because nothing can reach it from
+    /// off-box — this is the default and the only safe one without a proxy.
+    #[default]
+    Loopback,
+    /// Behind a terminating proxy at one of these addresses.
+    ///
+    /// Empty means "believe the header from anywhere", which is offered because a
+    /// sidecar-only network namespace makes it true, and refused by
+    /// [`Transport::describe`] telling the operator plainly what they chose.
+    TlsProxy {
+        /// Addresses whose `x-forwarded-proto` may be believed.
+        trusted: Vec<IpAddr>,
+    },
+    /// No requirement at all. For a test, or a deployment that has accepted the
+    /// consequence in writing.
+    Insecure,
+}
+
+impl Transport {
+    /// Whether a bearer token may be believed on this request.
+    fn admits(&self, req: &Request) -> std::result::Result<(), &'static str> {
+        match self {
+            Transport::Insecure => Ok(()),
+            Transport::Loopback => match req.peer {
+                // `is_loopback` on a parsed address, not `starts_with("127.")` — the
+                // string form accepts `127.0.0.1.evil.example`, which is the same bug
+                // this codebase already fixed once in `peer`.
+                Some(ip) if ip.is_loopback() => Ok(()),
+                Some(_) => Err("this listener accepts credentials on loopback only; \
+                                start with --behind-tls-proxy to accept forwarded ones"),
+                None => Err("the peer address is unknown, so loopback cannot be proved"),
+            },
+            Transport::TlsProxy { trusted } => {
+                let from_trusted =
+                    trusted.is_empty() || req.peer.is_some_and(|ip| trusted.contains(&ip));
+                if !from_trusted {
+                    return Err("not from a trusted proxy address");
+                }
+                match req.headers.get("x-forwarded-proto").map(String::as_str) {
+                    Some(p) if p.eq_ignore_ascii_case("https") => Ok(()),
+                    Some(_) => Err("x-forwarded-proto is not https, so the credential \
+                                    crossed the network in clear"),
+                    None => Err("no x-forwarded-proto: this request did not come \
+                                 through the terminating proxy"),
+                }
+            }
+        }
+    }
+
+    /// One line for the startup banner and `/healthz`, because a posture nobody can
+    /// see is a posture nobody checks.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Transport::Loopback => "loopback-only (credentials refused from off-box)".into(),
+            Transport::TlsProxy { trusted } if trusted.is_empty() => {
+                "behind a TLS proxy, ANY source address trusted for \
+                 x-forwarded-proto — correct only if nothing else can reach this port"
+                    .into()
+            }
+            Transport::TlsProxy { trusted } => format!(
+                "behind a TLS proxy at {} (x-forwarded-proto: https required)",
+                trusted
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Transport::Insecure => {
+                "INSECURE — bearer tokens accepted over plaintext from anywhere".into()
+            }
+        }
     }
 }
 
