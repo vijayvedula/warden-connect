@@ -1019,7 +1019,8 @@ impl ConnectPolicy {
             // `lint` already flags separately.
             for caller in self.zones.iter().filter(|z| from.matches(&z.id)) {
                 for callee in self.zones.iter().filter(|z| to.matches(&z.id)) {
-                    let (Ok(cz), Ok(ez)) = (ZoneId::new(&caller.id), ZoneId::new(&callee.id)) else {
+                    let (Ok(cz), Ok(ez)) = (ZoneId::new(&caller.id), ZoneId::new(&callee.id))
+                    else {
                         continue;
                     };
                     let crossing = wc_core::zone::classify(&cz, &ez);
@@ -1894,15 +1895,17 @@ decision = "allow"
         let eval = p
             .evaluate(&request, &caller(), &callee(Tier::THREE), &state(), NOW)
             .unwrap();
-        assert_ne!(eval.decision, ConnDecision::Deny, "a silent side is not a refusal");
+        assert_ne!(
+            eval.decision,
+            ConnDecision::Deny,
+            "a silent side is not a refusal"
+        );
 
         // Now intersect it with a second declared set that shares nothing.
-        let closed = request
-            .terms
-            .intersect(&Terms {
-                jurisdictions: vec!["SG".to_string()],
-                ..Terms::default()
-            });
+        let closed = request.terms.intersect(&Terms {
+            jurisdictions: vec!["SG".to_string()],
+            ..Terms::default()
+        });
         assert!(closed.is_closed());
         request.terms = closed;
         let eval = p
@@ -1931,7 +1934,11 @@ decision = "allow"
                 NOW,
             )
             .unwrap();
-        assert_eq!(base.decision, ConnDecision::Allow, "the baseline must auto-approve");
+        assert_eq!(
+            base.decision,
+            ConnDecision::Allow,
+            "the baseline must auto-approve"
+        );
 
         for posture in [Posture::Unattested, Posture::Degraded] {
             let mut c = callee(Tier::THREE);

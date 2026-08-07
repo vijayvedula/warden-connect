@@ -274,8 +274,11 @@ impl ControlPlaneClient {
             .limit(8 * 1024 * 1024)
             .read_to_string()
             .map_err(|e| {
-                WcError::with_detail(Code::CONTRACT_REVOKED, format!("{url}: cannot read response"))
-                    .with_source(e)
+                WcError::with_detail(
+                    Code::CONTRACT_REVOKED,
+                    format!("{url}: cannot read response"),
+                )
+                .with_source(e)
             })?;
         if !(200..300).contains(&status) {
             return Err(WcError::with_detail(
@@ -525,7 +528,10 @@ mod tests {
     }
 
     fn delta(events: Vec<SignedRevocationWire>) -> RevocationDelta {
-        let head_seq = events.last().map(|e| e.event["seq"].as_u64().unwrap()).unwrap_or(0);
+        let head_seq = events
+            .last()
+            .map(|e| e.event["seq"].as_u64().unwrap())
+            .unwrap_or(0);
         RevocationDelta {
             head_seq,
             head_digest: "sha256:aa".to_string(),
@@ -571,7 +577,10 @@ mod tests {
         events[0].jws = "not.a.signature".to_string();
         let report = apply_revocations(&delta(events), &revocation_keys(), &Revocations::new(), 0);
         let set = report.set.unwrap();
-        assert!(set.distrusted().is_some(), "an unverifiable feed must not be trusted");
+        assert!(
+            set.distrusted().is_some(),
+            "an unverifiable feed must not be trusted"
+        );
         assert!(set.is_empty(), "and nothing was applied from it");
     }
 

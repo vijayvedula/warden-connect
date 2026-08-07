@@ -1552,7 +1552,8 @@ reason = "a sensitive callee needs a security architect"
         let pol = policy();
         let input = bg(&["get_balance"], 900);
         let issued = with_issuer(&tmp, Tier::ONE, &pol, NOW, |issuer| {
-            let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
+            let proofs =
+                bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
             issuer
                 .breakglass(&input, &proofs, &approvers(), &BreakGlassLimits::default())
                 .expect("break-glass issues")
@@ -1560,7 +1561,10 @@ reason = "a sensitive callee needs a security architect"
 
         assert_eq!(issued.record.approval.mode, ApprovalMode::BreakGlass);
         assert_eq!(issued.record.approval.ticket.as_deref(), Some("SOC-4471"));
-        assert!(issued.record.approval.second.is_some(), "dual control recorded");
+        assert!(
+            issued.record.approval.second.is_some(),
+            "dual control recorded"
+        );
         assert_eq!(issued.record.exp - issued.record.iat, 900);
         assert_eq!(issued.artifacts.len(), 1);
     }
@@ -1572,7 +1576,8 @@ reason = "a sensitive callee needs a security architect"
         let pol = policy();
         let input = bg(&["get_balance"], 900);
         let err = with_issuer(&tmp, Tier::THREE, &pol, NOW, |issuer| {
-            let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), cecil()], NOW);
+            let proofs =
+                bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), cecil()], NOW);
             issuer
                 .breakglass(&input, &proofs, &approvers(), &BreakGlassLimits::default())
                 .unwrap_err()
@@ -1620,15 +1625,19 @@ reason = "a sensitive callee needs a security architect"
         let pol = policy();
         let input = bg(&["get_balance", "not_a_real_tool"], 900);
         let err = with_issuer(&tmp, Tier::THREE, &pol, NOW, |issuer| {
-            let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
+            let proofs =
+                bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
             issuer
                 .breakglass(&input, &proofs, &approvers(), &BreakGlassLimits::default())
                 .unwrap_err()
         });
-        assert_ne!(err.code(), Code::BREAKGLASS_OUTSIDE_POLICY, "not a policy refusal");
+        assert_ne!(
+            err.code(),
+            Code::BREAKGLASS_OUTSIDE_POLICY,
+            "not a policy refusal"
+        );
         assert!(
-            err.to_string().contains("not_a_real_tool")
-                || err.to_string().contains("surface"),
+            err.to_string().contains("not_a_real_tool") || err.to_string().contains("surface"),
             "{err}"
         );
     }
@@ -1644,8 +1653,10 @@ reason = "a sensitive callee needs a security architect"
         let mut store = seeded(&tmp, Tier::THREE);
         {
             let mut reg = store.registry(Actor::Human { id: priya() }, NOW - 100);
-            reg.set_posture(&server_id(), Posture::Unattested, 20).unwrap();
-            reg.transition(&server_id(), Lifecycle::Suspended, "drift").unwrap();
+            reg.set_posture(&server_id(), Posture::Unattested, 20)
+                .unwrap();
+            reg.transition(&server_id(), Lifecycle::Suspended, "drift")
+                .unwrap();
         }
         let mut evidence = Evidence::open(tmp.evidence()).unwrap();
         let key = signer();
@@ -1659,7 +1670,8 @@ reason = "a sensitive callee needs a security architect"
                 NOW,
                 Actor::Human { id: priya() },
             );
-            let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
+            let proofs =
+                bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
             issuer
                 .breakglass(&input, &proofs, &approvers(), &BreakGlassLimits::default())
                 .expect("break-glass overrides posture and suspension")
@@ -1697,7 +1709,8 @@ reason = "a sensitive callee needs a security architect"
                 _ => {}
             }
             let err = with_issuer(&tmp, Tier::THREE, &pol, NOW, |issuer| {
-                let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
+                let proofs =
+                    bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
                 issuer
                     .breakglass(&input, &proofs, &approvers(), &limits)
                     .unwrap_err()
@@ -1738,7 +1751,8 @@ reason = "a sensitive callee needs a security architect"
             // Distinct incidents so the ids differ.
             let mut input = bg(&["get_balance"], 600);
             input.incident = format!("SOC-{i}");
-            let proofs = bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
+            let proofs =
+                bg_proofs_from(&issuer.breakglass_pending(&input), &[cecil(), dana()], NOW);
             issuer
                 .breakglass(&input, &proofs, &approvers(), &limits)
                 .unwrap_or_else(|e| panic!("issue {i} failed: {e}"));

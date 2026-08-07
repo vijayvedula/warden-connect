@@ -270,7 +270,10 @@ impl TenantRegistry {
             if !matches!(t.mode.as_str(), "enforce" | "observe") {
                 return Err(WcError::with_detail(
                     Code::CONFIG_INVALID,
-                    format!("tenant {:?} mode must be enforce|observe, got {:?}", t.id, t.mode),
+                    format!(
+                        "tenant {:?} mode must be enforce|observe, got {:?}",
+                        t.id, t.mode
+                    ),
                 ));
             }
             // A tenant that can mint but has no key of its own would fall back to
@@ -439,17 +442,17 @@ mod tests {
         // An allowlist, not a denylist: a denylist has to be right about every
         // filesystem, and this one only has to be right about [a-z0-9-].
         for bad in [
-            "",                    // empty
-            "-leading-hyphen",     // reads as a flag
-            ".hidden",             // hidden file, and a traversal prefix
-            "APAC",                // case-folding collides with "apac"
-            "apac.emea",           // dots are structure elsewhere in this system
-            "apac emea",           // space
-            "apac\0",              // NUL
-            "apac:emea",           // drive separator on Windows
-            "apac\n",              // newline into a log line
-            "tenant\u{202E}evil",  // bidi override in an operator table
-            "café",                // normalisation could collide two ids
+            "",                   // empty
+            "-leading-hyphen",    // reads as a flag
+            ".hidden",            // hidden file, and a traversal prefix
+            "APAC",               // case-folding collides with "apac"
+            "apac.emea",          // dots are structure elsewhere in this system
+            "apac emea",          // space
+            "apac\0",             // NUL
+            "apac:emea",          // drive separator on Windows
+            "apac\n",             // newline into a log line
+            "tenant\u{202E}evil", // bidi override in an operator table
+            "café",               // normalisation could collide two ids
         ] {
             assert!(
                 TenantId::new(bad).is_err(),
@@ -480,7 +483,10 @@ mod tests {
 
     #[test]
     fn a_tenant_id_pads_so_operator_tables_keep_their_columns() {
-        assert_eq!(format!("[{:<10}]", TenantId::new("apac").unwrap()), "[apac      ]");
+        assert_eq!(
+            format!("[{:<10}]", TenantId::new("apac").unwrap()),
+            "[apac      ]"
+        );
     }
 
     // --- paths -------------------------------------------------------------
@@ -526,8 +532,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.len(), 2);
-        assert_eq!(r.resolve(&TenantId::new("apac").unwrap()).unwrap().name, "APAC");
-        assert!(!r.resolve(&TenantId::new("emea").unwrap()).unwrap().suspended);
+        assert_eq!(
+            r.resolve(&TenantId::new("apac").unwrap()).unwrap().name,
+            "APAC"
+        );
+        assert!(
+            !r.resolve(&TenantId::new("emea").unwrap())
+                .unwrap()
+                .suspended
+        );
     }
 
     #[test]
@@ -535,9 +548,11 @@ mod tests {
         // Otherwise the error is an enumeration oracle for the estate's customer
         // list: "unknown tenant" vs "forbidden" tells an attacker which names
         // exist.
-        let r = TenantRegistry::parse(r#"[[tenant]]
+        let r = TenantRegistry::parse(
+            r#"[[tenant]]
             id = "apac"
-            "#)
+            "#,
+        )
         .unwrap();
         let unknown = r.resolve(&TenantId::new("nope").unwrap()).unwrap_err();
 
@@ -581,14 +596,11 @@ mod tests {
 
     #[test]
     fn the_registry_rejects_duplicates_and_bad_modes() {
-        assert!(TenantRegistry::parse(
-            "[[tenant]]\nid = \"apac\"\n[[tenant]]\nid = \"apac\"\n"
-        )
-        .is_err());
-        assert!(TenantRegistry::parse(
-            "[[tenant]]\nid = \"apac\"\nmode = \"enfroce\"\n"
-        )
-        .is_err());
+        assert!(
+            TenantRegistry::parse("[[tenant]]\nid = \"apac\"\n[[tenant]]\nid = \"apac\"\n")
+                .is_err()
+        );
+        assert!(TenantRegistry::parse("[[tenant]]\nid = \"apac\"\nmode = \"enfroce\"\n").is_err());
         // And a traversal in the config file is caught by the same newtype.
         assert!(TenantRegistry::parse("[[tenant]]\nid = \"../escape\"\n").is_err());
     }

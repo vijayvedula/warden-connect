@@ -34,7 +34,10 @@ fuzz_target!(|data: &[u8]| {
     let mut previous = Revocations::new();
     previous.revoke_party(ALREADY);
     let report = client::apply_revocations(&delta, keys(), &previous, 0);
-    let set = report.set.clone().expect("apply_revocations always returns a set");
+    let set = report
+        .set
+        .clone()
+        .expect("apply_revocations always returns a set");
 
     // Deny-only: no delta, however shaped, may lift an existing revocation.
     assert!(
@@ -45,7 +48,10 @@ fuzz_target!(|data: &[u8]| {
     // than installing a partial one.
     assert!(report.applied <= delta.events.len());
     if !report.is_clean() {
-        assert!(set.distrusted().is_some(), "a bad pull produced a trusted set");
+        assert!(
+            set.distrusted().is_some(),
+            "a bad pull produced a trusted set"
+        );
     }
     // The applied sequence never runs ahead of what was verified contiguously.
     if !report.contiguous {

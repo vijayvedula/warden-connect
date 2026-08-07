@@ -444,7 +444,10 @@ impl Scheduler {
             return Ok(());
         };
         let window = now / 60;
-        let entry = self.windows.entry(endpoint.to_string()).or_insert((window, 0));
+        let entry = self
+            .windows
+            .entry(endpoint.to_string())
+            .or_insert((window, 0));
         if entry.0 != window {
             *entry = (window, 0);
         }
@@ -1138,7 +1141,13 @@ mod tests {
         format!("conn_{n:08x}")
     }
 
-    fn contract(n: u32, caller: &str, callee: &str, tools: &[&str], manifest: &str) -> ContractRecord {
+    fn contract(
+        n: u32,
+        caller: &str,
+        callee: &str,
+        tools: &[&str],
+        manifest: &str,
+    ) -> ContractRecord {
         ContractRecord {
             cid: Cid::new(cid(n)).unwrap(),
             jti: Jti::new("jti_0123456789abcdef").unwrap(),
@@ -1246,7 +1255,11 @@ mod tests {
     fn repeated_benign_drift_halves_the_interval_but_never_below_a_minute() {
         let cfg = AssuranceCfg::default();
         assert_eq!(cfg.interval_for(Tier::ONE, 0), 3_600);
-        assert_eq!(cfg.interval_for(Tier::ONE, 3), 3_600, "at the burst, not over");
+        assert_eq!(
+            cfg.interval_for(Tier::ONE, 3),
+            3_600,
+            "at the burst, not over"
+        );
         assert_eq!(cfg.interval_for(Tier::ONE, 4), 1_800);
 
         let tight = AssuranceCfg {
@@ -1273,9 +1286,16 @@ mod tests {
         // The point of the jitter: an estate admitted together must not land in one
         // second. Assert real spread rather than merely "it varies".
         let distinct: BTreeSet<i64> = offsets.iter().copied().collect();
-        assert!(distinct.len() > 150, "only {} distinct offsets", distinct.len());
+        assert!(
+            distinct.len() > 150,
+            "only {} distinct offsets",
+            distinct.len()
+        );
         let negatives = offsets.iter().filter(|o| **o < 0).count();
-        assert!((60..140).contains(&negatives), "lopsided: {negatives}/200 negative");
+        assert!(
+            (60..140).contains(&negatives),
+            "lopsided: {negatives}/200 negative"
+        );
     }
 
     #[test]
@@ -1322,7 +1342,11 @@ mod tests {
         };
         let mut s = Scheduler::new(cfg).unwrap();
         for i in 0..5 {
-            s.push(task(100, &format!("a{i}"), Some("https://payments.internal")));
+            s.push(task(
+                100,
+                &format!("a{i}"),
+                Some("https://payments.internal"),
+            ));
         }
 
         let r = s.tick(100, 100);
@@ -1529,7 +1553,10 @@ mod tests {
         let unknown = Contracted::Unknown;
         let v = classify_drift(&inputs(&old, &new, &unknown));
         assert_eq!(v.class, DriftClass::Material);
-        assert!(v.reasons.iter().any(|r| r.contains("could not be resolved")));
+        assert!(v
+            .reasons
+            .iter()
+            .any(|r| r.contains("could not be resolved")));
     }
 
     #[test]
@@ -1560,11 +1587,26 @@ mod tests {
 
         type Mutate = Box<dyn Fn(&mut DriftInputs<'_>)>;
         let cases: Vec<(&str, Mutate)> = vec![
-            ("endpoint", Box::new(|i: &mut DriftInputs<'_>| i.endpoint_changed = true)),
-            ("identity", Box::new(|i: &mut DriftInputs<'_>| i.identity_ok = Some(false))),
-            ("card", Box::new(|i: &mut DriftInputs<'_>| i.card_ok = Some(false))),
-            ("provenance", Box::new(|i: &mut DriftInputs<'_>| i.provenance_ok = Some(false))),
-            ("screening", Box::new(|i: &mut DriftInputs<'_>| i.screening_blocked = true)),
+            (
+                "endpoint",
+                Box::new(|i: &mut DriftInputs<'_>| i.endpoint_changed = true),
+            ),
+            (
+                "identity",
+                Box::new(|i: &mut DriftInputs<'_>| i.identity_ok = Some(false)),
+            ),
+            (
+                "card",
+                Box::new(|i: &mut DriftInputs<'_>| i.card_ok = Some(false)),
+            ),
+            (
+                "provenance",
+                Box::new(|i: &mut DriftInputs<'_>| i.provenance_ok = Some(false)),
+            ),
+            (
+                "screening",
+                Box::new(|i: &mut DriftInputs<'_>| i.screening_blocked = true),
+            ),
         ];
         for (what, apply) in cases {
             let mut i = inputs(&p, &p, &c);
@@ -1650,7 +1692,10 @@ mod tests {
         let s = score(&e, &sig, &cfg);
         assert_eq!(s.state, Posture::Unattested);
         assert!(s.unattested);
-        assert!(s.deductions.iter().any(|d| d.reason.contains("never verified")));
+        assert!(s
+            .deductions
+            .iter()
+            .any(|d| d.reason.contains("never verified")));
 
         let mut sig = healthy();
         sig.provenance_ok = Some(false);
@@ -1804,13 +1849,55 @@ mod tests {
         let base = score(&e, &healthy(), &cfg).score;
 
         let worse: Vec<(&str, Signals)> = vec![
-            ("material drift", Signals { open_material_drift: true, ..healthy() }),
-            ("benign drift", Signals { benign_drifts_in_window: 1, ..healthy() }),
-            ("overdue", Signals { intervals_overdue: 1, ..healthy() }),
-            ("orphaned", Signals { owner_orphaned: true, ..healthy() }),
-            ("cred expiring", Signals { credential_expires_in: Some(1), ..healthy() }),
-            ("denials", Signals { denied_action_percentile: Some(50), ..healthy() }),
-            ("screening flag", Signals { open_screening_flags: 1, ..healthy() }),
+            (
+                "material drift",
+                Signals {
+                    open_material_drift: true,
+                    ..healthy()
+                },
+            ),
+            (
+                "benign drift",
+                Signals {
+                    benign_drifts_in_window: 1,
+                    ..healthy()
+                },
+            ),
+            (
+                "overdue",
+                Signals {
+                    intervals_overdue: 1,
+                    ..healthy()
+                },
+            ),
+            (
+                "orphaned",
+                Signals {
+                    owner_orphaned: true,
+                    ..healthy()
+                },
+            ),
+            (
+                "cred expiring",
+                Signals {
+                    credential_expires_in: Some(1),
+                    ..healthy()
+                },
+            ),
+            (
+                "denials",
+                Signals {
+                    denied_action_percentile: Some(50),
+                    ..healthy()
+                },
+            ),
+            (
+                "screening flag",
+                Signals {
+                    open_screening_flags: 1,
+                    ..healthy()
+                },
+            ),
         ];
         for (what, sig) in worse {
             assert!(
@@ -1883,7 +1970,10 @@ mod tests {
         rev.sort_unstable();
         assert_eq!(
             rev,
-            vec!["spiffe://org/ns/x/sa/audit", "spiffe://org/ns/x/sa/orchestrator"]
+            vec![
+                "spiffe://org/ns/x/sa/audit",
+                "spiffe://org/ns/x/sa/orchestrator"
+            ]
         );
         assert_eq!(r.cut_set, vec![cid(1), cid(2), cid(3)]);
         assert!(!r.truncated);

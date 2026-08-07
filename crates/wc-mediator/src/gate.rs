@@ -269,7 +269,13 @@ impl MediatedUpstream {
     /// *zero behaviour change measured on the proxy path* (§8.16). A mediator that
     /// refused uncontracted traffic while calling itself an observer would be the
     /// worst version of this: it reads as configured, and it breaks production.
-    fn observe(&mut self, req: &Request, code: Code, detail: &str, tool: Option<String>) -> Response {
+    fn observe(
+        &mut self,
+        req: &Request,
+        code: Code,
+        detail: &str,
+        tool: Option<String>,
+    ) -> Response {
         self.log.findings.push(Finding {
             code,
             detail: detail.to_string(),

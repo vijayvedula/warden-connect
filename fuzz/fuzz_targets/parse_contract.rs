@@ -35,11 +35,20 @@ fuzz_target!(|data: &[u8]| {
 
     // Anything that verified must be self-consistent, or "verified" means nothing.
     let p = &verified.payload;
-    assert!(p.nbf <= p.exp, "accepted a contract whose window is inverted");
-    assert!(NOW >= p.nbf && NOW < p.exp, "accepted a contract outside its window");
+    assert!(
+        p.nbf <= p.exp,
+        "accepted a contract whose window is inverted"
+    );
+    assert!(
+        NOW >= p.nbf && NOW < p.exp,
+        "accepted a contract outside its window"
+    );
     assert_eq!(p.aud, MEDIATOR, "accepted another mediator's contract");
     assert!(!p.cid.as_str().is_empty() && !p.jti.as_str().is_empty());
-    assert_ne!(p.caller.id, p.callee.id, "accepted a contract from a party to itself");
+    assert_ne!(
+        p.caller.id, p.callee.id,
+        "accepted a contract from a party to itself"
+    );
 
     // And verification is deterministic: the same bytes verify the same way twice.
     assert!(contract::verify_artifact(text, &opts).is_ok());

@@ -63,7 +63,10 @@ fn seeds(target: &str) -> Vec<Vec<u8>> {
     let dir = corpus_dir(target);
     let mut out: Vec<Vec<u8>> = Vec::new();
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        panic!("{} is missing — a fuzz target with no seeds tests nothing", dir.display());
+        panic!(
+            "{} is missing — a fuzz target with no seeds tests nothing",
+            dir.display()
+        );
     };
     let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
     paths.sort();
@@ -205,17 +208,29 @@ fn fuzz_parse_contract_accepts_nothing_malformed() {
         // Anything that verified must be self-consistent, or "verified" means
         // nothing. No panic is the floor; this is the ceiling.
         let p = &verified.payload;
-        assert!(p.nbf <= p.exp, "accepted a contract whose window is inverted");
-        assert!(NOW >= p.nbf && NOW < p.exp, "accepted a contract outside its window");
+        assert!(
+            p.nbf <= p.exp,
+            "accepted a contract whose window is inverted"
+        );
+        assert!(
+            NOW >= p.nbf && NOW < p.exp,
+            "accepted a contract outside its window"
+        );
         assert_eq!(p.aud, MEDIATOR, "accepted another mediator's contract");
         assert!(!p.cid.as_str().is_empty() && !p.jti.as_str().is_empty());
         assert_ne!(p.caller.id, p.callee.id, "accepted a self-connection");
-        assert!(contract::verify_artifact(text, &opts).is_ok(), "verification is not stable");
+        assert!(
+            contract::verify_artifact(text, &opts).is_ok(),
+            "verification is not stable"
+        );
     }
 
     // The seed corpus contains one genuinely valid artifact, so a run that accepted
     // nothing means the harness is not reaching the verifier at all.
-    assert!(accepted >= 1, "nothing verified — the corpus or the wiring is wrong");
+    assert!(
+        accepted >= 1,
+        "nothing verified — the corpus or the wiring is wrong"
+    );
 }
 
 // ===========================================================================
@@ -273,7 +288,10 @@ fn fuzz_parse_connect_policy_never_panics_and_stays_lintable() {
             assert!(rule.decision.as_str().len() > 1);
         }
     }
-    assert!(parsed >= 1, "no policy parsed — the corpus is not policy-shaped");
+    assert!(
+        parsed >= 1,
+        "no policy parsed — the corpus is not policy-shaped"
+    );
 }
 
 // ===========================================================================
@@ -298,9 +316,12 @@ fn fuzz_screen_text_always_accounts_for_every_detector() {
                 "inputSchema": {"type": "object", "properties": {"arg": {"description": text}}},
             }],
         });
-        let Ok(canonical) =
-            canon::canonicalise(SurfaceKind::McpTools, fuzz_id(), &surface, &Limits::default())
-        else {
+        let Ok(canonical) = canon::canonicalise(
+            SurfaceKind::McpTools,
+            fuzz_id(),
+            &surface,
+            &Limits::default(),
+        ) else {
             continue;
         };
 
@@ -328,8 +349,10 @@ fn fuzz_screen_text_always_accounts_for_every_detector() {
                         "{d:?} was neither run nor reported skipped"
                     );
                 }
-                assert!(report.skipped.iter().all(|(_, why)| !why.is_empty()),
-                        "a skip with no reason is indistinguishable from a clean run");
+                assert!(
+                    report.skipped.iter().all(|(_, why)| !why.is_empty()),
+                    "a skip with no reason is indistinguishable from a clean run"
+                );
                 // Blocking is earned in code, never granted by input.
                 if report.verdict == Verdict::Block {
                     assert!(
@@ -363,19 +386,31 @@ fn fuzz_revocation_event_can_never_un_revoke() {
         let mut previous = Revocations::new();
         previous.revoke_party(ALREADY);
         let report = client::apply_revocations(&delta, &keys, &previous, 0);
-        let set = report.set.clone().expect("apply_revocations always returns a set");
+        let set = report
+            .set
+            .clone()
+            .expect("apply_revocations always returns a set");
 
         // Deny-only: no delta, however shaped, may lift an existing revocation.
         assert!(set.party_revoked(ALREADY), "a delta un-revoked a party");
-        assert!(report.applied <= delta.events.len(), "more applied than arrived");
+        assert!(
+            report.applied <= delta.events.len(),
+            "more applied than arrived"
+        );
         if !report.is_clean() {
-            assert!(set.distrusted().is_some(), "a bad pull produced a trusted set");
+            assert!(
+                set.distrusted().is_some(),
+                "a bad pull produced a trusted set"
+            );
         } else {
             assert!(set.distrusted().is_none());
         }
         applied_any |= report.applied > 0;
     }
-    assert!(applied_any, "no delta ever applied — the corpus is not feed-shaped");
+    assert!(
+        applied_any,
+        "no delta ever applied — the corpus is not feed-shaped"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -411,9 +446,18 @@ fn signed_delta() -> Vec<u8> {
     let key = signer();
     let mut events = Vec::new();
     for (seq, body) in [
-        (1u64, serde_json::json!({"kind": "party", "id": "spiffe://org/ns/agents/sa/recon"})),
-        (2u64, serde_json::json!({"kind": "connection", "cid": "conn_00000002"})),
-        (3u64, serde_json::json!({"kind": "artifact", "jti": "cx_00000003"})),
+        (
+            1u64,
+            serde_json::json!({"kind": "party", "id": "spiffe://org/ns/agents/sa/recon"}),
+        ),
+        (
+            2u64,
+            serde_json::json!({"kind": "connection", "cid": "conn_00000002"}),
+        ),
+        (
+            3u64,
+            serde_json::json!({"kind": "artifact", "jti": "cx_00000003"}),
+        ),
     ] {
         let mut event = body;
         event["seq"] = serde_json::json!(seq);
@@ -448,7 +492,11 @@ fn every_fuzz_target_has_a_seed_corpus() {
         .map(str::to_string)
         .filter(|n| n != "warden-connect-fuzz")
         .collect();
-    assert_eq!(targets.len(), 5, "§8.15.2 names five targets, found {targets:?}");
+    assert_eq!(
+        targets.len(),
+        5,
+        "§8.15.2 names five targets, found {targets:?}"
+    );
     for target in &targets {
         assert!(!seeds(target).is_empty(), "{target} has no seeds");
     }

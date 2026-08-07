@@ -501,12 +501,20 @@ pub fn discover(
             continue;
         }
         if let Some(j) = &query.jurisdiction {
-            if !entity.jurisdictions.iter().any(|x| x.eq_ignore_ascii_case(j)) {
+            if !entity
+                .jurisdictions
+                .iter()
+                .any(|x| x.eq_ignore_ascii_case(j))
+            {
                 continue;
             }
         }
         if let Some(c) = &query.data_class {
-            if !entity.data_classes.iter().any(|x| x.eq_ignore_ascii_case(c)) {
+            if !entity
+                .data_classes
+                .iter()
+                .any(|x| x.eq_ignore_ascii_case(c))
+            {
                 continue;
             }
         }
@@ -702,7 +710,12 @@ decision = "allow"
     fn estate() -> Projection {
         projection(vec![
             entity("recon", "internal.apac", 3, &["reconcile"]),
-            entity("payments", "internal.payments", 3, &["get_balance", "list_transactions"]),
+            entity(
+                "payments",
+                "internal.payments",
+                3,
+                &["get_balance", "list_transactions"],
+            ),
             entity("vault", "internal.vault", 1, &["get_balance", "sign"]),
         ])
     }
@@ -716,11 +729,20 @@ decision = "allow"
             CapKey::normalise("Payments.Balance.Read").as_str(),
             "payments.balance.read"
         );
-        assert_eq!(CapKey::normalise("list_transactions").as_str(), "list.transactions");
+        assert_eq!(
+            CapKey::normalise("list_transactions").as_str(),
+            "list.transactions"
+        );
         // Stop words and one-character tokens go.
-        assert_eq!(CapKey::normalise("get the balance of a account").as_str(), "balance.account");
+        assert_eq!(
+            CapKey::normalise("get the balance of a account").as_str(),
+            "balance.account"
+        );
         // Duplicates collapse, and order is stable.
-        assert_eq!(CapKey::normalise("balance balance read").as_str(), "balance.read");
+        assert_eq!(
+            CapKey::normalise("balance balance read").as_str(),
+            "balance.read"
+        );
         assert!(CapKey::normalise("the a of").is_empty());
         assert_eq!(CapKey::normalise("x"), CapKey::normalise(""));
     }
@@ -804,7 +826,12 @@ decision = "allow"
         // answer, byte for byte.
         let without = projection(vec![
             entity("recon", "internal.apac", 3, &["reconcile"]),
-            entity("payments", "internal.payments", 3, &["get_balance", "list_transactions"]),
+            entity(
+                "payments",
+                "internal.payments",
+                3,
+                &["get_balance", "list_transactions"],
+            ),
         ]);
         let mut t2 = Throttle::new();
         let absent = discover(
@@ -834,7 +861,14 @@ decision = "allow"
         .unwrap();
 
         let json = serde_json::to_string(&r.matches[0]).unwrap();
-        for leak in ["endpoint", "pin", "manifest", "sha256", "inputSchema", "items"] {
+        for leak in [
+            "endpoint",
+            "pin",
+            "manifest",
+            "sha256",
+            "inputSchema",
+            "items",
+        ] {
             assert!(!json.contains(leak), "summary leaked {leak}: {json}");
         }
         // And the candidate count is an operator metric, not part of the answer.
@@ -865,8 +899,13 @@ decision = "allow"
         assert!(over.truncated, "empty tail, not an error");
 
         // Which is the same shape as a genuine miss, deliberately.
-        let miss = discover(&Query::new("nothing.here"), &id("recon"), &mut Throttle::new(), &c)
-            .unwrap();
+        let miss = discover(
+            &Query::new("nothing.here"),
+            &id("recon"),
+            &mut Throttle::new(),
+            &c,
+        )
+        .unwrap();
         assert_eq!(over.matches, miss.matches);
     }
 
@@ -915,9 +954,14 @@ decision = "allow"
         let c = ctx(&proj, &pol, &state, &limits);
 
         assert_eq!(
-            discover(&Query::new("balance"), &id("ghost"), &mut Throttle::new(), &c)
-                .unwrap_err()
-                .code(),
+            discover(
+                &Query::new("balance"),
+                &id("ghost"),
+                &mut Throttle::new(),
+                &c
+            )
+            .unwrap_err()
+            .code(),
             Code::ASKER_NOT_ATTESTED
         );
 
@@ -925,9 +969,14 @@ decision = "allow"
         suspended.entities.get_mut(&id("recon")).unwrap().lifecycle = Lifecycle::Suspended;
         let c2 = ctx(&suspended, &pol, &state, &limits);
         assert_eq!(
-            discover(&Query::new("balance"), &id("recon"), &mut Throttle::new(), &c2)
-                .unwrap_err()
-                .code(),
+            discover(
+                &Query::new("balance"),
+                &id("recon"),
+                &mut Throttle::new(),
+                &c2
+            )
+            .unwrap_err()
+            .code(),
             Code::ASKER_NOT_ATTESTED
         );
     }
@@ -953,7 +1002,10 @@ decision = "allow"
     #[test]
     fn jurisdiction_and_data_class_narrow_the_answer() {
         let mut proj = estate();
-        proj.entities.get_mut(&id("payments")).unwrap().jurisdictions = vec!["AU".to_string()];
+        proj.entities
+            .get_mut(&id("payments"))
+            .unwrap()
+            .jurisdictions = vec!["AU".to_string()];
         let pol = default_policy();
         let state = StandingState::default();
         let limits = DiscoveryLimits::default();
@@ -961,17 +1013,26 @@ decision = "allow"
 
         let mut q = Query::new("balance");
         q.jurisdiction = Some("SG".to_string());
-        assert!(discover(&q, &id("recon"), &mut Throttle::new(), &c).unwrap().matches.is_empty());
+        assert!(discover(&q, &id("recon"), &mut Throttle::new(), &c)
+            .unwrap()
+            .matches
+            .is_empty());
 
         q.jurisdiction = Some("au".to_string()); // case-insensitive
         assert_eq!(
-            discover(&q, &id("recon"), &mut Throttle::new(), &c).unwrap().matches.len(),
+            discover(&q, &id("recon"), &mut Throttle::new(), &c)
+                .unwrap()
+                .matches
+                .len(),
             1
         );
 
         let mut q2 = Query::new("balance");
         q2.data_class = Some("health".to_string());
-        assert!(discover(&q2, &id("recon"), &mut Throttle::new(), &c).unwrap().matches.is_empty());
+        assert!(discover(&q2, &id("recon"), &mut Throttle::new(), &c)
+            .unwrap()
+            .matches
+            .is_empty());
     }
 
     #[test]
@@ -1023,8 +1084,20 @@ decision = "allow"
         let limits = DiscoveryLimits::default();
         let c = ctx(&proj, &pol, &state, &limits);
 
-        let a = discover(&Query::new("balance"), &id("recon"), &mut Throttle::new(), &c).unwrap();
-        let b = discover(&Query::new("balance"), &id("recon"), &mut Throttle::new(), &c).unwrap();
+        let a = discover(
+            &Query::new("balance"),
+            &id("recon"),
+            &mut Throttle::new(),
+            &c,
+        )
+        .unwrap();
+        let b = discover(
+            &Query::new("balance"),
+            &id("recon"),
+            &mut Throttle::new(),
+            &c,
+        )
+        .unwrap();
         assert_eq!(a.matches, b.matches);
         assert_eq!(a.matches[0].tier, 3, "most sensitive first");
     }
@@ -1092,7 +1165,10 @@ approver_role = "payments.controller"
     fn padding_actually_waits() {
         let started = std::time::Instant::now();
         let plan = Padding::new(30).apply(Duration::from_millis(1));
-        assert!(started.elapsed() >= Duration::from_millis(25), "did not wait");
+        assert!(
+            started.elapsed() >= Duration::from_millis(25),
+            "did not wait"
+        );
         assert!(!plan.exceeded);
     }
 

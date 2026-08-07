@@ -287,22 +287,21 @@ impl RevocationFeed {
                 )
                 .with_source(e)
             })?;
-        writeln!(file, "{line}").and_then(|()| file.sync_all()).map_err(|e| {
-            WcError::with_detail(
-                Code::REVOCATION_FEED_UNWRITABLE,
-                format!("cannot append to {}", self.path.display()),
-            )
-            .with_source(e)
-        })
+        writeln!(file, "{line}")
+            .and_then(|()| file.sync_all())
+            .map_err(|e| {
+                WcError::with_detail(
+                    Code::REVOCATION_FEED_UNWRITABLE,
+                    format!("cannot append to {}", self.path.display()),
+                )
+                .with_source(e)
+            })
     }
 
     /// Events after `since`, oldest first.
     #[must_use]
     pub fn since(&self, since: u64) -> Vec<&SignedRevocation> {
-        self.events
-            .iter()
-            .filter(|e| e.event.seq > since)
-            .collect()
+        self.events.iter().filter(|e| e.event.seq > since).collect()
     }
 
     /// Every event, for a full resync.
@@ -742,11 +741,10 @@ impl AckLedger {
         let before = self.orders.len();
         let confirmed = self.confirmed.clone();
         self.orders.retain(|o| {
-            let all = o.expected.iter().all(|m| {
-                confirmed
-                    .get(m)
-                    .is_some_and(|c| c.feed_seq >= o.feed_seq)
-            });
+            let all = o
+                .expected
+                .iter()
+                .all(|m| confirmed.get(m).is_some_and(|c| c.feed_seq >= o.feed_seq));
             !all
         });
         let _ = now;
@@ -798,7 +796,10 @@ impl ContainmentReport {
     /// Mediators that have confirmed.
     #[must_use]
     pub fn confirmed(&self) -> Vec<&MediatorResult> {
-        self.mediators.iter().filter(|m| m.ack.is_confirmed()).collect()
+        self.mediators
+            .iter()
+            .filter(|m| m.ack.is_confirmed())
+            .collect()
     }
 
     /// Mediators that have not confirmed. Never treated as contained.
@@ -881,7 +882,8 @@ pub fn contain(
 ) -> Result<ContainmentReport> {
     // The feed first. If this fails there is no order, and saying so beats
     // reporting a containment that only exists in memory.
-    ctx.feed.append(revoked.clone(), reason, actor, now, ctx.key)?;
+    ctx.feed
+        .append(revoked.clone(), reason, actor, now, ctx.key)?;
 
     // Then each affected connection by name, so a mediator can apply the cut
     // without having to derive the contract set itself.
@@ -897,7 +899,12 @@ pub fn contain(
     let head_seq = ctx.feed.next_seq() - 1;
 
     let deadline_at = now + u64::from(ctx.ack_deadline);
-    let expected: Vec<String> = ctx.mediators.mediators.iter().map(|m| m.id.clone()).collect();
+    let expected: Vec<String> = ctx
+        .mediators
+        .mediators
+        .iter()
+        .map(|m| m.id.clone())
+        .collect();
     ctx.ledger.expect(Order {
         feed_seq: head_seq,
         target: revoked.target(),
@@ -951,10 +958,7 @@ mod tests {
     use jsonwebtoken::Algorithm;
 
     fn tmp(label: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!(
-            "wc-contain-{label}-{}",
-            std::process::id()
-        ));
+        let base = std::env::temp_dir().join(format!("wc-contain-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         base
@@ -1041,14 +1045,8 @@ mod tests {
         let key = signing_key();
         let mut feed = RevocationFeed::open(&path).unwrap();
         for i in 1..=4u32 {
-            feed.append(
-                Revoked::Connection { cid: cid(i) },
-                "r",
-                "a",
-                1_000,
-                &key,
-            )
-            .unwrap();
+            feed.append(Revoked::Connection { cid: cid(i) }, "r", "a", 1_000, &key)
+                .unwrap();
         }
         assert_eq!(feed.since(0).len(), 4);
         assert_eq!(feed.since(2).len(), 2);
@@ -1065,7 +1063,8 @@ mod tests {
         let path = dir.join("r.jsonl");
         let key = signing_key();
         let mut feed = RevocationFeed::open(&path).unwrap();
-        feed.append(party(), "SOC-1", "human:sam", 1_000, &key).unwrap();
+        feed.append(party(), "SOC-1", "human:sam", 1_000, &key)
+            .unwrap();
 
         let text = std::fs::read_to_string(&path).unwrap();
         let edited = text.replace("SOC-1", "SOC-9");
@@ -1074,7 +1073,9 @@ mod tests {
         let reopened = RevocationFeed::open(&path).unwrap();
         let err = reopened.verify(&trust()).unwrap_err();
         assert_eq!(err.code(), Code::REVOCATION_FEED_UNWRITABLE);
-        assert!(err.to_string().contains("does not match its signed payload"));
+        assert!(err
+            .to_string()
+            .contains("does not match its signed payload"));
     }
 
     #[test]
@@ -1142,8 +1143,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(set.mediators.len(), 2);
-        assert_eq!(set.get("warden:mediator:emea-ops").unwrap().poll_interval, 5);
-        assert!(set.get("warden:mediator:emea-ops").unwrap().push_url.is_none());
+        assert_eq!(
+            set.get("warden:mediator:emea-ops").unwrap().poll_interval,
+            5
+        );
+        assert!(set
+            .get("warden:mediator:emea-ops")
+            .unwrap()
+            .push_url
+            .is_none());
 
         // Zero interval would make the unconfirmed bound zero, which reads as
         // "already contained".

@@ -31,8 +31,7 @@ use wc_core::model::{Entity, EntityId, HumanRef, Kind, Lifecycle, Posture, ZoneI
 
 pub const PRIV: &[u8] = include_bytes!("../../../../fixtures/keys/test_issuer_es256_priv.pem");
 pub const PUB: &[u8] = include_bytes!("../../../../fixtures/keys/test_issuer_es256_pub.pem");
-pub const APPROVER_PRIV: &[u8] =
-    include_bytes!("../../../../fixtures/keys/test_anchor_priv.pem");
+pub const APPROVER_PRIV: &[u8] = include_bytes!("../../../../fixtures/keys/test_anchor_priv.pem");
 pub const APPROVER_PUB: &[u8] = include_bytes!("../../../../fixtures/keys/test_anchor_pub.pem");
 
 pub const KID: &str = "wc-e2e-es256";
@@ -110,7 +109,8 @@ pub fn signer() -> IssuerKey {
 
 pub fn verifier() -> IssuerKeys {
     let mut keys = IssuerKeys::new();
-    keys.add_ec_pem(KID, PUB, Algorithm::ES256).expect("verifier");
+    keys.add_ec_pem(KID, PUB, Algorithm::ES256)
+        .expect("verifier");
     keys
 }
 
@@ -135,7 +135,11 @@ pub fn approvers() -> ApproverRegistry {
             &who,
             APPROVER_PUB,
             Algorithm::ES256,
-            &["security.architect", "payments.controller", "connect.secops"],
+            &[
+                "security.architect",
+                "payments.controller",
+                "connect.secops",
+            ],
         )
         .expect("approver registration");
     }
@@ -286,9 +290,10 @@ impl Estate {
 
     /// The state log's first segment, as a failure-injection scenario needs it.
     pub fn state_log(&self) -> PathBuf {
-        self.root
-            .state()
-            .join(format!("{}-000001.jsonl", wc_control::store::STATE_LOG_NAME))
+        self.root.state().join(format!(
+            "{}-000001.jsonl",
+            wc_control::store::STATE_LOG_NAME
+        ))
     }
 
     /// Register a party through the real admission pipeline.
@@ -353,7 +358,8 @@ impl Estate {
     /// do not call this.
     pub fn activate(&mut self, id: &EntityId) {
         let mut reg = self.store.registry(self.actor(), self.now);
-        reg.transition(id, Lifecycle::Active, "e2e").expect("activate");
+        reg.transition(id, Lifecycle::Active, "e2e")
+            .expect("activate");
         reg.set_posture(id, Posture::Attested, 95).expect("posture");
     }
 
@@ -393,9 +399,7 @@ impl Estate {
             active_contracts: contracts.len(),
             standing_contracts: contracts
                 .values()
-                .filter(|c| {
-                    c.approval.mode == wc_core::contract::ApprovalMode::StandingPolicy
-                })
+                .filter(|c| c.approval.mode == wc_core::contract::ApprovalMode::StandingPolicy)
                 .count(),
             issued_in_window: 0,
         }
@@ -415,9 +419,13 @@ impl Estate {
 
     /// Ask for a connection. Returns the outcome so a scenario can assert whether
     /// standing policy issued it or a human was required.
-    pub fn request(&mut self, caller: &EntityId, callee: &EntityId, tools: &[&str], ttl: u64)
-        -> Outcome
-    {
+    pub fn request(
+        &mut self,
+        caller: &EntityId,
+        callee: &EntityId,
+        tools: &[&str],
+        ttl: u64,
+    ) -> Outcome {
         self.try_request(caller, callee, tools, ttl)
             .expect("request evaluates")
     }
@@ -467,9 +475,7 @@ impl Estate {
     }
 
     /// Approve a pending request with one or two humans.
-    pub fn approve(&mut self, request_id: &str, who: &[HumanRef])
-        -> wc_control::issuance::Issued
-    {
+    pub fn approve(&mut self, request_id: &str, who: &[HumanRef]) -> wc_control::issuance::Issued {
         let key = signer();
         let registry = approvers();
         let policy = self.policy.clone();
@@ -504,9 +510,13 @@ impl Estate {
 
     /// Request and, if a human is needed, approve — the shortest path to a live
     /// contract.
-    pub fn connect(&mut self, caller: &EntityId, callee: &EntityId, tools: &[&str], ttl: u64)
-        -> wc_control::issuance::Issued
-    {
+    pub fn connect(
+        &mut self,
+        caller: &EntityId,
+        callee: &EntityId,
+        tools: &[&str],
+        ttl: u64,
+    ) -> wc_control::issuance::Issued {
         match self.request(caller, callee, tools, ttl) {
             Outcome::Issued(issued) => issued,
             Outcome::AwaitingApproval(req) => self.approve(&req.id, &[cecil(), dana()]),

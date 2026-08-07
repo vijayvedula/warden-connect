@@ -125,9 +125,7 @@ impl MeshTrust {
         }
         match origin {
             Origin::UnixSocket { path } => self.socket.as_deref() == Some(path.as_str()),
-            Origin::Tcp { addr } => {
-                origin.is_local() && self.addrs.iter().any(|a| a == addr)
-            }
+            Origin::Tcp { addr } => origin.is_local() && self.addrs.iter().any(|a| a == addr),
             // The sidecar does not speak to us over stdio; if it did there would
             // be no header.
             Origin::Stdio => false,
@@ -523,7 +521,9 @@ fn parse_xfcc_pairs(element: &str) -> Vec<(String, String)> {
 fn unquote(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
-        trimmed[1..trimmed.len() - 1].replace("\\\"", "\"").replace("\\\\", "\\")
+        trimmed[1..trimmed.len() - 1]
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\")
     } else {
         trimmed.to_string()
     }
@@ -736,7 +736,9 @@ mod tests {
     // --- mesh: the mode that goes wrong ------------------------------------
 
     fn xfcc(uri: &str) -> String {
-        format!("By=spiffe://org/ns/mesh/sa/sidecar;Hash=abc123;Subject=\"CN=recon,O=org\";URI={uri}")
+        format!(
+            "By=spiffe://org/ns/mesh/sa/sidecar;Hash=abc123;Subject=\"CN=recon,O=org\";URI={uri}"
+        )
     }
 
     fn mesh_source() -> PeerSource {
@@ -843,9 +845,7 @@ mod tests {
         // `By=` is the proxy's own identity. Reading it would authenticate the
         // sidecar as the caller — which always succeeds, and always with the
         // wrong answer.
-        let header = format!(
-            "By=spiffe://org/ns/mesh/sa/sidecar;Hash=deadbeef;URI={CALLER}"
-        );
+        let header = format!("By=spiffe://org/ns/mesh/sa/sidecar;Hash=deadbeef;URI={CALLER}");
         assert_eq!(xfcc_peer_uri(&header).unwrap(), CALLER);
     }
 
@@ -853,9 +853,8 @@ mod tests {
     fn quoted_values_with_separators_parse_correctly() {
         // Envoy quotes values containing `,` or `;`. A naive split turns a
         // Subject containing a comma into two elements and changes the meaning.
-        let header = format!(
-            "By=spiffe://org/sidecar;Subject=\"CN=recon,OU=platform,O=org\";URI={CALLER}"
-        );
+        let header =
+            format!("By=spiffe://org/sidecar;Subject=\"CN=recon,OU=platform,O=org\";URI={CALLER}");
         assert_eq!(xfcc_peer_uri(&header).unwrap(), CALLER);
 
         let escaped = format!("Subject=\"CN=say \\\"hi\\\",O=org\";URI={CALLER}");
@@ -892,8 +891,8 @@ mod tests {
             Code::CALLER_PEER_MISMATCH
         );
         // Two URIs in one element is ambiguous, and picking either is a guess.
-        let err = xfcc_peer_uri(&format!("URI={CALLER};URI=spiffe://org/ns/x/sa/other"))
-            .unwrap_err();
+        let err =
+            xfcc_peer_uri(&format!("URI={CALLER};URI=spiffe://org/ns/x/sa/other")).unwrap_err();
         assert_eq!(err.code(), Code::PEER_HEADER_UNTRUSTED);
     }
 

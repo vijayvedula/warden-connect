@@ -38,10 +38,22 @@ const SERVER: &str = "spiffe://org/ns/tools/sa/payments";
 /// An estate with one agent, one server and one live contract.
 fn wired(label: &str) -> (Estate, wc_control::issuance::Issued) {
     let mut e = Estate::new(label);
-    let agent = e.register(AGENT, Kind::Agent, "internal.apac-ops", &agent_card(),
-                           SurfaceKind::A2aCard, Some("payments-recon"));
-    let server = e.register(SERVER, Kind::McpServer, "internal.payments", &surface_of(6),
-                            SurfaceKind::McpTools, Some("payments-core"));
+    let agent = e.register(
+        AGENT,
+        Kind::Agent,
+        "internal.apac-ops",
+        &agent_card(),
+        SurfaceKind::A2aCard,
+        Some("payments-recon"),
+    );
+    let server = e.register(
+        SERVER,
+        Kind::McpServer,
+        "internal.payments",
+        &surface_of(6),
+        SurfaceKind::McpTools,
+        Some("payments-core"),
+    );
     e.activate(&agent.id);
     e.activate(&server.id);
     let issued = e.connect(&agent.id, &server.id, &["get_balance"], 30 * DAY);
@@ -84,7 +96,10 @@ fn a_kill_at_any_point_in_a_mint_leaves_no_half_contract() {
     let log = e.state_log();
     let full = std::fs::read_to_string(&log).expect("state log");
     let lines: Vec<&str> = full.lines().collect();
-    assert!(lines.len() > 4, "the scenario needs several records to cut between");
+    assert!(
+        lines.len() > 4,
+        "the scenario needs several records to cut between"
+    );
 
     // A kill lands between two appends, or part-way through one. Both are exercised
     // by cutting the log at every prefix and rebuilding, which is exactly what the
@@ -107,13 +122,19 @@ fn a_kill_at_any_point_in_a_mint_leaves_no_half_contract() {
                 "{cid} names a caller this projection does not have, unreported"
             );
         }
-        assert!(!report.truncated_tail, "a clean line cut is not a torn write");
+        assert!(
+            !report.truncated_tail,
+            "a clean line cut is not a torn write"
+        );
     }
 
     // Now a torn write: the last line cut mid-JSON, which is what a kill during
     // `write` actually leaves behind.
-    let torn = format!("{}\n{}", lines[..lines.len() - 1].join("\n"),
-                       &lines[lines.len() - 1][..lines[lines.len() - 1].len() / 2]);
+    let torn = format!(
+        "{}\n{}",
+        lines[..lines.len() - 1].join("\n"),
+        &lines[lines.len() - 1][..lines[lines.len() - 1].len() / 2]
+    );
     std::fs::write(&log, torn).unwrap();
     let (projection, report) =
         Projection::rebuild(e.root.state(), STATE_LOG_NAME).expect("a torn log must still rebuild");
@@ -145,7 +166,10 @@ fn the_artifact_is_written_after_the_record_so_a_kill_between_them_is_visible() 
     // mediator asking for the set gets the cid listed with no `jws`.
     let (e, issued) = wired("fi-artifact");
     let cid = issued.record.cid.as_str();
-    let path = e.store.artifacts_dir().join(wc_control::store::artifact_name(cid, MEDIATOR));
+    let path = e
+        .store
+        .artifacts_dir()
+        .join(wc_control::store::artifact_name(cid, MEDIATOR));
     assert!(path.exists());
 
     std::fs::remove_file(&path).unwrap();
@@ -154,7 +178,10 @@ fn the_artifact_is_written_after_the_record_so_a_kill_between_them_is_visible() 
         "a missing artifact must read as missing, not as an empty document"
     );
     assert!(
-        e.store.projection.contracts.contains_key(&issued.record.cid),
+        e.store
+            .projection
+            .contracts
+            .contains_key(&issued.record.cid),
         "the record survives, so the gap is discoverable rather than forgotten"
     );
 
@@ -180,7 +207,12 @@ fn existing_connections_survive_a_control_plane_outage_and_no_new_ones_appear() 
     let keys = verifier();
     let (stub, recorder) = StubServer::new(&surface_of(6));
     let cache = Arc::new(Cache::new());
-    cache.install(Snapshot::build(std::slice::from_ref(&artifact), &keys, MEDIATOR, e.now));
+    cache.install(Snapshot::build(
+        std::slice::from_ref(&artifact),
+        &keys,
+        MEDIATOR,
+        e.now,
+    ));
 
     for offset in [0, 600, 1_800, 3_600] {
         let clock = e.now + offset;
@@ -198,15 +230,16 @@ fn existing_connections_survive_a_control_plane_outage_and_no_new_ones_appear() 
             issued.record.is_live(clock),
             "a 30-day contract must not care about a one-hour outage"
         );
-        assert!(contract::verify_artifact(&artifact, &VerifyOpts::new(&keys, MEDIATOR, clock))
-            .is_ok());
+        assert!(
+            contract::verify_artifact(&artifact, &VerifyOpts::new(&keys, MEDIATOR, clock)).is_ok()
+        );
     }
     let _ = (stub, recorder, cache);
 
     // Past `exp` the outage stops mattering, because the contract does.
     let after = issued.record.exp + 1;
-    let err = contract::verify_artifact(&artifact, &VerifyOpts::new(&keys, MEDIATOR, after))
-        .unwrap_err();
+    let err =
+        contract::verify_artifact(&artifact, &VerifyOpts::new(&keys, MEDIATOR, after)).unwrap_err();
     assert_eq!(
         err.code(),
         Code::CONTRACT_EXPIRED,
@@ -229,7 +262,11 @@ fn an_unverifiable_revocation_feed_denies_everything() {
 
     // Healthy first, or the refusal below proves nothing.
     m.request(&req(1, "initialize", json!({})));
-    assert!(allowed(&m.request(&req(2, "tools/call", json!({"name": "get_balance"})))));
+    assert!(allowed(&m.request(&req(
+        2,
+        "tools/call",
+        json!({"name": "get_balance"})
+    ))));
     assert_eq!(recorder.ran("get_balance"), 1);
 
     // The feed comes back corrupt. Not "nothing is revoked" — *unknown*, and
@@ -262,7 +299,10 @@ fn an_unverifiable_revocation_feed_denies_everything() {
     let init = m2.request(&req(1, "initialize", json!({})));
     let why = refusal(&init).expect("a distrusted revocation set must admit nothing");
     assert!(why.contains("WC-3105"), "{why}");
-    assert!(why.contains("cannot be relied on"), "the alarm must say what is wrong: {why}");
+    assert!(
+        why.contains("cannot be relied on"),
+        "the alarm must say what is wrong: {why}"
+    );
     assert!(refusal(&m2.request(&req(2, "tools/call", json!({"name": "get_balance"})))).is_some());
     assert_eq!(recorder2.executed().len(), 0, "deny all means all");
 
@@ -334,10 +374,22 @@ fn a_blocking_sink_that_is_down_stops_issuance_and_leaves_nothing_behind() {
         })],
     );
     assert!(e.evidence.has_blocking_sinks());
-    let agent = e.register(AGENT, Kind::Agent, "internal.apac-ops", &agent_card(),
-                           SurfaceKind::A2aCard, Some("payments-recon"));
-    let server = e.register(SERVER, Kind::McpServer, "internal.payments", &surface_of(6),
-                            SurfaceKind::McpTools, Some("payments-core"));
+    let agent = e.register(
+        AGENT,
+        Kind::Agent,
+        "internal.apac-ops",
+        &agent_card(),
+        SurfaceKind::A2aCard,
+        Some("payments-recon"),
+    );
+    let server = e.register(
+        SERVER,
+        Kind::McpServer,
+        "internal.payments",
+        &surface_of(6),
+        SurfaceKind::McpTools,
+        Some("payments-core"),
+    );
     e.activate(&agent.id);
     e.activate(&server.id);
 
@@ -353,7 +405,11 @@ fn a_blocking_sink_that_is_down_stops_issuance_and_leaves_nothing_behind() {
     // Nothing committed, nothing signed, nothing on disk. This is the assertion:
     // WC-7001 is only a real control if the mint did not happen anyway.
     assert_eq!(e.store.projection.contracts.len(), contracts_before);
-    assert_eq!(e.evidence.head(), (head_seq, head_hash), "the chain did not move");
+    assert_eq!(
+        e.evidence.head(),
+        (head_seq, head_hash),
+        "the chain did not move"
+    );
     assert!(!e.root.chain_has("contract.mint"));
 
     // The sink comes back and the same request goes through.
@@ -376,15 +432,30 @@ fn a_fail_safe_sink_that_is_down_is_a_warning_not_an_outage() {
         })],
     );
     assert!(!e.evidence.has_blocking_sinks());
-    let agent = e.register(AGENT, Kind::Agent, "internal.apac-ops", &agent_card(),
-                           SurfaceKind::A2aCard, Some("payments-recon"));
-    let server = e.register(SERVER, Kind::McpServer, "internal.payments", &surface_of(6),
-                            SurfaceKind::McpTools, Some("payments-core"));
+    let agent = e.register(
+        AGENT,
+        Kind::Agent,
+        "internal.apac-ops",
+        &agent_card(),
+        SurfaceKind::A2aCard,
+        Some("payments-recon"),
+    );
+    let server = e.register(
+        SERVER,
+        Kind::McpServer,
+        "internal.payments",
+        &surface_of(6),
+        SurfaceKind::McpTools,
+        Some("payments-core"),
+    );
     e.activate(&agent.id);
     e.activate(&server.id);
 
     let issued = e.connect(&agent.id, &server.id, &["get_balance"], 30 * DAY);
-    assert!(e.root.chain_has("contract.mint"), "the authoritative copy landed");
+    assert!(
+        e.root.chain_has("contract.mint"),
+        "the authoritative copy landed"
+    );
     assert!(!e.artifact(issued.record.cid.as_str()).is_empty());
 }
 
@@ -413,7 +484,9 @@ fn clock_skew_is_bounded_by_leeway_and_fails_closed_past_it() {
     let mut past = VerifyOpts::new(&keys, MEDIATOR, issued.record.exp + skew);
     past.leeway = skew;
     assert_eq!(
-        contract::verify_artifact(&artifact, &past).unwrap_err().code(),
+        contract::verify_artifact(&artifact, &past)
+            .unwrap_err()
+            .code(),
         Code::CONTRACT_EXPIRED
     );
 
@@ -421,7 +494,9 @@ fn clock_skew_is_bounded_by_leeway_and_fails_closed_past_it() {
     let mut early = VerifyOpts::new(&keys, MEDIATOR, issued.record.iat - skew - 1);
     early.leeway = skew;
     assert_eq!(
-        contract::verify_artifact(&artifact, &early).unwrap_err().code(),
+        contract::verify_artifact(&artifact, &early)
+            .unwrap_err()
+            .code(),
         Code::CONTRACT_EXPIRED
     );
 
@@ -448,7 +523,10 @@ fn a_second_writer_is_refused_rather_than_interleaved() {
     let server = e.entity(&issued.record.callee);
     let second = e.connect(&agent.id, &server.id, &["list_transactions"], 7 * DAY);
     let after = std::fs::read_to_string(e.state_log()).unwrap();
-    assert!(after.starts_with(&before), "the loser must not have written into the middle");
+    assert!(
+        after.starts_with(&before),
+        "the loser must not have written into the middle"
+    );
     assert!(after.contains(second.record.cid.as_str()));
 
     let (rebuilt, report) = Projection::rebuild(e.root.state(), STATE_LOG_NAME).unwrap();
@@ -466,7 +544,10 @@ fn the_lock_is_released_when_the_writer_goes_away() {
     {
         let (_store, report) = Store::open(root.state()).unwrap();
         assert!(report.is_clean());
-        assert_eq!(Store::open(root.state()).unwrap_err().code(), Code::STORE_LOCKED);
+        assert_eq!(
+            Store::open(root.state()).unwrap_err().code(),
+            Code::STORE_LOCKED
+        );
     }
     Store::open(root.state()).expect("a released lock must be reacquirable");
 }
@@ -483,7 +564,11 @@ fn a_stale_mediator_closes_on_a_revoked_cid_at_the_next_refresh() {
     let (mut m, recorder, cache) = mediator(std::slice::from_ref(&artifact), &surface_of(6), e.now);
 
     m.request(&req(1, "initialize", json!({})));
-    assert!(allowed(&m.request(&req(2, "tools/call", json!({"name": "get_balance"})))));
+    assert!(allowed(&m.request(&req(
+        2,
+        "tools/call",
+        json!({"name": "get_balance"})
+    ))));
 
     // The control plane revokes. The mediator has not refreshed, so it is stale —
     // and being honest about that window is the point: the artifact is still
@@ -599,21 +684,29 @@ fn a_failed_chain_append_stops_the_operation_and_leaves_no_gap() {
     let last = rows[rows.len() - 1];
     std::fs::write(
         &chain,
-        format!("{}\n{}", rows[..rows.len() - 1].join("\n"), &last[..last.len() / 2]),
+        format!(
+            "{}\n{}",
+            rows[..rows.len() - 1].join("\n"),
+            &last[..last.len() / 2]
+        ),
     )
     .unwrap();
-    assert!(Evidence::verify(e.root.evidence(), None).is_err_and(|err| {
-        err.code() == Code::CHAIN_BROKEN || err.code() == Code::CHAIN_APPEND_FAILED
-    }) || Evidence::verify(e.root.evidence(), None)
-        .is_ok_and(|r| r.broken_at.is_some()),
-        "a torn tail must be an error or a located break, never a clean verify");
+    assert!(
+        Evidence::verify(e.root.evidence(), None).is_err_and(|err| {
+            err.code() == Code::CHAIN_BROKEN || err.code() == Code::CHAIN_APPEND_FAILED
+        }) || Evidence::verify(e.root.evidence(), None).is_ok_and(|r| r.broken_at.is_some()),
+        "a torn tail must be an error or a located break, never a clean verify"
+    );
 
     // Restored, the chain verifies again from the same head — so the detection above
     // was about the damage, not about the chain being fragile.
     std::fs::write(&chain, &good).unwrap();
     let restored = Evidence::verify(e.root.evidence(), None).unwrap();
     assert_eq!(restored.broken_at, None);
-    assert_eq!((restored.head_seq, restored.head_hash), (head_seq, head_hash));
+    assert_eq!(
+        (restored.head_seq, restored.head_hash),
+        (head_seq, head_hash)
+    );
 }
 
 #[test]
@@ -630,10 +723,22 @@ fn no_authority_is_issued_when_the_trail_cannot_be_written() {
             delivery: Delivery::Blocking,
         })],
     );
-    let agent = e.register(AGENT, Kind::Agent, "internal.apac-ops", &agent_card(),
-                           SurfaceKind::A2aCard, Some("payments-recon"));
-    let server = e.register(SERVER, Kind::McpServer, "internal.payments", &surface_of(6),
-                            SurfaceKind::McpTools, Some("payments-core"));
+    let agent = e.register(
+        AGENT,
+        Kind::Agent,
+        "internal.apac-ops",
+        &agent_card(),
+        SurfaceKind::A2aCard,
+        Some("payments-recon"),
+    );
+    let server = e.register(
+        SERVER,
+        Kind::McpServer,
+        "internal.payments",
+        &surface_of(6),
+        SurfaceKind::McpTools,
+        Some("payments-core"),
+    );
     e.activate(&agent.id);
     e.activate(&server.id);
 

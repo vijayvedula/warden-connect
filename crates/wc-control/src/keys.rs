@@ -228,12 +228,19 @@ impl Keyring {
             if !seen.insert(k.kid.as_str()) {
                 return Err(WcError::with_detail(
                     Code::CONFIG_INVALID,
-                    format!("kid {:?} appears twice; a kid must name exactly one key", k.kid),
+                    format!(
+                        "kid {:?} appears twice; a kid must name exactly one key",
+                        k.kid
+                    ),
                 ));
             }
             k.algorithm()?;
         }
-        let active = self.keys.iter().filter(|k| k.state == KeyState::Active).count();
+        let active = self
+            .keys
+            .iter()
+            .filter(|k| k.state == KeyState::Active)
+            .count();
         if active > 1 {
             // Two active keys means two signers and no way to say which one a
             // given contract should have come from.
@@ -360,7 +367,10 @@ impl Keyring {
     /// `WC-3102`, which reads like an attack rather than an operations mistake.
     pub fn retire(&mut self, kid: &str, now: u64) -> Result<()> {
         let key = self.get(kid).ok_or_else(|| {
-            WcError::with_detail(Code::CONFIG_INVALID, format!("kid {kid:?} is not in the ring"))
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!("kid {kid:?} is not in the ring"),
+            )
         })?;
         if key.state == KeyState::Active {
             return Err(WcError::with_detail(
@@ -478,12 +488,16 @@ pub fn jwk_from_pem(kid: &str, alg: &str, pem: &str) -> Result<serde_json::Value
         "ES384" => ("P-384", 48usize),
         "EdDSA" | "Ed25519" => {
             // Ed25519 SPKI is a fixed 44 bytes with the 32-byte key as the tail.
-            let x = der.len().checked_sub(32).map(|i| &der[i..]).ok_or_else(|| {
-                WcError::with_detail(
-                    Code::CONFIG_INVALID,
-                    format!("key {kid:?} is too short to be an Ed25519 SPKI"),
-                )
-            })?;
+            let x = der
+                .len()
+                .checked_sub(32)
+                .map(|i| &der[i..])
+                .ok_or_else(|| {
+                    WcError::with_detail(
+                        Code::CONFIG_INVALID,
+                        format!("key {kid:?} is too short to be an Ed25519 SPKI"),
+                    )
+                })?;
             return Ok(serde_json::json!({
                 "kty": "OKP",
                 "crv": "Ed25519",
@@ -610,7 +624,10 @@ mod tests {
 
         let err = r.retire("k-2026-04", NOW).unwrap_err();
         assert_eq!(err.code(), Code::CONFIG_INVALID);
-        assert!(err.to_string().contains("would break verification"), "{err}");
+        assert!(
+            err.to_string().contains("would break verification"),
+            "{err}"
+        );
 
         // Still live at the raw expiry, because of the margin.
         assert!(r.retire("k-2026-04", NOW + 30 * DAY).is_err());
@@ -778,7 +795,10 @@ mod tests {
         let text = toml::to_string_pretty(&r).unwrap();
         let back = Keyring::parse(&text).unwrap();
         assert_eq!(back.keys.len(), 2);
-        assert_eq!(back.get("k-next").unwrap().last_contract_exp, Some(NOW + DAY));
+        assert_eq!(
+            back.get("k-next").unwrap().last_contract_exp,
+            Some(NOW + DAY)
+        );
         assert_eq!(back.active().unwrap().kid, "k-2026-01");
     }
 
@@ -829,8 +849,12 @@ mod tests {
     fn a_key_that_is_not_an_uncompressed_point_is_refused() {
         // Refusing beats emitting a JWK with coordinates read from the wrong
         // offset, which would verify nothing and look like a valid key.
-        let err = jwk_from_pem("k1", "ES256", "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----")
-            .unwrap_err();
+        let err = jwk_from_pem(
+            "k1",
+            "ES256",
+            "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----",
+        )
+        .unwrap_err();
         assert_eq!(err.code(), Code::CONFIG_INVALID);
 
         let bogus = {
@@ -857,7 +881,10 @@ mod tests {
     fn the_generation_command_is_printable_and_names_the_right_curve() {
         let cmds = generation_command("ES384", "/keys/a.pem", "/keys/a.pub");
         assert!(cmds[0].contains("P-384"));
-        assert!(cmds[1].contains("chmod 600"), "a private key must not be world-readable");
+        assert!(
+            cmds[1].contains("chmod 600"),
+            "a private key must not be world-readable"
+        );
         assert!(cmds[2].contains("-pubout"));
         assert!(generation_command("ES256", "a", "b")[0].contains("P-256"));
     }
