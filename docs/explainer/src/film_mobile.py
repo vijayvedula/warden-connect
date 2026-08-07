@@ -21,7 +21,10 @@ how it is *seen*:
 
 Timing is fixed rather than self-paced: a beat is held for a reading time derived
 from its own word count, floored and capped, so long beats get the room they need and
-short ones do not drag.
+short ones do not drag. Each shot is then a **build, a still, and a dip** — the
+animation completes in the first two thirds and the finished slide is genuinely on
+screen for the rest, which is the part a reader needs and the first cut never gave
+them.
 
 Shares `check_fonts` and the easings with `journeys.py`. The palette and the frame
 differ, so `Canvas` does not.
@@ -305,6 +308,22 @@ class Canvas:
 
 # --- the timeline ----------------------------------------------------------
 
+# --- shot shape -------------------------------------------------------------
+# A shot is not one long animation. It is a build, then a **still**, then a dip.
+#
+# The first cut animated across the whole shot and cut on the last frame of the
+# build, which meant the finished slide was never actually on screen — the viewer
+# was always reading something mid-assembly. `HOLD` is the fraction of each shot
+# spent on the completed frame, and it is carved out of the existing duration
+# rather than added to it, so most of this costs no runtime at all.
+HOLD = 0.34          # of each shot, static and fully drawn
+FADE_IN = 0.13       # seconds
+FADE_OUT = 0.11      # seconds
+SETTLE = 0.30        # seconds added per shot, purely to breathe
+
+_GROUND = Image.new("RGB", (W, H), BG)
+
+
 class Video:
     def __init__(self, path):
         self.path = path
@@ -312,7 +331,7 @@ class Video:
 
     def scene(self, seconds):
         def deco(fn):
-            self.scenes.append((max(1, int(seconds * FPS)), fn))
+            self.scenes.append((max(1, int((seconds + SETTLE) * FPS)), fn))
             return fn
         return deco
 
@@ -326,11 +345,24 @@ class Video:
              "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(self.path)],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL)
+        fin, fout = int(FPS * FADE_IN), int(FPS * FADE_OUT)
         for count, fn in self.scenes:
+            # The build finishes here, not at the last frame. Everything after is the
+            # same picture, held.
+            build = max(1, int(round(count * (1 - HOLD))) - 1)
             for i in range(count):
                 c = Canvas()
-                fn(c, i / max(1, count - 1))
-                proc.stdin.write(c.im.tobytes())
+                fn(c, clamp(i / build))
+                im = c.im
+                # A short dip through the page colour at each edge. Not to black:
+                # blending toward the ground means the content fades and the ground
+                # stays, which reads as a soft cut rather than a dropped frame.
+                a = min(1.0,
+                        i / fin if fin else 1.0,
+                        (count - 1 - i) / fout if fout else 1.0)
+                if a < 0.995:
+                    im = Image.blend(_GROUND, im, max(0.0, a))
+                proc.stdin.write(im.tobytes())
         proc.stdin.close()
         proc.wait()
         return total / FPS
