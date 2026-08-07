@@ -828,6 +828,48 @@ mod tests {
     }
 
     #[test]
+    fn the_emitted_jwks_can_be_read_back_and_verifies_a_real_signature() {
+        // Until `IssuerKeys::add_jwks` existed this whole path was write-only: the
+        // control plane served a `jwks.json` at `/v1/jwks.json`, put one in every
+        // bundle, and *nothing in the repository ever read one back*. The coordinates
+        // were checked for length and for differing from each other, which a swapped
+        // x and y would also satisfy.
+        //
+        // This is the test that could not be written before. Emit the key set the way
+        // an operator would, ingest it the way a mediator now does, and verify a
+        // signature made by the matching private key. Any disagreement between the two
+        // halves — a coordinate offset, a curve name, an Ed25519 tail read one byte
+        // wrong — fails here and nowhere else.
+        let priv_pem = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/keys/test_issuer_es256_priv.pem"),
+        )
+        .unwrap();
+        let signer = wc_core::contract::IssuerKey::ec_pem(
+            "k-2026-01",
+            &priv_pem,
+            wc_core::contract::Algorithm::ES256,
+        )
+        .unwrap();
+        let jws =
+            wc_core::contract::sign_detached(&serde_json::json!({"sub": "round-trip"}), &signer)
+                .unwrap();
+
+        let document = ring().jwks().unwrap();
+        let mut keys = wc_core::contract::IssuerKeys::new();
+        let report = keys.add_jwks(&document).unwrap();
+        assert_eq!(report.added, vec!["k-2026-01".to_string()]);
+        assert!(
+            report.is_complete(),
+            "we emitted it; nothing should be skipped"
+        );
+
+        let claims: serde_json::Value =
+            wc_core::contract::verify_detached(&jws, "k-2026-01", &keys).unwrap();
+        assert_eq!(claims["sub"], "round-trip");
+    }
+
+    #[test]
     fn a_jwk_carries_real_p256_coordinates() {
         let jwk = jwk_from_pem("k1", "ES256", &pub_pem()).unwrap();
         assert_eq!(jwk["kty"], "EC");

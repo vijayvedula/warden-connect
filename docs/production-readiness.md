@@ -217,14 +217,52 @@ by what unblocks the others.
   P1 #9, where it is listed as missing. The drill must exercise the offline path,
   not only the online one.
 
-- [ ] **6. JWKS is file-only.** `keys.rs` has the keyring, rotation lifecycle and
-  retirement guard, and `connect keys jwks` writes the document. A mediator is
-  pointed at a *file*, so a rotated issuer key needs an out-of-band deploy before
-  anything verifies against it. Same residual Warden core carries; here it is
-  worse, because contracts outlive a rotation by design.
+- [x] **6. Issuer trust can rotate without a deploy.**
 
-  Needs: HTTP fetch with a TTL cache, and a rotation drill that proves a mediator
-  picks up a new `kid` without a restart.
+  What was wrong was narrower and worse than "no HTTP fetch": **JWKS handling was
+  write-only.** `keys jwks` rendered the document, `/v1/jwks.json` served it, `bundle`
+  carried it — and nothing in the repository could read one back. The coordinate
+  extraction in `jwk_from_pem` was covered only by length assertions, which a swapped
+  `x` and `y` would also satisfy. So a mediator was pointed at a PEM, one `kid` fixed
+  at startup, and rotation meant a file on every host plus a restart. That cost is why
+  keys in practice do not get rotated at all.
+
+  - `IssuerKeys::add_jwks` — the ingest. EC P-256/P-384 and Ed25519; **skips** RSA, a
+    key with no `kid`, `use: enc` and an unknown curve, each with a reason in the
+    returned `JwksReport`; **refuses** a symmetric key outright, because anyone who can
+    verify with it can mint with it. All-or-nothing on the error path, so a caller that
+    logs and carries on keeps its previous trust rather than an arbitrary prefix of a
+    document it rejected. A document where *nothing* is usable is an error, not an
+    empty success.
+  - `wc_mediator::jwks::JwksSource` — TTL cache over a URL or a file. Every refresh
+    **replaces** the set rather than merging into it: a key the issuer has withdrawn
+    has to stop verifying, and a merging cache would keep honouring a compromised key
+    while reporting healthy refreshes. A failed refresh keeps serving the cached set —
+    the keys are still valid and the issuer being briefly unreachable is not a reason
+    to deny every connection — but only to `max_stale`, past which it refuses, because
+    a set that can no longer be refreshed is a set nobody can withdraw a key from.
+    `status()` exposes age, staleness and the last error, so "running on cache" is
+    alertable rather than inferred afterwards.
+  - `Trust::{Pinned, Rotating}` refreshes **at the call site**. `connect-mediate`'s
+    refresh thread used to rebuild `IssuerKeys` from the startup PEM, so it held a copy
+    of boot-time trust: contracts refreshed every tick and the keys checking them never
+    did. `--jwks-url` would have looked configured and rotation would never have
+    arrived. Keys and contracts now refresh together, and a `kid` change is logged.
+  - Flags: `--jwks-url`, `--jwks-file`, `--jwks-ttl`, `--jwks-max-stale` on
+    `connect-mediate`; `--jwks FILE` on `connect verify`. Exactly one trust source —
+    passing two is refused rather than resolved by precedence, and `--kid`/`--alg`
+    alongside a key set is refused rather than silently ignored.
+  - The round trip is now proven: `the_emitted_jwks_can_be_read_back_and_verifies_a_
+    real_signature` emits from a `Keyring` and verifies a live signature through the
+    ingest. That is the test that could not be written while the path was write-only.
+
+  It also removes the "convert the JWKS to PEM" step from
+  `fixtures/attest/README.md` — `spire-agent api fetch jwtbundles` returns a JWKS, so
+  a SPIRE trust bundle is now readable as it comes.
+
+  **Still outstanding:** the rotation *drill* — a rehearsal that publishes a new `kid`
+  and proves a running mediator picks it up. The mechanism is tested; the procedure is
+  not, and per P1 #9 an unrehearsed procedure is an assumption.
 
 - [x] **7. A non-loopback listener no longer accepts credentials in clear.**
 
