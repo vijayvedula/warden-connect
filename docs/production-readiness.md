@@ -109,16 +109,56 @@ by what unblocks the others.
   Needs: an integration environment with SPIRE and a signing builder, and the
   four-stage happy path asserted against material this repo did not mint.
 
-- [ ] **4. Screening ships uncalibrated, and its own exit gate is unmeasured.**
-  `ScreenRules::calibrated = false` is deliberate — blocking is earned on
-  `fixtures/screening/`, never asserted in a default — and that is correct. But
-  §8.16's P2 exit criterion is *precision ≥ 0.98 on the labelled corpus*, and the
-  test that measures precision prints it and says **"measured, not gated"**. So the
-  number that decides whether a detector may block is a number CI does not check.
+- [x] **4. Screening precision and recall are gated, and the corpus could not see
+  its worst false-positive class.** This entry was wrong when written: precision
+  *was* asserted at `>= 0.98` with `fp.is_empty()`. What was wrong was the label —
+  the test printed **"(measured, not gated)"** directly above the assertions that
+  gate it — and recall, which was measured at 1.000 and gated at nothing.
 
-  Needs: the corpus expanded (it is small enough that one bad case moves precision
-  by more than the threshold's own margin), the number gated in CI, then a shipped
-  ruleset with `calibrated = true` and a documented basis for it.
+  Chasing the corpus found the real defect. **S1, a blocking detector, refused any
+  tool server whose descriptions were localised.** It blocked `U+200B..U+200F` and
+  `U+2066..U+2069` wholesale, which covers `U+200E`/`U+200F` (LRM/RLM, standard in
+  mixed-direction text), the bidi isolates (the *recommended* modern embedding
+  mechanism), `U+200C` ZWNJ (**required** in Persian and Urdu) and `U+200D` ZWJ
+  (required in Indic scripts, and in every multi-person emoji). Measured, not
+  theorised: Arabic, Hebrew, Persian, Hindi and an emoji team name were all refused.
+  On a product whose own documents lead with multi-market residency.
+
+  The corpus had CJK and accented Latin and **nothing that exercises bidi at all**,
+  so it could not have caught this at any precision threshold.
+
+  Three changes, and the third is what makes the first two safe:
+
+  1. **`is_concealing` narrowed to what can hide or reorder** — zero-width with no
+     shaping role, the deprecated embedding/override family (the Trojan Source
+     primitive), and the Unicode **tag block `U+E0000..U+E007F`**, which was not
+     detected at all before and is the carrier for ASCII smuggling. A recall gain,
+     not a trade.
+  2. **Legitimacy is contextual, not a blanket exemption.** A ZWJ between two
+     Devanagari letters is doing a job; the same ZWJ between `Amount.` and
+     ` Ignore limits.` is not. `has_complex_script` decides per field, so
+     `benign-arabic-with-rlm` passes and `attack-rlm-in-latin-text` still blocks.
+  3. **`matchable()` strips every invisible character before phrase matching.** The
+     matchers were plain `to_lowercase().contains()`, so S1's broad block list was
+     the only thing preventing evasion — one ZWJ inside
+     `ignore all previous instructions` breaks a substring match. Now the phrase
+     detectors see what a human sees, and `attack-zwj-split-override-phrase` fires
+     **S1 and S5** where it used to fire only S1.
+
+  Corpus: 49 → **63 cases** (28 block, 35 pass), ten of them benign near-misses
+  including six localisation cases, and four new attack families. Precision **1.000**,
+  recall **1.000**, both gated, and named as its own step in CI so the §8.16 P2 exit
+  criterion is checked rather than buried in a summary line.
+
+  `known_miss` is the escape hatch that lets recall be gated at all: a newly-understood
+  attack the detectors miss is a reviewable line in a fixture, not a threshold quietly
+  drifting down. A stale marker fails too — if the detectors start catching a case
+  marked `known_miss`, the test says so.
+
+  Still deliberately **not** done: `ScreenRules::calibrated` stays `false` by default
+  and `screen-rules.toml` still ships `calibrated = false`. Blocking is earned per
+  estate against that estate's own surfaces (§8.9), and our corpus is evidence for our
+  detectors, not for somebody else's tool servers.
 
 - [~] **5. Signing keys are PEM files on a filesystem.** The seam and the first
   key are done; the remaining sub-items are custody *deployments*, not code. See
