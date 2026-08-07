@@ -846,7 +846,10 @@ fn observe_mode_does_not_change_behaviour_on_an_uncontracted_pair() {
     let log = f.mediated.log();
     assert!(log.is_shadow());
     assert!(log.denials.is_empty(), "observe mode denies nothing");
-    assert!(log.findings.iter().all(|x| x.code == Code::NO_CONTRACT && x.allowed));
+    assert!(log
+        .findings
+        .iter()
+        .all(|x| x.code == Code::NO_CONTRACT && x.allowed));
     assert!(log
         .findings
         .iter()
@@ -857,10 +860,16 @@ fn observe_mode_does_not_change_behaviour_on_an_uncontracted_pair() {
 fn enforce_mode_refuses_an_uncontracted_pair_and_leaves_the_incident_behind() {
     let mut f = uncontracted(Mode::Enforce);
 
-    assert_eq!(blocked_with(&f.mediated.request(&initialize())), Some("WC-4001".to_string()));
+    assert_eq!(
+        blocked_with(&f.mediated.request(&initialize())),
+        Some("WC-4001".to_string())
+    );
     assert!(visible(&f.mediated.request(&tools_list())).is_empty());
     assert!(f.mediated.request(&call("wire_funds")).error.is_some());
-    assert!(f.recorder.calls().is_empty(), "nothing may reach the upstream");
+    assert!(
+        f.recorder.calls().is_empty(),
+        "nothing may reach the upstream"
+    );
 
     let log = f.mediated.log();
     assert!(!log.is_shadow(), "nothing ran, so nothing shadowed");
@@ -957,7 +966,11 @@ fn gate_filter_tools_list_256_tools() {
         let start = Instant::now();
         let stat = filter::filter_catalog(Catalog::Tools, &permitted, &mut resp);
         timings.push(start.elapsed());
-        assert_eq!(stat.hidden, N / 2, "the gate must measure real filtering work");
+        assert_eq!(
+            stat.hidden,
+            N / 2,
+            "the gate must measure real filtering work"
+        );
         assert!(!stat.failed_closed);
     }
     timings.sort_unstable();
@@ -972,7 +985,10 @@ fn gate_filter_tools_list_256_tools() {
     // not run in the mode most people invoke is the failure this file is full of
     // warnings about.
     let (ceiling, label) = if cfg!(debug_assertions) {
-        (thresholds::FILTER_256 * 12, "debug tripwire, NOT the §8.10.3 gate")
+        (
+            thresholds::FILTER_256 * 12,
+            "debug tripwire, NOT the §8.10.3 gate",
+        )
     } else {
         (thresholds::FILTER_256, "§8.10.3")
     };

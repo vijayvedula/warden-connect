@@ -99,7 +99,10 @@ impl Authority {
         match self {
             // A directory knows about credentials and sessions, not connections.
             Authority::Directory => {
-                matches!(event_uri, SESSION_REVOKED | CREDENTIAL_CHANGE | ASSURANCE_CHANGE)
+                matches!(
+                    event_uri,
+                    SESSION_REVOKED | CREDENTIAL_CHANGE | ASSURANCE_CHANGE
+                )
             }
             // A partner may cut a shared connection, and nothing else. In
             // particular not `credential-change`, which would let a counterparty
@@ -157,7 +160,10 @@ impl Transmitter {
             {
                 return Err(WcError::with_detail(
                     Code::CONFIG_INVALID,
-                    format!("transmitter {}: key {kid:?} is not a usable public PEM", self.issuer),
+                    format!(
+                        "transmitter {}: key {kid:?} is not a usable public PEM",
+                        self.issuer
+                    ),
                 ));
             }
         }
@@ -201,7 +207,10 @@ impl TransmitterSet {
             if t.jwks.is_empty() {
                 return Err(WcError::with_detail(
                     Code::CONFIG_INVALID,
-                    format!("transmitter {:?} has no keys, so nothing from it could verify", t.issuer),
+                    format!(
+                        "transmitter {:?} has no keys, so nothing from it could verify",
+                        t.issuer
+                    ),
                 ));
             }
             if t.audience.trim().is_empty() {
@@ -209,7 +218,10 @@ impl TransmitterSet {
                 // replays into ours.
                 return Err(WcError::with_detail(
                     Code::CONFIG_INVALID,
-                    format!("transmitter {:?} must declare the audience its tokens carry", t.issuer),
+                    format!(
+                        "transmitter {:?} must declare the audience its tokens carry",
+                        t.issuer
+                    ),
                 ));
             }
             if t.authority == Authority::Partner && t.parties.is_empty() {
@@ -455,14 +467,14 @@ pub fn ingest(
             format!("SET uses {alg:?}"),
         ));
     }
-    let claims: SetClaims =
-        wc_core::contract::verify_detached(token, &kid, &transmitter.keys()?).map_err(|e| {
-            WcError::with_detail(
-                Code::SIGNATURE_INVALID,
-                format!("SET from {issuer:?} does not verify under kid {kid:?}"),
-            )
-            .with_source(e)
-        })?;
+    let claims: SetClaims = wc_core::contract::verify_detached(token, &kid, &transmitter.keys()?)
+        .map_err(|e| {
+        WcError::with_detail(
+            Code::SIGNATURE_INVALID,
+            format!("SET from {issuer:?} does not verify under kid {kid:?}"),
+        )
+        .with_source(e)
+    })?;
     if claims.iss != transmitter.issuer {
         return Err(WcError::with_detail(
             Code::SIGNATURE_INVALID,
@@ -517,9 +529,7 @@ pub fn ingest(
     if !transmitter.may_name(&subject) {
         return Err(WcError::with_detail(
             Code::SIGNAL_NOT_AUTHORISED,
-            format!(
-                "transmitter {issuer:?} is not authorised to name {subject:?}",
-            ),
+            format!("transmitter {issuer:?} is not authorised to name {subject:?}",),
         ));
     }
     if claims.events.is_empty() {
@@ -611,10 +621,7 @@ fn peek_claim(token: &str, name: &str) -> Result<String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| {
-            WcError::with_detail(
-                Code::FRAME_MALFORMED,
-                format!("SET has no `{name}` claim"),
-            )
+            WcError::with_detail(Code::FRAME_MALFORMED, format!("SET has no `{name}` claim"))
         })
 }
 
@@ -626,10 +633,7 @@ fn peek_header(token: &str, name: &str) -> Result<String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| {
-            WcError::with_detail(
-                Code::FRAME_MALFORMED,
-                format!("SET header has no `{name}`"),
-            )
+            WcError::with_detail(Code::FRAME_MALFORMED, format!("SET header has no `{name}`"))
         })
 }
 
@@ -699,13 +703,7 @@ mod tests {
         }
     }
 
-    fn set(
-        issuer: &str,
-        subject: &str,
-        events: serde_json::Value,
-        iat: u64,
-        jti: &str,
-    ) -> String {
+    fn set(issuer: &str, subject: &str, events: serde_json::Value, iat: u64, jti: &str) -> String {
         let claims = serde_json::json!({
             "iss": issuer,
             "jti": jti,
@@ -854,7 +852,13 @@ mod tests {
             } else {
                 "human:priya@org"
             };
-            let token = set(issuer, subject, events, NOW - 10, &format!("j{issuer}{subject}"));
+            let token = set(
+                issuer,
+                subject,
+                events,
+                NOW - 10,
+                &format!("j{issuer}{subject}"),
+            );
             let out = ingest(&token, &streams(), &mut SeenTokens::default(), NOW).unwrap();
             for effect in &out.effects {
                 assert_ne!(
@@ -1115,8 +1119,12 @@ mod tests {
             pub_pem()
         );
         let err = TransmitterSet::parse(&unscoped).unwrap_err();
-        assert!(err.to_string().contains("could \n                         then cut any connection")
-            || err.to_string().contains("cut any connection"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("could \n                         then cut any connection")
+                || err.to_string().contains("cut any connection"),
+            "{err}"
+        );
 
         // No audience means a token for someone else's stream replays into ours.
         let no_aud = format!(

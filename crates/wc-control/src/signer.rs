@@ -112,9 +112,9 @@ impl CommandSigner {
     /// script file that this command names.
     pub fn parse(command: &str) -> Result<CommandSigner> {
         let mut parts = command.split_whitespace();
-        let program = parts
-            .next()
-            .ok_or_else(|| WcError::with_detail(Code::CONFIG_INVALID, "signing command is empty"))?;
+        let program = parts.next().ok_or_else(|| {
+            WcError::with_detail(Code::CONFIG_INVALID, "signing command is empty")
+        })?;
         let args: Vec<String> = parts.map(str::to_string).collect();
         Ok(CommandSigner::new(program, &args))
     }
@@ -206,12 +206,10 @@ impl Signer for CommandSigner {
         if trimmed.is_empty() {
             return Err(self.fail("exited 0 and produced no signature"));
         }
-        URL_SAFE_NO_PAD
-            .decode(trimmed.as_bytes())
-            .map_err(|e| {
-                self.fail("signature is not base64url (no padding)")
-                    .with_source(e)
-            })
+        URL_SAFE_NO_PAD.decode(trimmed.as_bytes()).map_err(|e| {
+            self.fail("signature is not base64url (no padding)")
+                .with_source(e)
+        })
     }
 }
 
@@ -321,8 +319,7 @@ sys.stdout.write(base64.urlsafe_b64encode(r + s).decode().rstrip("="))
 
         let mut keys = wc_core::contract::IssuerKeys::new();
         keys.add_ec_pem(KID, PUB, Algorithm::ES256).unwrap();
-        let back: serde_json::Value =
-            wc_core::contract::verify_detached(&jws, KID, &keys).unwrap();
+        let back: serde_json::Value = wc_core::contract::verify_detached(&jws, KID, &keys).unwrap();
         assert_eq!(back["seq"], 42);
     }
 

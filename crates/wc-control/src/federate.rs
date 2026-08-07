@@ -204,7 +204,11 @@ impl FederationMetadata {
         let mut out: Vec<String> = Vec::new();
         for (name, mine, theirs) in [
             ("capabilities", &self.capabilities, &superior.capabilities),
-            ("jurisdictions", &self.jurisdictions, &superior.jurisdictions),
+            (
+                "jurisdictions",
+                &self.jurisdictions,
+                &superior.jurisdictions,
+            ),
             ("data_classes", &self.data_classes, &superior.data_classes),
         ] {
             if theirs.is_empty() {
@@ -224,10 +228,13 @@ impl FederationMetadata {
         }
         if let (Some(mine), Some(theirs)) = (self.max_ttl_secs, superior.max_ttl_secs) {
             if mine > theirs {
-                out.push(format!("max_ttl_secs: {mine} exceeds the superior's {theirs}"));
+                out.push(format!(
+                    "max_ttl_secs: {mine} exceeds the superior's {theirs}"
+                ));
             }
         }
-        if let (Some(mine), Some(theirs)) = (self.max_delegation_depth, superior.max_delegation_depth)
+        if let (Some(mine), Some(theirs)) =
+            (self.max_delegation_depth, superior.max_delegation_depth)
         {
             if mine > theirs {
                 out.push(format!(
@@ -441,30 +448,24 @@ fn header_of(jws: &str) -> Result<Map<String, Value>> {
 /// Verify one statement against a key set, returning its claims.
 fn verify_statement(jws: &str, keys: &IssuerKeys) -> Result<EntityStatement> {
     let header = header_of(jws)?;
-    let alg = header
-        .get("alg")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            WcError::with_detail(
-                Code::FEDERATION_CHAIN_INVALID,
-                "entity statement header has no `alg`",
-            )
-        })?;
+    let alg = header.get("alg").and_then(Value::as_str).ok_or_else(|| {
+        WcError::with_detail(
+            Code::FEDERATION_CHAIN_INVALID,
+            "entity statement header has no `alg`",
+        )
+    })?;
     if !ACCEPTED_ALG_NAMES.contains(&alg) {
         return Err(WcError::with_detail(
             Code::ALG_NOT_ASYMMETRIC,
             format!("entity statement uses {alg:?}"),
         ));
     }
-    let kid = header
-        .get("kid")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            WcError::with_detail(
-                Code::FEDERATION_CHAIN_INVALID,
-                "entity statement has no `kid`; there is no way to choose a key",
-            )
-        })?;
+    let kid = header.get("kid").and_then(Value::as_str).ok_or_else(|| {
+        WcError::with_detail(
+            Code::FEDERATION_CHAIN_INVALID,
+            "entity statement has no `kid`; there is no way to choose a key",
+        )
+    })?;
 
     wc_core::contract::verify_detached::<EntityStatement>(jws, kid, keys).map_err(|e| {
         WcError::with_detail(
@@ -820,13 +821,7 @@ mod tests {
             metadata: meta(&["settlement"], None, None),
             authority_hints: vec!["https://acme.example/federation".to_string()],
         };
-        let err = resolve(
-            &[sign(&leaf, "evil-1", &priv_pem())],
-            &anchors(),
-            NOW,
-            60,
-        )
-        .unwrap_err();
+        let err = resolve(&[sign(&leaf, "evil-1", &priv_pem())], &anchors(), NOW, 60).unwrap_err();
         assert_eq!(err.code(), Code::FEDERATION_ANCHOR_UNKNOWN);
         assert!(err.to_string().contains("not a configured trust anchor"));
     }
@@ -963,7 +958,10 @@ mod tests {
         // superior permitted is not narrowed silently — it is refused, because
         // silently narrowing would hide a counterparty trying it on.
         let err = resolve(
-            &chain(meta(&["settlement"], Some(30 * 86_400), Some(1)), NOW + 86_400),
+            &chain(
+                meta(&["settlement"], Some(30 * 86_400), Some(1)),
+                NOW + 86_400,
+            ),
             &anchors(),
             NOW,
             60,
@@ -976,7 +974,10 @@ mod tests {
     #[test]
     fn a_leaf_claiming_an_unvouched_capability_is_refused() {
         let err = resolve(
-            &chain(meta(&["settlement", "wire_transfer"], Some(86_400), Some(1)), NOW + 86_400),
+            &chain(
+                meta(&["settlement", "wire_transfer"], Some(86_400), Some(1)),
+                NOW + 86_400,
+            ),
             &anchors(),
             NOW,
             60,
@@ -1042,7 +1043,9 @@ mod tests {
     #[test]
     fn a_chain_longer_than_the_bound_is_refused_before_any_verification() {
         // An unbounded chain from a counterparty is cheap unbounded work for us.
-        let long: Vec<String> = (0..MAX_CHAIN_LEN + 1).map(|_| "a.b.c".to_string()).collect();
+        let long: Vec<String> = (0..MAX_CHAIN_LEN + 1)
+            .map(|_| "a.b.c".to_string())
+            .collect();
         let err = resolve(&long, &anchors(), NOW, 60).unwrap_err();
         assert_eq!(err.code(), Code::FEDERATION_CHAIN_INVALID);
         assert!(err.to_string().contains("limit is"));

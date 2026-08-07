@@ -765,8 +765,11 @@ impl IssuerKey {
             ));
         }
         let key = EncodingKey::from_ec_pem(pem).map_err(|e| {
-            WcError::with_detail(Code::SIGNATURE_INVALID, "issuer key is not an EC PKCS#8 PEM")
-                .with_source(e)
+            WcError::with_detail(
+                Code::SIGNATURE_INVALID,
+                "issuer key is not an EC PKCS#8 PEM",
+            )
+            .with_source(e)
         })?;
         Ok(IssuerKey {
             kid: kid.to_string(),
@@ -879,7 +882,8 @@ impl IssuerKey {
             WcError::with_detail(Code::SIGNATURE_INVALID, "cannot encode JWS header").with_source(e)
         })?);
         let body = URL_SAFE_NO_PAD.encode(serde_json::to_vec(payload).map_err(|e| {
-            WcError::with_detail(Code::SIGNATURE_INVALID, "cannot encode JWS payload").with_source(e)
+            WcError::with_detail(Code::SIGNATURE_INVALID, "cannot encode JWS payload")
+                .with_source(e)
         })?);
         let signing_input = format!("{head}.{body}");
         let sig = self.sign_input(signing_input.as_bytes())?;
@@ -1655,7 +1659,10 @@ mod tests {
         };
         let no_overlap = request.intersect(&bar);
         assert!(no_overlap.jurisdictions.is_empty());
-        assert!(no_overlap.is_closed(), "an empty overlap must record that it is one");
+        assert!(
+            no_overlap.is_closed(),
+            "an empty overlap must record that it is one"
+        );
 
         // Fold in a rule that declares AU. Before the fix, AU came back.
         let rule = Terms {
@@ -1691,15 +1698,24 @@ mod tests {
         let met = a.intersect(&b);
         assert!(met.data_classes.is_empty() && met.classes_closed);
         assert_eq!(met.jurisdictions, vec!["AU".to_string()]);
-        assert!(!met.jurisdictions_closed, "jurisdictions overlapped and must not close");
-        assert!(met.is_closed(), "a connection carrying no data class carries nothing");
+        assert!(
+            !met.jurisdictions_closed,
+            "jurisdictions overlapped and must not close"
+        );
+        assert!(
+            met.is_closed(),
+            "a connection carrying no data class carries nothing"
+        );
         assert_eq!(met, met.intersect(&met), "still idempotent");
     }
 
     #[test]
     fn two_silent_sources_are_not_a_disagreement() {
         let met = Terms::default().intersect(&Terms::default());
-        assert!(!met.is_closed(), "nothing declared is not the same as nothing permitted");
+        assert!(
+            !met.is_closed(),
+            "nothing declared is not the same as nothing permitted"
+        );
     }
 
     #[test]
@@ -1715,7 +1731,11 @@ mod tests {
         let yielded = silent.intersect(&declared);
         assert_eq!(
             yielded.data_classes,
-            vec!["financial".to_string(), "phi".to_string(), "pii".to_string()]
+            vec![
+                "financial".to_string(),
+                "phi".to_string(),
+                "pii".to_string()
+            ]
         );
         assert_eq!(yielded, yielded.intersect(&yielded));
         assert_eq!(yielded, declared.intersect(&silent));
@@ -2043,8 +2063,7 @@ mod conformance {
             v.extend(std::iter::repeat_n(0xAB, 68));
             v
         };
-        let key =
-            IssuerKey::external(KID_ES, Algorithm::ES256, Box::new(Canned(der))).unwrap();
+        let key = IssuerKey::external(KID_ES, Algorithm::ES256, Box::new(Canned(der))).unwrap();
         let err = mint(&payload(), &key).unwrap_err();
         assert_eq!(err.code(), Code::SIGNATURE_INVALID);
         assert!(err.detail().contains("DER-encoded"), "{}", err.detail());
@@ -2075,8 +2094,7 @@ mod conformance {
         impl Signer for Indirect {
             fn sign(&self, input: &[u8]) -> Result<Vec<u8>> {
                 use base64::Engine as _;
-                let b64 =
-                    jsonwebtoken::crypto::sign(input, &self.0, Algorithm::ES256).unwrap();
+                let b64 = jsonwebtoken::crypto::sign(input, &self.0, Algorithm::ES256).unwrap();
                 Ok(URL_SAFE_NO_PAD.decode(b64).unwrap())
             }
         }
@@ -2098,7 +2116,8 @@ mod conformance {
         // Custody must not become a way around the asymmetric-only stance: a shared
         // secret held in an HSM is still a shared secret.
         for alg in [Algorithm::HS256, Algorithm::HS384, Algorithm::HS512] {
-            let err = IssuerKey::external(KID_ES, alg, Box::new(Canned(vec![0u8; 64]))).unwrap_err();
+            let err =
+                IssuerKey::external(KID_ES, alg, Box::new(Canned(vec![0u8; 64]))).unwrap_err();
             assert_eq!(err.code(), Code::ALG_NOT_ASYMMETRIC);
         }
     }

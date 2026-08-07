@@ -293,7 +293,10 @@ mod tests {
             ..Report::default()
         };
         incomplete.skip("mint", "no --signing-key", false);
-        assert!(!incomplete.passed(), "an incomplete run must not read as green");
+        assert!(
+            !incomplete.passed(),
+            "an incomplete run must not read as green"
+        );
         assert_eq!(incomplete.incomplete().len(), 1);
     }
 
@@ -326,14 +329,9 @@ mod tests {
         // and page faults; including it measures the allocator rather than the
         // code.
         let mut calls = 0usize;
-        let gate = measure(
-            "counting",
-            "",
-            Duration::from_secs(1),
-            50,
-            10,
-            || calls += 1,
-        );
+        let gate = measure("counting", "", Duration::from_secs(1), 50, 10, || {
+            calls += 1
+        });
         assert_eq!(calls, 60, "warmup runs but is not sampled");
         assert_eq!(gate.iterations, 50);
         assert!(gate.passed());
@@ -342,14 +340,9 @@ mod tests {
     #[test]
     fn a_slow_operation_actually_fails_its_gate() {
         // The harness has to be able to fail, or every green run means nothing.
-        let gate = measure(
-            "slow",
-            "",
-            Duration::from_nanos(1),
-            5,
-            0,
-            || std::thread::sleep(Duration::from_millis(1)),
-        );
+        let gate = measure("slow", "", Duration::from_nanos(1), 5, 0, || {
+            std::thread::sleep(Duration::from_millis(1))
+        });
         assert!(!gate.passed());
         assert!(gate.line().contains("FAIL"));
     }

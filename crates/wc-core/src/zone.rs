@@ -501,7 +501,10 @@ mod tests {
             vec!["internal", "internal.apac", "internal.apac.payments"]
         );
         assert_eq!(
-            ancestors(&z("public")).iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            ancestors(&z("public"))
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>(),
             vec!["public"]
         );
     }
@@ -595,8 +598,15 @@ mod tests {
         let d = l.resolve(&z("internal.apac.payments"), &z("internal.apac.ledger"));
         assert!(d.permitted);
         assert_eq!(d.crossing, Crossing::Lateral);
-        assert_eq!(d.meet.as_ref().map(|m| m.to_string()), Some("internal.apac".to_string()));
-        assert!(d.reason.contains("meeting at internal.apac"), "{}", d.reason);
+        assert_eq!(
+            d.meet.as_ref().map(|m| m.to_string()),
+            Some("internal.apac".to_string())
+        );
+        assert!(
+            d.reason.contains("meeting at internal.apac"),
+            "{}",
+            d.reason
+        );
     }
 
     #[test]
@@ -631,11 +641,13 @@ mod tests {
             z("internal"),
             z("partner.acme"),
         ));
-        assert!(l
-            .resolve(&z("internal.apac.payments"), &z("partner.acme.settlement"))
-            .permitted);
         assert!(
-            !l.resolve(&z("internal.apac"), &z("partner.other")).permitted,
+            l.resolve(&z("internal.apac.payments"), &z("partner.acme.settlement"))
+                .permitted
+        );
+        assert!(
+            !l.resolve(&z("internal.apac"), &z("partner.other"))
+                .permitted,
             "a different partner is not covered"
         );
     }
@@ -657,22 +669,29 @@ mod tests {
     #[test]
     fn strict_membership_refuses_an_undeclared_zone() {
         let mut l = ZoneLattice::new();
-        l.declare(&z("internal.apac"), TrustLevel::Internal).unwrap();
+        l.declare(&z("internal.apac"), TrustLevel::Internal)
+            .unwrap();
 
         // Off by default, because an estate mid-adoption has unclassified zones and
         // refusing them all at once is how a rollout stops.
-        assert!(l.resolve(&z("internal.apac"), &z("internal.wild")).permitted);
+        assert!(
+            l.resolve(&z("internal.apac"), &z("internal.wild"))
+                .permitted
+        );
 
         l.set_strict_membership(true);
         let d = l.resolve(&z("internal.apac"), &z("internal.wild"));
         assert!(!d.permitted);
-        assert!(d.reason.contains("callee zone internal.wild is not declared"));
+        assert!(d
+            .reason
+            .contains("callee zone internal.wild is not declared"));
 
         // A declared ancestor is enough: declaring `internal.apac` covers its
         // subtree, which is how the namespace is meant to be used.
-        assert!(l
-            .resolve(&z("internal.apac"), &z("internal.apac.payments"))
-            .permitted);
+        assert!(
+            l.resolve(&z("internal.apac"), &z("internal.apac.payments"))
+                .permitted
+        );
     }
 
     #[test]
@@ -680,7 +699,9 @@ mod tests {
         // The id appears in every contract, log line and register. Letting it
         // disagree with the declared trust level makes all of them lie.
         let mut l = ZoneLattice::new();
-        let err = l.declare(&z("partner.acme"), TrustLevel::Internal).unwrap_err();
+        let err = l
+            .declare(&z("partner.acme"), TrustLevel::Internal)
+            .unwrap_err();
         assert_eq!(err.code(), Code::CONFIG_INVALID);
         assert!(err.to_string().contains("names trust level"));
         assert!(l.declare(&z("partner.acme"), TrustLevel::Partner).is_ok());
@@ -709,7 +730,10 @@ mod tests {
         l.permit(CrossingRule::any(Crossing::Egress));
         l.permit(CrossingRule::any(Crossing::Public));
         let problems = l.lint();
-        assert!(problems.iter().any(|p| p.contains("duplicate")), "{problems:?}");
+        assert!(
+            problems.iter().any(|p| p.contains("duplicate")),
+            "{problems:?}"
+        );
         assert!(
             problems.iter().any(|p| p.contains("blanket `public`")),
             "{problems:?}"
@@ -719,7 +743,8 @@ mod tests {
     #[test]
     fn a_clean_lattice_lints_clean() {
         let mut l = ZoneLattice::new();
-        l.declare(&z("internal.apac"), TrustLevel::Internal).unwrap();
+        l.declare(&z("internal.apac"), TrustLevel::Internal)
+            .unwrap();
         l.permit(CrossingRule::between(
             Crossing::Egress,
             z("internal.apac"),

@@ -19,9 +19,8 @@ fuzz_target!(|data: &[u8]| {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
         return;
     };
-    let id = ID.get_or_init(|| {
-        EntityId::new("spiffe://org/ns/tools/sa/fuzz").expect("a fixed, valid id")
-    });
+    let id = ID
+        .get_or_init(|| EntityId::new("spiffe://org/ns/tools/sa/fuzz").expect("a fixed, valid id"));
     let limits = Limits::default();
 
     for kind in [SurfaceKind::McpTools, SurfaceKind::A2aCard] {

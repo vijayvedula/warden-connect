@@ -35,6 +35,9 @@ use wc_control::chain::{ANCHOR_FILE, ANCHOR_KID};
 use wc_control::signer::CommandSigner;
 
 use wc_control::api::{Api, ControlPlane};
+use wc_control::assurance;
+use wc_control::attest;
+use wc_control::broker;
 use wc_control::contain;
 use wc_control::cpolicy::{self as cpolicy, ConnectPolicy, StandingState};
 use wc_control::evidence::{EventKind, Evidence, LifecycleEvent};
@@ -45,9 +48,6 @@ use wc_control::issuance::{
     self as issuance, ApprovalProof, ApproverRegistry, Issued, Issuer, Outcome, PendingRequest,
     RequestInput, RequestStatus,
 };
-use wc_control::assurance;
-use wc_control::attest;
-use wc_control::broker;
 use wc_control::screen;
 use wc_control::store::{Actor, Store};
 use wc_core::canon::{self, Limits, SurfaceKind};
@@ -282,8 +282,8 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "revocation-key",
             "kid",
             "mediators",
-    "federate",
-    "tenants",
+            "federate",
+            "tenants",
             "ack-deadline",
             "push-token",
         ],
@@ -298,10 +298,30 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "keys jwks" => &["keyring", "out"],
         "keys note" => &["keyring", "kid", "exp"],
         "bundle export" => &[
-            "mediator", "keyring", "signing-key", "kid", "ttl", "out", "contracts",
+            "mediator",
+            "keyring",
+            "signing-key",
+            "kid",
+            "ttl",
+            "out",
+            "contracts",
         ],
-        "bundle verify" => &["file", "envelope-pub", "issuer-pub", "kid", "mediator", "now"],
-        "bench" => &["iterations", "gate", "signing-key", "verify-pub", "kid", "scale"],
+        "bundle verify" => &[
+            "file",
+            "envelope-pub",
+            "issuer-pub",
+            "kid",
+            "mediator",
+            "now",
+        ],
+        "bench" => &[
+            "iterations",
+            "gate",
+            "signing-key",
+            "verify-pub",
+            "kid",
+            "scale",
+        ],
         "caep ingest" => &["file", "transmitters", "now"],
         "show" => &["id"],
         "entities" => &[],
@@ -467,9 +487,7 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
                 "`register` needs a subject: `register server` or `register agent`".to_string()
             }
             "audit" => "`audit` needs a subject: `audit verify`".to_string(),
-            "keys" => {
-                "`keys` needs a subject: list, new, add, rotate, retire or jwks".to_string()
-            }
+            "keys" => "`keys` needs a subject: list, new, add, rotate, retire or jwks".to_string(),
             other => format!("unknown command {other:?}"),
         }));
     }
@@ -545,9 +563,10 @@ struct Paths {
 /// '../../../../tmp/elsewhere'` wrote the estate's state outside the root — found
 /// by running exactly that against the release binary.
 fn tenant_id(args: &Args) -> Result<wc_control::tenant::TenantId> {
-    let raw = args.get("tenant").map(str::to_string).or_else(|| {
-        std::env::var("WARDEN_CONNECT_TENANT").ok()
-    });
+    let raw = args
+        .get("tenant")
+        .map(str::to_string)
+        .or_else(|| std::env::var("WARDEN_CONNECT_TENANT").ok());
     match raw {
         Some(name) => wc_control::tenant::TenantId::new(name),
         None => Ok(wc_control::tenant::TenantId::default_tenant()),
@@ -957,10 +976,9 @@ fn admit_and_record(
         Some(d) => Some(d.to_string()),
         None if args.has("bind-surface") => {
             let fetched = source.fetch_surface(request)?;
-            let subject = request
-                .id
-                .clone()
-                .unwrap_or_else(|| EntityId::new(screen::SCREENING_SUBJECT).unwrap_or_else(|_| unreachable!()));
+            let subject = request.id.clone().unwrap_or_else(|| {
+                EntityId::new(screen::SCREENING_SUBJECT).unwrap_or_else(|_| unreachable!())
+            });
             Some(attest::surface_artifact_digest(
                 fetched.kind,
                 &subject,
@@ -1064,7 +1082,12 @@ fn admit_and_record(
     if !outcome.findings.is_empty() {
         println!("\n  findings");
         for f in &outcome.findings {
-            println!("    {:<9} {:<8} {}", f.code.to_string(), format!("{:?}", f.severity), f.detail);
+            println!(
+                "    {:<9} {:<8} {}",
+                f.code.to_string(),
+                format!("{:?}", f.severity),
+                f.detail
+            );
         }
     }
 
@@ -1234,7 +1257,10 @@ fn quarantine(args: &Args) -> Result<()> {
             for m in &report.mediators {
                 let ack = match &m.ack {
                     contain::AckState::Confirmed { confirmation } => {
-                        format!("confirmed seq {} ({} aborted)", confirmation.feed_seq, confirmation.aborted)
+                        format!(
+                            "confirmed seq {} ({} aborted)",
+                            confirmation.feed_seq, confirmation.aborted
+                        )
                     }
                     contain::AckState::Waiting { seconds_left } => {
                         format!("waiting, {seconds_left}s to deadline")
@@ -1250,7 +1276,10 @@ fn quarantine(args: &Args) -> Result<()> {
                         format!("push failed after {attempts}: {detail}")
                     }
                 };
-                println!("    {:<34} {:<12} {}  (bound {}s)", m.mediator, push, ack, m.bounded_by);
+                println!(
+                    "    {:<34} {:<12} {}  (bound {}s)",
+                    m.mediator, push, ack, m.bounded_by
+                );
             }
             if !report.fully_confirmed() {
                 println!();
@@ -1339,7 +1368,11 @@ fn mediators_cmd(args: &Args) -> Result<()> {
         return Ok(());
     }
 
-    println!("feed        {} event(s), head seq {}", feed.len(), feed.next_seq() - 1);
+    println!(
+        "feed        {} event(s), head seq {}",
+        feed.len(),
+        feed.next_seq() - 1
+    );
     match verified {
         Some(n) => println!("signatures  {n} verified"),
         None => println!("signatures  not checked (pass --revocation-pub and --kid)"),
@@ -1351,7 +1384,10 @@ fn mediators_cmd(args: &Args) -> Result<()> {
     }
     println!("outstanding {} order(s)", outstanding.len());
     for (order, states) in &outstanding {
-        println!("\n  seq {} · {} · ordered at {}", order.feed_seq, order.target, order.at);
+        println!(
+            "\n  seq {} · {} · ordered at {}",
+            order.feed_seq, order.target, order.at
+        );
         for (mediator, state) in states.iter() {
             let text = match state {
                 contain::AckState::Confirmed { confirmation } => {
@@ -1521,8 +1557,13 @@ fn posture(args: &Args) -> Result<()> {
         for e in &all {
             let signals = observed_signals(e, ts);
             let scored = assurance::score(e, &signals, &cfg);
-            println!("  {:<48} {:>3}  {:<11} {}",
-                e.id, scored.score, format!("{:?}", scored.state), scored.rationale());
+            println!(
+                "  {:<48} {:>3}  {:<11} {}",
+                e.id,
+                scored.score,
+                format!("{:?}", scored.state),
+                scored.rationale()
+            );
         }
         println!();
         println!("note: identity and provenance signals are read from the stored");
@@ -1634,11 +1675,7 @@ fn discover_cmd(args: &Args) -> Result<()> {
     for m in &result.matches {
         println!(
             "  {:<44} {:<18} {:<5} {:<22} {}",
-            m.entity,
-            m.capability,
-            m.tier,
-            m.owner,
-            m.likely_decision
+            m.entity, m.capability, m.tier, m.owner, m.likely_decision
         );
     }
     if result.truncated {
@@ -1725,7 +1762,10 @@ fn blast_radius_cmd(args: &Args) -> Result<()> {
         // `forward` is who this party can reach; `reverse` is who reaches it.
         // Labelling these the wrong way round tells an operator deciding a cut the
         // opposite of the truth about which direction the dependency runs.
-        for (label, nodes) in [("reaches", &report.forward), ("reached by", &report.reverse)] {
+        for (label, nodes) in [
+            ("reaches", &report.forward),
+            ("reached by", &report.reverse),
+        ] {
             if nodes.is_empty() {
                 continue;
             }
@@ -1878,15 +1918,14 @@ fn bundle_export(args: &Args) -> Result<()> {
         }
     }
 
-    let jwks = match args.get("keyring") {
-        Some(path) => wc_control::keys::Keyring::load(std::path::Path::new(path))?.jwks()?,
-        None => {
-            return Err(WcError::with_detail(
+    let jwks =
+        match args.get("keyring") {
+            Some(path) => wc_control::keys::Keyring::load(std::path::Path::new(path))?.jwks()?,
+            None => return Err(WcError::with_detail(
                 Code::EXPORT_FAILED,
                 "--keyring is required: a bundle must carry the JWKS its contracts verify against",
-            ))
-        }
-    };
+            )),
+        };
 
     let feed = wc_control::contain::RevocationFeed::open(&p.revocations)?;
     let revocations: Vec<Value> = feed
@@ -1957,7 +1996,9 @@ fn bundle_verify(args: &Args) -> Result<()> {
     // envelope key, so it is loaded separately — falling back to the envelope key
     // only when the operator says they are the same.
     let contract_keys = {
-        let path = args.get("issuer-pub").unwrap_or(require(args, "envelope-pub")?);
+        let path = args
+            .get("issuer-pub")
+            .unwrap_or(require(args, "envelope-pub")?);
         let pem = std::fs::read(path).map_err(|e| {
             WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
         })?;
@@ -2002,7 +2043,10 @@ fn bundle_verify(args: &Args) -> Result<()> {
     if !imported.is_clean() {
         return Err(WcError::with_detail(
             Code::SIGNATURE_INVALID,
-            format!("{} contract(s) in the bundle did not verify", imported.rejected.len()),
+            format!(
+                "{} contract(s) in the bundle did not verify",
+                imported.rejected.len()
+            ),
         ));
     }
     Ok(())
@@ -2205,7 +2249,8 @@ fn bench_cmd(args: &Args) -> Result<()> {
             iterations.min(200),
             5,
             || {
-                let _ = canon::canonicalise(SurfaceKind::McpTools, &entity, &raw, &Limits::default());
+                let _ =
+                    canon::canonicalise(SurfaceKind::McpTools, &entity, &raw, &Limits::default());
             },
         ));
     } else {
@@ -2303,7 +2348,11 @@ fn bench_cmd(args: &Args) -> Result<()> {
                 println!(
                     "  {:<28} {}  ({})",
                     skip.name,
-                    if skip.deliberate { "skipped" } else { "NOT RUN" },
+                    if skip.deliberate {
+                        "skipped"
+                    } else {
+                        "NOT RUN"
+                    },
                     skip.reason
                 );
             }
@@ -2510,7 +2559,10 @@ fn keys_list(args: &Args) -> Result<()> {
         }
     );
     println!();
-    println!("  {:<24} {:<9} {:<7} {:<22} RETIRABLE", "KID", "STATE", "ALG", "SIGNED THROUGH");
+    println!(
+        "  {:<24} {:<9} {:<7} {:<22} RETIRABLE",
+        "KID", "STATE", "ALG", "SIGNED THROUGH"
+    );
     for key in &ring.keys {
         let through = key
             .last_contract_exp
@@ -2554,9 +2606,7 @@ fn keys_new(args: &Args) -> Result<()> {
     }
     println!();
     println!("# then register the public half:");
-    println!(
-        "connect keys add --kid {kid} --alg {alg} --public {public} --private-ref {private}"
-    );
+    println!("connect keys add --kid {kid} --alg {alg} --public {public} --private-ref {private}");
     println!();
     println!("# warden-connect does not generate keys. A PKCS#11 or KMS URI is the");
     println!("# production answer, and --private-ref records wherever it lives.");
@@ -2661,12 +2711,18 @@ fn keys_note(args: &Args) -> Result<()> {
     ring.note_signed(kid, exp);
     ring.save(&keyring_path(args))?;
 
-    let recorded = ring.get(kid).and_then(|k| k.last_contract_exp).unwrap_or(exp);
+    let recorded = ring
+        .get(kid)
+        .and_then(|k| k.last_contract_exp)
+        .unwrap_or(exp);
     println!("{kid} signed through {recorded}");
     if recorded > exp {
         println!("  (kept the later date already on record; this only ever moves outward)");
     }
-    if let Some(at) = ring.get(kid).and_then(wc_control::keys::KeyEntry::safe_to_retire_at) {
+    if let Some(at) = ring
+        .get(kid)
+        .and_then(wc_control::keys::KeyEntry::safe_to_retire_at)
+    {
         println!("  retirable at {at}");
     }
     Ok(())
@@ -2764,7 +2820,11 @@ fn tenants_cmd(args: &Args) -> Result<()> {
                 "  {:<20} {:<9} {:<10} {}{}",
                 t.id,
                 t.mode,
-                if t.issuer_key.is_some() { "yes" } else { "shared" },
+                if t.issuer_key.is_some() {
+                    "yes"
+                } else {
+                    "shared"
+                },
                 t.name,
                 if t.suspended { "  (suspended)" } else { "" }
             );
@@ -2781,7 +2841,14 @@ fn tenants_cmd(args: &Args) -> Result<()> {
     }
     if !unused.is_empty() {
         println!();
-        println!("  declared but never used: {}", unused.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+        println!(
+            "  declared but never used: {}",
+            unused
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     Ok(())
 }
@@ -2838,13 +2905,26 @@ fn federate_cmd(args: &Args) -> Result<()> {
     println!("resolved   {}", resolved.subject);
     println!("anchor     {}", resolved.anchor);
     println!("chain      {} statement(s)", resolved.chain_len);
-    println!("keys       {}", resolved.jwks.keys().cloned().collect::<Vec<_>>().join(", "));
-    println!("expires    {} (in {})", resolved.expires_at, human_duration(resolved.expires_at.saturating_sub(at)));
+    println!(
+        "keys       {}",
+        resolved.jwks.keys().cloned().collect::<Vec<_>>().join(", ")
+    );
+    println!(
+        "expires    {} (in {})",
+        resolved.expires_at,
+        human_duration(resolved.expires_at.saturating_sub(at))
+    );
     println!();
-    println!("  zone            {}  ({:?})", terms.zone, terms.zone.trust_level());
+    println!(
+        "  zone            {}  ({:?})",
+        terms.zone,
+        terms.zone.trust_level()
+    );
     println!(
         "  ttl ceiling     {}",
-        terms.max_ttl_secs.map_or_else(|| "-".to_string(), human_duration)
+        terms
+            .max_ttl_secs
+            .map_or_else(|| "-".to_string(), human_duration)
     );
     println!(
         "  delegation      max depth {}",
@@ -2983,8 +3063,14 @@ fn export(args: &Args) -> Result<()> {
     };
 
     let rendered = match format {
-        "dora" => render_register(args, &export::dora_register(&projection, provenance.clone())?)?,
-        "cps230" => render_register(args, &export::cps230_register(&projection, provenance.clone())?)?,
+        "dora" => render_register(
+            args,
+            &export::dora_register(&projection, provenance.clone())?,
+        )?,
+        "cps230" => render_register(
+            args,
+            &export::cps230_register(&projection, provenance.clone())?,
+        )?,
         "oscal" => pretty(&export::oscal_component(&projection, &provenance)?)?,
         "bom" => {
             let raw = positional_or_flag(args, "id")?;
@@ -3001,7 +3087,9 @@ fn export(args: &Args) -> Result<()> {
         other => {
             return Err(WcError::with_detail(
                 Code::EXPORT_FAILED,
-                format!("unknown export format {other:?}; try csv, json, dora, cps230, oscal or bom"),
+                format!(
+                    "unknown export format {other:?}; try csv, json, dora, cps230, oscal or bom"
+                ),
             ))
         }
     };
@@ -3029,7 +3117,8 @@ fn export(args: &Args) -> Result<()> {
 fn render_register(args: &Args, register: &export::Register) -> Result<String> {
     if args.has("json") {
         let value = serde_json::to_value(register).map_err(|e| {
-            WcError::with_detail(Code::EXPORT_FAILED, "cannot serialise the register").with_source(e)
+            WcError::with_detail(Code::EXPORT_FAILED, "cannot serialise the register")
+                .with_source(e)
         })?;
         Ok(format!("{}\n", pretty(&value)?))
     } else {
@@ -3174,8 +3263,11 @@ fn screen_cmd(args: &Args) -> Result<()> {
     let mode = screen::ScreenMode::parse(args.get("mode").unwrap_or("flag"))?;
     let tier = match args.get("tier") {
         Some(t) => Tier::new(t.parse::<u8>().map_err(|e| {
-            WcError::with_detail(Code::CONFIG_INVALID, format!("tier must be 1..=4, got {t:?}"))
-                .with_source(e)
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!("tier must be 1..=4, got {t:?}"),
+            )
+            .with_source(e)
         })?)?,
         None => Tier::FOUR,
     };
@@ -3279,7 +3371,11 @@ fn screen_cmd(args: &Args) -> Result<()> {
                 println!(
                     "{:<3} {:<6} {:<24} {:<28} {}{}",
                     h.detector.as_str(),
-                    if h.detector.is_blocking() { "block" } else { "flag" },
+                    if h.detector.is_blocking() {
+                        "block"
+                    } else {
+                        "flag"
+                    },
                     h.item,
                     h.field,
                     h.detail,
@@ -3781,7 +3877,9 @@ fn breakglass_cmd(args: &Args) -> Result<()> {
             .unwrap_or(issuance::BreakGlassLimits::default().max_ttl_secs),
         max_per_window: args
             .number("budget")
-            .unwrap_or(u64::from(issuance::BreakGlassLimits::default().max_per_window))
+            .unwrap_or(u64::from(
+                issuance::BreakGlassLimits::default().max_per_window,
+            ))
             .min(u64::from(u32::MAX)) as u32,
         window_secs: args
             .get("window")
@@ -4737,18 +4835,30 @@ mod tests {
         assert!(check_flags("register server", &typo).is_err());
 
         let ok = Args::parse(
-            ["--mode", "enforce", "--rules", "screen-rules.toml", "--tier", "2"]
-                .iter()
-                .map(|s| (*s).to_string()),
+            [
+                "--mode",
+                "enforce",
+                "--rules",
+                "screen-rules.toml",
+                "--tier",
+                "2",
+            ]
+            .iter()
+            .map(|s| (*s).to_string()),
         );
         assert!(check_flags("screen", &ok).is_ok());
 
         // Registration takes the ruleset under a namespaced flag, because `--mode`
         // there would collide with the admission mode.
         let reg = Args::parse(
-            ["--screen-rules", "screen-rules.toml", "--screen-mode", "flag"]
-                .iter()
-                .map(|s| (*s).to_string()),
+            [
+                "--screen-rules",
+                "screen-rules.toml",
+                "--screen-mode",
+                "flag",
+            ]
+            .iter()
+            .map(|s| (*s).to_string()),
         );
         assert!(check_flags("register server", &reg).is_ok());
         assert!(check_flags("register agent", &reg).is_ok());
@@ -4764,7 +4874,10 @@ mod tests {
         )
         .expect("screen-rules.toml is readable");
         let rules = screen::ScreenRules::parse(&text).expect("shipped ruleset parses");
-        assert!(!rules.calibrated, "the shipped ruleset must not claim calibration");
+        assert!(
+            !rules.calibrated,
+            "the shipped ruleset must not claim calibration"
+        );
         assert!(rules.disabled.is_empty());
         assert_eq!(rules.escalate_at, 60);
     }
@@ -4823,9 +4936,7 @@ mod tests {
         assert_eq!(positional_or_flag(&two, "file").unwrap(), "estate.wcb");
 
         // One-word commands are unchanged.
-        let one = Args::parse(
-            ["canon", "surface.json"].iter().map(|s| (*s).to_string()),
-        );
+        let one = Args::parse(["canon", "surface.json"].iter().map(|s| (*s).to_string()));
         assert_eq!(positional_or_flag(&one, "file").unwrap(), "surface.json");
 
         // And a flag still works when no positional was given.
@@ -4904,7 +5015,11 @@ mod tests {
         ]);
         let err = issuer_key(&args).unwrap_err();
         assert_eq!(err.code(), Code::CONFIG_INVALID);
-        assert!(err.detail().contains("must not be a guess"), "{}", err.detail());
+        assert!(
+            err.detail().contains("must not be a guess"),
+            "{}",
+            err.detail()
+        );
 
         // And neither form is also an error, with both named.
         let neither = argv(&["request", "--kid", "k1"]);
@@ -4923,7 +5038,11 @@ mod tests {
         ]);
         let err = open_evidence(&args).unwrap_err();
         assert_eq!(err.code(), Code::CONFIG_INVALID);
-        assert!(err.detail().contains("must not be a guess"), "{}", err.detail());
+        assert!(
+            err.detail().contains("must not be a guess"),
+            "{}",
+            err.detail()
+        );
     }
 
     #[test]
@@ -4940,7 +5059,11 @@ mod tests {
         ]);
         let err = issuer_key(&args).unwrap_err();
         assert_eq!(err.code(), Code::CONFIG_INVALID);
-        assert!(err.detail().contains("--signer COMMAND"), "{}", err.detail());
+        assert!(
+            err.detail().contains("--signer COMMAND"),
+            "{}",
+            err.detail()
+        );
 
         // The same posture applies to the anchor: a checkpoint key on disk defeats
         // the anchor's whole purpose, so it cannot be the one exception.
@@ -4974,13 +5097,7 @@ mod tests {
 
     #[test]
     fn custody_is_recorded_on_the_key_it_describes() {
-        let local = argv(&[
-            "request",
-            "--issuer-key",
-            &fixture_key(),
-            "--kid",
-            "k1",
-        ]);
+        let local = argv(&["request", "--issuer-key", &fixture_key(), "--kid", "k1"]);
         assert_eq!(
             issuer_key(&local).unwrap().custody(),
             wc_core::contract::Custody::Local
@@ -4995,7 +5112,10 @@ mod tests {
             assert!(text.contains(flag), "usage does not mention {flag}");
         }
         // And the trap has to be in the help, not only in the source.
-        assert!(text.contains("DER"), "usage does not warn about DER signatures");
+        assert!(
+            text.contains("DER"),
+            "usage does not warn about DER signatures"
+        );
     }
 
     #[test]
@@ -5051,8 +5171,9 @@ fn bench_rebuild(contracts: usize) -> Result<wc_control::bench::Gate> {
 
     let dir = std::env::temp_dir().join(format!("wc-bench-rebuild-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| WcError::with_detail(Code::CONFIG_INVALID, "cannot create a scratch dir").with_source(e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, "cannot create a scratch dir").with_source(e)
+    })?;
 
     // Removed on the way out however this returns, including on the error paths
     // below — a benchmark that leaves a 100 MB log in the temp directory is a
@@ -5114,7 +5235,11 @@ fn bench_rebuild(contracts: usize) -> Result<wc_control::bench::Gate> {
 
     Ok(measure(
         "store::rebuild",
-        &format!("{} contracts, {} parties", projection.contracts.len(), projection.entities.len()),
+        &format!(
+            "{} contracts, {} parties",
+            projection.contracts.len(),
+            projection.entities.len()
+        ),
         thresholds::REBUILD,
         5,
         1,

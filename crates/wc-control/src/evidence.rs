@@ -504,7 +504,9 @@ impl Evidence {
     /// Whether any configured sink would block an operation.
     #[must_use]
     pub fn has_blocking_sinks(&self) -> bool {
-        self.sinks.iter().any(|s| s.delivery() == Delivery::Blocking)
+        self.sinks
+            .iter()
+            .any(|s| s.delivery() == Delivery::Blocking)
     }
 
     /// Record an event: blocking sinks, then the chain, then fail-safe sinks.
@@ -705,9 +707,7 @@ mod tests {
             fn ship(&self, event: &LifecycleEvent, _now: u64) -> Result<()> {
                 self.seen
                     .lock()
-                    .map_err(|_| {
-                        WcError::with_detail(Code::BLOCKING_SINK_UNAVAILABLE, "poisoned")
-                    })?
+                    .map_err(|_| WcError::with_detail(Code::BLOCKING_SINK_UNAVAILABLE, "poisoned"))?
                     .push(event.kind.as_str().to_string());
                 Ok(())
             }
@@ -723,13 +723,19 @@ mod tests {
             .with_event_sinks(vec![collector.clone()]);
 
         let recorded = evidence
-            .record(&LifecycleEvent::new(EventKind::Register, "human:priya"), 1_000)
+            .record(
+                &LifecycleEvent::new(EventKind::Register, "human:priya"),
+                1_000,
+            )
             .unwrap();
         assert_eq!(recorded.shipped, vec!["estate-postgres"]);
 
         // The filter is honoured.
         evidence
-            .record(&LifecycleEvent::new(EventKind::Discover, "human:priya"), 1_001)
+            .record(
+                &LifecycleEvent::new(EventKind::Discover, "human:priya"),
+                1_001,
+            )
             .unwrap();
 
         assert_eq!(

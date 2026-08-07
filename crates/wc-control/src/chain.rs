@@ -927,7 +927,10 @@ mod tests {
 
         let report = Chain::verify(tmp.path(), Some(PUB)).unwrap();
         assert!(report.is_intact(), "{report:?}");
-        assert_eq!(report.anchors_verified, 1, "an old checkpoint must still verify");
+        assert_eq!(
+            report.anchors_verified, 1,
+            "an old checkpoint must still verify"
+        );
         assert!(report.anchor_mismatches.is_empty());
     }
 
@@ -940,11 +943,15 @@ mod tests {
         impl wc_core::contract::Signer for Elsewhere {
             fn sign(&self, input: &[u8]) -> Result<Vec<u8>> {
                 use base64::Engine as _;
-                let b64 = jsonwebtoken::crypto::sign(input, &self.0, Algorithm::ES256)
-                    .map_err(|e| WcError::with_detail(Code::CHAIN_APPEND_FAILED, "sign").with_source(e))?;
+                let b64 =
+                    jsonwebtoken::crypto::sign(input, &self.0, Algorithm::ES256).map_err(|e| {
+                        WcError::with_detail(Code::CHAIN_APPEND_FAILED, "sign").with_source(e)
+                    })?;
                 base64::engine::general_purpose::URL_SAFE_NO_PAD
                     .decode(b64)
-                    .map_err(|e| WcError::with_detail(Code::CHAIN_APPEND_FAILED, "b64").with_source(e))
+                    .map_err(|e| {
+                        WcError::with_detail(Code::CHAIN_APPEND_FAILED, "b64").with_source(e)
+                    })
             }
         }
 
@@ -959,9 +966,10 @@ mod tests {
         )
         .unwrap();
         {
-            let mut chain = Chain::open(tmp.path())
-                .unwrap()
-                .with_anchor_signer(key, &anchor_path, 1);
+            let mut chain =
+                Chain::open(tmp.path())
+                    .unwrap()
+                    .with_anchor_signer(key, &anchor_path, 1);
             chain.append(draft("e"), 1_000).unwrap();
         }
 
@@ -986,11 +994,12 @@ mod tests {
         }
 
         let tmp = TmpDir::new("anchor-broken");
-        let key =
-            IssuerKey::external(ANCHOR_KID, Algorithm::ES256, Box::new(Broken)).unwrap();
-        let mut chain = Chain::open(tmp.path())
-            .unwrap()
-            .with_anchor_signer(key, tmp.path().join(ANCHOR_FILE), 1);
+        let key = IssuerKey::external(ANCHOR_KID, Algorithm::ES256, Box::new(Broken)).unwrap();
+        let mut chain = Chain::open(tmp.path()).unwrap().with_anchor_signer(
+            key,
+            tmp.path().join(ANCHOR_FILE),
+            1,
+        );
 
         let err = chain.append(draft("e"), 1_000).unwrap_err();
         assert_eq!(err.code(), Code::CHAIN_APPEND_FAILED);

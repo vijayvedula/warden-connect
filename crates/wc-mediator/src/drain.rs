@@ -191,7 +191,10 @@ mod tests {
         let err = OnRevoke::parse("drian", None).unwrap_err();
         assert_eq!(err.code(), Code::CONFIG_INVALID);
         assert!(err.to_string().contains("drain|abort"));
-        assert_eq!(OnRevoke::parse("", None).unwrap_err().code(), Code::CONFIG_INVALID);
+        assert_eq!(
+            OnRevoke::parse("", None).unwrap_err().code(),
+            Code::CONFIG_INVALID
+        );
     }
 
     #[test]
@@ -226,7 +229,11 @@ mod tests {
         let call = Call { started_at: 100 };
         assert_eq!(decide(mode, call, 110, 110), InFlight::Allow);
         assert_eq!(decide(mode, call, 110, 119), InFlight::Allow);
-        assert_eq!(decide(mode, call, 110, 120), InFlight::Abort, "at the bound");
+        assert_eq!(
+            decide(mode, call, 110, 120),
+            InFlight::Abort,
+            "at the bound"
+        );
         assert_eq!(decide(mode, call, 110, 500), InFlight::Abort);
     }
 

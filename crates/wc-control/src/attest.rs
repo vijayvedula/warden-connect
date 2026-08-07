@@ -161,8 +161,8 @@ impl JwtSvidIdentity<'_> {
 
         let mut parts = self.token.split('.');
         let header_seg = parts.next().unwrap_or_default();
-        let header: Map<String, Value> = serde_json::from_slice(&b64url(header_seg)?)
-            .map_err(|e| {
+        let header: Map<String, Value> =
+            serde_json::from_slice(&b64url(header_seg)?).map_err(|e| {
                 WcError::with_detail(Code::IDENTITY_UNVERIFIABLE, "SVID header is not JSON")
                     .with_source(e)
             })?;
@@ -194,10 +194,11 @@ impl JwtSvidIdentity<'_> {
         // treating an absent claim as a satisfied one.
         validation.set_required_spec_claims(&["exp", "aud", "sub"]);
 
-        let data = jsonwebtoken::decode::<SvidClaims>(&self.token, key, &validation).map_err(|e| {
-            WcError::with_detail(Code::IDENTITY_UNVERIFIABLE, "SVID verification failed")
-                .with_source(e)
-        })?;
+        let data =
+            jsonwebtoken::decode::<SvidClaims>(&self.token, key, &validation).map_err(|e| {
+                WcError::with_detail(Code::IDENTITY_UNVERIFIABLE, "SVID verification failed")
+                    .with_source(e)
+            })?;
 
         if !data.claims.sub.starts_with("spiffe://") {
             return Err(WcError::with_detail(
@@ -219,9 +220,7 @@ impl IdentityVerifier for JwtSvidIdentity<'_> {
             if claimed.as_str() != authenticated {
                 return Err(WcError::with_detail(
                     Code::IDENTITY_UNVERIFIABLE,
-                    format!(
-                        "SVID authenticates {authenticated} but registration claims {claimed}"
-                    ),
+                    format!("SVID authenticates {authenticated} but registration claims {claimed}"),
                 ));
             }
         }
@@ -362,11 +361,8 @@ impl JwksCardVerifier<'_> {
     fn verify_one(&self, sig: &CardSignature, payload_b64: &str) -> Result<String> {
         let header: Map<String, Value> =
             serde_json::from_slice(&b64url(&sig.protected)?).map_err(|e| {
-                WcError::with_detail(
-                    Code::CARD_SIGNATURE_INVALID,
-                    "protected header is not JSON",
-                )
-                .with_source(e)
+                WcError::with_detail(Code::CARD_SIGNATURE_INVALID, "protected header is not JSON")
+                    .with_source(e)
             })?;
 
         // `b64: false` would mean the signature covers the raw payload rather than
@@ -524,7 +520,10 @@ impl std::fmt::Debug for DsseProvenanceVerifier<'_> {
 
 impl DsseProvenanceVerifier<'_> {
     /// Verify one envelope end to end, returning what it established.
-    pub fn verify_envelope(&self, raw: &Value) -> Result<(ProvenanceBindings, Vec<ProvRef>, String)> {
+    pub fn verify_envelope(
+        &self,
+        raw: &Value,
+    ) -> Result<(ProvenanceBindings, Vec<ProvRef>, String)> {
         let envelope: DsseEnvelope = serde_json::from_value(raw.clone()).map_err(|e| {
             WcError::with_detail(Code::PROVENANCE_UNVERIFIABLE, "not a DSSE envelope")
                 .with_source(e)
@@ -684,10 +683,7 @@ impl DsseProvenanceVerifier<'_> {
                 } else {
                     format!("sha256:{expected}")
                 };
-                (
-                    digests.contains(&expected),
-                    Some(expected),
-                )
+                (digests.contains(&expected), Some(expected))
             }
             // Nothing to compare against. Reported, never silently treated as a
             // match: this is the binding that makes provenance mean anything.
@@ -1082,10 +1078,11 @@ mod tests {
             keys: &keys,
             require_signature: true,
         };
-        assert!(v
-            .verify_card(&card_req(&signed), &fetched(&signed))
-            .expect("still verifies")
-            .verified);
+        assert!(
+            v.verify_card(&card_req(&signed), &fetched(&signed))
+                .expect("still verifies")
+                .verified
+        );
     }
 
     #[test]
@@ -1286,7 +1283,10 @@ mod tests {
         let keys = trust();
         let v = prov(
             &keys,
-            vec![envelope(&statement(DIGEST, "https://evil.example/builder"), KID)],
+            vec![envelope(
+                &statement(DIGEST, "https://evil.example/builder"),
+                KID,
+            )],
             Some(DIGEST),
             &[BUILDER],
         );
@@ -1338,10 +1338,12 @@ mod tests {
             "payloadType".to_string(),
             json!("application/vnd.in-toto+json"),
         );
-        assert!(prov(&keys, vec![env.clone()], Some(DIGEST), &[BUILDER])
-            .verify_provenance(&request(None))
-            .expect("unchanged type still verifies")
-            .verified);
+        assert!(
+            prov(&keys, vec![env.clone()], Some(DIGEST), &[BUILDER])
+                .verify_provenance(&request(None))
+                .expect("unchanged type still verifies")
+                .verified
+        );
 
         let mut different = env;
         different

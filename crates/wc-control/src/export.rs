@@ -189,8 +189,9 @@ pub fn gaps(proj: &Projection, as_of: u64) -> Vec<Exception> {
             out.push(Exception {
                 kind: "party.no_pin".to_string(),
                 subject: e.id.as_str().to_string(),
-                detail: "no declared surface was pinned, so drift cannot be detected for this party"
-                    .to_string(),
+                detail:
+                    "no declared surface was pinned, so drift cannot be detected for this party"
+                        .to_string(),
             });
         }
         if e.service.is_none() {
@@ -198,8 +199,9 @@ pub fn gaps(proj: &Projection, as_of: u64) -> Vec<Exception> {
             out.push(Exception {
                 kind: "party.no_business_service".to_string(),
                 subject: e.id.as_str().to_string(),
-                detail: "no business service recorded, so criticality cannot be mapped to a function"
-                    .to_string(),
+                detail:
+                    "no business service recorded, so criticality cannot be mapped to a function"
+                        .to_string(),
             });
         }
     }
@@ -424,25 +426,66 @@ fn criticality(tier: u8) -> &'static str {
 
 /// The DORA Register of Information template revision these tables are shaped
 /// against.
-pub const DORA_TEMPLATE: &str = "DORA RoI (ITS on the register of information) — RT.01–RT.07 shaped";
+pub const DORA_TEMPLATE: &str =
+    "DORA RoI (ITS on the register of information) — RT.01–RT.07 shaped";
 
 /// Mandatory DORA fields with no source in a connection control plane.
 fn dora_unpopulated() -> Vec<UnpopulatedField> {
     [
-        ("RT.01.01", "LEI of the entity maintaining the register", "corporate registry / treasury"),
+        (
+            "RT.01.01",
+            "LEI of the entity maintaining the register",
+            "corporate registry / treasury",
+        ),
         ("RT.01.01", "Competent authority", "compliance"),
-        ("RT.02.01", "Contract reference number", "procurement / CLM system"),
+        (
+            "RT.02.01",
+            "Contract reference number",
+            "procurement / CLM system",
+        ),
         ("RT.02.01", "Annual expense or estimated cost", "finance"),
-        ("RT.02.01", "Contract start and end date", "procurement / CLM system"),
-        ("RT.02.01", "Governing law of the contractual arrangement", "legal"),
-        ("RT.03.01", "LEI of the ICT third-party service provider", "procurement / corporate registry"),
-        ("RT.03.01", "Country of the provider's parent undertaking", "procurement"),
+        (
+            "RT.02.01",
+            "Contract start and end date",
+            "procurement / CLM system",
+        ),
+        (
+            "RT.02.01",
+            "Governing law of the contractual arrangement",
+            "legal",
+        ),
+        (
+            "RT.03.01",
+            "LEI of the ICT third-party service provider",
+            "procurement / corporate registry",
+        ),
+        (
+            "RT.03.01",
+            "Country of the provider's parent undertaking",
+            "procurement",
+        ),
         ("RT.03.01", "Person type / provider category", "procurement"),
         ("RT.05.01", "Total annual expense per provider", "finance"),
-        ("RT.06.01", "Function identifier and licensed activity", "business architecture"),
-        ("RT.06.01", "Recovery time and recovery point objectives", "business continuity"),
-        ("RT.07.01", "Substitutability assessment and reintegration plan", "business continuity"),
-        ("RT.07.01", "Date of the last audit of the provider", "third-party risk"),
+        (
+            "RT.06.01",
+            "Function identifier and licensed activity",
+            "business architecture",
+        ),
+        (
+            "RT.06.01",
+            "Recovery time and recovery point objectives",
+            "business continuity",
+        ),
+        (
+            "RT.07.01",
+            "Substitutability assessment and reintegration plan",
+            "business continuity",
+        ),
+        (
+            "RT.07.01",
+            "Date of the last audit of the provider",
+            "third-party risk",
+        ),
     ]
     .iter()
     .map(|(table, field, source)| UnpopulatedField {
@@ -500,10 +543,10 @@ pub fn dora_register(proj: &Projection, provenance: Provenance) -> Result<Regist
                     c.iat.to_string(),
                     c.exp.to_string(),
                     format!("{:?}", c.approval.mode),
-                    c.approval
-                        .by
-                        .as_ref()
-                        .map_or_else(|| s("standing policy — no human"), |h| h.as_str().to_string()),
+                    c.approval.by.as_ref().map_or_else(
+                        || s("standing policy — no human"),
+                        |h| h.as_str().to_string(),
+                    ),
                     c.approval
                         .second
                         .as_ref()
@@ -549,7 +592,10 @@ pub fn dora_register(proj: &Projection, provenance: Provenance) -> Result<Regist
                     c.terms.delegation.max_depth.to_string(),
                     // The exit path is not a policy document here — it is the
                     // expiry, which is enforced whether or not anyone reads it.
-                    format!("contract expires at {}; revocable immediately by cid", c.exp),
+                    format!(
+                        "contract expires at {}; revocable immediately by cid",
+                        c.exp
+                    ),
                 ]
             })
             .collect(),
@@ -604,11 +650,7 @@ pub fn dora_register(proj: &Projection, provenance: Provenance) -> Result<Regist
         ],
         rows: entities
             .iter()
-            .filter(|e| {
-                proj.by_caller
-                    .get(&e.id)
-                    .is_some_and(|set| !set.is_empty())
-            })
+            .filter(|e| proj.by_caller.get(&e.id).is_some_and(|set| !set.is_empty()))
             .map(|e| {
                 let count = proj.by_caller.get(&e.id).map_or(0, |set| set.len());
                 vec![
@@ -659,7 +701,11 @@ pub fn dora_register(proj: &Projection, provenance: Provenance) -> Result<Regist
                     service.clone(),
                     s(criticality(tier)),
                     members.len().to_string(),
-                    members.iter().filter(|e| is_third_party(e)).count().to_string(),
+                    members
+                        .iter()
+                        .filter(|e| is_third_party(e))
+                        .count()
+                        .to_string(),
                     jurisdictions.into_iter().collect::<Vec<_>>().join("|"),
                     classes.into_iter().collect::<Vec<_>>().join("|"),
                 ]
@@ -690,9 +736,11 @@ fn surface_summary(c: &ContractRecord) -> String {
     let items = c.surface.items();
     let write = items.iter().any(|i| {
         let l = i.to_ascii_lowercase();
-        ["write", "create", "delete", "update", "transfer", "wire", "post", "send"]
-            .iter()
-            .any(|w| l.contains(w))
+        [
+            "write", "create", "delete", "update", "transfer", "wire", "post", "send",
+        ]
+        .iter()
+        .any(|w| l.contains(w))
     });
     format!(
         "{} item(s), {}",
@@ -710,11 +758,27 @@ pub const CPS230_TEMPLATE: &str = "APRA CPS 230 — material service provider re
 
 fn cps230_unpopulated() -> Vec<UnpopulatedField> {
     [
-        ("MSP", "Contract commencement and expiry", "procurement / CLM system"),
-        ("MSP", "Tolerance level for disruption", "business continuity"),
+        (
+            "MSP",
+            "Contract commencement and expiry",
+            "procurement / CLM system",
+        ),
+        (
+            "MSP",
+            "Tolerance level for disruption",
+            "business continuity",
+        ),
         ("MSP", "Fourth-party reliance", "third-party risk"),
-        ("MSP", "Board approval reference for material arrangements", "company secretary"),
-        ("CBS", "Critical operation tolerance (RTO / RPO / data loss)", "business continuity"),
+        (
+            "MSP",
+            "Board approval reference for material arrangements",
+            "company secretary",
+        ),
+        (
+            "CBS",
+            "Critical operation tolerance (RTO / RPO / data loss)",
+            "business continuity",
+        ),
         ("CBS", "Nominated accountable executive", "operational risk"),
     ]
     .iter()
@@ -774,7 +838,11 @@ pub fn cps230_register(proj: &Projection, provenance: Provenance) -> Result<Regi
                     providers.iter().cloned().collect::<Vec<_>>().join("|"),
                     // Materiality under CPS 230 is a judgement, not a computation.
                     // Tier is the input; the answer is the institution's.
-                    if tier <= 2 { s("candidate — tier 1/2 dependency") } else { s("unlikely") },
+                    if tier <= 2 {
+                        s("candidate — tier 1/2 dependency")
+                    } else {
+                        s("unlikely")
+                    },
                 ]
             })
             .collect(),
@@ -796,11 +864,7 @@ pub fn cps230_register(proj: &Projection, provenance: Provenance) -> Result<Regi
         ],
         rows: entities
             .iter()
-            .filter(|e| {
-                proj.by_callee
-                    .get(&e.id)
-                    .is_some_and(|set| !set.is_empty())
-            })
+            .filter(|e| proj.by_callee.get(&e.id).is_some_and(|set| !set.is_empty()))
             .map(|e| {
                 let live = contracts.iter().filter(|c| c.callee == e.id).count();
                 vec![
@@ -1242,7 +1306,14 @@ mod tests {
         let no_service = entity("orphan", "internal.apac-ops", 3, None);
 
         let proj = projection(
-            vec![unattested, degraded, quarantined, pending, unpinned, no_service],
+            vec![
+                unattested,
+                degraded,
+                quarantined,
+                pending,
+                unpinned,
+                no_service,
+            ],
             vec![],
         );
         let kinds = Exceptions {
@@ -1259,7 +1330,10 @@ mod tests {
             "party.no_pin",
             "party.no_business_service",
         ] {
-            assert!(kinds.contains_key(expected), "missing {expected}: {kinds:?}");
+            assert!(
+                kinds.contains_key(expected),
+                "missing {expected}: {kinds:?}"
+            );
         }
     }
 
@@ -1285,7 +1359,9 @@ mod tests {
         proj.contracts.get_mut(&cid).unwrap().exp = AS_OF - 1;
         let found = gaps(&proj, AS_OF);
         assert!(
-            found.iter().any(|g| g.kind == "contract.expired_but_active"),
+            found
+                .iter()
+                .any(|g| g.kind == "contract.expired_but_active"),
             "{found:?}"
         );
     }
@@ -1328,7 +1404,11 @@ mod tests {
         let r = dora_register(&estate(), provenance(Some("anchor:40"))).unwrap();
         let t = r.tables.iter().find(|t| t.id == "RT.02.01").unwrap();
         let approved_by = t.columns.iter().position(|c| c == "approved_by").unwrap();
-        let change_ref = t.columns.iter().position(|c| c == "change_reference").unwrap();
+        let change_ref = t
+            .columns
+            .iter()
+            .position(|c| c == "change_reference")
+            .unwrap();
         assert!(t.rows.iter().all(|row| row[approved_by] == "human:cecil"));
         assert!(t.rows.iter().all(|row| row[change_ref] == "RISK-14"));
     }
@@ -1459,7 +1539,10 @@ mod tests {
             .unwrap();
         let impls = recon["control-implementations"].as_array().unwrap();
         assert_eq!(impls.len(), 2);
-        assert!(impls[0]["description"].as_str().unwrap().contains("limited to"));
+        assert!(impls[0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("limited to"));
 
         // A component with no outbound contracts carries no implementations rather
         // than an empty array that reads as "no controls".
@@ -1478,10 +1561,7 @@ mod tests {
         let props = doc["component-definition"]["metadata"]["props"]
             .as_array()
             .unwrap();
-        let verifiable = props
-            .iter()
-            .find(|p| p["name"] == "verifiable")
-            .unwrap();
+        let verifiable = props.iter().find(|p| p["name"] == "verifiable").unwrap();
         assert_eq!(verifiable["value"], "false");
         assert!(doc["component-definition"]["metadata"]["remarks"]
             .as_str()

@@ -269,15 +269,17 @@ pub fn import(
     // The signature first. Nothing in the body is believed until it verifies —
     // including the expiry, which an unverified body could otherwise extend.
     let claims: BundleClaims =
-        wc_core::contract::verify_detached(&bundle.bundle_jws, &bundle.kid, envelope_keys).map_err(
-            |e| {
+        wc_core::contract::verify_detached(&bundle.bundle_jws, &bundle.kid, envelope_keys)
+            .map_err(|e| {
                 WcError::with_detail(
                     Code::SIGNATURE_INVALID,
-                    format!("bundle signature does not verify under kid {:?}", bundle.kid),
+                    format!(
+                        "bundle signature does not verify under kid {:?}",
+                        bundle.kid
+                    ),
                 )
                 .with_source(e)
-            },
-        )?;
+            })?;
 
     let actual = bundle.body.digest();
     if claims.digest != actual {
@@ -323,7 +325,10 @@ pub fn import(
     if now < bundle.body.issued_at.saturating_sub(300) {
         return Err(WcError::with_detail(
             Code::CONTRACT_EXPIRED,
-            format!("bundle is issued at {} , which is in the future", bundle.body.issued_at),
+            format!(
+                "bundle is issued at {} , which is in the future",
+                bundle.body.issued_at
+            ),
         ));
     }
 
