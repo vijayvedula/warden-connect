@@ -3,7 +3,7 @@
 ## The film, vertical — for phones
 
 [`warden-connect-mobile.mp4`](warden-connect-mobile.mp4) · 1080×1920 · 9:16 ·
-30 fps · **2:29** · no audio track. Poster:
+30 fps · **2:40** · no audio track. Poster:
 [`warden-connect-mobile-poster.jpg`](warden-connect-mobile-poster.jpg).
 
 The web presentation *"Why agent connections need a control plane"* as a video a
@@ -25,6 +25,19 @@ lands.
 self-paced. Here each beat is held for its own reading time — 3.8 words/second,
 floored at 2.0 s so short beats do not flash and capped at 4.4 s so long ones do not
 stall. A viewer who needs longer can scrub; one who is bored leaves.
+
+**Every shot is a build, a still, and a dip.** The animation completes in the first
+two thirds; the last third is the *same frame*, held. The first cut animated across
+the whole shot and cut on the final frame of the build, which meant the finished
+slide was never actually on screen — the viewer was always reading something
+mid-assembly. The still is carved out of the existing duration rather than added to
+it, so almost all of it is free; only a flat 0.3 s per shot is new, and that is the
+part that lets a slide land before the next one arrives.
+
+The cut itself is a short dip through the **page colour**, not through black. Blending
+toward the ground means the content fades and the ground stays put, which reads as a
+soft cut rather than a dropped frame — and on a dark single-theme film there is
+nothing for a black flash to hide behind.
 
 Platform-safe margins throughout: feed UI covers roughly the top 8% and bottom 12% of
 a 9:16 frame, and nothing that carries meaning goes there.
