@@ -907,6 +907,27 @@ impl IssuerKey {
     }
 }
 
+/// What [`IssuerKeys::add_jwks`] made of a document.
+///
+/// Both lists matter. `added` is what can now verify; `skipped` is what could not, and
+/// it is returned rather than logged because "the rotation appeared to work and the new
+/// key was silently dropped" is the failure this whole type exists to make impossible.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct JwksReport {
+    /// Key ids now trusted.
+    pub added: Vec<String>,
+    /// Keys passed over, each with the reason.
+    pub skipped: Vec<String>,
+}
+
+impl JwksReport {
+    /// Whether every key in the document was usable.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.skipped.is_empty()
+    }
+}
+
 /// The issuer keys a verifier trusts, resolved by `kid`.
 ///
 /// Keyed by `kid` so rotation is safe: both the outgoing and incoming key stay
@@ -943,6 +964,141 @@ impl IssuerKeys {
         Ok(())
     }
 
+    /// Trust every usable key in a JWKS document, returning what was added.
+    ///
+    /// The ingest direction, which did not exist: `keys::jwk_from_pem` could *emit* a
+    /// JWKS and nothing could read one back. That made key rotation a deployment event
+    /// — a new `jwks.json` copied to every mediator — and it is also what stood between
+    /// this and a real SPIRE integration, because `spire-agent api fetch jwtbundles`
+    /// hands you a JWKS and the only way to use it was to convert each key to PEM by
+    /// hand.
+    ///
+    /// # What is skipped rather than refused
+    ///
+    /// A real issuer's JWKS contains keys this system cannot or must not use, and a
+    /// document is not invalid for containing them:
+    ///
+    /// * **RSA and anything else asymmetric we do not accept for contracts.** Skipped,
+    ///   counted, and reported — an OIDC issuer publishing RS256 alongside ES256 is
+    ///   ordinary, and refusing the whole set would refuse the usable key with it.
+    /// * **A key with no `kid`.** There is no way to select it later, and a verifier
+    ///   that trusted the header to name its own key would let an attacker choose which
+    ///   key verifies their signature (§7.8 A1).
+    /// * **`"use": "enc"`** — an encryption key is not a signing key.
+    ///
+    /// # What is refused outright
+    ///
+    /// A symmetric key (`"kty": "oct"`). Anyone who can verify with it can mint with
+    /// it, so its presence in a *trust bundle* is not a key to skip past but a sign the
+    /// document is not what the caller thinks it is. Returning `Err` here is the same
+    /// stance `ASYMMETRIC_ALGS` takes.
+    ///
+    /// # All or nothing
+    ///
+    /// Keys are staged and committed only if the whole document is acceptable. A caller
+    /// that logs the error and carries on is then running with its previous trust set
+    /// rather than with an arbitrary prefix of a document it rejected.
+    pub fn add_jwks(&mut self, document: &str) -> Result<JwksReport> {
+        let set: jsonwebtoken::jwk::JwkSet = serde_json::from_str(document).map_err(|e| {
+            WcError::with_detail(Code::CONFIG_INVALID, "not a JWKS document").with_source(e)
+        })?;
+
+        let mut report = JwksReport::default();
+        let mut staged: Vec<(String, Algorithm, DecodingKey)> = Vec::new();
+        for jwk in &set.keys {
+            use jsonwebtoken::jwk::{AlgorithmParameters, EllipticCurve, PublicKeyUse};
+
+            if let AlgorithmParameters::OctetKey(_) = jwk.algorithm {
+                return Err(WcError::with_detail(
+                    Code::ALG_NOT_ASYMMETRIC,
+                    "JWKS contains a symmetric key; anyone who can verify with it can \
+                     mint with it, so this is not a trust bundle",
+                ));
+            }
+            if matches!(jwk.common.public_key_use, Some(PublicKeyUse::Encryption)) {
+                report.skipped.push("use=enc".to_string());
+                continue;
+            }
+            let Some(kid) = jwk.common.key_id.clone() else {
+                // Not an error in the document, but unusable here: `verify_detached`
+                // resolves by a caller-supplied `kid` precisely so the header cannot
+                // choose its own key.
+                report.skipped.push("no kid".to_string());
+                continue;
+            };
+
+            let alg = match &jwk.algorithm {
+                AlgorithmParameters::EllipticCurve(ec) => match ec.curve {
+                    EllipticCurve::P256 => Algorithm::ES256,
+                    EllipticCurve::P384 => Algorithm::ES384,
+                    _ => {
+                        report.skipped.push(format!("{kid}: unsupported curve"));
+                        continue;
+                    }
+                },
+                AlgorithmParameters::OctetKeyPair(okp) => match okp.curve {
+                    EllipticCurve::Ed25519 => Algorithm::EdDSA,
+                    _ => {
+                        report.skipped.push(format!("{kid}: unsupported OKP curve"));
+                        continue;
+                    }
+                },
+                // RSA is accepted on third-party tokens (`ACCEPTED_ALG_NAMES`) but
+                // `IssuerKeys` has no RSA loader, so it cannot be trusted from here.
+                // Skipped rather than refused: an issuer publishing RS256 beside ES256
+                // is ordinary and the ES256 key is still wanted.
+                AlgorithmParameters::RSA(_) => {
+                    report.skipped.push(format!("{kid}: RSA"));
+                    continue;
+                }
+                AlgorithmParameters::OctetKey(_) => unreachable!("refused above"),
+            };
+
+            // If the JWK declares an `alg`, it has to agree with what the curve says.
+            // A P-256 key labelled `ES384` is a document nobody should guess about.
+            if let Some(declared) = jwk.common.key_algorithm {
+                let name = format!("{declared:?}");
+                if !name.eq_ignore_ascii_case(&format!("{alg:?}")) {
+                    report
+                        .skipped
+                        .push(format!("{kid}: alg {name} disagrees with the curve"));
+                    continue;
+                }
+            }
+
+            let key = DecodingKey::from_jwk(jwk).map_err(|e| {
+                WcError::with_detail(
+                    Code::SIGNATURE_INVALID,
+                    format!("JWKS key {kid:?} is not usable"),
+                )
+                .with_source(e)
+            })?;
+            staged.push((kid.clone(), alg, key));
+            report.added.push(kid);
+        }
+
+        if report.added.is_empty() {
+            // A trust bundle that trusts nothing verifies nothing, and would otherwise
+            // present as a working configuration until the first contract arrived.
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!(
+                    "JWKS has {} key(s) and none is usable: {}",
+                    set.keys.len(),
+                    if report.skipped.is_empty() {
+                        "the document is empty".to_string()
+                    } else {
+                        report.skipped.join("; ")
+                    }
+                ),
+            ));
+        }
+        for (kid, alg, key) in staged {
+            self.keys.insert(kid, (alg, key));
+        }
+        Ok(report)
+    }
+
     /// Look up a trusted key.
     #[must_use]
     pub fn get(&self, kid: &str) -> Option<&(Algorithm, DecodingKey)> {
@@ -953,6 +1109,18 @@ impl IssuerKeys {
     #[must_use]
     pub fn len(&self) -> usize {
         self.keys.len()
+    }
+
+    /// Every trusted key id, sorted.
+    ///
+    /// For a status line. "Which keys does this process trust right now" is the first
+    /// question asked when a contract is refused for an unknown `kid`, and answering it
+    /// by reading the deployment's configuration answers it about what was intended.
+    #[must_use]
+    pub fn kids(&self) -> Vec<String> {
+        let mut kids: Vec<String> = self.keys.keys().cloned().collect();
+        kids.sort();
+        kids
     }
 
     /// Whether no key is trusted.
@@ -2937,5 +3105,228 @@ mod conformance {
     #[test]
     fn the_pin_alg_is_recorded_in_fixtures() {
         assert_eq!(callee_pin().alg, PIN_ALG);
+    }
+}
+
+#[cfg(test)]
+mod jwks_ingest {
+    //! [`IssuerKeys::add_jwks`] — the direction that did not exist.
+    //!
+    //! Rotation without this is a deployment: a new PEM copied to every mediator and a
+    //! restart. With it, a verifier can be pointed at an issuer's published key set,
+    //! which is also the form SPIRE hands out JWT bundles in.
+    //!
+    //! The coordinates below were extracted once from `fixtures/keys/*.pub.pem` with
+    //! `cryptography` and pasted here, so this module can prove a *signature made by the
+    //! matching private key verifies through the JWKS path* without wc-core growing a
+    //! PEM-to-JWK converter it does not otherwise need. If a fixture key is ever
+    //! regenerated, `an_ingested_key_verifies_a_real_signature` is what fails.
+
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use serde_json::json;
+
+    const ES256_PRIV: &[u8] = include_bytes!("../../../fixtures/keys/test_issuer_es256_priv.pem");
+    const ED_PRIV: &[u8] = include_bytes!("../../../fixtures/keys/test_issuer_ed25519_priv.pem");
+
+    const ES_X: &str = "ktLmuZwwCcx63nhx-fgvx5T_Ct8I8DC4aqxfFwViT70";
+    const ES_Y: &str = "87OFL3uLtI_CltSCX5g8X4GsnwH-4RasPaKAs8US2Co";
+    const ED_X: &str = "YlwgW8bKk8qBVesuj5HmIg03RABJ9CrwNCBu5WeKrAI";
+
+    fn es_jwk(kid: &str) -> serde_json::Value {
+        json!({"kty": "EC", "crv": "P-256", "x": ES_X, "y": ES_Y, "kid": kid})
+    }
+
+    fn ed_jwk(kid: &str) -> serde_json::Value {
+        json!({"kty": "OKP", "crv": "Ed25519", "x": ED_X, "kid": kid})
+    }
+
+    fn set(keys: Vec<serde_json::Value>) -> String {
+        json!({"keys": keys}).to_string()
+    }
+
+    #[test]
+    fn an_ingested_key_verifies_a_real_signature() {
+        // The test that makes the rest meaningful. `report.added` naming a kid proves
+        // only that parsing succeeded; a JWK assembled from the wrong coordinate order,
+        // or an Ed25519 `x` read as a compressed point, would still parse and would
+        // still be reported as added. Nothing catches that except verifying something.
+        let signer = IssuerKey::ec_pem("prod-2026-q3", ES256_PRIV, Algorithm::ES256).unwrap();
+        let jws = sign_detached(&json!({"sub": "agent-7"}), &signer).unwrap();
+
+        let mut keys = IssuerKeys::default();
+        let report = keys.add_jwks(&set(vec![es_jwk("prod-2026-q3")])).unwrap();
+        assert_eq!(report.added, vec!["prod-2026-q3".to_string()]);
+        assert!(report.is_complete());
+
+        let claims: serde_json::Value = verify_detached(&jws, "prod-2026-q3", &keys).unwrap();
+        assert_eq!(claims["sub"], "agent-7");
+    }
+
+    #[test]
+    fn an_ingested_ed25519_key_verifies_a_real_signature() {
+        let signer = IssuerKey::ed_pem("ed-1", ED_PRIV).unwrap();
+        let jws = sign_detached(&json!({"sub": "agent-8"}), &signer).unwrap();
+
+        let mut keys = IssuerKeys::default();
+        keys.add_jwks(&set(vec![ed_jwk("ed-1")])).unwrap();
+        let claims: serde_json::Value = verify_detached(&jws, "ed-1", &keys).unwrap();
+        assert_eq!(claims["sub"], "agent-8");
+    }
+
+    #[test]
+    fn a_rotation_adds_the_new_key_without_dropping_the_old_one() {
+        // What rotation actually looks like: for one overlap window the issuer publishes
+        // both, and contracts signed under either must verify. An ingest that replaced
+        // the map instead of inserting into it would reject every contract minted before
+        // the rotation — an outage, discovered in production.
+        let old = IssuerKey::ec_pem("k-old", ES256_PRIV, Algorithm::ES256).unwrap();
+        let jws_old = sign_detached(&json!({"n": 1}), &old).unwrap();
+
+        let mut keys = IssuerKeys::default();
+        keys.add_jwks(&set(vec![es_jwk("k-old")])).unwrap();
+        let report = keys
+            .add_jwks(&set(vec![es_jwk("k-old"), ed_jwk("k-new")]))
+            .unwrap();
+        assert_eq!(report.added, vec!["k-old".to_string(), "k-new".to_string()]);
+
+        let _: serde_json::Value = verify_detached(&jws_old, "k-old", &keys).unwrap();
+        assert!(keys.get("k-new").is_some());
+    }
+
+    #[test]
+    fn a_symmetric_key_in_a_trust_bundle_is_refused_outright() {
+        // Not skipped. Anyone who can verify with an `oct` key can mint with it, so a
+        // trust bundle containing one is not a set with an unusable member — it is a
+        // document that is not what the caller thinks it is.
+        let mut keys = IssuerKeys::default();
+        let err = keys
+            .add_jwks(&set(vec![
+                es_jwk("good"),
+                json!({"kty": "oct", "k": "c2VjcmV0", "kid": "shared"}),
+            ]))
+            .unwrap_err();
+        assert_eq!(err.code(), Code::ALG_NOT_ASYMMETRIC);
+        // And it refused before trusting the usable key beside it, so a caller that
+        // ignores the error is not left half-configured.
+        assert!(keys.get("good").is_none());
+    }
+
+    #[test]
+    fn rsa_is_skipped_and_the_usable_key_beside_it_survives() {
+        // The case that decides skip-versus-refuse. An OIDC issuer publishing RS256
+        // alongside ES256 is ordinary; refusing the document would refuse the EC key
+        // with it, and the operator would read "invalid JWKS" about a valid one.
+        let mut keys = IssuerKeys::default();
+        let report = keys
+            .add_jwks(&set(vec![
+                json!({"kty": "RSA", "n": "0vx7ag", "e": "AQAB", "kid": "rsa-1"}),
+                es_jwk("ec-1"),
+            ]))
+            .unwrap();
+        assert_eq!(report.added, vec!["ec-1".to_string()]);
+        assert_eq!(report.skipped, vec!["rsa-1: RSA".to_string()]);
+        assert!(!report.is_complete(), "the caller has to be able to see it");
+    }
+
+    #[test]
+    fn a_key_with_no_kid_is_skipped() {
+        // §7.8 A1: `verify_detached` resolves by a caller-supplied kid precisely so a
+        // signature's own header cannot choose which key checks it. A JWK with no kid
+        // has no name to be selected by, and inventing one would invent trust.
+        let mut keys = IssuerKeys::default();
+        let mut anon = es_jwk("x");
+        anon.as_object_mut().unwrap().remove("kid");
+        let report = keys.add_jwks(&set(vec![anon, ed_jwk("named")])).unwrap();
+        assert_eq!(report.added, vec!["named".to_string()]);
+        assert_eq!(report.skipped, vec!["no kid".to_string()]);
+    }
+
+    #[test]
+    fn an_encryption_key_is_skipped() {
+        let mut keys = IssuerKeys::default();
+        let mut enc = es_jwk("enc-1");
+        enc.as_object_mut()
+            .unwrap()
+            .insert("use".into(), json!("enc"));
+        let report = keys.add_jwks(&set(vec![enc, ed_jwk("sig-1")])).unwrap();
+        assert_eq!(report.added, vec!["sig-1".to_string()]);
+        assert_eq!(report.skipped.len(), 1);
+    }
+
+    #[test]
+    fn a_declared_alg_that_disagrees_with_the_curve_is_skipped() {
+        // A P-256 key labelled ES384. One of the two fields is wrong and there is no way
+        // to tell which, so guessing would mean verifying with a key under an algorithm
+        // its publisher did not intend.
+        let mut keys = IssuerKeys::default();
+        let mut lying = es_jwk("liar");
+        lying
+            .as_object_mut()
+            .unwrap()
+            .insert("alg".into(), json!("ES384"));
+        let err = keys.add_jwks(&set(vec![lying])).unwrap_err();
+        assert_eq!(err.code(), Code::CONFIG_INVALID);
+        assert!(
+            format!("{err}").contains("disagrees with the curve"),
+            "the reason has to survive into the message: {err}"
+        );
+
+        // The agreeing case is admitted, so the check is not just refusing every `alg`.
+        let mut honest = es_jwk("honest");
+        honest
+            .as_object_mut()
+            .unwrap()
+            .insert("alg".into(), json!("ES256"));
+        let report = keys.add_jwks(&set(vec![honest])).unwrap();
+        assert_eq!(report.added, vec!["honest".to_string()]);
+    }
+
+    #[test]
+    fn a_document_with_no_usable_key_is_an_error_not_an_empty_success() {
+        // The failure this whole return type exists to prevent: an operator points a
+        // verifier at the wrong URL, every key is skipped, and the process starts
+        // cleanly and trusts nothing — presenting as working until the first contract
+        // arrives and is refused for an unrelated-looking reason.
+        let mut keys = IssuerKeys::default();
+        let err = keys
+            .add_jwks(&set(vec![json!({
+                "kty": "RSA", "n": "0vx7ag", "e": "AQAB", "kid": "rsa-only"
+            })]))
+            .unwrap_err();
+        assert_eq!(err.code(), Code::CONFIG_INVALID);
+        let text = format!("{err}");
+        assert!(text.contains("none is usable"), "{text}");
+        assert!(
+            text.contains("rsa-only"),
+            "the reason must be actionable: {text}"
+        );
+
+        // An empty set fails the same way and says so differently.
+        let empty = keys.add_jwks(&set(vec![])).unwrap_err();
+        assert!(format!("{empty}").contains("empty"), "{empty}");
+    }
+
+    #[test]
+    fn an_unsupported_curve_is_skipped_rather_than_guessed_at() {
+        let mut keys = IssuerKeys::default();
+        let report = keys
+            .add_jwks(&set(vec![
+                json!({"kty": "EC", "crv": "P-521", "x": ES_X, "y": ES_Y, "kid": "p521"}),
+                es_jwk("p256"),
+            ]))
+            .unwrap();
+        assert_eq!(report.added, vec!["p256".to_string()]);
+        assert_eq!(report.skipped, vec!["p521: unsupported curve".to_string()]);
+    }
+
+    #[test]
+    fn a_document_that_is_not_a_jwks_is_refused_as_configuration() {
+        let mut keys = IssuerKeys::default();
+        for bad in ["", "not json", "{}", r#"{"keys": {}}"#, "[]"] {
+            let err = keys.add_jwks(bad).unwrap_err();
+            assert_eq!(err.code(), Code::CONFIG_INVALID, "on {bad:?}");
+        }
     }
 }

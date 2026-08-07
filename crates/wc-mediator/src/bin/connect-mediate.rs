@@ -41,6 +41,7 @@ use wc_mediator::cache::Cache;
 use wc_mediator::ceiling::Ceilings;
 use wc_mediator::client::{self, ControlPlaneClient};
 use wc_mediator::gate::{GateCfg, MediatedUpstream};
+use wc_mediator::jwks::{JwksSource, Trust};
 
 fn main() -> std::process::ExitCode {
     match run() {
@@ -81,13 +82,108 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Resolve issuer trust from the flags: one pinned PEM, or a key set that rotates.
+///
+/// Exactly one, and the ambiguous case is refused rather than resolved by precedence.
+/// An operator who passes both has two different beliefs about where trust comes from,
+/// and silently honouring one of them means the mediator is trusting something its
+/// operator did not think it was.
+fn build_trust(args: &[String]) -> Result<Trust, String> {
+    let pem_path = flag(args, "issuer-pub");
+    let url = flag(args, "jwks-url");
+    let file = flag(args, "jwks-file");
+
+    let chosen = [
+        pem_path.as_ref().map(|_| "--issuer-pub"),
+        url.as_ref().map(|_| "--jwks-url"),
+        file.as_ref().map(|_| "--jwks-file"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+
+    match chosen.as_slice() {
+        [] => Err(
+            "no issuer trust: pass --issuer-pub PEM --kid KID, or --jwks-url URL, \
+                   or --jwks-file FILE"
+                .to_string(),
+        ),
+        [_] => Ok(()),
+        many => Err(format!(
+            "{} were all given; issuer trust has one source, and choosing for you would \
+             mean verifying against a key set you did not mean",
+            many.join(" and ")
+        )),
+    }?;
+
+    if let Some(pem_path) = pem_path {
+        let kid = required(args, "kid")?;
+        let pem = std::fs::read(&pem_path).map_err(|e| format!("read {pem_path}: {e}"))?;
+        let mut keys = IssuerKeys::new();
+        match flag(args, "alg")
+            .unwrap_or_else(|| "ES256".to_string())
+            .as_str()
+        {
+            "ES256" => keys.add_ec_pem(&kid, &pem, Algorithm::ES256),
+            "ES384" => keys.add_ec_pem(&kid, &pem, Algorithm::ES384),
+            "EdDSA" | "Ed25519" => keys.add_ed_pem(&kid, &pem),
+            other => return Err(format!("{other:?} is not an accepted contract algorithm")),
+        }
+        .map_err(|e| e.to_string())?;
+        return Ok(Trust::Pinned(keys));
+    }
+
+    // `--kid` and `--alg` name one key; a key set names its own, so accepting them
+    // together would suggest they narrow it. They do not.
+    for ignored in ["kid", "alg"] {
+        if flag(args, ignored).is_some() {
+            return Err(format!(
+                "--{ignored} applies to --issuer-pub only; a key set carries its own kid \
+                 and algorithm, so this flag would have no effect"
+            ));
+        }
+    }
+
+    let mut source = match (url, file) {
+        (Some(url), _) => JwksSource::url(&url),
+        (_, Some(file)) => JwksSource::file(file),
+        _ => unreachable!("one source was chosen above"),
+    };
+    if let Some(ttl) = flag(args, "jwks-ttl") {
+        source = source.with_ttl(
+            ttl.parse()
+                .map_err(|_| format!("--jwks-ttl {ttl:?} is not a number of seconds"))?,
+        );
+    }
+    if let Some(max) = flag(args, "jwks-max-stale") {
+        source = source.with_max_stale(
+            max.parse()
+                .map_err(|_| format!("--jwks-max-stale {max:?} is not a number of seconds"))?,
+        );
+    }
+
+    // Load once here so a bad URL is a startup failure. Deferring it to the first
+    // request would mean the process starts, reports healthy, and denies everything.
+    let report = source
+        .load(now())
+        .map_err(|e| format!("issuer key set unusable, refusing to start: {e}"))?;
+    if !report.is_complete() {
+        eprintln!(
+            "connect-mediate: key set skipped {} key(s): {}",
+            report.skipped.len(),
+            report.skipped.join("; ")
+        );
+    }
+    Ok(Trust::Rotating(Box::new(source)))
+}
+
 const USAGE: &str = "\
 connect-mediate — the warden-connect inline mediator
 
 USAGE
   connect-mediate --upstream \"<command>\" --mediator-id ID \\
                   --caller SPIFFE_ID --callee SPIFFE_ID \\
-                  --issuer-pub PEM --kid KID \\
+                  (--issuer-pub PEM --kid KID | --jwks-url URL | --jwks-file F) \\
                   [--contracts URL --token TOKEN] | [--contract FILE ...]
 
 WARDEN CORE
@@ -105,6 +201,16 @@ CONNECT
   --issuer-pub PEM        the contract issuer's public key
   --kid KID               the key id it is registered under
   --alg ES256|ES384|EdDSA (default: ES256)
+  --jwks-url URL          the issuer's published key set, instead of a PEM;
+                          re-fetched on the TTL, so rotating the issuer key is
+                          a publish rather than a redeploy of every mediator
+  --jwks-file FILE        a key set on disk — a SPIRE bundle or a mounted
+                          ConfigMap — re-read on the same TTL
+  --jwks-ttl N            seconds between key-set reads (default: 300)
+  --jwks-max-stale N      how long a cached key set is still served while the
+                          fetch is failing, before verification stops
+                          (default: 3600); a set that can no longer be
+                          refreshed is a set nobody can withdraw a key from
   --contracts URL         control plane to pull contract sets from
   --token TOKEN           bearer token with the connect.mediator role
   --contract FILE         a contract artifact to load directly (repeatable);
@@ -134,20 +240,8 @@ fn run() -> Result<(), String> {
     let caller = EntityId::new(required(&args, "caller")?).map_err(|e| e.to_string())?;
     let callee = EntityId::new(required(&args, "callee")?).map_err(|e| e.to_string())?;
 
-    let issuer_pub = required(&args, "issuer-pub")?;
-    let kid = required(&args, "kid")?;
-    let pem = std::fs::read(&issuer_pub).map_err(|e| format!("read {issuer_pub}: {e}"))?;
-    let mut keys = IssuerKeys::new();
-    match flag(&args, "alg")
-        .unwrap_or_else(|| "ES256".to_string())
-        .as_str()
-    {
-        "ES256" => keys.add_ec_pem(&kid, &pem, Algorithm::ES256),
-        "ES384" => keys.add_ec_pem(&kid, &pem, Algorithm::ES384),
-        "EdDSA" | "Ed25519" => keys.add_ed_pem(&kid, &pem),
-        other => return Err(format!("{other:?} is not an accepted contract algorithm")),
-    }
-    .map_err(|e| e.to_string())?;
+    let mut trust = build_trust(&args)?;
+    eprintln!("connect-mediate: issuer trust — {}", trust.describe(now()));
 
     let cache = Arc::new(Cache::new());
     let refresh_secs: u64 = flag(&args, "refresh")
@@ -181,7 +275,9 @@ fn run() -> Result<(), String> {
     }
 
     if !inline.is_empty() {
-        let snapshot = wc_mediator::cache::Snapshot::build(&inline, &keys, &mediator_id, now());
+        let (keys, _) = trust.keys(now());
+        let keys = keys.map_err(|e| e.to_string())?;
+        let snapshot = wc_mediator::cache::Snapshot::build(&inline, keys, &mediator_id, now());
         eprintln!(
             "connect-mediate: loaded {} contract(s) from disk, {} rejected",
             snapshot.len(),
@@ -199,7 +295,9 @@ fn run() -> Result<(), String> {
     if let Some(client) = &client {
         // The first refresh is a startup gate. If the control plane cannot be
         // reached now, this mediator would deny everything while looking healthy.
-        let report = client::refresh(client, &cache, &keys, &mediator_id, 0, now())
+        let (keys, _) = trust.keys(now());
+        let keys = keys.map_err(|e| e.to_string())?;
+        let report = client::refresh(client, &cache, keys, &mediator_id, 0, now())
             .map_err(|e| format!("first contract refresh failed, refusing to start: {e}"))?;
         eprintln!(
             "connect-mediate: {} contract(s) installed, set {} seq {}{}",
@@ -227,26 +325,52 @@ fn run() -> Result<(), String> {
         // not extend authority either — contracts still expire on their own `exp`.
         let loop_client = client.clone();
         let loop_cache = Arc::clone(&cache);
-        let loop_keys_pem = pem.clone();
-        let loop_kid = kid.clone();
-        let loop_alg = flag(&args, "alg").unwrap_or_else(|| "ES256".to_string());
         let loop_mediator = mediator_id.clone();
+        // The trust itself moves into the loop rather than being rebuilt from the PEM
+        // here, which is what it used to be. Rebuilding meant the thread held a *copy*
+        // of the startup trust: contracts refreshed every tick and the keys they were
+        // checked against never did, so `--jwks-url` would have looked configured and
+        // rotation would never have arrived. `Trust::keys` refreshes at the call site
+        // so that gap has nowhere to reopen.
         std::thread::spawn(move || {
-            let mut keys = IssuerKeys::new();
-            let registered = match loop_alg.as_str() {
-                "EdDSA" | "Ed25519" => keys.add_ed_pem(&loop_kid, &loop_keys_pem),
-                "ES384" => keys.add_ec_pem(&loop_kid, &loop_keys_pem, Algorithm::ES384),
-                _ => keys.add_ec_pem(&loop_kid, &loop_keys_pem, Algorithm::ES256),
-            };
-            if registered.is_err() {
-                eprintln!("connect-mediate: refresh thread has no usable issuer key");
-                return;
-            }
+            let mut trust = trust;
             let mut seq = 0u64;
+            let mut last_kids: Vec<String> = Vec::new();
             loop {
                 std::thread::sleep(Duration::from_secs(refresh_secs));
-                match client::refresh(&loop_client, &loop_cache, &keys, &loop_mediator, seq, now())
-                {
+                let at = now();
+                let (keys, key_failure) = trust.keys(at);
+                if let Some(e) = key_failure {
+                    // Not fatal on its own: the cached set is still being served. It
+                    // stops being served at the staleness bound, and then `keys` below
+                    // is the error that says so.
+                    eprintln!("connect-mediate: issuer key set refresh failed: {e}");
+                }
+                let keys = match keys {
+                    Ok(keys) => keys,
+                    Err(e) => {
+                        // Contracts are not pulled at all in this state. Pulling them
+                        // would mean verifying against a trust set this process has
+                        // already decided it cannot vouch for.
+                        eprintln!("connect-mediate: not refreshing contracts — {e}");
+                        continue;
+                    }
+                };
+                let kids = keys.kids();
+                if kids != last_kids {
+                    // The one event an operator wants in the log: rotation landed, and
+                    // what it landed as.
+                    if !last_kids.is_empty() {
+                        eprintln!(
+                            "connect-mediate: issuer keys changed — was [{}], now [{}]",
+                            last_kids.join(", "),
+                            kids.join(", ")
+                        );
+                    }
+                    last_kids = kids;
+                }
+
+                match client::refresh(&loop_client, &loop_cache, keys, &loop_mediator, seq, at) {
                     Ok(report) => {
                         seq = report.seq;
                         if !report.is_clean() {

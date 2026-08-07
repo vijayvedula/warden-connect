@@ -50,8 +50,10 @@ output and re-run it.
 # stage 1, against a running SPIRE agent
 spire-agent api fetch jwt -audience warden-connect://control-plane/apac \
   | sed -n 's/^ *token: *//p' > fixtures/attest/jwt-svid.token
-# and the bundle it should verify against
-spire-agent api fetch jwtbundles > /tmp/bundles.json   # convert the JWKS to PEM
+# and the bundle it should verify against. What SPIRE hands back is a JWKS, which
+# `IssuerKeys::add_jwks` now reads directly — the conversion step this line used to
+# ask for is gone.
+spire-agent api fetch jwtbundles > fixtures/attest/spiffe-bundle.jwks.json
 
 cargo test -p wc-e2e --test attest
 ```

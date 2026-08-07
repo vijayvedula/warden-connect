@@ -351,6 +351,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "verify" => &[
             "file",
             "issuer-pub",
+            "jwks",
             "kid",
             "alg",
             "mediator-id",
@@ -3491,24 +3492,59 @@ fn verify_cmd(args: &Args) -> Result<()> {
         .trim()
         .to_string();
 
-    let key_path = require(args, "issuer-pub")?;
-    let pem = std::fs::read(key_path).map_err(|e| {
-        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {key_path}")).with_source(e)
-    })?;
-    let kid = require(args, "kid")?;
-
-    let mut keys = IssuerKeys::new();
-    match args.get("alg").unwrap_or("ES256") {
-        "ES256" => keys.add_ec_pem(kid, &pem, Algorithm::ES256)?,
-        "ES384" => keys.add_ec_pem(kid, &pem, Algorithm::ES384)?,
-        "EdDSA" | "Ed25519" => keys.add_ed_pem(kid, &pem)?,
-        other => {
+    // Trust comes from one PEM, or from a key set. A third-party implementer checking
+    // their minter against this has a JWKS far more often than a PEM — it is what an
+    // OIDC issuer and a SPIRE server both publish — and requiring them to convert it by
+    // hand made the conformance entry point harder to reach than the specification.
+    let keys = match (args.get("jwks"), args.get("issuer-pub")) {
+        (Some(_), Some(_)) => {
             return Err(WcError::with_detail(
-                Code::ALG_NOT_ASYMMETRIC,
-                format!("{other:?} is not an accepted contract algorithm"),
+                Code::CONFIG_INVALID,
+                "--jwks and --issuer-pub both name the issuer's trust; pass one",
             ))
         }
-    }
+        (Some(path), None) => {
+            let document = std::fs::read_to_string(path).map_err(|e| {
+                WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}"))
+                    .with_source(e)
+            })?;
+            let mut keys = IssuerKeys::new();
+            let report = keys.add_jwks(&document)?;
+            if !report.is_complete() {
+                // On stderr, so `--json` on stdout stays machine-readable. Said at all
+                // because "the key I expected was skipped" is otherwise indistinguishable
+                // from "the contract names a kid nobody has heard of".
+                eprintln!(
+                    "connect verify: {} key(s) skipped: {}",
+                    report.skipped.len(),
+                    report.skipped.join("; ")
+                );
+            }
+            keys
+        }
+        (None, _) => {
+            let key_path = require(args, "issuer-pub")?;
+            let pem = std::fs::read(key_path).map_err(|e| {
+                WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {key_path}"))
+                    .with_source(e)
+            })?;
+            let kid = require(args, "kid")?;
+
+            let mut keys = IssuerKeys::new();
+            match args.get("alg").unwrap_or("ES256") {
+                "ES256" => keys.add_ec_pem(kid, &pem, Algorithm::ES256)?,
+                "ES384" => keys.add_ec_pem(kid, &pem, Algorithm::ES384)?,
+                "EdDSA" | "Ed25519" => keys.add_ed_pem(kid, &pem)?,
+                other => {
+                    return Err(WcError::with_detail(
+                        Code::ALG_NOT_ASYMMETRIC,
+                        format!("{other:?} is not an accepted contract algorithm"),
+                    ))
+                }
+            }
+            keys
+        }
+    };
 
     let mediator = require(args, "mediator-id")?;
     let at = args.number("now").unwrap_or_else(now);
@@ -4742,8 +4778,10 @@ TOOLS
   screen <surface.json> [--kind mcp|a2a] [--mode observe|flag|enforce] [--tier N]
                         [--rules screen-rules.toml] [--acceptances FILE]
                         [--estate names.json] [--json]      exit 5 on block
-  verify <contract.jws> --issuer-pub PEM --kid KID --mediator-id ID
+  verify <contract.jws> (--issuer-pub PEM --kid KID | --jwks FILE) --mediator-id ID
                         [--alg ES256|ES384|EdDSA] [--now TS] [--leeway N] [--json]
+                        --jwks takes an issuer key set — what an OIDC issuer or a
+                        SPIRE server publishes — instead of a converted PEM
   version
 
 SERVE
