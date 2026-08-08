@@ -13,6 +13,11 @@
 > and #3 (real attestation material) now need procurement and an integration
 > environment, not commits.
 >
+> **P1: all six done or code-complete.** #9, #10, #11 and #12 are closed; #13 and #14 are
+> partial with the remainder named — crates.io publishing is blocked by the path dependency
+> on Warden core, which is a coupling decision rather than a packaging chore, and evidence
+> segment retirement does not exist.
+>
 > Working through P0 in order turned up **ten** defects the tests as written could not
 > see: a gate pointing at a benchmark that did not exist; a blocking detector that
 > refused every localised tool server; a verifier reading the system clock; a listener
@@ -30,7 +35,7 @@
 | | Evidence |
 |---|---|
 | Modules delivered | All of P0–P4 (§8.16). `wc-core` 7 modules, `wc-control` 23, `wc-mediator` 8, `wc-cli` |
-| Tests | **958 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
+| Tests | **967 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
 | Conformance | 19 vectors in `fixtures/contracts/`, driven off `expected.json`; `connect verify` is the ground truth (§8.15.3) |
 | Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expect_used` warned workspace-wide |
 | CI | [`ci.yml`](../.github/workflows/ci.yml) — 5 jobs: stable, MSRV 1.89, release-mode latency gates, supply chain + dependency ceilings, nightly fuzz build |
@@ -418,19 +423,55 @@ by what unblocks the others.
 
 ## P1 — scale and operability
 
-- [ ] **9. Four §8.16 acceptance criteria were never measured.** They are stated
-  as exit gates and no run exists:
+- [x] **9. All four §8.16 acceptance criteria now run in CI.**
 
-  | Phase | Criterion | Status |
+  | Phase | Criterion | Measured |
   |---|---|---|
-  | P0 | 10⁴ entities registered from CI | never run |
-  | P3 | quarterly containment drill script in the repo | no script |
-  | P4 | DORA register generated in < 1 h at 10⁵ contracts | never run |
-  | P4 | partner federation e2e against a **second** control plane | never run |
+  | P0 | 10⁴ entities registered from CI | **37.3 s**, against a 120 s gate |
+  | P3 | quarterly containment drill script in the repo | [`scripts/containment-drill.sh`](../scripts/containment-drill.sh), 9 steps, run in CI |
+  | P4 | DORA register at 10⁵ contracts, under 1 h | **p99 91 ms**, against a 500 ms gate |
+  | P4 | partner federation against a **second** control plane | 9 tests in `crates/wc-e2e/tests/federation.rs` |
 
-  The last one matters most: federation is the claim that two organisations
-  interoperate on two signed artifacts, and it has only ever been tested against
-  itself.
+  **The federation one mattered most and was the most wrong.** `uc05_federation` exercises
+  partner-*zone policy* inside one estate holding one issuer key — so an implementation that
+  verified a partner's statement against the **local** issuer keys would have passed it.
+  There are now two organisations with two keypairs: org B signs statements about its own
+  parties, org A holds B as a trust anchor and issues the contract, and
+  `a_statement_signed_by_our_own_key_is_not_a_partner` is the test that would fail if this
+  were self-federation wearing two names. The end-to-end case asserts the contract verifies
+  under **our** key and **not** the partner's — a contract a partner could forge would make
+  the federation pointless.
+
+  **Two places my tests were wrong and the code was stricter.** I assumed a partner asking
+  for more than its anchor allows would be *narrowed*, the way `Terms::intersect` narrows a
+  contract. It is **refused** (`WC-2033`), and refusing is the better choice: a statement
+  claiming thirty days when the anchor says seven is not a partner being generous with
+  itself, it is a disagreement about the relationship, and acting on our own reading of a
+  disagreement is how two organisations end up with different beliefs about it. Same for a
+  partner naming one of our internal zones — refused, not re-placed. Both are recorded in
+  the tests.
+
+  **The two gates are set from measurement, not from the criterion.** The DORA criterion
+  says "under one hour"; a gate at 3600 s passes while the export gets two orders of
+  magnitude slower, which is a gate that cannot fail. So it is 500 ms — about 5× the
+  measured p99. Conversely `registry::register` is bounded *generously* at 3× measured,
+  because it is dominated by `fsync` and therefore measures the disk: a gate tuned tight to
+  one machine fails on a slower CI volume for a reason nobody can fix in code, and a gate
+  that fails for unfixable reasons gets disabled. What it will catch is an O(n²)
+  registration path.
+
+  It is also the slowest thing in CI at ~37 s, and that cost is the point — the criterion is
+  not met by registering a hundred entities quickly.
+
+  **The drill exercises the break-glass path, not just the routine one**, which
+  [key-custody.md](key-custody.md) requires: it refuses the offline key without
+  `--break-glass`, uses it with, asserts `containment.breakglass_key` reaches the chain, and
+  finishes by backing up and restoring to prove the incident record survives. It ends by
+  printing what it **cannot** prove — the offline key was a file rather than a hardware
+  token, no mediators were configured so nothing enforced the containment, propagation was
+  not timed, and nobody was paged. Running it in CI keeps the script working, which is the
+  failure mode of every drill script that exists and is never executed; it does not replace
+  the quarterly run with the real token and the named share-holders present.
 
 - [x] **10. HA is a tested mode, and the standby it needed did not exist.**
 

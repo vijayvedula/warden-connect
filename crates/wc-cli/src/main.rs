@@ -2476,6 +2476,80 @@ fn bench_cmd(args: &Args) -> Result<()> {
         }
     }
 
+    // --- the §8.16 acceptance criteria (P1 #9) ----------------------------
+    //
+    // Stated as phase exit gates and never run. They are here rather than in a separate
+    // harness because `connect bench` is already the thing CI invokes, and a criterion in
+    // a second place nobody calls is the same as a criterion nobody measured.
+
+    // P4: a DORA register at 10⁵ contracts, which §8.16 bounds at one hour.
+    if wanted("export::dora") {
+        let projection = bench_estate(scale)?;
+        let provenance = export::Provenance {
+            as_of: ts,
+            chain_head_seq: 0,
+            chain_head_hash: String::new(),
+            anchor_ref: None,
+            replay_complete: true,
+        };
+        // Two iterations, not five hundred: at this scale one run is seconds, and the
+        // question is "does it complete", not "what is the jitter". The register is
+        // asserted non-empty, because an export that produced nothing would post an
+        // excellent number for doing no work — the same defect the rebuild gate had.
+        let mut rows = 0usize;
+        report.gates.push(measure(
+            "export::dora",
+            &format!("{scale} contracts"),
+            thresholds::DORA_100K,
+            2,
+            0,
+            || {
+                if let Ok(register) = export::dora_register(&projection, provenance.clone()) {
+                    rows = register.tables.iter().map(|t| t.rows.len()).sum();
+                }
+            },
+        ));
+        if rows == 0 {
+            report.skip(
+                "export::dora",
+                "the register came back empty, so the timing above measured nothing",
+                false,
+            );
+        }
+    } else {
+        report.skip("export::dora", "not selected by --gate", true);
+    }
+
+    // P0: 10⁴ entities registered. Against a real store on a real filesystem, because the
+    // cost is durability rather than computation and an in-memory projection would measure
+    // the wrong thing entirely.
+    if wanted("registry::register") {
+        let dir = std::env::temp_dir().join(format!("wc-bench-register-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut registered = 0usize;
+        report.gates.push(measure(
+            "registry::register",
+            "10,000 entities, appended and fsynced",
+            thresholds::REGISTER_10K,
+            1,
+            0,
+            || {
+                let _ = std::fs::remove_dir_all(&dir);
+                registered = bench_register(&dir, 10_000).unwrap_or(0);
+            },
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        if registered < 10_000 {
+            report.skip(
+                "registry::register",
+                "fewer than 10,000 entities landed, so the timing measured a partial run",
+                false,
+            );
+        }
+    } else {
+        report.skip("registry::register", "not selected by --gate", true);
+    }
+
     // Blast radius at the NFR scale, not a token one.
     if wanted("assurance::blast_radius") {
         let projection = bench_estate(scale)?;
@@ -2704,6 +2778,43 @@ fn bench_payload(now: u64) -> Result<contract::ContractPayload> {
 /// Built as a wide star rather than a chain: a chain of 10⁵ would exceed the depth
 /// bound after three hops and measure almost nothing, which is a benchmark that
 /// passes by not doing the work.
+/// Register `count` entities into a fresh store, returning how many landed.
+///
+/// A real `Store` on a real filesystem: every registration is an append plus an `fsync`, so
+/// an in-memory version would measure the wrong thing and pass while the durable path
+/// regressed.
+fn bench_register(dir: &std::path::Path, count: usize) -> Result<usize> {
+    use wc_control::store::Store;
+    use wc_core::model::{Entity, HumanRef, Kind};
+
+    std::fs::create_dir_all(dir).map_err(|e| {
+        WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!("cannot create {}", dir.display()),
+        )
+        .with_source(e)
+    })?;
+    let (mut store, _) = Store::open(dir)?;
+    let owner = HumanRef::new("human:bench")?;
+    let zone = ZoneId::new("internal.bench")?;
+    let actor = wc_control::store::Actor::Human { id: owner.clone() };
+    let ts = now();
+
+    for i in 0..count {
+        let id = EntityId::new(format!("urn:wc:bench:reg{i}"))?;
+        let entity = Entity::pending(
+            id,
+            Kind::McpServer,
+            owner.clone(),
+            zone.clone(),
+            Tier::THREE,
+            0,
+        );
+        store.registry(actor.clone(), ts).put(entity)?;
+    }
+    Ok(store.projection.entities.len())
+}
+
 fn bench_estate(contracts: usize) -> Result<wc_control::store::Projection> {
     use wc_control::store::Projection;
     use wc_core::contract::{ApprovalRef, ContractRecord, ContractStatus, Terms, CONTRACT_SCHEMA};

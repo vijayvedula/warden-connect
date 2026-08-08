@@ -71,6 +71,40 @@ pub const BLAST_RADIUS: Duration = Duration::from_millis(40);
 pub const REBUILD: Duration = Duration::from_millis(600);
 /// `wcs1` canonicalisation of a 256-tool surface.
 pub const CANON_256: Duration = Duration::from_millis(10);
+
+/// Producing a DORA register at 10⁵ contracts (§8.16 P4 acceptance criterion).
+///
+/// The criterion says **under one hour**, and that is the number a regulator's deadline
+/// implies rather than one anybody measured. The measured p99 is far below it, so the gate
+/// is set from the measurement plus headroom instead: a gate at 3600 s would pass while the
+/// export got two orders of magnitude slower, which is a gate that cannot fail.
+///
+/// The one-hour figure is still the *contractual* claim; this is the tripwire that would
+/// tell you long before you breached it.
+///
+/// **Measured p99: 92 ms** at 10⁵ contracts — about 39,000× inside the criterion. Set at
+/// 500 ms, roughly 5×, which catches a 5× regression and stays stable across machines. The
+/// first version of this constant was 10 s, which passes while the export gets a hundred
+/// times slower: a gate that cannot fail.
+pub const DORA_100K: Duration = Duration::from_millis(500);
+
+/// Registering 10⁴ entities from a cold start (§8.16 P0 acceptance criterion).
+///
+/// Stated as an exit gate and never run. Each registration is an append to the state log,
+/// `fsync`ed, so this is dominated by durability rather than by anything this code
+/// computes — which is the honest reading of the number: **it measures the disk the estate
+/// is on**, and it exists to catch the day somebody makes registration quadratic.
+///
+/// **Measured: 39.5 s** on an SSD, about 4 ms per entity, which is one flush. The bound is
+/// deliberately generous at 3× that, because the variable is hardware: a gate tuned tight
+/// to this laptop would fail on a slower CI volume for a reason nobody could fix in the
+/// code, and a gate that fails for unfixable reasons gets disabled. What it *will* catch is
+/// an O(n²) registration path, which would blow past this by orders of magnitude.
+///
+/// It is also the slowest gate in the suite by far. That cost is the point: §8.16 asked for
+/// 10⁴ entities registered from CI, and the criterion is not met by measuring 100 of them
+/// quickly.
+pub const REGISTER_10K: Duration = Duration::from_secs(120);
 /// Screening a 256-tool surface.
 pub const SCREEN_256: Duration = Duration::from_millis(50);
 
