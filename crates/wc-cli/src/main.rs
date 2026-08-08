@@ -410,6 +410,8 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "deny" => &["id", "reason", "policy"],
         "serve" => &[
             "listen",
+            "standby",
+            "standby-timeout",
             "behind-tls-proxy",
             "trusted-proxy",
             "insecure-plaintext",
@@ -654,6 +656,45 @@ fn paths(args: &Args) -> Paths {
 fn open_store(args: &Args) -> Result<Store> {
     let p = paths(args);
     let (store, report) = Store::open(&p.state)?;
+    warn_if_unclean(&report);
+    Ok(store)
+}
+
+/// Open the store, standing by for the active writer if `--standby` was given (P1 #10).
+///
+/// Only `serve` offers this. A one-shot command competing with a running control plane
+/// should fail immediately and say the estate is busy; a *second control plane* should
+/// wait, because that is what active/standby means (§8.5.2).
+///
+/// Note what does **not** happen while standing by: no listener is bound. A standby that
+/// bound the port and answered `/readyz` with "not ready" would be relying on every
+/// load balancer in front of it to read that correctly. Not being there at all is the same
+/// signal with no room for a health-check misconfiguration, and it also makes the port
+/// available to the active writer on the same host.
+fn open_store_or_stand_by(args: &Args) -> Result<Store> {
+    if !args.has("standby") {
+        return open_store(args);
+    }
+    let p = paths(args);
+    let timeout = std::time::Duration::from_secs(args.number("standby-timeout").unwrap_or(3_600));
+    eprintln!(
+        "connect: standing by for the active writer on {} (up to {}s); no listener is \
+         bound until this process is active",
+        p.state.display(),
+        timeout.as_secs()
+    );
+    let (store, report, election) = Store::open_waiting(
+        &p.state,
+        timeout,
+        std::time::Duration::from_millis(250),
+        |secs| eprintln!("connect: still standing by after {secs}s"),
+    )?;
+    eprintln!("connect: {}", election.describe());
+    warn_if_unclean(&report);
+    Ok(store)
+}
+
+fn warn_if_unclean(report: &wc_control::store::RebuildReport) {
     if !report.is_clean() {
         eprintln!(
             "connect: warning: state rebuild not clean — {} applied, {} unknown, {} inconsistent{}",
@@ -670,7 +711,6 @@ fn open_store(args: &Args) -> Result<Store> {
             eprintln!("  {problem}");
         }
     }
-    Ok(store)
 }
 
 /// What the transport must prove before a bearer token is believed.
@@ -4519,7 +4559,7 @@ fn serve_cmd(args: &Args) -> Result<()> {
     }
 
     let signer = issuer_key(args)?;
-    let store = open_store(args)?;
+    let store = open_store_or_stand_by(args)?;
     let evidence = open_evidence(args)?;
     let iss = args
         .get("iss")
@@ -5021,6 +5061,27 @@ SERVE
   serve [--listen 127.0.0.1:8787] --issuer-key PEM --kid KID
         [--behind-tls-proxy [--trusted-proxy ADDR]...] | [--insecure-plaintext]
         [--tokens tokens.toml] [--approvers approvers.toml] [--jwks FILE]
+        [--standby [--standby-timeout 3600]]
+
+HIGH AVAILABILITY  (§8.5.2, docs/production-readiness.md P1 #10)
+  The state log and the evidence chain are single-writer by construction: two
+  writers would fork a hash chain. HA is therefore active/standby, with the
+  writer lock as the election primitive — not two active replicas.
+
+  --standby           wait for the active writer to release, then take over. No
+                      listener is bound while waiting, so a load balancer sees
+                      nothing rather than something answering \"not ready\" — the
+                      same signal with no room for a health-check to be wrong
+  --standby-timeout N give up after N seconds (default 3600) and exit non-zero.
+                      A standby that started anyway would be a second writer,
+                      which would look exactly like a successful failover
+
+  The lock is released by a crash as well as a clean exit, because it belongs to
+  the file descriptor and the kernel closes it. There is no lease to expire and
+  no heartbeat to tune. What this does NOT give you is fencing against a
+  partitioned active: flock is advisory and node-local, so a shared filesystem
+  must guarantee single attachment (ReadWriteOnce, one EBS volume, one LUN) —
+  that guarantee is what actually fences.
 
 TRANSPORT  (serve speaks plain HTTP; TLS is terminated in front of it)
   A non-loopback listener refuses to start rather than accept bearer tokens in

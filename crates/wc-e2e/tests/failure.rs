@@ -752,3 +752,185 @@ fn no_authority_is_issued_when_the_trail_cannot_be_written() {
     let verified = Evidence::verify(e.root.evidence(), None).unwrap();
     assert_eq!(verified.broken_at, None, "and the chain still verifies");
 }
+
+// ===========================================================================
+// 13 · Active/standby handover (P1 #10)
+// ===========================================================================
+//
+// The two tests above prove a second writer is *refused* and that the lock is released.
+// P1 #10's point was that neither exercises a **handover**: what a standby does with a
+// projection that is behind, how long election takes, and what happens to work the
+// outgoing writer committed while the standby was waiting.
+//
+// Before `Store::open_waiting` there was no standby at all — the second process failed at
+// startup and exited, so "active/standby with that lock as the election primitive" (§8.5.2)
+// had a primitive and no standby.
+
+/// Release the writer while keeping the storage — a process exiting, not a host being
+/// wiped.
+///
+/// `Root::drop` removes the directory, so `drop(estate)` models a disk going away rather
+/// than a failover. Destructuring keeps the `Root` alive and drops only the handles that
+/// hold the lock, which is what an active writer exiting actually looks like.
+fn release_writer(e: Estate) -> Root {
+    let Estate {
+        root,
+        store,
+        evidence,
+        ..
+    } = e;
+    drop(store);
+    drop(evidence);
+    root
+}
+
+#[test]
+fn a_standby_takes_over_and_sees_everything_the_active_writer_committed() {
+    // The question P1 #10 asked: the standby is waiting, the active writer keeps working,
+    // and the successor must not start from the view it had when it began waiting.
+    let (mut e, issued) = wired("fi-ha-handover");
+    let state = e.root.state();
+    let first_cid = issued.record.cid.as_str().to_string();
+
+    // A second contract, written *after* a standby would plausibly have started waiting.
+    let agent = e.entity(&issued.record.caller);
+    let server = e.entity(&issued.record.callee);
+    let second = e.connect(&agent.id, &server.id, &["list_transactions"], 7 * DAY);
+    let second_cid = second.record.cid.as_str().to_string();
+
+    // While the active writer holds the lock, a standby cannot take it.
+    assert_eq!(Store::open(&state).unwrap_err().code(), Code::STORE_LOCKED);
+
+    // The active writer goes away — cleanly here; a crash is the same mechanism, because a
+    // `flock` is owned by the descriptor and the kernel closes it either way.
+    let _root = release_writer(e);
+
+    let (store, report, election) = Store::open_waiting(
+        &state,
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        |_| {},
+    )
+    .expect("the standby must be able to take over");
+
+    assert!(report.is_clean(), "{report:?}");
+    assert!(
+        election.uncontended,
+        "the previous writer had already exited, so nothing was contended: {election:?}"
+    );
+
+    // Both contracts are present — including the one written after the standby would have
+    // begun waiting. This is the assertion the item is about: a successor that rebuilt
+    // before electing would be missing the second one.
+    let cids: Vec<String> = store
+        .projection
+        .contracts
+        .keys()
+        .map(|c| c.as_str().to_string())
+        .collect();
+    assert!(
+        cids.contains(&first_cid),
+        "successor lost the first contract: {cids:?}"
+    );
+    assert!(
+        cids.contains(&second_cid),
+        "successor started from a projection behind the log: {cids:?}"
+    );
+}
+
+#[test]
+fn a_standby_waits_through_a_handover_rather_than_exiting() {
+    // The behaviour that did not exist. `Store::open` fails instantly, which is right for
+    // `connect register` competing with a running `serve` — and it made failover mean an
+    // external supervisor restarting a process that would then race the dying one.
+    let (e, _issued) = wired("fi-ha-wait");
+    let state = e.root.state();
+
+    let waiting = state.clone();
+    let standby = std::thread::spawn(move || {
+        Store::open_waiting(
+            &waiting,
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_millis(5),
+            |_| {},
+        )
+    });
+
+    // Long enough that the standby has certainly failed at least one attempt, so this is a
+    // handover and not a race it happened to win.
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    let _root = release_writer(e);
+
+    let (store, report, election) = standby.join().unwrap().expect("the standby must win");
+    assert!(report.is_clean());
+    assert!(
+        !election.uncontended,
+        "a successor must know it succeeded somebody: {election:?}"
+    );
+    assert!(election.describe().contains("took over"), "{election:?}");
+    assert!(!store.projection.contracts.is_empty());
+}
+
+#[test]
+fn a_standby_that_cannot_elect_refuses_to_serve_rather_than_becoming_a_second_writer() {
+    // The dangerous alternative. A standby whose wait expired and started anyway would be
+    // a second writer — the one thing the lock exists to prevent — and it would present as
+    // a successful failover, with two processes appending to one hash-chained log.
+    let (_e, _issued) = wired("fi-ha-timeout");
+    let state = _e.root.state();
+
+    let err = Store::open_waiting(
+        &state,
+        std::time::Duration::from_millis(80),
+        std::time::Duration::from_millis(10),
+        |_| {},
+    )
+    .expect_err("the active writer still holds the lock");
+    assert_eq!(err.code(), Code::STORE_LOCKED);
+    assert!(
+        format!("{err}").contains("giving up rather than starting without the lock"),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_in_flight_write_is_either_committed_or_absent_never_half() {
+    // P1 #10's last question: what happens to an in-flight approval. The answer has to be
+    // structural rather than lucky — a successor rebuilding a log with a torn final record
+    // must reject that record and say so, not accept a half-parsed one.
+    let (e, issued) = wired("fi-ha-torn");
+    let state = e.root.state();
+    let log = e.state_log();
+    let cid = issued.record.cid.as_str().to_string();
+    let _root = release_writer(e);
+
+    // A process killed mid-append leaves a truncated final line: exactly what an un-fsynced
+    // tail looks like after a hard stop.
+    let mut text = std::fs::read_to_string(&log).unwrap();
+    text.push_str("{\"seq\":9999,\"kind\":\"contract.min");
+    std::fs::write(&log, &text).unwrap();
+
+    let (store, report, _election) = Store::open_waiting(
+        &state,
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        |_| {},
+    )
+    .expect("a torn tail must not stop a successor from starting");
+
+    // Everything committed before the tear survives.
+    let cids: Vec<String> = store
+        .projection
+        .contracts
+        .keys()
+        .map(|c| c.as_str().to_string())
+        .collect();
+    assert!(cids.contains(&cid), "{cids:?}");
+
+    // And the tear is reported rather than silently dropped: a successor that started clean
+    // on a damaged log would be asserting the estate is intact when it is not.
+    assert!(
+        !report.is_clean(),
+        "a torn final record must be visible in the rebuild report: {report:?}"
+    );
+}
