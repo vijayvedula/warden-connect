@@ -30,7 +30,7 @@
 | | Evidence |
 |---|---|
 | Modules delivered | All of P0–P4 (§8.16). `wc-core` 7 modules, `wc-control` 23, `wc-mediator` 8, `wc-cli` |
-| Tests | **948 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
+| Tests | **958 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
 | Conformance | 19 vectors in `fixtures/contracts/`, driven off `expected.json`; `connect verify` is the ground truth (§8.15.3) |
 | Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expect_used` warned workspace-wide |
 | CI | [`ci.yml`](../.github/workflows/ci.yml) — 5 jobs: stable, MSRV 1.89, release-mode latency gates, supply chain + dependency ceilings, nightly fuzz build |
@@ -577,12 +577,42 @@ by what unblocks the others.
   a *tool surface*, and the product that generates BOMs ships without one of
   itself.
 
-- [ ] **14. Backup, restore and retention are undocumented and untested.** The
-  evidence chain and the state log **are** the system of record — that is the
-  whole argument for shipping no database (§8.16b). There is no tested restore
-  procedure, no retention policy against the regulatory clock the export module
-  assumes, and no WORM/offsite shipping for signed anchors. A tamper-evident chain
-  on a disk nobody backs up is a compliance story with one point of failure.
+- [~] **14. Backup and restore are code, tested, and documented.**
+
+  * **`connect backup --out DIR`** — a verified snapshot. It **verifies the chain first and
+    refuses if it is broken**, which is the reason this is code rather than `cp -r`: a
+    snapshot of an already-corrupt root looks like insurance, launders the corruption into
+    every copy, and is discovered at the exact moment somebody needed it to be real. No
+    manifest is written for a chain that did not verify. The manifest records head
+    sequences, because after a restore the first question is *how much did we lose*.
+  * **`connect restore --from DIR --into ROOT`** — four refusals in the order that matters:
+    no manifest, a digest mismatch (checked **before** anything is placed, since a restore
+    that copies first has overwritten what it would compare against), a non-empty target
+    (never merged — two append-only logs joined are a third history that never happened,
+    *and it would verify*), and a live writer.
+  * **Hot backups are safe and say when they were hot.** Both logs are append-only, so a
+    mid-append copy is a prefix plus possibly a torn final line, never a scrambled middle.
+    The manifest names a sequence rather than claiming an instant, and `torn_tail` reports
+    a caught partial write.
+  * **`connect retention`** reports the window and **deletes nothing** — see below.
+  * **[operations.md](operations.md)** — the paths, what losing each one costs, the restore
+    drill including `connect export --format dora` against the restored root (the line that
+    proves the recovery is worth having), and what is still missing.
+
+  Verified end to end: backup → restore into a new root → `audit verify` → the estate is
+  present, and a second restore into the same root is refused.
+
+  **Retention deletes nothing, deliberately.** Removing a row from a hash-linked chain
+  breaks every row after it, so retention here is *segment retirement* — retire whole
+  segments once every row in one is past its clock, keep the anchor that covered them —
+  and that rotation design does not exist. Implementing a row-level delete would silently
+  destroy the property the chain exists for while reporting success, so the command reports
+  the window instead and says why.
+
+  **Still outstanding:** segment retirement itself; a measured RTO (the drill is a
+  procedure, not a measurement); automated offsite shipping, left out on purpose because a
+  WORM credential inside the control plane is a new blast radius; and cross-tenant backup
+  in one invocation.
 
 ---
 
