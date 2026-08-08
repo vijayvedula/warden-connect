@@ -3,7 +3,7 @@
 ## The film, vertical — for phones
 
 [`warden-connect-mobile.mp4`](warden-connect-mobile.mp4) · 1080×1920 · 9:16 ·
-30 fps · **3:45** · no audio track. Poster:
+30 fps · **3:55** · no audio track. Poster:
 [`warden-connect-mobile-poster.jpg`](warden-connect-mobile-poster.jpg).
 
 The web presentation *"Why agent connections need a control plane"* as a video a
@@ -26,6 +26,11 @@ self-paced. Here each beat is held for its own reading time — 3.8 words/second
 floored at 2.0 s so short beats do not flash and capped at 4.4 s so long ones do not
 stall. A viewer who needs longer can scrub; one who is bored leaves.
 
+**A scene builds; it never fades itself out.** `p` completes at the end of the build,
+not the end of the shot, so a scene that faded itself at `p → 1` went dark for the
+entire still. The title did exactly that and left **3.8 seconds of blank frame** at the
+head of the film. The shot shape owns both edges; scenes only build.
+
 **Every shot is a build, a still, and a dip.** The animation completes in the first
 two thirds; the last third is the *same frame*, held. The first cut animated across
 the whole shot and cut on the final frame of the build, which meant the finished
@@ -39,6 +44,15 @@ toward the ground means the content fades and the ground stays put, which reads 
 soft cut rather than a dropped frame — and on a dark single-theme film there is
 nothing for a black flash to hide behind.
 
+**And the shot arrives, rather than appearing.** The dip tells you a shot ended; it
+does not tell you a new one has your attention. Each shot now eases up from 0.945 while
+it builds and drifts to 1.045 as it fades, so a section pushes in, sits **dead still**
+while it is read, then recedes. The push-in overlaps the build and so costs no runtime;
+only the longer fade-out does, and that is added on top of the still rather than taken
+out of it — which is why the film grew by ten seconds and the reading time per slide
+did not shrink by a frame. The 1.045 ceiling is set by the safe margins: it crops 41 px
+top and bottom, and nothing meaningful is drawn there.
+
 Platform-safe margins throughout: feed UI covers roughly the top 8% and bottom 12% of
 a 9:16 frame, and nothing that carries meaning goes there.
 
@@ -49,8 +63,12 @@ cp out/warden-connect-mobile.mp4 ../video/
 
 ### It opens by earning the problem
 
-*The Assumption* — the chapter that has to work hardest, because everything after it
-is a solution to a problem the viewer has not yet agreed exists.
+*Software Used To Be Predictable* — the chapter that has to work hardest, because
+everything after it is a solution to a problem the viewer has not yet agreed exists.
+
+It was called *The Assumption*, which named the fact that there is one without ever
+saying what it is. The label now states the assumption itself, in the past tense, so it
+still reads correctly across all five beats while the chapter takes it apart.
 
 The film used to begin with the solution. *What Changed* now comes between the title
 and the two layers, and it is the only chapter that argues the problem **exists**

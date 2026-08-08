@@ -174,6 +174,9 @@ struct Fixture {
     cache: Arc<Cache>,
     recorder: Recorder,
     mediated: MediatedUpstream,
+    /// The decision log and data-plane metrics (P1 #11), captured rather than written to
+    /// stderr so a test can assert on what an operator would see.
+    telemetry: Arc<wc_mediator::obs::Telemetry>,
 }
 
 /// Build a mediator over a stub server, with a contract for `tools`.
@@ -257,6 +260,14 @@ fn build(
     // keeps the zone test explicit about what it is varying.
     cfg.zones = Box::new(AnyZone);
 
+    // `All`, so the allow path is asserted too. The shipped default is `Notable` for
+    // volume reasons; a test that only ever saw denials could not tell a mediator that
+    // logs correctly from one that logs everything as a denial.
+    let telemetry = Arc::new(wc_mediator::obs::Telemetry::captured(
+        wc_core::obs::LogLevel::All,
+    ));
+    cfg.telemetry = Arc::clone(&telemetry);
+
     let mediated = MediatedUpstream::new(Box::new(upstream), Arc::clone(&cache), cfg)
         .with_ceilings(Ceilings::new());
 
@@ -264,6 +275,7 @@ fn build(
         cache,
         recorder,
         mediated,
+        telemetry,
     }
 }
 
@@ -807,12 +819,17 @@ fn uncontracted(mode: Mode) -> Fixture {
     );
     cfg.mode = mode;
     cfg.zones = Box::new(AnyZone);
+    let telemetry = Arc::new(wc_mediator::obs::Telemetry::captured(
+        wc_core::obs::LogLevel::All,
+    ));
+    cfg.telemetry = Arc::clone(&telemetry);
 
     Fixture {
         cache: Arc::clone(&cache),
         recorder,
         mediated: MediatedUpstream::new(Box::new(upstream), cache, cfg)
             .with_ceilings(Ceilings::new()),
+        telemetry,
     }
 }
 
@@ -1027,5 +1044,156 @@ fn gate_filter_tools_list_256_tools() {
         thresholds::FILTER_GATE_COMMAND.contains("gate_filter"),
         "the advertised command `{}` no longer selects this test",
         thresholds::FILTER_GATE_COMMAND
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The decision log (P1 #11)
+// ---------------------------------------------------------------------------
+//
+// P1 #11's sharpest finding was that there was **no structured decision log on the
+// mediator path at all** — "the thing an operator would actually alert on". These drive
+// the real gate rather than the telemetry type, because the gap was never in the
+// formatting: it was that four different refusal exits existed and none of them emitted.
+
+/// Every decision line the mediator wrote, parsed.
+fn decisions(f: &Fixture) -> Vec<Value> {
+    f.telemetry
+        .lines()
+        .iter()
+        .map(|l| serde_json::from_str(l).expect("every line must be valid JSON"))
+        .collect()
+}
+
+#[test]
+fn an_uncontracted_tool_call_is_logged_with_its_cid_code_and_mode() {
+    let mut f = fixture(&["get_balance"]);
+    f.mediated.request(&initialize());
+    f.mediated.request(&call("transfer_funds"));
+
+    let denials: Vec<Value> = decisions(&f)
+        .into_iter()
+        .filter(|d| d["decision"] == "deny")
+        .collect();
+    assert!(!denials.is_empty(), "a refused call must produce a line");
+    let d = &denials[0];
+    assert_eq!(d["code"], "WC-4002", "the uncontracted-tool code");
+    assert_eq!(d["mode"], "enforce");
+    assert_eq!(d["tool"], "transfer_funds");
+    assert_eq!(
+        d["cid"], "conn_7f3a91c4",
+        "the correlation root the rest of the family joins on"
+    );
+    assert_eq!(d["ev"], "connect.decision");
+}
+
+#[test]
+fn a_refused_call_is_logged_through_the_exit_it_actually_leaves_by() {
+    // The bug this would have caught. A refused `tools/call` is a JSON-RPC *result*
+    // carrying an error, not a protocol error, so it leaves through `tool_denial` and not
+    // `blocked`. Hooking only `blocked` would have logged connection-level refusals and
+    // silently dropped every expired contract, uncontracted tool and ceiling breach —
+    // which is most of what there is to see.
+    let mut f = build(
+        &["get_balance"],
+        DECLARED,
+        |mut p| {
+            p.exp = NOW - 1; // expired before the call
+            p
+        },
+        Mode::Enforce,
+        Terms::default(),
+    );
+    f.mediated.request(&initialize());
+    f.mediated.request(&call("get_balance"));
+
+    let codes: Vec<String> = decisions(&f)
+        .iter()
+        .filter(|d| d["decision"] == "deny")
+        .map(|d| d["code"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(
+        !codes.is_empty(),
+        "an expired contract must appear in the decision log"
+    );
+}
+
+#[test]
+fn observe_mode_says_observe_so_it_does_not_read_as_an_estate_under_attack() {
+    // The reason `mode` is a mandatory field. An observe deployment produces a finding on
+    // every uncontracted call by design — that is what it is for. Without the mode in the
+    // line, a dashboard counting findings shows a estate in crisis on its first day of
+    // rollout, and the rollout gets reverted.
+    let mut f = uncontracted(Mode::Observe);
+    f.mediated.request(&initialize());
+    f.mediated.request(&call("get_balance"));
+
+    let lines = decisions(&f);
+    assert!(!lines.is_empty());
+    assert!(lines.iter().all(|d| d["mode"] == "observe"), "{lines:#?}");
+    assert!(
+        lines.iter().any(|d| d["decision"] == "record"),
+        "a finding that let traffic through is `record`, not `deny`: {lines:#?}"
+    );
+}
+
+#[test]
+fn an_allowed_call_carries_the_latency_of_the_mediated_hop() {
+    let mut f = fixture(&["get_balance"]);
+    f.mediated.request(&initialize());
+    f.mediated.request(&call("get_balance"));
+
+    let allows: Vec<Value> = decisions(&f)
+        .into_iter()
+        .filter(|d| d["decision"] == "allow")
+        .collect();
+    assert_eq!(allows.len(), 1, "{allows:#?}");
+    assert_eq!(allows[0]["tool"], "get_balance");
+    assert_eq!(
+        allows[0]["code"], "WC-0000",
+        "an allow has no code; there is no Code::OK to borrow"
+    );
+    assert!(allows[0]["latency_us"].is_number());
+}
+
+#[test]
+fn the_filter_gauge_reports_what_the_agent_was_allowed_to_see() {
+    // §8.14's `wc_filter_tools{state}`. The number an operator wants on the first day of a
+    // rollout is "the catalogue went from 3 tools to 1", and nothing else reports it.
+    let mut f = fixture(&["get_balance"]);
+    f.mediated.request(&initialize());
+    f.mediated.request(&tools_list());
+
+    let r = f.telemetry.registry();
+    assert_eq!(
+        r.value(wc_mediator::obs::FILTER_TOOLS, &[("state", "exposed")]),
+        Some(1)
+    );
+    assert_eq!(
+        r.value(wc_mediator::obs::FILTER_TOOLS, &[("state", "hidden")]),
+        Some(2)
+    );
+}
+
+#[test]
+fn decisions_are_counted_by_code_so_a_spike_is_attributable() {
+    // `wc_decisions_total{decision,mode,code}`. A spike in WC-3102 is an attack; a spike
+    // in WC-4002 is a policy that got tighter than somebody expected. An unlabelled total
+    // cannot tell those apart, which is what the seven original counters could not do.
+    let mut f = fixture(&["get_balance"]);
+    f.mediated.request(&initialize());
+    for _ in 0..3 {
+        f.mediated.request(&call("transfer_funds"));
+    }
+    assert_eq!(
+        f.telemetry.registry().value(
+            wc_mediator::obs::DECISIONS,
+            &[
+                ("decision", "deny"),
+                ("mode", "enforce"),
+                ("code", "WC-4002")
+            ]
+        ),
+        Some(3)
     );
 }

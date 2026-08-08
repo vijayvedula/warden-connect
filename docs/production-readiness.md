@@ -30,7 +30,7 @@
 | | Evidence |
 |---|---|
 | Modules delivered | All of P0–P4 (§8.16). `wc-core` 7 modules, `wc-control` 23, `wc-mediator` 8, `wc-cli` |
-| Tests | **891 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
+| Tests | **940 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
 | Conformance | 19 vectors in `fixtures/contracts/`, driven off `expected.json`; `connect verify` is the ground truth (§8.15.3) |
 | Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expect_used` warned workspace-wide |
 | CI | [`ci.yml`](../.github/workflows/ci.yml) — 5 jobs: stable, MSRV 1.89, release-mode latency gates, supply chain + dependency ceilings, nightly fuzz build |
@@ -440,19 +440,61 @@ by what unblocks the others.
   does with a projection that is behind, how long election takes, what a mediator
   sees during it, or what happens to an in-flight approval.
 
-- [ ] **11. Observability is a counter set, not an operable signal.**
-  `api.rs` has six `AtomicU64` counters (`requests`, `denied`, `minted`,
-  `escalated`, `replays`, `pulls`) behind `/metrics`. §8.14 specifies roughly
-  fifteen metric families with labels — `wc_denials_total{code}` for *every* WC-\*
-  code, `wc_verify_duration_seconds_bucket{path}`,
-  `wc_filter_tools{state}`, `wc_drift_total{class}`. Almost none are emitted, and
-  there is **no structured decision log on the mediator path at all**, which is
-  the thing an operator would actually alert on.
+- [x] **11. Observability is now an operable signal.**
 
-  Needs: the §8.14 families emitted; per-decision JSON logs carrying `cid`, code
-  and mode; and a documented alert set. The four alerts this design implies and
-  nobody has written down: ACK lag, mediators reported unconfirmed, a **distrusted
-  revocation set**, and blocking-sink failures.
+  What was there: seven unlabelled `AtomicU64`s behind `/metrics`, all of them about the
+  **HTTP surface** — requests, denials, replays — and none about the estate. A control
+  plane can serve two hundred clean requests a second while every contract in the
+  register is expiring and no mediator has acknowledged anything. And there was **no
+  structured decision log on the mediator path at all**, which was the sharpest part of
+  this item: issuance stays healthy while every call in the estate is refused, and the
+  only process that knows a call was denied is the mediator.
+
+  * **`wc_core::obs`** — a labelled registry (counters, gauges, histograms), Prometheus
+    text and JSON, in `wc-core` because both planes need it and they can share nothing
+    else: `wc-control` may not depend on Warden core (§8.3), and `warden::obs` is a
+    fixed-shape counter set with no `cid`, no `WC-*` code and no mode — the three fields
+    this item asks for. No new dependency; `BTreeMap` and atomics.
+  * **Cardinality is capped at 256 per family, and overflow folds rather than drops.** The
+    fold is the decision worth defending: a silently missing series reads as *zero* on a
+    dashboard, so an alert stops firing and nothing says why. `wc_obs_series_dropped_total`
+    counts what folded, and `wc_obs_unknown_family_total` catches a misspelled metric name
+    — which would otherwise be a flat line everyone reads as a quiet estate.
+  * **Counters are incremented; gauges are derived at scrape time.** An
+    incrementally-maintained gauge is a second copy of an answer the projection already
+    holds, and it diverges the first time a code path forgets — producing a number that is
+    believed and wrong. So `/metrics` and `connect posture` cannot disagree.
+  * **The mediator's decision log** — one JSON object per line on stderr, carrying `cid`,
+    the `WC-*` code and the mode. Hooked at **all four** refusal exits, which is where the
+    real work was: a refused `tools/call` leaves through `tool_denial` as a JSON-RPC result
+    rather than through `blocked`, so hooking the obvious one would have logged
+    connection-level refusals and silently dropped every expired contract, uncontracted
+    tool and ceiling breach — most of what there is to see.
+  * **An allow carries `WC-0000`, not a synthesised success code.** There is no `Code::OK`
+    and inventing one would put success and failure in one namespace, making the estate's
+    most common "error" everything working.
+  * **`--decision-log off|notable|all`, default `notable`.** Allows are counted at every
+    level including `off`, so turning logging down costs detail rather than visibility —
+    otherwise the cheapest way to reduce log spend is to go blind, which is what happens.
+  * **`--metrics-file` for the mediator**, written atomically via rename. It has no
+    listener by design, so there is no `/metrics` to scrape; this is the node-exporter
+    textfile-collector convention.
+  * **[observability.md](observability.md)** — every family, and the four alerts as PromQL
+    with severities and runbooks: mediators reported unconfirmed, ACK lag breaching
+    §7.10's own 60-second claim, a distrusted revocation set, and blocking-sink failure.
+    Plus what this telemetry **cannot** answer, named so a permanently-zero panel does not
+    teach an operator to ignore the panel.
+
+  Two things the design forced that are worth recording. `wc_revocation_trusted` lives on
+  the **mediator** and not the control plane: distrust is local, and a mediator refusing
+  everything is indistinguishable from the control plane's side from a healthy estate with
+  no traffic. And `wc_anchor_age_seconds` is read **without verifying the signature** —
+  it is a liveness signal, and it is exactly the number an attacker who could rewrite the
+  chain would want to look healthy, so it says so in its own documentation and points at
+  `connect audit verify` as the integrity path.
+
+  The seven original unlabelled series are still served under `_total` names. A renamed
+  metric does not make a dashboard panel error; it makes it go blank.
 
 - [x] **12. Config resolves flag over file over env, as §8.13 says it does.**
 

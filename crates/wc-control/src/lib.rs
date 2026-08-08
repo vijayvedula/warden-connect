@@ -32,6 +32,7 @@ pub mod http;
 pub mod issuance;
 pub mod keys;
 pub mod lock;
+pub mod obs;
 pub mod registry;
 pub mod screen;
 pub mod signer;
