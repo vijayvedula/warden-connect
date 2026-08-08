@@ -572,10 +572,56 @@ by what unblocks the others.
   precedence holds through `tenant_id` rather than only inside the parser — the rule was
   never in doubt, the wiring was.
 
-- [ ] **13. Packaging.** No Dockerfile, no published image, no release process, no
-  SBOM. Worth naming plainly: `export::cyclonedx_bom` produces a CycloneDX BOM of
-  a *tool surface*, and the product that generates BOMs ships without one of
-  itself.
+- [~] **13. Packaging: a Dockerfile, an SBOM of ourselves, and a written release process.**
+
+  * **[`Dockerfile`](../Dockerfile)** — multi-stage, pinned to the **MSRV** rather than
+    `rust:1`, because an image built on a newer toolchain than the one gating the tests is
+    an image nobody verified. Both binaries in one image on purpose: a mediator's version
+    has to be answerable during an incident, and two images means two answers. Non-root,
+    one volume, `ca-certificates` (without it every `--jwks-url` fetch fails with a
+    certificate error that reads as a server problem).
+
+    The build context is the **parent** of both repositories, because Warden core is a path
+    dependency (§8.3). Building from inside this repo fails at `cargo build`, which is the
+    correct failure — an image without core is an image whose mediator cannot exist.
+
+    `debian:bookworm-slim` and not `scratch`, stated as a trade rather than a default:
+    §8.3's crypto choice would allow a static image, but `connect audit verify`,
+    `connect backup` and the restore drill are run by a human in or beside this container,
+    and `scratch` makes each of them need a second image holding the same binary.
+
+  * **[`scripts/sbom.py`](../scripts/sbom.py)** — a CycloneDX 1.5 BOM of the two shipped
+    binaries: 145 components, every one with a licence. Built from `cargo metadata` rather
+    than `cargo-cyclonedx`, so it needs no tool nobody has. **Reproducible by
+    construction** — no timestamp, and `bom-ref` is `name@version` rather than cargo's
+    package id, which for a path dependency is `path+file:///Users/…` and would put the
+    build machine's filesystem into a published artifact. A BOM that differs between two
+    checkouts of one commit cannot be diffed, and a diff is how anyone notices a dependency
+    appeared. Dev-dependencies are excluded: they are not in the artifact, and inflating
+    the surface a consumer believes they run is the direction of error that gets BOMs
+    filtered.
+
+  * **[releasing.md](releasing.md)** — the preconditions (all already in CI, listed because
+    a release is when somebody is tempted to skip one), the fact that a release is pinned
+    by **two revisions** rather than one, and why removing a metric family is breaking even
+    though no Rust signature moves.
+
+  * **CI gained two jobs:** `image` builds the Dockerfile and runs both binaries including
+    a write to the state root as the unprivileged user; `supply-chain` generates the SBOM,
+    asserts it is byte-identical on a second run, and uploads it.
+
+  **Honest limits.** The image **has not been built locally** — there is no container
+  runtime on this machine, so CI is the only place it is verified, and `releasing.md` says
+  so in a table rather than implying otherwise.
+
+  **Still outstanding, and structural:** publishing to crates.io is impossible while
+  `warden` is a path dependency. `cargo publish` of `wc-mediator` would fail and one of
+  `wc-core` would succeed, publishing half a product. Making this publishable means giving
+  core a registry version and depending on it by version — a change to the family's
+  coupling model, not a packaging chore. Also missing: release provenance. This repository
+  **verifies** DSSE/in-toto SLSA envelopes and produces none of its own, so the shortest
+  path is to attest releases in the format it already accepts and then verify our own
+  artifacts with our own code.
 
 - [~] **14. Backup and restore are code, tested, and documented.**
 

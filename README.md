@@ -163,6 +163,7 @@ can live in an HSM, a smartcard or a KMS and never reach this process.
 | [docs/twelve-factor.md](docs/twelve-factor.md) | Config, state, logs, disposability — and where this deviates |
 | [docs/observability.md](docs/observability.md) | Every metric family, the four alerts as PromQL, and what the telemetry cannot answer |
 | [docs/operations.md](docs/operations.md) | Backup, restore, the quarterly drill, and why retention deletes nothing |
+| [docs/releasing.md](docs/releasing.md) | What ships, the two revisions a release is pinned by, and what is verified where |
 | [docs/production-readiness.md](docs/production-readiness.md) | What is not ready, in priority order |
 | [DRILL.md](DRILL.md) | How this was built, module by module |
 | [SECURITY.md](SECURITY.md) | Reporting a vulnerability; what is in and out of scope |
