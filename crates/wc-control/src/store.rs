@@ -97,17 +97,29 @@ where
     ///
     /// Fails with [`Code::STORE_LOCKED`] if another process already holds it.
     pub fn open(dir: impl AsRef<Path>, name: &str) -> Result<Self> {
-        let dir = dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(&dir).map_err(|e| {
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir).map_err(|e| {
             WcError::with_detail(
                 Code::STORE_LOCKED,
                 format!("cannot create {}", dir.display()),
             )
             .with_source(e)
         })?;
+        let lock = crate::lock::acquire(dir, name)?;
+        Log::with_lock(dir, name, lock)
+    }
 
-        let lock = crate::lock::acquire(&dir, name)?;
-
+    /// Open a log whose writer lock is already held.
+    ///
+    /// The standby path needs this (P1 #10): election has to happen **before** the
+    /// projection is rebuilt, or the successor rebuilds from a log the outgoing active
+    /// writer is still appending to and starts serving a view that is already behind.
+    pub fn with_lock(
+        dir: impl AsRef<Path>,
+        name: &str,
+        lock: crate::lock::LockGuard,
+    ) -> Result<Self> {
+        let dir = dir.as_ref().to_path_buf();
         let segments = segments(&dir, name)?;
         let segment = segments.last().map_or(1, |(n, _)| *n);
         let path = segment_path(&dir, name, segment);
@@ -1037,12 +1049,63 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open the state directory: rebuild the projection, then take the writer
-    /// lock. The report says whether the rebuild was clean.
+    /// Open the state directory: take the writer lock, **then** rebuild the projection.
+    ///
+    /// The order is the correctness argument, and it used to be the other way round. A
+    /// rebuild performed before election reads a log another process may still be
+    /// appending to, so the resulting projection can be behind the log by however many
+    /// records landed in between. On the old path that was only wasted work — the
+    /// subsequent lock attempt failed and the whole open failed with it — but it is
+    /// exactly wrong for a standby, which is *expecting* the log to have grown while it
+    /// waited. Lock first and the log is frozen for the duration of the rebuild.
     pub fn open(dir: impl AsRef<Path>) -> Result<(Store, RebuildReport)> {
         let dir = dir.as_ref().to_path_buf();
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            WcError::with_detail(
+                Code::STORE_LOCKED,
+                format!("cannot create {}", dir.display()),
+            )
+            .with_source(e)
+        })?;
+        let lock = crate::lock::acquire(&dir, STATE_LOG_NAME)?;
+        Store::assemble(dir, lock)
+    }
+
+    /// Stand by until the active writer releases, then take over (P1 #10).
+    ///
+    /// §8.5.2 says high availability is "active/standby with that lock as the election
+    /// primitive". This is the standby. It returns once the lock is held and the
+    /// projection has been rebuilt from everything the outgoing writer committed —
+    /// including whatever it wrote while this process was waiting, which is the question
+    /// P1 #10 asked and nothing answered.
+    ///
+    /// The `Election` says whether this process was a successor or the first writer, and
+    /// how long the takeover took. Both belong in a startup line: after a failover the
+    /// first thing anyone wants to know is whether the new process actually took over or
+    /// simply started.
+    pub fn open_waiting(
+        dir: impl AsRef<Path>,
+        timeout: std::time::Duration,
+        poll: std::time::Duration,
+        on_wait: impl FnMut(u64),
+    ) -> Result<(Store, RebuildReport, crate::lock::Election)> {
+        let dir = dir.as_ref().to_path_buf();
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            WcError::with_detail(
+                Code::STORE_LOCKED,
+                format!("cannot create {}", dir.display()),
+            )
+            .with_source(e)
+        })?;
+        let (lock, election) =
+            crate::lock::acquire_waiting(&dir, STATE_LOG_NAME, timeout, poll, on_wait)?;
+        let (store, report) = Store::assemble(dir, lock)?;
+        Ok((store, report, election))
+    }
+
+    fn assemble(dir: PathBuf, lock: crate::lock::LockGuard) -> Result<(Store, RebuildReport)> {
         let (projection, report) = Projection::rebuild(&dir, STATE_LOG_NAME)?;
-        let log = StateLog::open(&dir, STATE_LOG_NAME)?;
+        let log = StateLog::with_lock(&dir, STATE_LOG_NAME, lock)?;
         let artifacts = dir.join("contracts");
         Ok((
             Store {

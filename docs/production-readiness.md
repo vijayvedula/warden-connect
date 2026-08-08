@@ -30,7 +30,7 @@
 | | Evidence |
 |---|---|
 | Modules delivered | All of P0–P4 (§8.16). `wc-core` 7 modules, `wc-control` 23, `wc-mediator` 8, `wc-cli` |
-| Tests | **940 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
+| Tests | **948 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
 | Conformance | 19 vectors in `fixtures/contracts/`, driven off `expected.json`; `connect verify` is the ground truth (§8.15.3) |
 | Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expect_used` warned workspace-wide |
 | CI | [`ci.yml`](../.github/workflows/ci.yml) — 5 jobs: stable, MSRV 1.89, release-mode latency gates, supply chain + dependency ceilings, nightly fuzz build |
@@ -432,13 +432,56 @@ by what unblocks the others.
   interoperate on two signed artifacts, and it has only ever been tested against
   itself.
 
-- [ ] **10. HA is one sentence, not a tested mode.**
-  [`store.rs`](../crates/wc-control/src/store.rs) says *"High availability is
-  active/standby with that lock as the election primitive."* The failure-injection
-  tier proves a second writer is refused (`WC-8003`) and that the lock is released
-  when the holder goes away. It does not exercise a **handover**: what a standby
-  does with a projection that is behind, how long election takes, what a mediator
-  sees during it, or what happens to an in-flight approval.
+- [x] **10. HA is a tested mode, and the standby it needed did not exist.**
+
+  The sentence was *"high availability is active/standby with that lock as the election
+  primitive"* (§8.5.2) — and there was **no standby**. `lock::acquire` uses
+  `LOCK_EX | LOCK_NB`, so a second process failed at startup and exited. Failover meant
+  an external supervisor restarting a process that would then race the dying one. The
+  primitive existed; nothing stood by on it.
+
+  * **`lock::acquire_waiting`** is the election: poll until the lock is free, announce the
+    wait once per elapsed second, and return an `Election` saying whether this process
+    succeeded somebody. A crash releases the lock as surely as a clean exit, because it
+    belongs to the file descriptor — no lease to expire, no heartbeat to tune, which is
+    the main reason this stayed `flock`.
+  * **`Store::open_waiting`** elects **then** rebuilds. The old `Store::open` rebuilt the
+    projection *before* taking the lock; on that path it was only wasted work, because the
+    subsequent lock attempt failed and took the whole open with it. For a standby it is
+    exactly wrong — the log has been growing the entire time it waited — so the order is
+    now lock-first for both, and `Store::open`'s doc says why.
+  * **`connect serve --standby [--standby-timeout N]`**. No listener is bound while
+    waiting: a load balancer sees nothing rather than something answering "not ready",
+    which is the same signal with no room for a health check to be misconfigured. A
+    timeout exits non-zero, because a standby that started anyway would be a second
+    writer *and would present as a successful failover*.
+  * **Four handover tests** (`failure.rs` §13): a successor sees writes the active writer
+    made while the standby was waiting; a standby waits through a real handover rather
+    than exiting; a standby that cannot elect refuses to serve; and a torn final record —
+    the in-flight-approval question — is rejected and **reported** rather than
+    half-applied, because a successor that started clean on a damaged log would be
+    asserting the estate is intact when it is not.
+  * Verified between two real processes with `kill -9`: the successor logged *"took over
+    the writer lock after 1271 ms; the previous active writer is gone"* and served.
+
+  **A defect found while building it.** `Election::uncontended` was first inferred from
+  `waited == 0` in whole seconds — so any handover completing inside a second reported as
+  uncontended, and the successor's own startup line would have claimed it was the first
+  writer. That is the single line an operator reads after a failover. Now tracked
+  explicitly, and `waited_ms` is milliseconds because a healthy handover is fast and a
+  whole-second figure can only measure the bad ones.
+
+  **What `flock` does not do: fence a partitioned active.** It is advisory and
+  node-local, so the storage layer has to guarantee single attachment — RWO, one EBS
+  volume, one Managed Disk, one LUN. The lock is the *election*; the volume is the
+  *fence*. [physical-architecture.md](physical-architecture.md) now carries that per
+  variant, because a deployment that moves the state root to a shared filesystem to make
+  failover easier has removed the thing that made failover safe.
+
+  **Still not covered:** failover *under load*, with a mediator mid-pull. The design's
+  answer is that an agent should see nothing — a mediator serves from cache to `exp` and
+  only new issuance stops (§7.8 A9) — and that is asserted elsewhere, but not across a
+  handover.
 
 - [x] **11. Observability is now an operable signal.**
 

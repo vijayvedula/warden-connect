@@ -335,6 +335,49 @@ substitute for separation *across* them.
 
 ---
 
+## High availability, and what actually fences
+
+Every variant above runs `connect serve` **active/standby**, never two active replicas.
+Not a scaling choice: the state log and the evidence chain are append-only with one
+writer, and two writers would fork a hash chain. §8.5.2 makes the writer lock the
+election primitive, and `connect serve --standby` is the standby — it waits for the
+lock, then rebuilds the projection from everything the outgoing writer committed,
+including whatever landed while it was waiting.
+
+Three properties worth knowing before relying on it:
+
+* **A crash releases the lock.** It belongs to the file descriptor, so the kernel
+  releases it when the process dies. There is no lease to expire and no heartbeat to
+  tune — which is the main reason this is `flock` rather than something cleverer.
+* **A standby binds no port while waiting.** A load balancer sees nothing, rather than
+  something answering "not ready". Same signal, no room for a health check to be
+  configured wrongly.
+* **A standby that times out exits non-zero.** Starting anyway would make it a second
+  writer, and it would present as a successful failover.
+
+**`flock` does not fence a partitioned active.** It is advisory and node-local: two
+hosts mounting the same export can both believe they hold it. Nothing in this codebase
+can fix that, so the storage layer has to:
+
+| Variant | What provides single-attachment |
+|---|---|
+| On-prem VMs | a SAN LUN attached to one host, or shared-nothing with the standby on its own disk and asynchronous replication |
+| On-prem Kubernetes | a `ReadWriteOnce` PVC — the scheduler will not attach it to two pods |
+| AWS | one EBS volume. **Not EFS**: `flock` over NFS is not a foundation for a single-writer invariant |
+| Azure | one Managed Disk. **Not Azure Files**, for the same reason |
+
+So the honest statement is that the lock is the *election* and the volume is the
+*fence*. A deployment that puts the state root on a shared filesystem to make failover
+easier has removed the thing that made failover safe.
+
+**What is still not tested:** a failover under load, with a mediator mid-pull. The
+handover itself is exercised (`crates/wc-e2e/tests/failure.rs`, §13) — including a
+successor picking up writes made while it waited, a torn final record, and a standby
+refusing to start when it cannot elect. What no test covers is the *latency* an agent
+sees across the gap, and the answer from the design is that it should see none: a
+mediator serves from cache to `exp` and only new issuance stops, which is §7.8's A9
+residual.
+
 ## Gaps that shape the design
 
 These are code facts, not platform choices, and they constrain every variant.

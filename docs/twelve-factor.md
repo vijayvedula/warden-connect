@@ -127,8 +127,11 @@ per gateway.
 Registration, approval and evidence-append are writes to a hash-chained log, and two
 writers would fork the chain. `store.rs` takes an exclusive lock and a second writer is
 refused with `WC-8003`; HA is **active/standby with that lock as the election
-primitive**. See P1 #10 in [production-readiness.md](production-readiness.md) — the
-refusal is tested, the failover is not.
+primitive**, and `connect serve --standby` is the standby — it waits for the lock, then
+rebuilds from everything the outgoing writer committed. The handover is tested, including
+a crash and a torn final record. What `flock` does not do is fence a partitioned active,
+so the volume must guarantee single attachment — see
+[physical-architecture.md](physical-architecture.md).
 
 No async runtime. Concurrency is OS threads: an accept loop, a refresh loop. The reason
 is §8.3 — `wc-core` has to stay embeddable in a caller's own event loop, and an async
