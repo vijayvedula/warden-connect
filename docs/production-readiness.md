@@ -91,11 +91,41 @@ by what unblocks the others.
     warning from a new compiler version in somebody else's crate would fail the build
     for a reason nobody here can fix. `-D warnings` goes on the clippy invocation.
 
-- [x] **2. Every §8.10.3 gate now runs.** Both missing gates are implemented, and
+- [x] **2. Every §8.10.3 gate now runs, and its budget now says on what hardware.**
+
+  **The first CI run failed two gates**, and the reason was a defect in the specification
+  rather than in the code: §8.10.3 published `blast_radius p99 ≤ 40 ms` and
+  `rebuild ≤ 600 ms` **with no hardware qualification**, so both read as machine-independent
+  commitments. A latency budget that does not say what it was measured on is not a
+  specification, it is a number — the same defect class as everything else in this build.
+
+  On a shared 2-vCPU runner the same code measures 80.6 ms and 1.03 s against 34 ms and
+  314 ms on the reference laptop: 2.7× and 3.5× slower, in line with every other gate on
+  that machine.
+
+  **The split that decided what to change:** §7.10's product claims are about *added latency
+  on the request path* — establishment p99 < 5 ms, each later call < 1 ms — served by
+  `gate::verify` and `contract::mint`, which pass on the runner with **4× and 36× headroom**.
+  So **not one request-path threshold was widened**; the claims an agent experiences hold on
+  slow hardware too. `blast_radius` is an operator query and `rebuild` is a cold start;
+  neither is in §7.10's budget and both scale with estate size rather than with a request.
+  Their enforced ceilings are now ~2× the slow-hardware measurement, and §8.10.3's table
+  carries reference p99, published target and enforced ceiling as three separate columns.
+
+  The ~2× is looser than ideal and says so on the constant: a 2× regression would slip, and
+  the reason it is not tighter is that a shared runner swings more than 50% between runs. A
+  flaky gate gets disabled, and a disabled gate catches nothing at all. What it still catches
+  is the thing that matters — a rebuild that becomes quadratic.
+
+  One gate the runner is **faster** at, by 10×: `registry::register`, because macOS
+  `F_FULLFSYNC` is genuinely slow and that number measures the disk rather than this code.
+
+  **Earlier, from the original item:** both originally-missing gates are implemented, and
   running them for the first time found a defect and moved a threshold.
 
   * **`store::rebuild` at 10⁵ contracts** — implemented in `connect bench`, which
-    writes the fixture once and replays it. Passes at **p99 293 ms against 600 ms**.
+    writes the fixture once and replays it. Measured **p99 293 ms** on the reference
+    machine, which is where §8.10.3's 600 ms figure comes from.
     The fixture is asserted to have replayed what was written, because a gate timing
     a rebuild that produced an empty projection would report an excellent number for
     doing nothing.

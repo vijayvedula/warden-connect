@@ -1891,18 +1891,46 @@ two orders of magnitude inside the < 1 ms NFR.
 
 ### 8.10.3 Performance gates in CI
 
-`connect bench` asserts, on the CI reference machine, and fails the build on
-regression:
+`connect bench` asserts these and fails the build on regression.
 
-| Gate | Threshold |
-|---|---|
-| `gate::verify` steady state | p99 ≤ 1.5 ms |
-| `gate::verify` cold | p99 ≤ 3.0 ms |
-| `filter_tools_list`, 256 tools | p99 ≤ 100 µs (revised from 50 µs by measurement — see `wc_core::thresholds`) |
-| `contract::mint` | p99 ≤ 20 ms |
-| `contract::mint` overhead, excluding the signature | p99 ≤ 50 µs |
-| `blast_radius`, 10⁵ edges | p99 ≤ 40 ms |
-| `Projection::rebuild`, 10⁵ contracts | ≤ 600 ms |
+**Every figure below is qualified by hardware, and it did not used to be.** A latency budget
+that does not say what it was measured on is not a specification, it is a number — and this
+table published `blast_radius p99 ≤ 40 ms` and `rebuild ≤ 600 ms` with no qualification, so
+both read as machine-independent commitments. The first CI run on a shared 2-vCPU runner
+failed on exactly those two while every other gate passed. See `wc_core::thresholds::
+REFERENCE_HARDWARE`.
+
+*Reference* is an Apple M-series laptop. *Enforced* is what `connect bench` fails on, set
+against the slowest hardware the project actually runs on — the CI runner measures 1.7–3.5×
+slower across every gate.
+
+| Gate | Reference p99 | Published target | Enforced ceiling |
+|---|---|---|---|
+| `gate::verify` steady state | 178 µs | p99 ≤ 1.5 ms | 1.5 ms |
+| `gate::verify` cold | 178 µs | p99 ≤ 3.0 ms | 3.0 ms |
+| `filter_tools_list`, 256 tools | 35–45 µs | p99 ≤ 100 µs | 100 µs |
+| `contract::mint` | 332 µs | p99 ≤ 20 ms | 20 ms |
+| `contract::mint` overhead, excluding the signature | 1.8 µs | p99 ≤ 50 µs | 50 µs |
+| `blast_radius`, 10⁵ edges | 34 ms | p99 ≤ 40 ms *(reference only)* | **160 ms** |
+| `Projection::rebuild`, 10⁵ contracts | 314 ms | ≤ 600 ms *(reference only)* | **2 s** |
+| `export::dora`, 10⁵ contracts | 93 ms | §8.16: under 1 h | 500 ms |
+| `registry::register`, 10⁴ entities | 37 s *(macOS fsync)* | §8.16: runs in CI | 120 s |
+
+**Only the last four differ between target and enforced, and the reason is the split that
+decides everything here.** §7.10's product claims are about *added latency on the request
+path*: connection establishment p99 < 5 ms, each later call < 1 ms. Those are served by
+`gate::verify` and `contract::mint`, and on the CI runner they pass with 4× and 36× headroom —
+**so not one request-path threshold was widened**, because none needed to be. The claims an
+agent experiences hold on slow hardware too.
+
+`blast_radius` is an operator running a query; `rebuild` is a process starting. Neither is in
+§7.10's budget, and both scale with estate size rather than with a request. Their enforced
+ceilings are ~2× the slow-hardware measurement, which is looser than ideal — a 2× regression
+would slip — and the reason it is not tighter is that a shared runner swings more than 50%
+between runs. A flaky gate gets disabled, and a disabled gate catches nothing.
+
+`registry::register` is the one gate the runner is *faster* at, by 10×: macOS `F_FULLFSYNC` is
+genuinely slow, and the number measures the disk rather than this code.
 
 A latency claim in a design document that is not asserted by a test is a
 marketing claim. Two of these were marketing claims until 2026-08-07:
