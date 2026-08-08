@@ -54,6 +54,7 @@ Written after the build, and downstream of what the code turned out to need:
 | [key-custody.md](key-custody.md) | The six signing operations, which key loss is unrecoverable and which is merely an outage, and why the revocation key is the odd one out |
 | [twelve-factor.md](twelve-factor.md) | Config, state, logs, disposability — and the two places this deliberately deviates, including the one where §1 of the LLD overstates what exists |
 | [observability.md](observability.md) | The §8.14 families as emitted, the four alerts this design implies written as PromQL with runbooks, and the questions the telemetry deliberately cannot answer |
+| [operations.md](operations.md) | Backup, restore and the quarterly drill; what losing each file costs, and why retention on a hash-linked chain is segment retirement rather than deletion |
 | [production-readiness.md](production-readiness.md) | Nineteen items in P0/P1/P2 plus a hardening pass, in working order. Written before anyone asked |
 
 Read them in order; 01 and 02 are the positioning, 03–06 are the product

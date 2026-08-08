@@ -191,6 +191,9 @@ const COMMANDS: &[&str] = &[
     "caep ingest",
     "tenants",
     "audit verify",
+    "backup",
+    "restore",
+    "retention",
     "canon",
     "screen",
     "export",
@@ -347,6 +350,9 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         ],
         "blast-radius" => &["id", "depth", "services"],
         "audit verify" => &["anchor-pub"],
+        "backup" => &["out", "anchor-pub", "now"],
+        "restore" => &["from", "into"],
+        "retention" => &["contracts", "discovery", "now"],
         "export" => &["format", "as-of", "id", "anchor-pub", "out"],
         "canon" => &["file", "kind", "entity", "document"],
         "screen" => &[
@@ -559,6 +565,9 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "bench" => bench_cmd(args)?,
         "caep ingest" => caep_ingest(args)?,
         "audit verify" => audit_verify(args)?,
+        "backup" => backup_cmd(args)?,
+        "restore" => restore_cmd(args)?,
+        "retention" => retention_cmd(args)?,
         "canon" => canon_cmd(args)?,
         "screen" => screen_cmd(args)?,
         "verify" => verify_cmd(args)?,
@@ -3222,6 +3231,178 @@ fn federate_cmd(args: &Args) -> Result<()> {
 // evidence
 // ---------------------------------------------------------------------------
 
+/// `connect backup --out DIR` — a verified snapshot of this tenant's system of record.
+///
+/// Verifies the chain before writing a manifest, so a snapshot of an already-corrupt root
+/// is refused rather than labelled a backup. See [`wc_control::backup`] for why that
+/// refusal is the whole point.
+fn backup_cmd(args: &Args) -> Result<()> {
+    let p = paths(args);
+    let out = require(args, "out")?;
+    let anchor_pub = read_optional(args, "anchor-pub")?;
+    let ts = args.number("now").unwrap_or_else(now);
+    let tenant = tenant_id(args)?;
+
+    let report = wc_control::backup::snapshot(
+        &p.state,
+        &p.evidence,
+        std::path::Path::new(out),
+        tenant.as_str(),
+        anchor_pub.as_deref(),
+        ts,
+    )?;
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "out": out,
+                "tenant": report.manifest.tenant,
+                "state_seq": report.manifest.state_seq,
+                "chain_seq": report.manifest.chain_seq,
+                "chain_head": report.manifest.chain_head,
+                "files": report.manifest.files.len(),
+                "bytes": report.bytes,
+                "torn_tail": report.torn_tail,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("backed up {} to {out}", report.manifest.tenant);
+    println!("  state seq   {}", report.manifest.state_seq);
+    println!("  chain seq   {}", report.manifest.chain_seq);
+    println!(
+        "  chain head  {}",
+        report
+            .manifest
+            .chain_head
+            .chars()
+            .take(20)
+            .collect::<String>()
+    );
+    println!(
+        "  files       {} ({} bytes)",
+        report.manifest.files.len(),
+        report.bytes
+    );
+    println!("  verified    the chain was intact before this manifest was written");
+    if report.torn_tail {
+        // Said loudly because it is the difference between a cold and a hot copy, and an
+        // operator restoring this later needs to know one record may be missing.
+        println!(
+            "  NOTE        a log ended mid-record: this was a hot copy, so the last \
+             append may be absent from the restore"
+        );
+    }
+    println!();
+    println!("Ship this offsite, to WORM storage if the retention clock matters.");
+    println!("Restore it into an empty root with `connect restore --from {out} --into ROOT`.");
+    Ok(())
+}
+
+/// `connect restore --from DIR --into ROOT` — place a verified snapshot into an empty root.
+fn restore_cmd(args: &Args) -> Result<()> {
+    let from = require(args, "from")?;
+    let into = require(args, "into")?;
+    let tenant = tenant_id(args)?;
+    let base = std::path::Path::new(into)
+        .join("tenants")
+        .join(tenant.as_str());
+
+    let report = wc_control::backup::restore(
+        std::path::Path::new(from),
+        &base.join("state"),
+        &base.join("evidence"),
+    )?;
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "into": base.display().to_string(),
+                "placed": report.placed,
+                "state_seq": report.manifest.state_seq,
+                "chain_seq": report.manifest.chain_seq,
+                "chain_head": report.chain_head,
+                "taken_at": report.manifest.at,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("restored {} file(s) into {}", report.placed, base.display());
+    println!("  taken at    {}", report.manifest.at);
+    println!("  state seq   {}", report.manifest.state_seq);
+    println!("  chain seq   {}", report.manifest.chain_seq);
+    println!("  chain head  matches the manifest");
+    println!();
+    // The number an incident actually turns on.
+    println!(
+        "Anything committed after state seq {} is not in this restore. Run \
+         `connect audit verify` against the new root before serving from it.",
+        report.manifest.state_seq
+    );
+    Ok(())
+}
+
+/// `connect retention` — the window of evidence this root actually holds.
+fn retention_cmd(args: &Args) -> Result<()> {
+    let p = paths(args);
+    let ts = args.number("now").unwrap_or_else(now);
+    let mut policy = wc_control::backup::Retention::default();
+    if let Some(v) = args.get("contracts").and_then(cpolicy::parse_duration) {
+        policy.contracts = v;
+    }
+    if let Some(v) = args.get("discovery").and_then(cpolicy::parse_duration) {
+        policy.discovery = v;
+    }
+    let report = wc_control::backup::retention_report(&p.evidence, &policy, ts)?;
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "contracts_secs": policy.contracts,
+                "discovery_secs": policy.discovery,
+                "retained": report.retained,
+                "expired": report.expired,
+                "oldest": report.oldest,
+                "deletes": false,
+                "note": report.note,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "retention  contracts {}s · discovery {}s",
+        policy.contracts, policy.discovery
+    );
+    println!("  rows retained  {}", report.retained);
+    println!("  rows expired   {}", report.expired);
+    match report.oldest {
+        Some(at) => println!(
+            "  oldest row     {at} ({}s of history)",
+            ts.saturating_sub(at)
+        ),
+        None => println!("  oldest row     none — this chain is empty"),
+    }
+    println!();
+    println!("Nothing was deleted — {}.", report.note);
+    Ok(())
+}
+
+/// A PEM named by an optional flag.
+fn read_optional(args: &Args, flag: &str) -> Result<Option<Vec<u8>>> {
+    match args.get(flag) {
+        None => Ok(None),
+        Some(path) => Ok(Some(std::fs::read(path).map_err(|e| {
+            WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+        })?)),
+    }
+}
+
 fn audit_verify(args: &Args) -> Result<()> {
     let p = paths(args);
     let anchor_pub = match args.get("anchor-pub") {
@@ -5038,6 +5219,18 @@ CI
 
 EVIDENCE
   audit verify [--anchor-pub PEM] [--json]
+  backup    --out DIR [--anchor-pub PEM] [--json]
+            a verified snapshot of this tenant's state and evidence. Refuses if
+            the chain does not verify: a snapshot of a corrupt root looks like
+            insurance and launders the corruption into every copy
+  restore   --from DIR --into ROOT [--json]
+            place a snapshot into an empty root. Verifies every digest before
+            writing anything, refuses to merge into an occupied root, and holds
+            the writer lock while it places
+  retention [--contracts 7y] [--discovery 90d] [--json]
+            the window of evidence this root holds. Deletes nothing: the chain is
+            hash-linked, so retention is segment retirement rather than row
+            deletion, and a row-level delete would break every row after it
   export --format csv|json|dora|cps230|oscal|bom [--as-of TS]
          [--anchor-pub PEM] [--id ID for bom] [--out FILE]
 
