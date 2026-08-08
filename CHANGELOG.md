@@ -96,7 +96,7 @@ between here and a release.
 
 ### Tests and CI
 
-- **958 tests** across unit, e2e, failure-injection, property, fuzz and attestation-interop
+- **967 tests** across unit, e2e, failure-injection, property, fuzz and attestation-interop
   tiers, plus the conformance vectors.
 - CI: fmt, clippy with `-D warnings`, the full suite, MSRV 1.89, the §8.10.3 latency gates
   via `connect bench`, screening calibration, `cargo deny`, and per-crate dependency
@@ -147,10 +147,21 @@ mode this component exists to prevent, occurring inside it:
 
 ### Known gaps
 
-See [docs/production-readiness.md](docs/production-readiness.md). The headline items:
-custody 5c–5e (two revocation `kid`s, structural approver separation), the rotation drill,
-HA failover as a tested mode rather than a sentence, and four §8.16 acceptance criteria
-that are stated as exit gates and have never been measured.
+See [docs/production-readiness.md](docs/production-readiness.md). P0 and P1 are done or
+code-complete; what remains needs something a commit cannot supply:
+
+* **A hardware token and a KMS key** (P0 #5) — the custody seams and their enforcement are
+  built; the procurement and the runbook are not.
+* **A SPIRE server and a signing builder** (P0 #3) — the verifiers run against material
+  minted by an independent implementation, not against real output.
+* **crates.io publishing** (P1 #13) — structurally blocked while Warden core is a path
+  dependency. Changing that changes the family's coupling model.
+* **Evidence segment retirement** (P1 #14) — retention reports the window and deletes
+  nothing, because deleting a row from a hash-linked chain breaks every row after it.
+* **The rotation and restore drills** — the mechanisms are tested; the procedures have not
+  been rehearsed, and an unrehearsed procedure is an assumption.
+* **P2 #15–#19** — a coverage-guided fuzz campaign, the conformance kit as a kit, an SDK
+  and examples, operator documentation, and multi-tenancy at scale.
 
 `RUSTSEC-2023-0071` (Marvin, in `rsa`) is ignored with an argued reason and a review date
 in [`deny.toml`](deny.toml): `jsonwebtoken`'s `rust_crypto` feature is a bundle that pulls

@@ -89,7 +89,7 @@ injected everywhere, so nothing in the test suite depends on the wall clock.
 
 ```sh
 cargo build --workspace          # needs ../warden checked out beside this repo
-cargo test --workspace           # 958 tests
+cargo test --workspace           # 967 tests
 cargo clippy --workspace --all-targets
 cargo deny check
 ./scripts/dep-count.sh           # dependency ceilings, asserted

@@ -39,7 +39,7 @@ skip one.
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                       # 958 tests
+cargo test --workspace                       # 967 tests
 cargo +1.89 test --workspace                 # the MSRV, which CI pins
 cargo test -p wc-mediator --release gate_filter
 connect bench --iterations 400 \
@@ -50,14 +50,21 @@ cargo deny check
 python3 scripts/sbom.py --check
 ```
 
-Two are release-specific and are **not** yet automated:
+CI also runs `./scripts/containment-drill.sh` and the cross-organisation federation tests,
+which are the §8.16 P3 and P4 acceptance criteria.
 
-* **The restore drill.** [operations.md](operations.md) — back up a production-sized root,
-  restore it into a fresh one, `audit verify`, and produce a DORA export from the restored
-  copy. An untested restore is a directory.
+Two things remain release-specific and are **not** automated, both because they need
+something a runner does not have:
+
+* **The restore drill at production size.** [operations.md](operations.md) — back up a real
+  root, restore it into a fresh one, `audit verify`, and produce a DORA export from the
+  restored copy. The mechanism is tested and the drill script exercises it on a scratch
+  estate; what nobody has done is run it against a root with 10⁵ contracts in it and record
+  the elapsed time. "We can restore" and "we can restore inside our RTO" are different
+  claims.
 * **The rotation drill.** Publish a new issuer `kid` and confirm a running mediator picks it
-  up without a restart. The mechanism is tested (`wc_mediator::jwks`); the procedure is not,
-  and per P1 #9 an unrehearsed procedure is an assumption.
+  up without a restart. The mechanism is tested (`wc_mediator::jwks`); the procedure is not.
+  An unrehearsed procedure is an assumption.
 
 ## Versioning
 
@@ -111,7 +118,7 @@ and publish half a product.
 
 Making this publishable means giving Warden core a registry version and depending on it by
 version — which changes the family's coupling model, not just its packaging. That is a
-design decision, not a release chore, and it is why P1 #13 stays open.
+design decision, not a release chore, and it is why P1 #13 stays partial.
 
 ## Provenance
 
@@ -138,7 +145,10 @@ the residual §7.8 A8 describes for a control plane.
 | the §8.10.3 latency gates hold | CI `gates`, release mode | yes |
 | no banned dependency, no advisory | CI `supply-chain` | yes |
 | the SBOM is complete and reproducible | CI `supply-chain` | yes |
+| the containment drill still works | CI `gates` | yes — but on a scratch estate with a *file* standing in for the hardware token |
+| federation against a second control plane | CI `gates` | yes |
 | **the image builds and runs** | CI `image` | **only in CI** — it cannot be built on a machine with no container runtime, and it has not been built on one yet |
-| the restore drill | nobody | no |
+| the containment drill against the real offline token | a human, quarterly | no |
+| the restore drill at production size, timed | nobody | no |
 | the rotation drill | nobody | no |
 | release provenance | nobody | no |

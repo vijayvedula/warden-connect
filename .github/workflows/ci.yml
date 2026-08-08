@@ -123,7 +123,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   gates:
-    name: latency gates (§8.10.3)
+    name: latency gates (§8.10.3) + §8.16 acceptance criteria
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -144,18 +144,39 @@ jobs:
         working-directory: warden-connect
         run: cargo test -p wc-mediator --release --test mediation gate_filter -- --nocapture
 
-      # Seven gates, and a non-zero exit on regression or on a gate that could not run.
+      # Every gate, and a non-zero exit on regression or on a gate that could not run.
       # The thresholds are the design's, not the runner's — a slow runner reports an
       # honest failure rather than recalibrating, which is the whole point of them.
+      #
+      # This now includes two §8.16 *acceptance criteria* that were stated as phase exit
+      # gates and never measured (P1 #9): `export::dora` at 10⁵ contracts, and
+      # `registry::register` at 10⁴ entities. The second is the slowest thing in CI at
+      # ~40 s, and that cost is the point — the criterion is not met by registering a
+      # hundred entities quickly.
       - name: connect bench
         working-directory: warden-connect
         run: |
           cargo build --release -p wc-cli
           ./target/release/connect bench \
             --iterations 400 \
+            --scale 100000 \
             --signing-key fixtures/keys/test_issuer_es256_priv.pem \
             --verify-pub  fixtures/keys/test_issuer_es256_pub.pem \
             --kid wc-test-es256
+
+      # §8.16 P3: "quarterly containment drill script in the repo". Running it in CI does
+      # not replace the quarterly run against a real hardware token — the script says so
+      # itself — but it does keep the script working, which is the failure mode of every
+      # drill script that exists and is never executed.
+      - name: containment drill
+        working-directory: warden-connect
+        run: ./scripts/containment-drill.sh
+
+      # §8.16 P4: federation against a *second* control plane, with its own issuer key.
+      # This had only ever been tested against itself.
+      - name: cross-organisation federation
+        working-directory: warden-connect
+        run: cargo test -p wc-e2e --test federation
 
   # ---------------------------------------------------------------------------
   supply-chain:
