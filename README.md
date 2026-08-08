@@ -165,6 +165,7 @@ can live in an HSM, a smartcard or a KMS and never reach this process.
 | [docs/operations.md](docs/operations.md) | Backup, restore, the quarterly drill, and why retention deletes nothing |
 | [docs/releasing.md](docs/releasing.md) | What ships, the two revisions a release is pinned by, and what is verified where |
 | [docs/conformance.md](docs/conformance.md) | Run the vectors against **your** verifier, the two stages, and the version policy |
+| [sdk/python/](sdk/python) · [examples/](examples) | A dependency-free client for the control-plane API, and three runnable examples |
 | [docs/production-readiness.md](docs/production-readiness.md) | What is not ready, in priority order |
 | [DRILL.md](DRILL.md) | How this was built, module by module |
 | [SECURITY.md](SECURITY.md) | Reporting a vulnerability; what is in and out of scope |
