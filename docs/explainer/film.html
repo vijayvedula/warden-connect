@@ -48,7 +48,8 @@
   /* Two planes, not one. `minmax(0, 1fr)` rather than `1fr`: a plain 1fr track
      keeps an automatic min-content floor, so the canvas refuses to shrink and
      spills over the narration below it. */
-  .stage { position: absolute; inset: 0; overflow: hidden; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+  .stage { position: absolute; inset: 0; overflow: hidden; display: grid;
+           grid-template-rows: auto minmax(0, 1fr) auto; }
   .stage canvas { width: 100%; height: 100%; min-height: 0; display: block; }
   /* the narration is the bottom fifth, and grows sideways rather than upwards */
   .capwrap {
@@ -67,8 +68,9 @@
   .cap b { font-weight: 400; color: var(--blue); }
   .cap .r { color: var(--red); }
 
+  /* its own row, so a zoomed canvas can never reach underneath it */
   .chnum {
-    position: absolute; top: 1.5rem; left: 50%; transform: translateX(-50%);
+    justify-self: center; margin: 1.5rem 0 .1rem;
     font-family: var(--serif); font-size: clamp(1.15rem, 2.3vw, 1.7rem);
     letter-spacing: -.012em; color: var(--yellow); pointer-events: none;
     white-space: nowrap; padding-bottom: .35rem;
@@ -77,8 +79,8 @@
   /* the title announces itself as each chapter opens */
   .slide.on .chnum { animation: chIn .75s cubic-bezier(.2,.7,.3,1) both; }
   @keyframes chIn {
-    from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
-    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+    from { opacity: 0; transform: translateY(-10px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
 
   /* ---------- title slide ---------- */
@@ -217,8 +219,7 @@
   .rm .capwrap { display: block; min-height: 0; padding: 1.8rem 1.5rem 3rem; }
   .rm .cap { max-width: 48ch; }
   .rm .cap { opacity: 1 !important; transform: none !important; margin: 0 auto 1.2rem; max-width: 46ch; }
-  .rm .chnum { position: static; transform: none; display: block; text-align: center;
-               padding: 2.5rem 0 .4rem; border-bottom: 0; animation: none !important; }
+  .rm .chnum { justify-self: center; margin: 2.5rem 0 .4rem; animation: none !important; }
   .rm .title, .rm .personas, .rm .close { height: auto; padding: 4rem 1.5rem; overflow: visible; }
   .rm .bar, .rm .title .hint { display: none; }
 
@@ -239,19 +240,19 @@
       <div class="capwrap">
         <div class="cap"><p>Two layers, asking two different questions.</p>
           <p>One of them you already have.</p></div>
-        <div class="cap"><p><b>Warden</b> answers: may <em>this specific call</em> proceed, right now?</p>
+        <div class="cap" data-dwell="1.2"><p><b>Warden</b> answers: may <em>this specific call</em> proceed, right now?</p>
           <p>Session tokens and scope, per-call policy, held approvals, audit rows. The action boundary — decided every single call.</p></div>
         <div class="cap"><p><b>warden-connect</b> answers what Warden never asks: may these two parties be <em>introduced at all</em>, over what surface, for how long?</p>
           <p>The relationship boundary — decided once, and it arrives as five capabilities.</p></div>
-        <div class="cap"><p><b>One.</b> Pin the tool surface.</p>
+        <div class="cap" data-dwell="1.3"><p><b>One.</b> Pin the tool surface.</p>
           <p>A hash over exactly what was contracted, so a silent change is detected rather than trusted.</p></div>
-        <div class="cap"><p><b>Two.</b> Know what you actually have.</p>
+        <div class="cap" data-dwell="1.3"><p><b>Two.</b> Know what you actually have.</p>
           <p>Agents and services, with named owners, in a tamper-evident log.</p></div>
-        <div class="cap"><p><b>Three.</b> Turn an approval into an artifact.</p>
+        <div class="cap" data-dwell="1.3"><p><b>Three.</b> Turn an approval into an artifact.</p>
           <p>Signed, expiring, machine-checkable. Not a ticket.</p></div>
-        <div class="cap"><p><b>Four.</b> Put the contract on the path.</p>
+        <div class="cap" data-dwell="1.3"><p><b>Four.</b> Put the contract on the path.</p>
           <p>Only contracted tools are visible; everything else is refused before the service is called.</p></div>
-        <div class="cap"><p><b>Five.</b> Contain the whole estate in one verb.</p>
+        <div class="cap" data-dwell="1.3"><p><b>Five.</b> Contain the whole estate in one verb.</p>
           <p>With per-node proof — and honest reporting when a node cannot confirm.</p></div>
         <div class="cap"><p>Each capability is independently valuable. <em>You can stop on any of them.</em></p>
           <p>And neither layer can ever widen the other. Which leaves the question this film is about — why does any of it need to exist?</p></div>
@@ -422,19 +423,30 @@ const VW = 1200, VH = 560;   /* virtual stage; everything is authored in these u
 function makeCtx(canvas, vw, vh) {
   vw = vw || VW; vh = vh || VH;
   const ctx = canvas.getContext("2d");
-  let sx = 1, ox = 0, oy = 0;
+  let sx = 1, ox = 0, oy = 0, cw = 0, ch = 0;
   function fit() {
     const dpr = Math.min(devicePixelRatio || 1, 2);
     const w = canvas.clientWidth, h = canvas.clientHeight || (w * vh / vw);
     canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cw = w; ch = h;
     sx = Math.min(w / vw, h / vh);
     ox = (w - vw * sx) / 2; oy = (h - vh * sx) / 2;
   }
   const A = {
     ctx: ctx, fit: fit,
     clear() { ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.restore(); },
-    begin() { ctx.save(); ctx.translate(ox, oy); ctx.scale(sx, sx); },
+    /* With no camera, the whole stage is framed as before. With one, the given
+       rect is framed instead — so a beat can push in on the region it narrates
+       without any scene code knowing the camera exists. */
+    begin(cam) {
+      ctx.save();
+      if (!cam) { ctx.translate(ox, oy); ctx.scale(sx, sx); return; }
+      const s2 = Math.min(cw / cam.w, ch / cam.h);
+      ctx.translate(cw / 2, ch / 2);
+      ctx.scale(s2, s2);
+      ctx.translate(-(cam.x + cam.w / 2), -(cam.y + cam.h / 2));
+    },
     end() { ctx.restore(); },
     line(x1, y1, x2, y2, col, w, dash) {
       ctx.save(); ctx.strokeStyle = col; ctx.lineWidth = w || 2; ctx.lineCap = "round";
@@ -881,6 +893,29 @@ const SCENES = {
 }
 };
 
+/* ───────────────────────── the shot list ─────────────────────────
+   One rect per beat, in stage coordinates, naming what the viewer should be
+   reading. `null` means the wide shot. Consecutive beats sharing a rect hold
+   the camera still, which is what makes a dense region readable. */
+const FULL = null;
+const CH0_LADDER = [8, 166, 568, 376];      /* the five capabilities + their command */
+const FOCUS = {
+  0: [FULL, [660, 34, 500, 352], [52, 30, 508, 166],
+      CH0_LADDER, CH0_LADDER, CH0_LADDER, CH0_LADDER, CH0_LADDER, FULL],
+  1: [[230, 248, 760, 224], [230, 248, 760, 224], [230, 186, 760, 276], FULL, FULL],
+  2: [[438, 148, 324, 284], [396, 158, 408, 234], FULL, FULL],
+  3: [[228, 246, 764, 186], [228, 246, 764, 186], [516, 236, 368, 194], FULL, [176, 256, 1008, 252]],
+  4: [[118, 36, 964, 436], [118, 36, 964, 404], [138, 326, 904, 208], FULL, FULL]
+};
+const rect = r => r ? { x: r[0], y: r[1], w: r[2], h: r[3] } : { x: 0, y: 0, w: VW, h: VH };
+const grow = (r, f) => ({ x: r.x - r.w * f / 2, y: r.y - r.h * f / 2, w: r.w * (1 + f), h: r.h * (1 + f) });
+const mixRect = (a, b, t) => ({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t),
+                                w: lerp(a.w, b.w, t), h: lerp(a.h, b.h, t) });
+function shot(ch, i) {
+  const list = FOCUS[ch];
+  return rect(list && list[i] !== undefined ? list[i] : FULL);
+}
+
 /* ───────────────────────── the timeline ─────────────────────────
    Each beat is held long enough to animate, read and absorb. The duration is
    derived from the narration itself rather than hand-tuned, so editing a
@@ -895,7 +930,8 @@ function beatMs(capEl) {
     const n = el.textContent.trim().split(/\s+/).filter(Boolean).length;
     words += n * (i === 0 ? 1 : .85);          /* the secondary line reads faster */
   });
-  return clamp((LEAD + words / WPS + DWELL) * 1000, MINB, MAXB) * RATE;
+  const extra = parseFloat(capEl.dataset.dwell) || 1;
+  return clamp((LEAD + words / WPS + DWELL) * 1000, MINB, MAXB) * RATE * extra;
 }
 
 const slides = Array.from(document.querySelectorAll(".slide"));
@@ -909,7 +945,7 @@ slides.forEach((sec, si) => {
     const caps = Array.from(sec.querySelectorAll(".cap"));
     const label = (sec.querySelector(".chnum") || {}).textContent || "chapter";
     caps.forEach((cap, bi) => STEPS.push({
-      si: si, kind: kind, dur: beatMs(cap), beat: bi, beats: beats,
+      si: si, kind: kind, dur: beatMs(cap), beat: bi, beats: beats, ch: sec.dataset.ch,
       A: A, caps: caps, fn: SCENES[sec.dataset.ch], label: label
     }));
   } else if (kind === "personas") {
@@ -977,7 +1013,12 @@ function render(force) {
   if (st.kind === "chapter") {
     /* animate over the opening stretch, then hold so the frame can be read */
     const ap = smooth(clamp(el / (st.dur * .42), 0, 1));
-    st.A.clear(); st.A.begin(); st.fn(st.A, clamp((st.beat + ap) / st.beats, 0, 1)); st.A.end();
+    /* the camera travels on the same easing: a beat that opens a chapter pushes
+       in from slightly wider, otherwise it moves from the previous beat's shot */
+    const to = shot(st.ch, st.beat);
+    const from = st.beat === 0 ? grow(to, .16) : shot(st.ch, st.beat - 1);
+    st.A.clear(); st.A.begin(mixRect(from, to, ap));
+    st.fn(st.A, clamp((st.beat + ap) / st.beats, 0, 1)); st.A.end();
     st.caps.forEach((cap, i) => {
       const o = i === st.beat ? clamp(Math.min(el / 420, (st.dur - el) / 340), 0, 1) : 0;
       cap.style.opacity = o;

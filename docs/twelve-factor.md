@@ -3,15 +3,17 @@
 Referenced by [08-lld.md](08-lld.md) §1 as *"Everything via `WARDEN_CONNECT_*` env, TOML
 file, or flag — flags override file overrides env (core's precedence)."*
 
-**That sentence is not what the code does, and the difference is the first thing on this
-page.** There is no general configuration file. Config is flags plus four environment
-variables, and the TOML files this component reads are *domain* documents — a policy, a
-keyring, a token table — not a config layer with precedence over flags. The three-layer
-chain the LLD describes is two layers.
+**When this page was written that sentence was not what the code did**, and saying so
+was the point of the page: there was no configuration file at all, and config was flags
+plus four hand-wired environment variables. The three-layer chain the LLD described was
+two layers.
 
-That is recorded here rather than quietly satisfied, because a component whose own
-design document overstates its configurability is the same defect class this repository
-keeps finding: a control that reads as configured and is not there.
+It is now three, and §8.13's order holds — see factor III. The record of the gap stays
+here deliberately, because it is the same defect class this repository keeps finding: a
+component whose own design document overstates it, with nothing disagreeing.
+
+What has *not* changed is that ten §8.13 keys describe behaviour this build does not
+have. Those are refused with a reason rather than accepted and ignored.
 
 ---
 
@@ -42,7 +44,24 @@ which is an argued exception with a review date, not a blanket ignore.
 
 ## III · Config
 
-**What exists:**
+**What exists.** All three layers, in §8.13's order: **flag over file over env.**
+
+* **Flags** — the full surface, `connect --help`.
+* **File** — `--config FILE`, or `connect.toml` beside the process if it exists.
+  Sections and keys are §8.13's. A key that maps to no flag is **refused**, not ignored,
+  and a §8.13 key this build does not implement is refused *with the reason* — a config
+  file is version-controlled and reviewed by somebody who believes it took effect, so a
+  silently-dropped `require_provenance = true` is a false belief with an audit trail
+  behind it. A file key only applies to commands that accept the flag, so one
+  deployment-wide file does not make `connect entities` complain about a listener.
+* **Env** — `WARDEN_CONNECT_<FLAG>` for **every** flag, derived mechanically from the
+  flag name (`--anchor-interval` → `WARDEN_CONNECT_ANCHOR_INTERVAL`). §8.13 promised this
+  "for every key" and four were wired by hand; a new flag now gets its variable by
+  existing rather than by somebody remembering. An empty value does not override, because
+  `WARDEN_CONNECT_ROOT=` is how a variable gets unset in a shell profile.
+
+The four originally hand-wired variables keep their names, so an existing deployment's
+environment keeps working:
 
 | Env | Flag | Meaning |
 |---|---|---|
@@ -50,8 +69,6 @@ which is an argued exception with a review date, not a blanket ignore.
 | `WARDEN_CONNECT_TENANT` | `--tenant` | tenant on this root (default `default`) |
 | `WARDEN_CONNECT_ACTOR` | `--by`, `--as` | who is acting, for evidence rows |
 | `WARDEN_CONNECT_REQUIRE_EXTERNAL_SIGNING` | `--require-external-signing` | refuse to start if any signing key would be read from local disk |
-
-Precedence is **flag, then env**. Nothing else.
 
 **Domain documents, passed by path:** `connect-policy.toml`, `keys.toml`,
 `tokens.toml`, `approvers.toml`, `screen-rules.toml`, `tenants.toml`, `streams.toml`,
@@ -65,9 +82,12 @@ signing key is a file path or a delegated signer command
 expected to be a mounted secret. An env var is readable from `/proc`, inherited by every
 child process, and printed by any crash reporter that dumps the environment.
 
-**The gap:** no `--config FILE` for the flags themselves, so a deployment with many
-flags carries them in its unit file or its pod spec. That is workable and it is not what
-the LLD claims.
+**The remaining gap.** Ten §8.13 keys describe behaviour this build does not have —
+`[server].tls`, `[policy].hot_reload` and `pdp_url`, `[admission].rekor` and
+`require_provenance`, and others. They are **refused with a reason** rather than
+accepted and dropped, which is the honest state: the config file cannot express them
+because the behaviour does not exist. `crates/wc-cli/src/config.rs` lists each with the
+answer to "I set this and nothing changed".
 
 ## IV · Backing services
 
