@@ -1,0 +1,109 @@
+# Coverage-guided fuzz campaigns (production-readiness P2 #15).
+#
+# Separate from ci.yml on purpose. A campaign is minutes per target, so putting it on every
+# push would make people avoid pushing — and a check people route around is worse than no
+# check, because the routing-around is invisible.
+#
+# So: nightly on a schedule, and on demand. `ci.yml`'s `fuzz` job still compiles the targets
+# on every push, because a target that has quietly stopped compiling is a fuzz directory
+# that reads as coverage while providing none.
+name: fuzz
+
+on:
+  schedule:
+    # 03:17 UTC daily. An odd minute so this does not join the stampede every project
+    # schedules on the hour, which is how a scheduled job gets silently throttled.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per target"
+        required: false
+        default: "300"
+
+permissions:
+  contents: read
+
+jobs:
+  campaign:
+    name: campaign (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    # One job per target rather than one job running five. A crash in `parse_contract` must
+    # not cut short `screen_text`'s budget, and `fail-fast: false` is what stops the first
+    # crash from cancelling the others — losing four targets' findings to learn about one is
+    # the opposite of what a nightly campaign is for.
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - parse_contract
+          - canon_surface
+          - parse_connect_policy
+          - screen_text
+          - revocation_event
+
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: warden-connect }
+      # Warden core is a path dependency (§8.3), so even the fuzz crate needs it beside.
+      - uses: actions/checkout@v4
+        with:
+          repository: vijayvedula/warden
+          path: warden
+          token: ${{ secrets.WARDEN_CORE_TOKEN || github.token }}
+
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: warden-connect/fuzz, key: fuzz-campaign }
+      - uses: taiki-e/install-action@cargo-fuzz
+
+      # The corpus from previous runs, so each night starts where the last one stopped.
+      # Without this every campaign spends its first minutes rediscovering that JSON has
+      # braces, and a fuzzer that restarts from the seeds every night is a fuzzer that never
+      # gets past the shallow paths.
+      - name: restore the accumulated corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: warden-connect/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: campaign
+        working-directory: warden-connect
+        run: ./scripts/fuzz.sh "${{ inputs.seconds || 300 }}" "${{ matrix.target }}"
+
+      - name: save the corpus
+        # Even on a crash: the inputs found before the crash are worth keeping, and a cache
+        # that only updates on success loses everything the failing run learned.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: warden-connect/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+
+      # A crash artifact is the only output of this job that matters, and it has to leave the
+      # runner or it dies with it. The next step for a human is in scripts/fuzz.sh's own
+      # output: copy it into `fuzz/corpus/<target>/` and commit — the stable mirror then runs
+      # it forever, on every push, with no nightly and no cargo-fuzz.
+      - name: keep the crash
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-${{ matrix.target }}
+          path: |
+            warden-connect/fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
+
+      # Corpus growth is uploaded rather than committed. A workflow with write access to
+      # `main` is a supply-chain surface on a repository whose entire argument is about
+      # provenance, and "the fuzzer pushed to main overnight" is not a sentence this project
+      # should be able to say. A human merges it, which is one command:
+      #   gh run download <id> -n corpus-<target> -D fuzz/corpus/<target>
+      - name: keep the corpus growth
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-${{ matrix.target }}
+          path: warden-connect/fuzz/corpus/${{ matrix.target }}/
+          if-no-files-found: ignore

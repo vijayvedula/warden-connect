@@ -2702,6 +2702,76 @@ mod conformance {
         }
     }
 
+    /// The vector set's version. Bumped by hand, per `docs/conformance.md`.
+    const VECTORS_VERSION: &str = "1.0";
+
+    /// Codes reachable from the artifact and a trusted key alone.
+    ///
+    /// This list **is** the specification of the split that `fixtures/contracts/README.md`
+    /// describes in prose. Everything else needs an authenticated peer, the callee's
+    /// presented surface, a revocation feed or local zone policy — none of which a
+    /// command-line verifier has, so those vectors are *valid artifacts* to it.
+    fn stage_of(expected: Option<Code>) -> &'static str {
+        match expected {
+            // A vector that must be admitted is an artifact-stage vector: it is the
+            // direction that matters most, because a verifier which rejects everything
+            // satisfies every rejection vector perfectly.
+            None => "artifact",
+            Some(code)
+                if [
+                    Code::ALG_NOT_ASYMMETRIC,
+                    Code::SIGNATURE_INVALID,
+                    Code::CONTRACT_EXPIRED,
+                    Code::AUDIENCE_MISMATCH,
+                    Code::SCHEMA_UNKNOWN,
+                    Code::CONTRACT_OVERSIZE,
+                ]
+                .contains(&code) =>
+            {
+                "artifact"
+            }
+            Some(_) => "context",
+        }
+    }
+
+    /// The `kid` in a minted artifact's JOSE header, if it has one.
+    fn header_kid(jws: &str) -> Option<String> {
+        use base64::Engine as _;
+        let header = jws.split('.').next().unwrap_or_default();
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(header)
+            .ok()?;
+        serde_json::from_slice::<serde_json::Value>(&raw)
+            .ok()?
+            .get("kid")?
+            .as_str()
+            .map(str::to_string)
+    }
+
+    /// Which published test key a verifier must be configured to trust for this vector.
+    ///
+    /// The artifact's own `kid` **only when it names a published key**. Anything else — an
+    /// absent `kid`, or one naming a key nobody published — resolves to the default, which
+    /// is what makes the "untrusted key" and "no key" vectors test what they claim to.
+    fn trust_kid(jws: &str) -> &'static str {
+        match header_kid(jws).as_deref() {
+            Some(KID_ED) => KID_ED,
+            _ => KID_ES,
+        }
+    }
+
+    /// The algorithm that key is registered under.
+    ///
+    /// Needed because a verifier registers a key *for an algorithm*; offering the Ed25519
+    /// PEM while defaulting to ES256 fails to load it, and the vector then looks like a
+    /// verifier that rejects a valid contract.
+    fn trust_alg(jws: &str) -> &'static str {
+        match trust_kid(jws) {
+            KID_ED => "EdDSA",
+            _ => "ES256",
+        }
+    }
+
     #[test]
     #[ignore = "writes fixtures; run explicitly after an intentional format change"]
     fn generate_vectors() {
@@ -2716,19 +2786,41 @@ mod conformance {
                 json!({
                     "description": description,
                     "expect": expected.map(|c| c.to_string()),
+                    // Which half of verification this vector exercises. Prose in the
+                    // README before now, which meant a third party's harness had to
+                    // hard-code two tables out of a document — the difference between a
+                    // set of fixtures and a kit (P2 #16).
+                    "stage": stage_of(expected),
+                    // How a verifier must be **configured** to run this vector: which
+                    // published test key it trusts, and under which algorithm.
+                    //
+                    // Not the artifact's own header `kid`. That distinction is the whole
+                    // point of `unknown-kid.jws`: the verifier trusts `wc-test-es256` and
+                    // the artifact claims `wc-rogue`, so no key resolves. A harness that
+                    // configured itself from the artifact's claim would register the
+                    // trusted key *under the attacker's name*, resolve it, and admit the
+                    // vector — turning the one test of "a key I do not trust" into a test
+                    // of nothing. Found by running this harness against our own verifier.
+                    "trust_kid": trust_kid(&jws),
+                    "trust_alg": trust_alg(&jws),
                 }),
             );
         }
         let manifest = json!({
             "media_type": CONTRACT_TYP,
             "schema": PAYLOAD_SCHEMA,
+            // The vector set's own version, separate from the payload schema. See
+            // `docs/conformance.md` for the policy: adding a vector is a minor bump,
+            // changing what an existing vector expects is a major one, because somebody
+            // else's verifier passes today and would fail tomorrow.
+            "vectors_version": VECTORS_VERSION,
             "mediator_id": MEDIATOR,
             "now": NOW,
             "keys": {
                 KID_ES: "fixtures/keys/test_issuer_es256_pub.pem",
                 KID_ED: "fixtures/keys/test_issuer_ed25519_pub.pem",
             },
-            "note": "`expect` is the WC-* code a conforming verifier must produce; null means the contract must be admitted.",
+            "note": "`expect` is the WC-* code a conforming verifier must produce; null means the contract must be admitted. `stage` is `artifact` for checks a verifier can make from the artifact and a trusted key alone, and `context` for checks needing an authenticated peer, a presented surface, a revocation feed or zone policy — a command-line verifier must ADMIT those and a mediator must refuse them.",
             "vectors": index,
         });
         std::fs::write(

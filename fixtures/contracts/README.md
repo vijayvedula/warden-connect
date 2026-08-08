@@ -13,7 +13,22 @@ checkable without linking any warden-connect code.
 | File | Contents |
 |---|---|
 | `*.jws` | One artifact per case, one line each |
-| `expected.json` | For every vector: a description and the `WC-*` code a conforming verifier must produce (`null` means the contract must be admitted) |
+| `expected.json` | For every vector: a description, the `WC-*` code a conforming verifier must produce (`null` means it must be admitted), its `stage` (`artifact` or `context`), and the `trust_kid`/`trust_alg` a verifier must be **configured** with |
+
+`stage`, `trust_kid` and `trust_alg` are machine-readable so a third party's harness does
+not have to hard-code the two tables below out of this document. `trust_*` is deliberately
+**not** the artifact's own header `kid`: `unknown-kid.jws` is a vector precisely because the
+artifact names a key nobody published, and a harness that configured itself from the
+artifact's claim would register the trusted key under the attacker's name and admit it.
+
+**Use the harness rather than driving these by hand:**
+
+```sh
+scripts/conformance.sh ./my-verifier
+```
+
+See [docs/conformance.md](../../docs/conformance.md) for the calling convention, the
+version policy for this vector set, and what the kit does not yet cover.
 
 The signing keys are in [`../keys/`](../keys) and are **published test keys,
 worthless by construction**. `expected.json` names which `kid` maps to which

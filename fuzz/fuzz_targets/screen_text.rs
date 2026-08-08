@@ -51,10 +51,24 @@ fuzz_target!(|data: &[u8]| {
             );
             // A detector that did not run is a gap, and a report that does not say so
             // is a lie. Every detector must be accounted for, either way.
-            assert_eq!(
-                report.ran.len() + report.skipped.len(),
-                screen::Detector::ALL.len()
-            );
+            //
+            // Membership, not a count. This asserted
+            // `ran.len() + skipped.len() == ALL.len()` and was **wrong by design**: `S2`
+            // lands in *both* lists when the name index is empty, which is the honest
+            // answer — its script half ran and its collision half could not, so reporting
+            // it as run would claim coverage that does not exist and reporting it as
+            // skipped would discard the findings it did produce.
+            //
+            // The stable mirror in `crates/wc-e2e/tests/fuzz.rs` already asserted it this
+            // way, so the two tiers had drifted — which is exactly what the mirror exists
+            // to prevent, and exactly what only a real campaign could reveal: the mirror
+            // cannot fail its own invariant, and this target had never been run.
+            for d in screen::Detector::ALL {
+                assert!(
+                    report.ran.contains(&d) || report.skipped.iter().any(|(s, _)| *s == d),
+                    "{d:?} was neither run nor reported skipped"
+                );
+            }
             // Blocking is earned in code, never granted by input: a verdict that
             // blocks must be backed by a detector whose blocking status is fixed in
             // `is_blocking`, which no ruleset can reach.

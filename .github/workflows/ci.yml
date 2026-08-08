@@ -88,6 +88,15 @@ jobs:
       # Named separately from the run above even though it is inside it: the §8.15.3
       # conformance vectors are the ground truth a third party implements against, and
       # a green summary line is not the same as knowing they ran.
+      # The kit as a third party would use it: the harness against a verifier, rather than
+      # our own unit test reading the same fixtures it wrote. A harness bug is invisible to
+      # the unit test and fatal to an implementer — two were found this way (P2 #16).
+      - name: Conformance kit, through the harness
+        working-directory: warden-connect
+        run: |
+          cargo build -p wc-cli
+          ./scripts/conformance.sh
+
       - name: Conformance vectors (§8.15.3)
         working-directory: warden-connect
         run: cargo test -p wc-core --lib conformance -- --nocapture

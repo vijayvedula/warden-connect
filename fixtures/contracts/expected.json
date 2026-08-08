@@ -5,85 +5,143 @@
   },
   "media_type": "warden-connection+jws",
   "mediator_id": "warden:mediator:apac-ops",
-  "note": "`expect` is the WC-* code a conforming verifier must produce; null means the contract must be admitted.",
+  "note": "`expect` is the WC-* code a conforming verifier must produce; null means the contract must be admitted. `stage` is `artifact` for checks a verifier can make from the artifact and a trusted key alone, and `context` for checks needing an authenticated peer, a presented surface, a revocation feed or zone policy — a command-line verifier must ADMIT those and a mediator must refuse them.",
   "now": 1785312500,
   "schema": 1,
   "vectors": {
     "alg-confusion-ed-for-es.jws": {
       "description": "EdDSA signature under a kid registered for ES256",
-      "expect": "WC-3101"
+      "expect": "WC-3101",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "alg-none.jws": {
       "description": "unsigned, claiming alg=none",
-      "expect": "WC-3101"
+      "expect": "WC-3101",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "aud-other-mediator.jws": {
       "description": "addressed to a different mediator; replay must fail",
-      "expect": "WC-3104"
+      "expect": "WC-3104",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "expired.jws": {
       "description": "exp in the past; no grace period",
-      "expect": "WC-3103"
+      "expect": "WC-3103",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "hmac-hs256.jws": {
       "description": "HMAC: anyone who can verify could also mint",
-      "expect": "WC-3101"
+      "expect": "WC-3101",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "nbf-future.jws": {
       "description": "not valid yet",
-      "expect": "WC-3103"
+      "expect": "WC-3103",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "no-kid.jws": {
       "description": "no kid, so no key can be resolved",
-      "expect": "WC-3102"
+      "expect": "WC-3102",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "oversize.jws": {
       "description": "beyond the 64 KiB artifact ceiling",
-      "expect": "WC-3121"
+      "expect": "WC-3121",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "posture-unattested.jws": {
       "description": "artifact is valid; admission denies on posture in enforce mode",
-      "expect": "WC-3109"
+      "expect": "WC-3109",
+      "stage": "context",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "revoked-jti.jws": {
       "description": "artifact id on the revocation feed",
-      "expect": "WC-3105"
+      "expect": "WC-3105",
+      "stage": "context",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "schema-99.jws": {
       "description": "a newer payload schema; reject rather than guess",
-      "expect": "WC-3120"
+      "expect": "WC-3120",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "surface-superset.jws": {
       "description": "surface widened and re-signed; the digest no longer matches",
-      "expect": "WC-3108"
+      "expect": "WC-3108",
+      "stage": "context",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "tampered-payload.jws": {
       "description": "surface widened after signing",
-      "expect": "WC-3102"
+      "expect": "WC-3102",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "unknown-claim.jws": {
       "description": "an unrecognised claim a verifier must not ignore",
-      "expect": "WC-3120"
+      "expect": "WC-3120",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "unknown-kid.jws": {
       "description": "signed by a key the verifier does not trust",
-      "expect": "WC-3102"
+      "expect": "WC-3102",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "valid-ed25519.jws": {
       "description": "the same contract signed with EdDSA",
-      "expect": null
+      "expect": null,
+      "stage": "artifact",
+      "trust_alg": "EdDSA",
+      "trust_kid": "wc-test-ed25519"
     },
     "valid-es256.jws": {
       "description": "a well-formed ES256 contract",
-      "expect": null
+      "expect": null,
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "wrong-typ.jws": {
       "description": "a JWT that is not a connection contract",
-      "expect": "WC-3120"
+      "expect": "WC-3120",
+      "stage": "artifact",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     },
     "zone-crossing.jws": {
       "description": "internal to partner without an explicit rule",
-      "expect": "WC-3110"
+      "expect": "WC-3110",
+      "stage": "context",
+      "trust_alg": "ES256",
+      "trust_kid": "wc-test-es256"
     }
-  }
+  },
+  "vectors_version": "1.0"
 }
