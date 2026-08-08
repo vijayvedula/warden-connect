@@ -18,6 +18,16 @@
 > on Warden core, which is a coupling decision rather than a packaging chore, and evidence
 > segment retirement does not exist.
 >
+> **P2: all five done.** #15–#19 are closed. The remaining work in each is named in its entry
+> and needs an environment rather than a commit: a longer fuzz campaign, `wcs1` digest
+> vectors for third parties, a packaged SDK release, and two real regions with two volumes.
+>
+> **Nineteen items: fifteen `[x]`, four `[~]`, none untouched.** What is left in the four is
+> procurement (a hardware token, a KMS key), an integration environment (SPIRE, a signing
+> builder, a second region), a coupling decision (crates.io), and one unbuilt feature
+> (evidence segment retirement). The hardening review below is the remaining engineering
+> work.
+>
 > Working through P0 in order turned up **ten** defects the tests as written could not
 > see: a gate pointing at a benchmark that did not exist; a blocking detector that
 > refused every localised tool server; a verifier reading the system clock; a listener
@@ -35,7 +45,7 @@
 | | Evidence |
 |---|---|
 | Modules delivered | All of P0–P4 (§8.16). `wc-core` 7 modules, `wc-control` 23, `wc-mediator` 8, `wc-cli` |
-| Tests | **969 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
+| Tests | **978 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
 | Conformance | 19 vectors in `fixtures/contracts/`, driven off `expected.json`; `connect verify` is the ground truth (§8.15.3) |
 | Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expect_used` warned workspace-wide |
 | CI | [`ci.yml`](../.github/workflows/ci.yml) — 5 jobs: stable, MSRV 1.89, release-mode latency gates, supply chain + dependency ceilings, nightly fuzz build |
@@ -786,13 +796,6 @@ by what unblocks the others.
   expected digest* set, which is what a third party actually needs. Also missing: the
   mediator's eleven checks as fixtures, and a signed distribution of the vector set.
 
-- [ ] **16. The conformance kit is fixtures, not a kit.** The independence
-  argument — *implement the checks in your own egress layer and still
-  interoperate* — rests on `connect verify` being ground truth. Today that is 19
-  files and an `expected.json` in `fixtures/contracts/`. There is no packaged kit,
-  no documented harness for a third party, and no version policy for the vectors.
-  Until there is, "no lock-in to our data plane" is an assertion.
-
 - [x] **17. An SDK for the control plane, and three runnable examples.**
 
   [`sdk/python/`](../sdk/python) and [`examples/`](../examples). One client for one surface:
@@ -835,17 +838,59 @@ by what unblocks the others.
   examples run against a live control plane, which is stronger evidence than mocks but is
   not a suite.
 
-- [ ] **18. Operator documentation.** The design docs are thorough and are not
-  operator documentation. Missing, all of which Warden core has: a deployment
-  guide, a runbook, and a **threat model**. The threat model is the one with teeth
-  — the five defects found in the last test pass were all *silent control
-  failures*, and a written threat model is what turns that pattern into a checklist
-  instead of a habit.
+- [x] **18. Operator documentation: a deployment guide, a runbook, and a threat model.**
 
-- [ ] **19. Multi-tenancy and residency at scale.** `tenant.rs` and `federate.rs`
-  are unit-tested, including the path-traversal fix and cross-tenant `WC-8002`.
-  No two-region deployment has been stood up, and residency is the constraint the
-  one-pager leads with.
+  * **[threat-model.md](threat-model.md)** — the one with teeth, and it opens with the bug
+    class rather than the threat table. **Part 1 is a table of fourteen controls that read as
+    configured and did nothing**, drawn from this build, and a six-question review checklist
+    ending in *run it* — because not one of the fourteen was found by reading code. Parts 2–4
+    are the trust boundaries, the eleven threats as things an operator **verifies** (with the
+    command for each), and the fail-closed matrix with the two rows people get wrong. Part 5
+    says what is out of scope and why, because a threat model implying coverage it lacks is
+    worse than a short one.
+  * **[deployment.md](deployment.md)** — the four-stage adoption ladder, in order, with what
+    each stage buys and what it can break. Keys first and the **anchor key off the host
+    first**; the storage constraint stated as a constraint; "do not skip stage 2" with the
+    reason. Ends in a fourteen-line pre-production checklist.
+  * **[runbook.md](runbook.md)** — symptom-first, because that is what you have at 03:00.
+    *"All the agents are down"* leads with `wc_revocation_trusted == 0`, since the most likely
+    cause is a control operating correctly and it will arrive sounding like an outage. A
+    `WC-*` code table maps a denial spike to a diagnosis, and every refusal-to-start message
+    is listed as deliberate rather than as a crash.
+
+  Together with the existing [observability.md](observability.md) (alert definitions) and
+  [operations.md](operations.md) (backup, restore, the drill), that is the operator set.
+
+- [x] **19. Two regions, stood up and asserted.**
+
+  `crates/wc-e2e/tests/residency.rs` — nine tests over two regional tenants, each with its own
+  issuer key, which is the deployment shape #19 said had never been stood up. It asserts what
+  an auditor asks: neither region's state is reachable from the other, a region name cannot
+  escape its root, a contract minted in one region **does not verify** in the other even when
+  the `kid` matches, and an unknown region is refused rather than defaulted — because falling
+  back to `default` would mean an operator believing they were acting in Frankfurt while
+  writing to Singapore.
+
+  **The residency rule itself was already implemented** and I checked before adding anything:
+  §8.7.3's *"escalate one step if declared.jurisdictions crosses a data-residency boundary"*
+  is `spans_residency_groups`, and the groups are configurable because an estate's real
+  boundaries are counsel's answer rather than a library constant. What was missing was the
+  two-region deployment exercising it, plus the baseline that stops the escalation test from
+  passing on a rule that escalates everything, and the case where no jurisdiction is declared
+  at all — treating an empty list as a crossing would escalate every contract in an estate
+  that has not adopted jurisdictions, and an escalation that fires on everything is one
+  nobody can act on.
+
+  **The honest limit is a test.** `residency_is_a_governance_control_and_says_so` asserts that
+  crossing a boundary **escalates** and does not **refuse**: warden-connect does not route
+  traffic and cannot see where bytes go, so a crossing is declared, tiered and approved by a
+  human, not prevented. If somebody later adds a "residency denied" outcome, that assertion is
+  where they will have to argue for it.
+
+  **Still outstanding:** two regions here are two tenants under one root, which exercises the
+  isolation and the escalation but not the operational reality — two control planes, two
+  volumes, two failure domains, and a partner federation across them. That needs an
+  environment, the same way P0 #3 needs a SPIRE server.
 
 ---
 

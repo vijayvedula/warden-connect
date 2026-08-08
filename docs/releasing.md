@@ -39,7 +39,7 @@ skip one.
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                       # 969 tests
+cargo test --workspace                       # 978 tests
 cargo +1.89 test --workspace                 # the MSRV, which CI pins
 cargo test -p wc-mediator --release gate_filter
 connect bench --iterations 400 \

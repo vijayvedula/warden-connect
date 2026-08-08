@@ -89,7 +89,7 @@ injected everywhere, so nothing in the test suite depends on the wall clock.
 
 ```sh
 cargo build --workspace          # needs ../warden checked out beside this repo
-cargo test --workspace           # 969 tests
+cargo test --workspace           # 978 tests
 cargo clippy --workspace --all-targets
 cargo deny check
 ./scripts/dep-count.sh           # dependency ceilings, asserted
@@ -159,6 +159,9 @@ can live in an HSM, a smartcard or a KMS and never reach this process.
 | [docs/07-hld.md](docs/07-hld.md) | High-level design — the two-layer model, the artifact, the family |
 | [docs/08-lld.md](docs/08-lld.md) | Low-level design — every module, every check, the build order |
 | [docs/physical-architecture.md](docs/physical-architecture.md) | Four deployment variants: on-prem VMs, Kubernetes, AWS, Azure |
+| [docs/threat-model.md](docs/threat-model.md) | The bug class this system produces, a review checklist, and the eleven threats as things to verify |
+| [docs/deployment.md](docs/deployment.md) | The four-stage adoption ladder, and a pre-production checklist |
+| [docs/runbook.md](docs/runbook.md) | Symptom-first incident response |
 | [docs/key-custody.md](docs/key-custody.md) | Six signing operations, and which key loss is unrecoverable |
 | [docs/twelve-factor.md](docs/twelve-factor.md) | Config, state, logs, disposability — and where this deviates |
 | [docs/observability.md](docs/observability.md) | Every metric family, the four alerts as PromQL, and what the telemetry cannot answer |

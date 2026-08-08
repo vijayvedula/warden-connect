@@ -50,6 +50,9 @@ Written after the build, and downstream of what the code turned out to need:
 
 | Document | What it gives you |
 |---|---|
+| [threat-model.md](threat-model.md) | The defect class this codebase produces and a six-question review checklist, the trust boundaries, the eleven §7.8 threats as operator checks, the fail-closed matrix, and what is deliberately out of scope |
+| [deployment.md](deployment.md) | Nothing to enforcing, in four stages, with a pre-production checklist |
+| [runbook.md](runbook.md) | Symptom-first incident response: what "all the agents are down" usually means, and every refusal-to-start message |
 | [physical-architecture.md](physical-architecture.md) | Four deployment variants — on-prem VMs, on-prem Kubernetes, AWS, Azure — with topologies, a cross-variant mapping table, and the gaps that shape the design |
 | [key-custody.md](key-custody.md) | The six signing operations, which key loss is unrecoverable and which is merely an outage, and why the revocation key is the odd one out |
 | [twelve-factor.md](twelve-factor.md) | Config, state, logs, disposability — and the two places this deliberately deviates, including the one where §1 of the LLD overstates what exists |
