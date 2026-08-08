@@ -186,6 +186,62 @@ jobs:
         working-directory: warden-connect
         run: ./scripts/dep-count.sh
 
+      # This repository ships a CycloneDX BOM *generator* (`export::cyclonedx_bom`, for a
+      # tool surface) and shipped no BOM of itself. A component that asks an estate to
+      # inventory its agents while being uninventoriable is asking for a trust it does not
+      # extend. The check fails on a component with no licence and on a local path leaking
+      # into the document.
+      - name: SBOM of ourselves
+        working-directory: warden-connect
+        run: |
+          python3 scripts/sbom.py --check
+          python3 scripts/sbom.py > warden-connect.cdx.json
+          # Reproducible by construction — no timestamp, no filesystem paths — so a diff is
+          # how anyone notices a dependency appeared.
+          python3 scripts/sbom.py | diff -q - warden-connect.cdx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: warden-connect/warden-connect.cdx.json
+
+  # ---------------------------------------------------------------------------
+  image:
+    name: container image
+    runs-on: ubuntu-latest
+    steps:
+      # The build context is the *parent* of both checkouts: Warden core is a path
+      # dependency (§8.3), so an image built without it is an image whose mediator cannot
+      # exist. This layout is the Dockerfile's documented contract, and this job is what
+      # keeps it true — the file cannot be built on a machine with no container runtime,
+      # so CI is the only place it is verified.
+      - uses: actions/checkout@v4
+        with: { path: warden-connect }
+      - uses: actions/checkout@v4
+        with:
+          repository: vijayvedula/warden
+          path: warden
+          token: ${{ secrets.WARDEN_CORE_TOKEN || github.token }}
+
+      - name: docker build
+        run: docker build -f warden-connect/Dockerfile -t warden-connect:ci .
+
+      # An image that builds and cannot run is not a release artifact. Both binaries are
+      # exercised, because they are the two halves of the product and only one of them is
+      # the entrypoint.
+      - name: the image actually runs
+        run: |
+          docker run --rm warden-connect:ci version
+          docker run --rm --entrypoint connect-mediate warden-connect:ci --help | head -3
+
+      # The state root has to be writable by the non-root user, or `serve` fails on its
+      # first append — which would only be discovered by someone deploying it.
+      - name: the state root is writable by the unprivileged user
+        run: |
+          docker run --rm warden-connect:ci \
+            register server --endpoint https://x.internal/mcp \
+            --owner human:ci --zone internal.ci --by human:ci
+
   # ---------------------------------------------------------------------------
   fuzz:
     name: fuzz targets compile
