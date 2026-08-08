@@ -147,7 +147,7 @@ the residual §7.8 A8 describes for a control plane.
 | the SBOM is complete and reproducible | CI `supply-chain` | yes |
 | the containment drill still works | CI `gates` | yes — but on a scratch estate with a *file* standing in for the hardware token |
 | federation against a second control plane | CI `gates` | yes |
-| **the image builds and runs** | CI `image` | **only in CI** — it cannot be built on a machine with no container runtime, and it has not been built on one yet |
+| **the image builds and runs** | CI `image` | yes — built and all four steps run locally on Docker 29.5 (linux/arm64), which is also how the `register server` bug in that job was found |
 | the containment drill against the real offline token | a human, quarterly | no |
 | the restore drill at production size, timed | nobody | no |
 | the rotation drill | nobody | no |

@@ -661,9 +661,14 @@ by what unblocks the others.
     a write to the state root as the unprivileged user; `supply-chain` generates the SBOM,
     asserts it is byte-identical on a second run, and uploads it.
 
-  **Honest limits.** The image **has not been built locally** — there is no container
-  runtime on this machine, so CI is the only place it is verified, and `releasing.md` says
-  so in a table rather than implying otherwise.
+  **The image is now built and run**, on Docker 29.5 (linux/arm64): all four `image` job
+  steps pass. Building it found a defect in the job itself — the step meant to prove the
+  state root is writable used `register server --endpoint`, which runs admission stage 2 and
+  **fetches the callee's surface over the network**, so it exited 1 with `WC-1002 surface
+  unobtainable` in a container where nothing resolves. It was testing DNS. Replaced with
+  `register agent --card` against a mounted fixture: entirely offline, and it proves more
+  than intended — an append to the state log *and* the evidence chain, both fsynced, as uid
+  10001.
 
   **Still outstanding, and structural:** publishing to crates.io is impossible while
   `warden` is a path dependency. `cargo publish` of `wc-mediator` would fail and one of
