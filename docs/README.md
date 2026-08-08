@@ -56,6 +56,7 @@ Written after the build, and downstream of what the code turned out to need:
 | [observability.md](observability.md) | The §8.14 families as emitted, the four alerts this design implies written as PromQL with runbooks, and the questions the telemetry deliberately cannot answer |
 | [operations.md](operations.md) | Backup, restore and the quarterly drill; what losing each file costs, and why retention on a hash-linked chain is segment retirement rather than deletion |
 | [releasing.md](releasing.md) | What ships, why a release is pinned by two revisions, why crates.io is structurally out of reach, and a table of what is verified where |
+| [conformance.md](conformance.md) | The kit: how to run the vectors against your own verifier, why four of nineteen defer to a mediator, the version policy for the set, and the `wcs1` digest vectors that are still missing |
 | [production-readiness.md](production-readiness.md) | Nineteen items in P0/P1/P2 plus a hardening pass, in working order. Written before anyone asked |
 
 Read them in order; 01 and 02 are the positioning, 03–06 are the product

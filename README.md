@@ -89,7 +89,7 @@ injected everywhere, so nothing in the test suite depends on the wall clock.
 
 ```sh
 cargo build --workspace          # needs ../warden checked out beside this repo
-cargo test --workspace           # 967 tests
+cargo test --workspace           # 969 tests
 cargo clippy --workspace --all-targets
 cargo deny check
 ./scripts/dep-count.sh           # dependency ceilings, asserted
@@ -164,6 +164,7 @@ can live in an HSM, a smartcard or a KMS and never reach this process.
 | [docs/observability.md](docs/observability.md) | Every metric family, the four alerts as PromQL, and what the telemetry cannot answer |
 | [docs/operations.md](docs/operations.md) | Backup, restore, the quarterly drill, and why retention deletes nothing |
 | [docs/releasing.md](docs/releasing.md) | What ships, the two revisions a release is pinned by, and what is verified where |
+| [docs/conformance.md](docs/conformance.md) | Run the vectors against **your** verifier, the two stages, and the version policy |
 | [docs/production-readiness.md](docs/production-readiness.md) | What is not ready, in priority order |
 | [DRILL.md](DRILL.md) | How this was built, module by module |
 | [SECURITY.md](SECURITY.md) | Reporting a vulnerability; what is in and out of scope |
@@ -178,9 +179,15 @@ including alg confusion, `alg: none`, HMAC substitution, a tampered payload, a
 superset surface and a wrong audience.
 
 ```sh
-connect verify fixtures/contracts/valid-es256.jws \
-    --jwks your-issuer-keys.json --mediator-id warden:mediator:apac-ops
+scripts/conformance.sh ./my-verifier          # your implementation
+scripts/conformance.sh                         # ours, as a self-check
 ```
+
+Fifteen vectors any verifier can run; four need a mediator (an authenticated peer, a
+presented surface, a revocation feed) and are reported as **deferred** rather than passed —
+counting them would tell you you had covered nineteen checks when you had covered fifteen.
+[docs/conformance.md](docs/conformance.md) has the calling convention and the version
+policy.
 
 If your verifier and this one disagree on any vector, one of us has a bug — and that is
 a more useful conversation than a specification document.

@@ -35,7 +35,7 @@
 | | Evidence |
 |---|---|
 | Modules delivered | All of P0–P4 (§8.16). `wc-core` 7 modules, `wc-control` 23, `wc-mediator` 8, `wc-cli` |
-| Tests | **967 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
+| Tests | **969 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
 | Conformance | 19 vectors in `fixtures/contracts/`, driven off `expected.json`; `connect verify` is the ground truth (§8.15.3) |
 | Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expect_used` warned workspace-wide |
 | CI | [`ci.yml`](../.github/workflows/ci.yml) — 5 jobs: stable, MSRV 1.89, release-mode latency gates, supply chain + dependency ceilings, nightly fuzz build |
@@ -705,11 +705,86 @@ by what unblocks the others.
 
 ## P2 — completeness and developer experience
 
-- [ ] **15. Coverage-guided fuzzing has never run.** Five targets and seed corpora
-  exist; the stable mirror runs on `cargo test` and exists precisely so the targets
-  cannot rot into not compiling. That is not the same as a campaign. Needs
-  `cargo-fuzz` in CI on a schedule, corpus committed as it grows, and any crash
-  turned into a unit test.
+- [x] **15. Coverage-guided fuzzing has run, and the first campaign found a defect.**
+
+  `cargo-fuzz` installed, campaigns run on all five targets. **6.3 million executions on
+  `parse_contract` in 61 seconds**, no crashes; `canon_surface`, `parse_connect_policy` and
+  `revocation_event` clean.
+
+  **`screen_text` crashed on empty input**, and the finding is the interesting part: the
+  product was correct and the *fuzz target's own invariant was stale*. It asserted
+  `ran.len() + skipped.len() == Detector::ALL.len()`, which is wrong by design — `S2` lands
+  in **both** lists when the name index is empty, because its script half ran and its
+  collision half could not, and reporting it as either alone would be a lie. The stable
+  mirror already asserted the correct set-membership property, so **the two tiers had
+  drifted** — which is precisely what §8.15.2's mirror exists to prevent, and precisely what
+  only a real campaign could reveal: the mirror cannot fail its own invariant, and this
+  target had never been run.
+
+  * **[`scripts/fuzz.sh`](../scripts/fuzz.sh)** — a bounded campaign, because the thing that
+    stops fuzzing happening is not difficulty, it is that nobody remembers the flags.
+  * **A second defect, in the script itself, found by running it.** Pointing `cargo fuzz` at
+    the tracked corpus and then running `cmin` **deleted the hand-written seeds**:
+    minimisation keeps one input per coverage edge and does not care which, so 23 named,
+    readable, deliberately chosen inputs became 787 files called `a3f0e1…`. That is not a
+    smaller corpus, it is one nobody can review or prune, and it destroys the property
+    `fuzz/README.md` describes — `screen_text` holds *near misses* on purpose. New inputs now
+    go to a scratch directory and the tracked corpus is only ever read.
+  * **[`.github/workflows/fuzz.yml`](../.github/workflows/fuzz.yml)** — nightly, one job per
+    target with `fail-fast: false` so one crash does not cut short four other budgets. The
+    accumulated corpus is cached between runs, so a campaign does not restart from the seeds
+    every night and spend its first minutes rediscovering that JSON has braces.
+  * **Corpus growth is uploaded, not committed.** A workflow with write access to `main` is a
+    supply-chain surface on a repository whose entire argument is provenance, and "the
+    fuzzer pushed to main overnight" is not a sentence this project should be able to say.
+  * **The crash-to-regression loop is now asserted.** It already worked and was undocumented:
+    `seeds()` reads *every* file in `fuzz/corpus/<target>`, so committing a crashing artifact
+    makes it a regression test that runs on stable, on every push, with no nightly and no
+    cargo-fuzz. `a_committed_crash_becomes_a_stable_regression_test` keeps that closed, and
+    `the_fuzz_manifest_and_the_target_files_agree` catches a target file with no `[[bin]]`
+    entry — which is never built and never run while reading as a sixth target.
+
+  **Still outstanding:** no campaign longer than a minute per target has run, so this is
+  smoke-depth coverage. The nightly schedule is what turns that into hours per week, and it
+  has not run yet.
+
+- [x] **16. The conformance kit is a kit.**
+
+  It was nineteen files and an `expected.json`, with no harness a third party could point at
+  their own verifier and no version policy — so "no lock-in to our data plane" was an
+  assertion.
+
+  * **[`scripts/conformance.sh`](../scripts/conformance.sh)** runs the vectors against **any**
+    verifier via a documented calling convention, comparing the `WC-*` code rather than just
+    the exit status. "It rejected it" is half the claim; "for the right reason" is the half
+    that makes two implementations interoperable.
+  * **The artifact/context split is machine-readable.** It was prose in a README, so a third
+    party's harness had to hard-code two tables out of a document. `expected.json` now
+    carries `stage` per vector, and the four context vectors are reported as **deferred**,
+    never as passes — counting them would tell an implementer they had covered nineteen
+    checks when they had covered fifteen, and the four they had not are the ones needing a
+    mediator.
+  * **A version policy** in [conformance.md](conformance.md): adding a vector is a minor
+    bump, changing what an existing vector expects is major, because a verifier that passes
+    today fails tomorrow through no change of its own. A major bump is a promise being
+    broken and comes with a changelog entry.
+  * **CI runs the harness**, not only the unit test that reads the same fixtures it wrote — a
+    harness bug is invisible to that test and fatal to an implementer.
+
+  **Two harness bugs found by running it against our own verifier**, which is why the
+  no-argument invocation is a self-check rather than a convenience. Tab as a field separator
+  **collapses**, because tab is IFS whitespace — so an empty `expect` shifted every column
+  right and reported a conformant verifier as broken. And configuring the verifier from the
+  artifact's own header `kid` registers the trusted key **under the attacker's name**, which
+  resolves and admits `unknown-kid.jws` — turning the one test of "a key I do not trust"
+  into a test of nothing. The manifest now emits `trust_kid`/`trust_alg`: the verifier's
+  *configuration*, deliberately not the artifact's claim.
+
+  **Still outstanding, and the most valuable thing missing:** `wcs1` canonicalisation
+  vectors. `surface_digest` is what pins a surface and two implementations must agree on it
+  byte for byte; there are unit tests and a fuzz target, but no published *input surface →
+  expected digest* set, which is what a third party actually needs. Also missing: the
+  mediator's eleven checks as fixtures, and a signed distribution of the vector set.
 
 - [ ] **16. The conformance kit is fixtures, not a kit.** The independence
   argument — *implement the checks in your own egress layer and still

@@ -501,3 +501,86 @@ fn every_fuzz_target_has_a_seed_corpus() {
         assert!(!seeds(target).is_empty(), "{target} has no seeds");
     }
 }
+
+// ===========================================================================
+// The crash-to-regression loop (P2 #15)
+// ===========================================================================
+//
+// A campaign is only worth running if a crash it finds becomes permanent. The mechanism
+// already existed and was undocumented: `seeds()` reads *every* file in
+// `fuzz/corpus/<target>`, so committing a crashing artifact turns it into a regression test
+// that runs on stable, on every push, with no nightly and no cargo-fuzz.
+//
+// These two tests are what keep that loop closed. Without them the workflow is a convention,
+// and a convention is what gets skipped when the corpus needs a name and it is late.
+
+#[test]
+fn a_committed_crash_becomes_a_stable_regression_test() {
+    // Asserted by construction: drop a file into a corpus directory, and the harness that
+    // runs on `cargo test` picks it up with no registration step anywhere.
+    let target = "parse_contract";
+    let dir = corpus_dir(target);
+    let marker = dir.join("zz-loop-check-tmp");
+
+    let before = seeds(target).len();
+    // Deliberately hostile bytes: what a crash artifact actually looks like.
+    std::fs::write(&marker, b"\x00\xff{\"alg\":\"none\"}\n\x00").expect("write marker");
+    let after = seeds(target).len();
+    let contents = seeds(target);
+    let _ = std::fs::remove_file(&marker);
+
+    assert_eq!(
+        after,
+        before + 1,
+        "a file dropped into {} must be picked up with no registration step — that is what \
+         makes `cp artifact corpus/ && git commit` a complete regression test",
+        dir.display()
+    );
+    assert!(
+        contents.iter().any(|s| s.starts_with(b"\x00\xff")),
+        "and its exact bytes must reach the target, not a sanitised version"
+    );
+}
+
+#[test]
+fn the_fuzz_manifest_and_the_target_files_agree() {
+    // `every_fuzz_target_has_a_seed_corpus` above reads `fuzz/Cargo.toml`; this reads
+    // `fuzz/fuzz_targets/`. Two sources of truth, and the interesting failure is when they
+    // disagree:
+    //
+    // * a `.rs` file with no `[[bin]]` entry is **never built and never run** — it reads as
+    //   a sixth target in the directory listing and contributes nothing, which is precisely
+    //   the "fuzz directory that reads as coverage" this tier exists to prevent;
+    // * a `[[bin]]` entry with no file fails to compile, which CI catches — but only after
+    //   somebody has pushed.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz");
+
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("fuzz/Cargo.toml");
+    let mut declared: Vec<String> = manifest
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("name = \""))
+        .filter_map(|l| l.strip_suffix('"'))
+        .map(str::to_string)
+        .filter(|n| n != "warden-connect-fuzz")
+        .collect();
+    declared.sort();
+
+    let mut present: Vec<String> = std::fs::read_dir(root.join("fuzz_targets"))
+        .expect("fuzz/fuzz_targets")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "rs"))
+        .filter_map(|e| {
+            e.path()
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+        })
+        .collect();
+    present.sort();
+
+    assert_eq!(
+        declared, present,
+        "fuzz/Cargo.toml and fuzz/fuzz_targets/ disagree; a target file with no [[bin]] \
+         entry is never built and never run"
+    );
+}
