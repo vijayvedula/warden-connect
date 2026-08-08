@@ -793,10 +793,47 @@ by what unblocks the others.
   no documented harness for a third party, and no version policy for the vectors.
   Until there is, "no lock-in to our data plane" is an assertion.
 
-- [ ] **17. No SDK, no examples.** Warden core has `sdk/` and `examples/`. For the
-  mediator this matters least (it compiles into the proxy by design); for the
-  control-plane API it matters most, and that is the surface a platform team
+- [x] **17. An SDK for the control plane, and three runnable examples.**
+
+  [`sdk/python/`](../sdk/python) and [`examples/`](../examples). One client for one surface:
+  the item was right that the mediator needs none — it compiles into the proxy by design, so
+  you deploy it rather than call it — and that the control-plane API is what a platform team
   integrates against.
+
+  **No dependencies.** `urllib`, not `requests`: a platform team's first question about a new
+  SDK is what it drags into their image.
+
+  **Three real bugs, all found by running it against a live control plane** rather than
+  against mocks:
+
+  * **`Outcome` keyed off the HTTP status alone.** A replayed idempotent request returns
+    **200**, not the original 201/202 — so a caller retrying a timeout would have seen
+    `issued`, `awaiting_approval` and `denied` **all false**, three impossible answers at
+    once by the class's own docstring, and concluded nothing had happened while a human was
+    already looking at the request. It now reads the outcome out of the body, and
+    `Outcome.replayed` says it was a replay. This is exactly the class of bug the SDK exists
+    to absorb.
+  * **`quarantine` sent `id` where the API wants `party`** (`WC-4008`), so every quarantine
+    attempted through the client would have failed — discovered at the moment it matters
+    least.
+  * **`/v1/posture` returns the *ids* under each heading, not a tally**, so the example
+    printed a list where a number belonged.
+
+  **What it deliberately cannot do:** sign an approval, because that needs a key this client
+  must never hold (see [key-custody.md](key-custody.md) — an approver key the service could
+  reach makes dual control theatre); and mint or verify a contract, because a second Python
+  implementation of the eleven checks with no vectors run against it would be worse than
+  none.
+
+  The examples end where the honest answer ends. `03_contain_a_party.py` exits **4** when the
+  quarantine was recorded and no mediator is configured, because the registry transition is
+  the control plane's own state and *unconfirmed is not contained* — a script that printed
+  "quarantined" and stopped would imply otherwise.
+
+  **Still outstanding:** no packaged release (`publish = false` applies here too until P1 #13
+  is resolved), and no SDK tests beyond an import check — the verification so far is the
+  examples run against a live control plane, which is stronger evidence than mocks but is
+  not a suite.
 
 - [ ] **18. Operator documentation.** The design docs are thorough and are not
   operator documentation. Missing, all of which Warden core has: a deployment
