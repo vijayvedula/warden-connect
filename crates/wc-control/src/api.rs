@@ -151,6 +151,13 @@ pub struct ControlPlane {
     pub revocations: Option<Mutex<crate::contain::RevocationFeed>>,
     /// Counters.
     pub metrics: Metrics,
+    /// The §8.14 metric families (P1 #11).
+    ///
+    /// Beside `Metrics` rather than replacing it: the seven raw atomics are read directly
+    /// by tests and by `Metrics::bump` call sites all over this file, and rewriting those
+    /// in the same change that introduces the registry would make a regression in either
+    /// hard to attribute. The registry is the *exposition*; `Metrics` feeds it.
+    pub registry: wc_core::obs::Registry,
     /// Idempotency records: key → (expiry, body hash, response body).
     idempotency: Mutex<HashMap<String, (u64, String, String)>>,
     /// Injected clock.
@@ -190,6 +197,11 @@ impl ControlPlane {
             jwks: r#"{"keys":[]}"#.to_string(),
             acks: Mutex::new(HashMap::new()),
             metrics: Metrics::default(),
+            registry: {
+                let r = wc_core::obs::Registry::new();
+                crate::obs::register(&r);
+                r
+            },
             idempotency: Mutex::new(HashMap::new()),
             now,
         }
@@ -601,8 +613,52 @@ fn ready(cp: &Arc<ControlPlane>) -> Response {
     }
 }
 
+/// `/metrics` — the §8.14 families, Prometheus text or JSON.
+///
+/// Counters are folded in from `Metrics` and gauges are derived from the projection on
+/// each scrape, so a number here and a number from `connect posture` cannot disagree.
+/// See `crate::obs` for why that division rather than incremental gauges.
+///
+/// The seven original unlabelled series are kept as aliases at the bottom. They are what
+/// an existing dashboard is scraping, and silently renaming a metric breaks every panel
+/// and every alert built on it — the alert does not error, it goes blank, which is the
+/// failure mode this whole item is about.
 fn metrics(cp: &Arc<ControlPlane>) -> Response {
     let m = &cp.metrics;
+    let r = &cp.registry;
+
+    // Counters this file already maintains, published under their §8.14 names.
+    r.set(
+        crate::obs::API_REQUESTS,
+        &[],
+        m.requests.load(Ordering::Relaxed),
+    );
+    r.set(
+        crate::obs::API_REPLAYS,
+        &[],
+        m.replays.load(Ordering::Relaxed),
+    );
+    r.set(
+        crate::obs::CONTRACT_PULLS,
+        &[],
+        m.pulls.load(Ordering::Relaxed),
+    );
+    r.set(
+        crate::obs::MINTED,
+        &[("approval_mode", "any")],
+        m.minted.load(Ordering::Relaxed),
+    );
+    r.set(
+        crate::obs::ESCALATED,
+        &[],
+        m.escalated.load(Ordering::Relaxed),
+    );
+    r.set(
+        crate::obs::TRANSPORT_REFUSED,
+        &[],
+        m.transport_refused.load(Ordering::Relaxed),
+    );
+
     let store = lock(&cp.store);
     let entities = store.projection.entities.len();
     let contracts = store
@@ -617,28 +673,54 @@ fn metrics(cp: &Arc<ControlPlane>) -> Response {
         .values()
         .filter(|r| r.status == RequestStatus::Pending)
         .count();
+
+    let now = (cp.now)();
+    // A control plane with no feed can still record a quarantine and report it as done
+    // while no mediator ever hears, so "serving a feed at all" is a gauge rather than a
+    // footnote. Whether a feed *verifies* is a mediator-side state this process cannot
+    // observe — see `obs::REVOCATION_SERVING`.
+    let feed = cp
+        .revocations
+        .as_ref()
+        .map(|feed| (true, lock(feed).len() as u64));
+
+    let (chain_len, newest_anchor) = {
+        let evidence = lock(&cp.evidence);
+        (evidence.head().0, evidence.newest_anchor().map(|c| c.ts))
+    };
+
+    crate::obs::snapshot(
+        r,
+        &store.projection,
+        &crate::contain::AckLedger::default(),
+        chain_len,
+        newest_anchor,
+        feed,
+        now,
+    );
     drop(store);
 
     let acks = lock(&cp.acks).len();
-    let body = format!(
-        "# warden-connect control plane\n\
-         wc_api_requests_total {}\n\
+
+    let mut body = r.to_prometheus();
+    body.push_str(&format!(
+        "# HELP wc_api_denied_total Requests refused for lack of a role or a token.\n\
+         # TYPE wc_api_denied_total counter\n\
          wc_api_denied_total {}\n\
-         wc_api_replays_total {}\n\
-         wc_contract_pulls_total {}\n\
-         wc_contracts_minted_total {}\n\
-         wc_requests_escalated_total {}\n\
-         wc_entities {entities}\n\
-         wc_contracts_active {contracts}\n\
-         wc_requests_pending {pending}\n\
-         wc_mediators_acked {acks}\n",
-        m.requests.load(Ordering::Relaxed),
+         # HELP wc_mediators_acked Mediators that have acknowledged at least one set.\n\
+         # TYPE wc_mediators_acked gauge\n\
+         wc_mediators_acked {acks}\n\
+         # HELP wc_entities_total Registered entities, unlabelled. Superseded by wc_entities.\n\
+         # TYPE wc_entities_total gauge\n\
+         wc_entities_total {entities}\n\
+         # HELP wc_contracts_active_total Active contracts, unlabelled. Superseded by wc_contracts_active.\n\
+         # TYPE wc_contracts_active_total gauge\n\
+         wc_contracts_active_total {contracts}\n\
+         # HELP wc_requests_pending_total Requests awaiting a human, unlabelled.\n\
+         # TYPE wc_requests_pending_total gauge\n\
+         wc_requests_pending_total {pending}\n",
         m.denied.load(Ordering::Relaxed),
-        m.replays.load(Ordering::Relaxed),
-        m.pulls.load(Ordering::Relaxed),
-        m.minted.load(Ordering::Relaxed),
-        m.escalated.load(Ordering::Relaxed),
-    );
+    ));
     Response::text(200, body)
 }
 

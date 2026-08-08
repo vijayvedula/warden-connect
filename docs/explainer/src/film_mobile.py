@@ -334,9 +334,39 @@ class Canvas:
 BUILD = 1.2          # seconds of animation, then it stops moving
 MIN_STILL = 3.0      # seconds the finished frame is held, at minimum
 FADE_IN = 0.13       # seconds
-FADE_OUT = 0.12      # seconds
+FADE_OUT = 0.34      # seconds
+
+# The dip alone tells you a shot ended; it does not tell you a new one has your
+# attention. A shot now also *arrives* — it eases up from slightly under full size
+# while it builds — and *recedes*, drifting a touch past full size as it fades. The
+# push-in overlaps the build, so it costs no runtime; only the longer fade does, and
+# that is added on top of the still rather than taken out of it.
+#
+# 1.045 is bounded by the safe margins: it crops 41px top and bottom, and nothing
+# meaningful is drawn above TOP_SAFE or below BOT_SAFE.
+ZOOM_IN = 0.55       # seconds of push-in, run during the build
+ZOOM_FROM = 0.945    # scale a shot arrives at
+ZOOM_TO = 1.045      # scale a shot leaves at
 
 _GROUND = Image.new("RGB", (W, H), BG)
+
+
+def _scaled(im, s):
+    """Scale about the frame centre, keeping the frame exactly W x H.
+
+    Under 1.0 the shot sits inside the ground rather than being letterboxed by
+    black; over 1.0 it is centre-cropped, which is why the safe margins matter.
+    """
+    if abs(s - 1.0) < 0.002:
+        return im
+    nw, nh = max(2, int(round(W * s))), max(2, int(round(H * s)))
+    r = im.resize((nw, nh), Image.LANCZOS)
+    if s < 1.0:
+        out = _GROUND.copy()
+        out.paste(r, ((W - nw) // 2, (H - nh) // 2))
+        return out
+    x, y = (nw - W) // 2, (nh - H) // 2
+    return r.crop((x, y, x + W, y + H))
 
 
 class Video:
@@ -370,6 +400,7 @@ class Video:
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL)
         fin, fout = int(FPS * FADE_IN), int(FPS * FADE_OUT)
+        zin = max(1, int(FPS * ZOOM_IN))
         for count, fn in self.scenes:
             # The build finishes here, not at the last frame. Everything after is the
             # same picture, held — at least MIN_STILL of it.
@@ -385,6 +416,16 @@ class Video:
                 a = min(1.0,
                         i / fin if fin else 1.0,
                         (count - 1 - i) / fout if fout else 1.0)
+                # ...and a push-in on arrival, a drift on the way out. The still
+                # between them is dead flat: nothing moves while it is being read.
+                left = count - 1 - i
+                if i < zin:
+                    s = ZOOM_FROM + (1.0 - ZOOM_FROM) * ease_out(i / zin)
+                elif fout and left < fout:
+                    s = 1.0 + (ZOOM_TO - 1.0) * ease_in_out(1 - left / fout)
+                else:
+                    s = 1.0
+                im = _scaled(im, s)
                 if a < 0.995:
                     im = Image.blend(_GROUND, im, max(0.0, a))
                 proc.stdin.write(im.tobytes())
@@ -485,7 +526,10 @@ PERSONAS = [
      "12 / 13 confirmed - 41s", RED),
 ]
 
-CHAPTERS = ["The Assumption", "The Two Layers", "The Connection", "The Obvious Fix",
+# Named for the assumption itself, not for the fact that there is one — and in
+# the past tense, so the label works across all five beats while the chapter
+# takes it apart.
+CHAPTERS = ["Software Used To Be Predictable", "The Two Layers", "The Connection", "The Obvious Fix",
             "The Idea", "On the Path", "Five Readings", "Plainly"]
 
 
@@ -1414,15 +1458,17 @@ def build():
     # --- title ---
     @v.scene(3.6)
     def _title(c, p):
+        # `p` completes at the end of the BUILD, not the end of the shot, so a
+        # scene that fades *itself* out at p→1 goes dark for the whole still —
+        # which is what left four seconds of blank frame at the head of the film.
+        # The shot shape already dips at both edges; scenes only build.
         a = smooth(clamp(p * 2.4))
-        out = 1 - smooth(clamp((p - 0.86) / 0.14))
-        c.text((W // 2, 700), "INTRODUCING", "mono", 30, YELLOW, a * out, anchor="ma")
-        c.text((W // 2, 790), "warden-connect", "serif", 104, INK, a * out,
-               anchor="ma")
-        c.line((W // 2 - 200, 950), (W // 2 + 200, 950), YELLOW, a * out * 0.5, 2)
+        c.text((W // 2, 700), "INTRODUCING", "mono", 30, YELLOW, a, anchor="ma")
+        c.text((W // 2, 790), "warden-connect", "serif", 104, INK, a, anchor="ma")
+        c.line((W // 2 - 200, 950), (W // 2 + 200, 950), YELLOW, a * 0.5, 2)
         c.centred(1010, "The connection control plane for AI agents",
-                  W - PAD * 2 - 60, "serif", 44, DIM, a * out)
-        c.mark(a * out * 0.6)
+                  W - PAD * 2 - 60, "serif", 44, DIM, a)
+        c.mark(a * 0.6)
 
     # --- the five chapters ---
     for ci, caps in enumerate(chapter_caps):

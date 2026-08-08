@@ -53,6 +53,7 @@ Written after the build, and downstream of what the code turned out to need:
 | [physical-architecture.md](physical-architecture.md) | Four deployment variants — on-prem VMs, on-prem Kubernetes, AWS, Azure — with topologies, a cross-variant mapping table, and the gaps that shape the design |
 | [key-custody.md](key-custody.md) | The six signing operations, which key loss is unrecoverable and which is merely an outage, and why the revocation key is the odd one out |
 | [twelve-factor.md](twelve-factor.md) | Config, state, logs, disposability — and the two places this deliberately deviates, including the one where §1 of the LLD overstates what exists |
+| [observability.md](observability.md) | The §8.14 families as emitted, the four alerts this design implies written as PromQL with runbooks, and the questions the telemetry deliberately cannot answer |
 | [production-readiness.md](production-readiness.md) | Nineteen items in P0/P1/P2 plus a hardening pass, in working order. Written before anyone asked |
 
 Read them in order; 01 and 02 are the positioning, 03–06 are the product

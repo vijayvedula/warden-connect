@@ -531,6 +531,18 @@ impl Evidence {
             .any(|s| s.delivery() == Delivery::Blocking)
     }
 
+    /// The newest checkpoint's sequence and signing time, if the chain is anchored.
+    ///
+    /// For the `wc_anchor_age_seconds` gauge. Unverified — see
+    /// [`crate::chain::newest_checkpoint`] for why that is the right trade here and where
+    /// the verifying path lives.
+    #[must_use]
+    pub fn newest_anchor(&self) -> Option<crate::chain::Checkpoint> {
+        self.chain
+            .anchor_path()
+            .and_then(crate::chain::newest_checkpoint)
+    }
+
     /// Record an event: blocking sinks, then the chain, then fail-safe sinks.
     ///
     /// Returns `Err` if a blocking sink refuses — and in that case **nothing is

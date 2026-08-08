@@ -217,6 +217,15 @@ CONNECT
                           the air-gapped alternative to --contracts
   --refresh N             seconds between pulls (default: 5)
   --observe               record findings instead of denying
+  --decision-log LEVEL    off|notable|all (default: notable). One JSON object per
+                          decision on stderr, carrying cid, WC-* code and mode.
+                          `notable` is denials and observe-mode findings; `all`
+                          adds allows, which in front of a busy agent is a lot.
+                          Counters are kept at every level, so turning the log
+                          down costs detail rather than visibility
+  --metrics-file PATH     write the Prometheus exposition here for a textfile
+                          collector. This process has no listener by design, so
+                          there is no /metrics to scrape
   --any-zone              permit any zone pair (observe deployments only)
   --peer-mode MODE        configured|mtls|mesh|jwt-svid (default: configured)
                           only `configured` applies to this stdio sidecar; the
@@ -437,6 +446,44 @@ fn run() -> Result<(), String> {
     if present(&args, "any-zone") {
         cfg.zones = Box::new(wc_core::contract::AnyZone);
     }
+
+    // --- telemetry (P1 #11) -----------------------------------------------
+    //
+    // The decision log is the only place a refused call is visible: the control plane sees
+    // issuance, and issuance stays healthy while every call in the estate is denied. It is
+    // on by default at `notable` — denials and observe-mode findings — because a default of
+    // `off` would mean the stream exists and nobody's deployment has it.
+    let level = match flag(&args, "decision-log") {
+        None => wc_core::obs::LogLevel::default(),
+        Some(word) => wc_core::obs::LogLevel::parse(&word)
+            .ok_or_else(|| format!("--decision-log {word:?} is not off, notable or all"))?,
+    };
+    let mut telemetry = wc_mediator::obs::Telemetry::new(level);
+    if let Some(path) = flag(&args, "metrics-file") {
+        telemetry = telemetry.with_metrics_file(path);
+    }
+    let telemetry = Arc::new(telemetry);
+    cfg.telemetry = Arc::clone(&telemetry);
+
+    // A file is only useful if something rewrites it. On its own thread rather than on the
+    // request path: flushing per call would put a filesystem write between the agent and
+    // its tool, which is a latency cost paid on every call to make a number fresher than
+    // any scrape interval needs.
+    if flag(&args, "metrics-file").is_some() {
+        let flusher = Arc::clone(&telemetry);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(10));
+            flusher.flush();
+        });
+    }
+    eprintln!(
+        "connect-mediate: decision log {}{}",
+        level.as_str(),
+        match flag(&args, "metrics-file") {
+            Some(p) => format!(", metrics to {p}"),
+            None => ", no metrics file".to_string(),
+        }
+    );
 
     let upstream_cmd = required(&args, "upstream")?;
     let upstream_timeout: u64 = flag(&args, "upstream-timeout")

@@ -269,6 +269,30 @@ impl Anchor {
     }
 }
 
+/// The newest checkpoint in an anchor file: its sequence and when it was signed.
+///
+/// **The signature is not verified here, and that is deliberate.** This feeds the
+/// `wc_anchor_age_seconds` gauge, so it runs on every metrics scrape and has no public key
+/// to verify against — `Anchor` holds the *signing* side. Verification is
+/// [`verify_anchors`], reached by `connect audit verify`, which is the path whose answer
+/// anyone is asked to rely on.
+///
+/// The distinction matters because the number this produces is exactly the number an
+/// attacker who could rewrite the chain would want to look healthy. It is a liveness
+/// signal — "checkpoints are still being written" — not an integrity one.
+#[must_use]
+pub fn newest_checkpoint(path: impl AsRef<Path>) -> Option<Checkpoint> {
+    use base64::Engine as _;
+
+    let text = std::fs::read_to_string(path.as_ref()).ok()?;
+    let last = text.lines().rfind(|l| !l.trim().is_empty())?;
+    let payload = last.split('.').nth(1)?;
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
 /// Verify every checkpoint in an anchor file against a chain's entries.
 ///
 /// Returns the number verified, and the sequences where a checkpoint disagreed with
@@ -393,6 +417,12 @@ impl Chain {
     #[must_use]
     pub fn head(&self) -> (u64, &str) {
         (self.last_seq, &self.last_hash)
+    }
+
+    /// Where checkpoints are written, if this chain is anchored.
+    #[must_use]
+    pub fn anchor_path(&self) -> Option<&Path> {
+        self.anchor.as_ref().map(|a| a.path.as_path())
     }
 
     /// Append an entry, returning it as written.

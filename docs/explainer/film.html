@@ -898,14 +898,14 @@ const SCENES = {
    reading. `null` means the wide shot. Consecutive beats sharing a rect hold
    the camera still, which is what makes a dense region readable. */
 const FULL = null;
-const CH0_LADDER = [8, 166, 568, 376];      /* the five capabilities + their command */
+const CH0_LADDER = [-44, 166, 568, 376];      /* the five capabilities + their command */
 const FOCUS = {
   0: [FULL, [660, 34, 500, 352], [52, 30, 508, 166],
       CH0_LADDER, CH0_LADDER, CH0_LADDER, CH0_LADDER, CH0_LADDER, FULL],
   1: [[230, 248, 760, 224], [230, 248, 760, 224], [230, 186, 760, 276], FULL, FULL],
   2: [[438, 148, 324, 284], [396, 158, 408, 234], FULL, FULL],
-  3: [[228, 246, 764, 186], [228, 246, 764, 186], [516, 236, 368, 194], FULL, [176, 256, 1008, 252]],
-  4: [[118, 36, 964, 436], [118, 36, 964, 404], [138, 326, 904, 208], FULL, FULL]
+  3: [[228, 246, 764, 186], [228, 246, 764, 186], [470, 230, 460, 210], FULL, [30, 96, 1140, 410]],
+  4: [[118, 36, 964, 436], [118, 36, 964, 404], [130, 90, 940, 430], FULL, FULL]
 };
 const rect = r => r ? { x: r[0], y: r[1], w: r[2], h: r[3] } : { x: 0, y: 0, w: VW, h: VH };
 const grow = (r, f) => ({ x: r.x - r.w * f / 2, y: r.y - r.h * f / 2, w: r.w * (1 + f), h: r.h * (1 + f) });

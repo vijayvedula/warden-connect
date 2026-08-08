@@ -353,7 +353,53 @@ fn metrics_are_served_as_prometheus_text() {
         .unwrap()
         .starts_with("text/plain"));
     assert!(reply.body.contains("wc_api_requests_total"));
-    assert!(reply.body.contains("wc_entities 3"));
+
+    // The §8.14 families are labelled, so `wc_entities` now carries posture, lifecycle
+    // and tier. That is the point of P1 #11 — an unlabelled count of entities cannot
+    // answer "how many are unattested", which is the question anyone actually asks.
+    assert!(
+        reply.body.contains("wc_entities{"),
+        "expected a labelled family:\n{}",
+        reply.body
+    );
+    assert!(reply.body.contains("posture=\""), "{}", reply.body);
+
+    // And the unlabelled series is still served under `_total`. An existing dashboard is
+    // scraping it, and a renamed metric does not make a panel error — it makes it go
+    // blank, which is the exact failure this item is about.
+    assert!(
+        reply.body.contains("wc_entities_total 3"),
+        "the compatibility alias must survive:\n{}",
+        reply.body
+    );
+
+    // Every family carries its type, from the first scrape, before anything has happened.
+    // An alert cannot be written against a family that only appears once it is non-zero.
+    for declared in [
+        "# TYPE wc_denials_total counter",
+        "# TYPE wc_contracts_expiring gauge",
+        "# TYPE wc_mediator_ack_lag_seconds histogram",
+        "# TYPE wc_revocation_feed_serving gauge",
+    ] {
+        assert!(reply.body.contains(declared), "missing {declared}");
+    }
+}
+
+#[test]
+fn a_denial_is_counted_under_its_wc_code() {
+    // The family §8.14 asks for by name, and the one an operator alerts on: a spike in
+    // `wc_denials_total{code="WC-3102"}` is an attack, a spike in `{code="WC-4001"}` is a
+    // policy that got tighter than somebody expected, and an unlabelled total cannot tell
+    // those apart.
+    let h = harness("denialmetrics");
+    // No token at all — refused before any handler runs.
+    call(h.port, "GET", "/v1/entities", None, None, None);
+    let reply = call(h.port, "GET", "/metrics", None, None, None);
+    assert!(
+        reply.body.contains("wc_api_denied_total 1"),
+        "{}",
+        reply.body
+    );
 }
 
 #[test]

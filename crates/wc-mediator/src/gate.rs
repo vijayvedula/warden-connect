@@ -59,6 +59,12 @@ pub struct GateCfg {
     pub limits: Limits,
     /// Wall clock, injected so tests and replays are deterministic.
     pub now: fn() -> u64,
+    /// Where per-decision lines and data-plane metrics go (P1 #11).
+    ///
+    /// `Arc` because one `Telemetry` serves every connection this mediator handles — the
+    /// counters are estate-wide and a per-connection registry would answer "how many
+    /// denials" with "however many this one connection had".
+    pub telemetry: Arc<crate::obs::Telemetry>,
 }
 
 impl GateCfg {
@@ -74,6 +80,7 @@ impl GateCfg {
             zones: Box::new(SameTrustLevel),
             limits: Limits::default(),
             now,
+            telemetry: Arc::new(crate::obs::Telemetry::default()),
         }
     }
 
@@ -228,6 +235,15 @@ impl MediatedUpstream {
     }
 
     fn blocked(&self, req: &Request, code: Code, detail: &str) -> Response {
+        // Every refusal produces one line. This is the stream P1 #11 said did not exist,
+        // and the reason it has to be here rather than in `deny` is that `deny` records
+        // only the *transition* — the second and hundredth refused call on a dead
+        // connection are the ones an operator is watching, and they never reach `deny`.
+        self.emit(
+            crate::obs::Outcome::Deny,
+            Some(code),
+            parse_tool_call(&req.params).map(|(n, _)| n).as_deref(),
+        );
         Response {
             jsonrpc: "2.0".to_string(),
             id: req.id.clone(),
@@ -276,6 +292,7 @@ impl MediatedUpstream {
         detail: &str,
         tool: Option<String>,
     ) -> Response {
+        self.emit(crate::obs::Outcome::Record, Some(code), tool.as_deref());
         self.log.findings.push(Finding {
             code,
             detail: detail.to_string(),
@@ -284,6 +301,31 @@ impl MediatedUpstream {
         });
         self.log.forwarded += 1;
         self.inner.request(req)
+    }
+
+    /// Write one decision to the telemetry.
+    ///
+    /// Reads the peers and mode off the configuration rather than taking them as
+    /// arguments, so a new call site cannot pass the wrong ones — the whole value of the
+    /// `mode` field is that it distinguishes an observe deployment from an estate under
+    /// attack, and a call site that got it backwards would invert exactly that.
+    fn emit(&self, outcome: crate::obs::Outcome, code: Option<Code>, tool: Option<&str>) {
+        let jti = match &self.state {
+            State::Live { admitted, .. } => admitted.jti.as_str(),
+            _ => "",
+        };
+        self.cfg.telemetry.record(
+            self.log.cid.as_deref().unwrap_or(""),
+            outcome,
+            code,
+            self.cfg.mode,
+            tool.unwrap_or(""),
+            self.cfg.peer.caller.as_str(),
+            self.cfg.peer.callee.as_str(),
+            jti,
+            (self.cfg.now)(),
+            0,
+        );
     }
 
     /// `initialize`: resolve the contract and run every check that does not need
@@ -460,6 +502,14 @@ impl MediatedUpstream {
             }
         };
         let stat = filter::filter_catalog(catalog, &items, &mut as_value);
+        // §8.14's `wc_filter_tools{state}` and `wc_filter_failclosed_total`. The
+        // fail-closed counter is the one that matters most and is the easiest to miss: an
+        // unparseable upstream response becomes an *empty* catalogue, so the agent sees no
+        // tools and reports "the server has nothing", which reads as a broken upstream
+        // rather than as this mediator refusing to guess.
+        self.cfg
+            .telemetry
+            .filtered(stat.exposed as u64, stat.hidden as u64, stat.failed_closed);
         self.log
             .filtered
             .push((catalog.method().to_string(), stat.clone()));
@@ -572,8 +622,24 @@ impl MediatedUpstream {
             return self.tool_denial(req, e.code(), e.detail());
         }
 
+        // The allow path. Timed around the upstream call so `latency_us` is the cost of
+        // the whole mediated hop, which is the number §7.10's per-call budget is about.
+        let started = std::time::Instant::now();
         self.log.forwarded += 1;
-        self.inner.request(req)
+        let response = self.inner.request(req);
+        self.cfg.telemetry.record(
+            self.log.cid.as_deref().unwrap_or(""),
+            crate::obs::Outcome::Allow,
+            None,
+            self.cfg.mode,
+            &tool,
+            self.cfg.peer.caller.as_str(),
+            self.cfg.peer.callee.as_str(),
+            admitted.jti.as_str(),
+            now,
+            started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+        );
+        response
     }
 
     /// Fetch the catalogue on the mediator's own behalf and verify the pin.
@@ -594,6 +660,26 @@ impl MediatedUpstream {
     /// A refusal shaped as a tool error, so the agent handles it as a failed call
     /// rather than a transport fault.
     fn tool_denial(&self, req: &Request, code: Code, detail: &str) -> Response {
+        // A second refusal exit, distinct from `blocked` because a refused *call* is a
+        // JSON-RPC result carrying an error rather than a protocol error. It needs its own
+        // emit for exactly that reason: this is where an expired contract, an uncontracted
+        // tool and a ceiling breach come out, which is most of what an operator cares
+        // about, and hooking only `blocked` would have logged none of them.
+        self.emit(
+            crate::obs::Outcome::Deny,
+            Some(code),
+            parse_tool_call(&req.params).map(|(n, _)| n).as_deref(),
+        );
+        if matches!(
+            code,
+            Code::RATE_CEILING | Code::SPEND_CEILING | Code::CONCURRENCY_CEILING
+        ) {
+            self.cfg.telemetry.ceiling_breach(match code {
+                Code::RATE_CEILING => "rate",
+                Code::SPEND_CEILING => "spend",
+                _ => "concurrency",
+            });
+        }
         Response::ok(
             req.id.clone(),
             tool_error_result(format!("BLOCKED by warden-connect: {code} {detail}")),
