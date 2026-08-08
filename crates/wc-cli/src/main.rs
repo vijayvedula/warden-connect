@@ -21,6 +21,7 @@
 #![warn(missing_docs)]
 
 mod args;
+mod config;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -63,6 +64,9 @@ use args::Args;
 /// Where state and evidence live, by default.
 const DEFAULT_ROOT: &str = ".connect";
 
+/// The config file read when `--config` is not given, if it happens to exist.
+const DEFAULT_CONFIG: &str = "connect.toml";
+
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.is_empty() || argv[0] == "--help" || argv[0] == "-h" || argv[0] == "help" {
@@ -70,8 +74,8 @@ fn main() -> ExitCode {
         return ExitCode::from(if argv.is_empty() { 2 } else { 0 });
     }
 
-    let args = Args::parse(argv);
-    match dispatch(&args) {
+    let mut args = Args::parse(argv);
+    match dispatch(&mut args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(Failure::Usage(message)) => {
             eprintln!("connect: {message}\n");
@@ -206,6 +210,7 @@ const COMMANDS: &[&str] = &[
 
 /// Flags accepted by every command.
 const GLOBAL_FLAGS: &[&str] = &[
+    "config",
     "root",
     "tenant",
     "by",
@@ -480,7 +485,7 @@ fn check_flags(command: &str, args: &Args) -> std::result::Result<(), Failure> {
     )))
 }
 
-fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
+fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
     // `connect activate <id>` puts the id in `verbs`, because it precedes any
     // flag. So match on at most the first two words and let the handler take the
     // rest as positional — matching on the whole joined verb path would make
@@ -505,6 +510,23 @@ fn dispatch(args: &Args) -> std::result::Result<(), Failure> {
             other => format!("unknown command {other:?}"),
         }));
     }
+    // --- the config layer (§8.13, P1 #12) ---------------------------------
+    //
+    // Resolved here, after the command is known and before flags are checked, because
+    // which keys apply depends on the command. `--config FILE` is explicit; otherwise
+    // `connect.toml` beside the process is used if it exists. Absent is fine; present
+    // and broken is a startup failure, because a file that exists was written on purpose.
+    {
+        let mut known: Vec<&str> = accepted_flags(command).to_vec();
+        known.extend_from_slice(GLOBAL_FLAGS);
+        let loaded = match args.get("config") {
+            Some(path) => Some(config::Config::load(path).map_err(Failure::Wc)?),
+            None => config::Config::load_default(DEFAULT_CONFIG).map_err(Failure::Wc)?,
+        };
+        config::apply(args, loaded.as_ref(), &known);
+    }
+
+    let args = &*args;
     check_flags(command, args)?;
     // Before any command touches the filesystem. A tenant id is a path component,
     // so validating it once here is what keeps every later `paths()` call honest.
@@ -5060,6 +5082,11 @@ KEY CUSTODY  (docs/key-custody.md)
                         only from configuration
 
 GLOBAL
+  --config FILE      flag defaults from a TOML file (default: {DEFAULT_CONFIG} if it
+                     exists). Precedence is flag over file over env (§8.13); every
+                     flag also reads WARDEN_CONNECT_<FLAG>, derived not hand-wired.
+                     A key that maps to nothing is refused, not ignored — a config
+                     file is reviewed by somebody who believes it took effect
   --root PATH        state and evidence root (env WARDEN_CONNECT_ROOT, default {DEFAULT_ROOT})
   --tenant NAME      tenant (default: default)
   --by human:x       the accountable operator (env WARDEN_CONNECT_ACTOR)
@@ -5360,6 +5387,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_config_mapping_points_at_a_flag_some_command_accepts() {
+        // The mapping table promises `server.listen` fills `--listen`. If no command
+        // accepted `--listen`, the key would parse, validate, pass the unknown-key check
+        // and then be filtered out as not-for-this-command — silently, on every command.
+        // That is the same failure the module exists to prevent, one level up.
+        let mut all: Vec<&str> = GLOBAL_FLAGS.to_vec();
+        for command in COMMANDS {
+            all.extend_from_slice(accepted_flags(command));
+        }
+        for flag in config::mapped_flags() {
+            assert!(
+                all.contains(&flag),
+                "connect.toml maps to --{flag}, which no command accepts"
+            );
+        }
+    }
+
+    #[test]
+    fn the_config_file_is_read_and_a_flag_still_wins() {
+        // End to end through `dispatch`'s own layering rather than through `config::apply`
+        // alone, because the wiring is what was missing — the rule was never in doubt.
+        let dir = std::env::temp_dir().join(format!("wc-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("connect.toml");
+        std::fs::write(&path, "[server]\ntenant = \"from-file\"\n").unwrap();
+
+        let loaded = config::Config::load(path.to_str().unwrap()).unwrap();
+        let mut args = argv(&["entities"]);
+        config::apply(&mut args, Some(&loaded), &["tenant"]);
+        assert_eq!(
+            tenant_id(&args).unwrap().as_str(),
+            "from-file",
+            "the file layer must reach the code that uses it, not just the parser"
+        );
+
+        let mut overridden = argv(&["entities", "--tenant", "from-flag"]);
+        config::apply(&mut overridden, Some(&loaded), &["tenant"]);
+        assert_eq!(tenant_id(&overridden).unwrap().as_str(), "from-flag");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

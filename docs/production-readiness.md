@@ -454,16 +454,38 @@ by what unblocks the others.
   nobody has written down: ACK lag, mediators reported unconfirmed, a **distrusted
   revocation set**, and blocking-sink failures.
 
-- [~] **12. Config is flags plus two TOML sections.** `connect.toml` covers
-  `[[sink]]` and `[assurance]`; everything else is command-line flags. The LLD
-  claims twelve-factor config with a stated precedence (flag over file over env)
-  and the binaries do not implement it: there are four `WARDEN_CONNECT_*` variables
-  and no general config file, so the chain is **flag over env**, two layers.
+- [x] **12. Config resolves flag over file over env, as §8.13 says it does.**
 
-  [twelve-factor.md](twelve-factor.md) now exists and opens by saying so, which is
-  the part that was actually urgent — the gap was documented as satisfied. What is
-  still missing is the `--config FILE` layer itself, so a deployment with many flags
-  carries them in a unit file or a pod spec. Workable, and not what §1 claims.
+  It said so and it did not. There was no configuration file at all — `connect.toml`
+  held `[[sink]]` and `[assurance]` for their own loaders and nothing else — and env was
+  four hand-wired lookups. `connect serve --config connect.toml`, which §8.13 shows in
+  an example, was not something the binary could do.
+
+  * **File layer** — `--config FILE`, or `connect.toml` beside the process if it exists.
+    Resolved after the command is known, because which keys apply depends on it: one
+    deployment-wide file holds `listen` for `serve` beside `revocation_key` for
+    `quarantine`, and injecting all of it everywhere would make `connect entities` fail
+    the unknown-flag check because the file mentions a listener.
+  * **Env layer generalised** — `WARDEN_CONNECT_<FLAG>` for every flag, derived from the
+    flag name rather than hand-wired, so a new flag gets its variable by existing. The
+    four original names are unchanged, so an existing deployment keeps working. An empty
+    value does not override: `WARDEN_CONNECT_ROOT=` is how a variable gets unset in a
+    profile, and reading it as the empty path would put the estate in the working
+    directory.
+  * **An unknown key is refused, not ignored** — with the known keys listed. This is the
+    decision that makes the item worth doing rather than cosmetic: a config file is
+    version-controlled and reviewed by somebody who believes it took effect, so a
+    silently-dropped key is a false belief *with an audit trail behind it*. Same for a
+    key in the wrong section, which would otherwise be a near-miss that does nothing.
+  * **Ten §8.13 keys describe behaviour this build does not have** — `[server].tls`,
+    `[policy].hot_reload`, `pdp_url`, `[admission].rekor`, `require_provenance` and
+    others. Each is refused **with the reason**, so an operator who writes
+    `hot_reload = true` is told SIGHUP does not reload anything rather than discovering
+    it during a policy change. Accepting them would have been the failure above.
+
+  Two guard tests: every mapping points at a flag some command actually accepts, and the
+  precedence holds through `tenant_id` rather than only inside the parser — the rule was
+  never in doubt, the wiring was.
 
 - [ ] **13. Packaging.** No Dockerfile, no published image, no release process, no
   SBOM. Worth naming plainly: `export::cyclonedx_bom` produces a CycloneDX BOM of
