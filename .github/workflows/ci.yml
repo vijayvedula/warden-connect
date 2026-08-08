@@ -264,12 +264,23 @@ jobs:
           docker run --rm warden-connect:ci version
           docker run --rm --entrypoint connect-mediate warden-connect:ci --help | head -3
 
-      # The state root has to be writable by the non-root user, or `serve` fails on its
-      # first append — which would only be discovered by someone deploying it.
+      # The state root has to be writable by the non-root user, or `serve` fails on its first
+      # append — which would otherwise only be discovered by whoever deployed it.
+      #
+      # `register agent --card`, not `register server --endpoint`. The first version of this
+      # step used the latter and failed, correctly: registering a *server* runs admission
+      # stage 2, which fetches the callee's surface over the network, and `x.internal`
+      # resolves nowhere in a container. It exited 1 with `WC-1002 surface unobtainable`, so
+      # the step was testing DNS rather than the filesystem.
+      #
+      # A card is a file, so this path is entirely offline — and it proves more than the
+      # original intended: an append to the state log *and* to the evidence chain, both
+      # fsynced, as uid 10001.
       - name: the state root is writable by the unprivileged user
         run: |
-          docker run --rm warden-connect:ci \
-            register server --endpoint https://x.internal/mcp \
+          docker run --rm \
+            -v "$PWD/warden-connect/fixtures/attest/agent-card.signed.json:/card.json:ro" \
+            warden-connect:ci register agent --card /card.json \
             --owner human:ci --zone internal.ci --by human:ci
 
   # ---------------------------------------------------------------------------
