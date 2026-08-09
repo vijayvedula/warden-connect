@@ -242,4 +242,10 @@ rewriting the answer breaks the chain.
   *permanent* to *bounded by detection*. Rate limits, per-key authorisation policy
   and alerting on mint volume are what bound it; they are operational work, not a
   property the KMS provides for free.
-- **This note is a decision, not an implementation.** Nothing in it is built.
+- **The seams are built; the custody is not bought.** When this note was written nothing in
+  it existed. All five sub-items now do — `--signer`, `--anchor-signer`,
+  `--revocation-signer`, `--approver-signer`, `--envelope-signer`, the two revocation `kid`s,
+  and `custody::Separation` refusing an approver key that is the service's. What remains is
+  procurement and ceremony: a KMS key, a hardware token, an M-of-N PIN split, and holders who
+  have rehearsed. A delegated signer verified against SoftHSM is a verified *wrapper*, not a
+  verified *custody arrangement*. See [limitations.md](limitations.md).
