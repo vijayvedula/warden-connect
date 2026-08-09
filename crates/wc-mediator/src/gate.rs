@@ -344,6 +344,10 @@ impl MediatedUpstream {
             .and_then(Value::as_str)
             .map(str::to_string);
 
+        // Timed, because §8.14 declares `wc_verify_duration_seconds{path}` and nothing was
+        // observing it — the family was declared, documented, and never populated. This is
+        // the connection-establishment cost §7.10 bounds at p99 < 5 ms.
+        let started = std::time::Instant::now();
         let contract =
             match self
                 .cache
@@ -371,6 +375,12 @@ impl MediatedUpstream {
                 }
             };
         self.log.cid = Some(contract.payload.cid.as_str().to_string());
+        // `warm`: the contract came from the installed snapshot, which is every resolve the
+        // mediator does — it verifies signatures once at install time, not per connection.
+        // A `cold` path would mean rebuilding the key set, which only `Snapshot::build` does.
+        self.cfg
+            .telemetry
+            .verified(true, started.elapsed().as_secs_f64());
 
         let unused = Pin::empty((self.cfg.now)());
         let ctx = AdmitCtx {
