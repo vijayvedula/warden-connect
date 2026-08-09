@@ -120,25 +120,27 @@ fails on the day is a flat battery, a forgotten PIN, or a departed share-holder 
 
 ## 4 · SPIRE — attestation stage 1
 
-P0 #3. The verifiers run against fixtures minted by `cryptography`; nothing has run against a
-real issuer.
+**Done, and re-runnable.** Stage 1 has been verified against a real SPIRE 1.15.2 server and
+agent; the material is checked in at [`fixtures/spire/`](../fixtures/spire/README.md). The
+only dependency is **Docker**, already covered in §2:
 
 ```sh
-# https://spiffe.io/downloads — or:
-brew install spire            # binaries: spire-server, spire-agent
-```
-
-Then, per `fixtures/attest/README.md`:
-
-```sh
-spire-agent api fetch jwt -audience warden-connect://control-plane/apac \
-  | sed -n 's/^ *token: *//p' > fixtures/attest/jwt-svid.token
-spire-agent api fetch jwtbundles > fixtures/attest/spiffe-bundle.jwks.json
+scripts/spire-fixtures.sh          # downloads SPIRE, verifies the digest, mints
 cargo test -p wc-e2e --test attest
 ```
 
-The bundle needs no conversion — `IssuerKeys::add_jwks` reads a JWKS directly, which is what
-P0 #6 removed.
+Nothing to install by hand, and nothing to install on a Mac at all: **SPIRE publishes linux
+and windows binaries only**, so `brew install spire` does not exist and `command -v
+spire-server` will never succeed there. The script mounts the linux musl release binaries
+into Alpine instead — the official images are distroless and have no shell.
+
+The bundle needs no conversion: `spire-server bundle show -format spiffe` is already a JWKS
+and `IssuerKeys::add_jwks` reads it directly, which is what P0 #6 removed.
+
+> An earlier version of this section gave three commands that do not exist — `brew install
+> spire`, `spire-agent api fetch jwtbundles`, and a `sed` that never matched SPIRE's real
+> output. [`fixtures/spire/README.md`](../fixtures/spire/README.md) records what they should
+> have been. Worth knowing about any procedure in these docs that has not been run.
 
 ## 5 · cosign — attestation stage 4
 

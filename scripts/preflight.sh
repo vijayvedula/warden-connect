@@ -99,13 +99,19 @@ else
     miss "an MCP upstream" "expected warden/examples/echo_mcp_server.py"; DEEP_MISSING=1
 fi
 
-# --- attestation: the flows that are still stand-ins ------------------------
-bold "Attestation (P0 #3) — these flows run on minted fixtures, not real output"
+# --- attestation ------------------------------------------------------------
+bold "Attestation (P0 #3) — stages 1 and 4 run against real issuers; 2 and 3 do not"
 
-if have spire-server && have spire-agent; then
-    ok "SPIRE" "stage 1 JWT-SVID, and jwtbundles as a JWKS"
+# Not `command -v spire-server`, which this check used to do and which can never succeed on
+# a Mac: SPIRE publishes linux and windows binaries only. The dependency is Docker, and the
+# fixtures are checked in, so the flow is reachable wherever the daemon runs.
+if [ -f "$REPO/fixtures/spire/manifest.json" ]; then
+    ok "SPIRE fixtures" "real 1.15.2 output; re-mint with scripts/spire-fixtures.sh"
+elif have docker && docker info >/dev/null 2>&1; then
+    warn "SPIRE fixtures" "absent, but reachable: scripts/spire-fixtures.sh"
+    DEEP_MISSING=1
 else
-    miss "SPIRE" "https://spiffe.io/downloads — unlocks stage 1 against a real issuer"
+    miss "SPIRE fixtures" "needs docker — SPIRE has no darwin build to install"
     DEEP_MISSING=1
 fi
 
@@ -174,10 +180,10 @@ if [ "$DEEP_MISSING" = 1 ]; then
 
   What each missing dependency unlocks is printed above. In value order:
     1 · SoftHSM     — the delegated-signer path, and the DER vs R||S trap it documents
-    2 · SPIRE       — attestation stage 1 against a real issuer, and a real JWKS bundle
-    3 · Prometheus  — a live scrape; `promtool test rules` already proves each alert fires
-    4 · a TLS proxy — to re-verify --behind-tls-proxy end to end (done once already)
-    5 · cosign      — to regenerate fixtures/cosign/ (stage 4 already verified)
+    2 · Prometheus  — a live scrape; `promtool test rules` already proves each alert fires
+    3 · a TLS proxy — to re-verify --behind-tls-proxy end to end (done once already)
+    4 · cosign      — to regenerate fixtures/cosign/ (stage 4 already verified)
+    5 · docker      — to re-mint fixtures/spire/ (stage 1 already verified)
 
 BLOCKED
     exit 2

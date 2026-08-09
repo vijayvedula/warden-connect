@@ -112,7 +112,10 @@ mTLS/SVID identity compared to contract claims — **authenticated, never claime
 **Check:** `connect-mediate --peer-mode configured` records that identity came from
 configuration, not a handshake. Confirm the startup banner says so, and that a shared
 gateway is not running in `configured` mode.
-**Residual:** the workload-identity issuer.
+**Residual:** the workload-identity issuer. Stage 1 is verified against a real SPIRE 1.15.2
+server (`fixtures/spire/`), so what is proven is that an SVID was signed by a key in the
+bundle you configured. **Who is entitled to be in that bundle is SPIRE's problem** — a
+trust domain that will attest any workload that asks makes a valid SVID worth nothing here.
 
 ### A4 · Rug-pull / tool poisoning
 Pinned surface hash, connect-time comparison, re-attestation, injection screening.
@@ -128,6 +131,12 @@ reasons — a missing `keyid` and a DER signature — so an estate wiring up gen
 provenance would have been told its provenance was unverifiable and, reasonably, turned the
 requirement off. A control that refuses valid evidence is a control that gets disabled.
 `fixtures/cosign/` exists so that cannot recur.
+
+The same check was then run one stage up, against a real SPIRE server, and stage 1 passed
+unchanged — the only integration in this build that did. What it found instead was **four
+wrong commands in this repository's own procedure for exercising it**, one of which would
+have written an empty token file. Same lesson, one layer out: a control nobody can follow
+the instructions for is a control nobody runs.
 
 ### A5 · Shadow endpoint bypassing the mediator
 **Check:** this is a *deployment* property and the most commonly assumed-away threat. Confirm

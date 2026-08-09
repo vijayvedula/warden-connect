@@ -21,10 +21,16 @@
 //!   three parties, so they get three keypairs. A single key would let this pass while
 //!   the code confused the roles — and the negative case below proves it does not.
 //!
-//! What is still not proven, and is the remaining half of P0 #3: the material is the
-//! right *shape* but did not come out of a SPIRE server or a build pipeline. The
-//! fixtures are files on disk precisely so that swapping in real output and re-running
-//! this file is the whole test.
+//! A spec reading catches a disagreement about what a specification *says*; only another
+//! implementation catches a disagreement about what an issuer actually *emits*. Both
+//! matter, so both are here — the interop sections at the bottom of this file add real
+//! output from **SPIRE 1.15.2** (stage 1, `fixtures/spire/`) and **cosign v3.1.3**
+//! (stage 4, `fixtures/cosign/`) beside the minted material, rather than replacing it.
+//!
+//! What is still not proven: **stages 2 and 3**. There is no reference implementation of
+//! a signed A2A card to disagree with, so the card verifier is checked only against our
+//! own reading. That is exactly the position stage 4 was in before cosign, and cosign
+//! showed stage 4 was rejecting every real attestation.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -34,7 +40,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use wc_control::admission::{
-    self, AdmissionCtx, AdmissionRequest, Declared, InlineSurface, NoScreening, TierRules,
+    self, AdmissionCtx, AdmissionRequest, Declared, IdentityVerifier, InlineSurface, NoScreening,
+    TierRules,
 };
 use wc_control::attest::{DsseProvenanceVerifier, JwksCardVerifier, JwtSvidIdentity};
 use wc_control::screen::{Acceptances, NameIndex, RulesetScreener, ScreenMode, ScreenRules};
@@ -697,4 +704,262 @@ fn an_untrusted_key_is_still_refused_when_the_envelope_names_no_keyid() {
         .verify_envelope(&envelope)
         .expect_err("a key we do not trust must not verify it");
     assert_eq!(err.code(), Code::PROVENANCE_UNVERIFIABLE);
+}
+
+// ===========================================================================
+// Interop: a JWT-SVID minted by SPIRE, not by us
+// ===========================================================================
+//
+// The same argument as `fixtures/cosign/` one stage earlier. `fixtures/attest/jwt-svid.token`
+// is minted by `scripts/gen-attest-fixtures.py` from the SPIFFE and JOSE spec text, so it can
+// only catch a disagreement about what the specs *say*. `fixtures/spire/` is the output of a
+// real SPIRE 1.15.2 server and agent, which is the only thing that catches a disagreement
+// about what an issuer actually emits.
+//
+// Two things a reader should know about the shape, because they are the parts a verifier is
+// most likely to get wrong (see `a_real_spire_svid_omits_iss_and_nbf`):
+//
+//   · **there is no `iss` claim.** SPIRE does not emit one; the trust domain is carried in
+//     `sub`. A verifier with `set_issuer(...)` would reject every real SVID.
+//   · **`aud` is an array**, even for one audience.
+//
+// The trust bundle is checked in exactly as `spire-server bundle show -format spiffe` printed
+// it — including the `x509-svid` key that has no `kid` — because that whole document is what an
+// operator will paste, and `add_jwks` has to survive it rather than require it be pre-filtered.
+
+fn spire_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/spire")
+}
+
+fn spire_read(name: &str) -> String {
+    let path = spire_dir().join(name);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}\n\nSee fixtures/spire/README.md.", path.display()))
+}
+
+fn spire_manifest() -> Value {
+    serde_json::from_str(&spire_read("manifest.json")).unwrap()
+}
+
+/// The trust bundle, loaded the way an operator would: the whole SPIFFE bundle, unedited.
+fn spire_bundle() -> (IssuerKeys, wc_core::contract::JwksReport) {
+    let mut keys = IssuerKeys::new();
+    let report = keys
+        .add_jwks(&spire_read("bundle.spiffe.json"))
+        .expect("SPIRE's own trust bundle must load");
+    (keys, report)
+}
+
+fn spire_identity<'a>(
+    keys: &'a IssuerKeys,
+    token: &str,
+    audience: &str,
+    now: u64,
+) -> JwtSvidIdentity<'a> {
+    JwtSvidIdentity {
+        keys,
+        audience: audience.to_string(),
+        token: token.trim().to_string(),
+        leeway: 60,
+        now,
+    }
+}
+
+#[test]
+fn a_real_spire_jwt_svid_authenticates_the_party_it_names() {
+    // Stage 1 against a real issuer. Until this test existed, every SVID the verifier had
+    // ever seen was minted by a script in this repository.
+    let m = spire_manifest();
+    let (keys, _) = spire_bundle();
+    let identity = spire_identity(
+        &keys,
+        &spire_read("jwt-svid.token"),
+        m["audience"].as_str().unwrap(),
+        m["iat"].as_u64().unwrap(),
+    );
+    let proof = identity
+        .verify_identity(&request(m["spiffe_id"].as_str().unwrap(), card()))
+        .expect("a real SPIRE JWT-SVID must authenticate");
+    assert_eq!(proof.id.as_str(), m["spiffe_id"].as_str().unwrap());
+    assert!(
+        proof.verified,
+        "a signature-checked SVID is not a mere assertion"
+    );
+    assert!(
+        proof.method.contains(m["jwt_svid_kid"].as_str().unwrap()),
+        "the proof should name the bundle key that verified it: {}",
+        proof.method
+    );
+}
+
+#[test]
+fn the_whole_spiffe_bundle_loads_and_says_what_it_could_not_use() {
+    // `bundle show -format spiffe` returns the x509-svid signing key beside the jwt-svid one,
+    // and the x509 key has no `kid`. Both facts have to be true for this fixture to be
+    // exercising anything, so they are asserted rather than assumed.
+    let m = spire_manifest();
+    let doc: Value = serde_json::from_str(&spire_read("bundle.spiffe.json")).unwrap();
+    let uses: Vec<&str> = doc["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["use"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        uses,
+        vec!["x509-svid", "jwt-svid"],
+        "the fixture's shape changed"
+    );
+    assert!(
+        doc["keys"][0]["kid"].is_null(),
+        "the x509-svid key is meant to have no kid — that is the case this test covers"
+    );
+
+    let (keys, report) = spire_bundle();
+    assert_eq!(
+        report.added,
+        vec![m["jwt_svid_kid"].as_str().unwrap().to_string()],
+        "exactly the JWT signing key should become trusted"
+    );
+    assert_eq!(report.skipped, vec!["no kid".to_string()]);
+    assert!(
+        !report.is_complete(),
+        "a bundle with an unusable key is not complete, and an operator should be told"
+    );
+    assert_eq!(
+        keys.kids(),
+        report.added,
+        "trusted kids and the report must agree"
+    );
+}
+
+#[test]
+fn a_real_spire_token_minted_for_another_audience_is_refused() {
+    // A2, against real material: the same agent, the same bundle, an SVID SPIRE minted for
+    // the EMEA control plane presented to the APAC one.
+    let m = spire_manifest();
+    let (keys, _) = spire_bundle();
+    let identity = spire_identity(
+        &keys,
+        &spire_read("jwt-svid-other-audience.token"),
+        m["audience"].as_str().unwrap(),
+        m["iat"].as_u64().unwrap(),
+    );
+    let err = identity
+        .verify_identity(&request(m["spiffe_id"].as_str().unwrap(), card()))
+        .expect_err("an SVID for another control plane must not authenticate here");
+    assert_eq!(err.code(), Code::IDENTITY_UNVERIFIABLE);
+
+    // And it is a real token, not a broken one: it verifies against the audience it was
+    // minted for. Otherwise this test would pass on a corrupt fixture.
+    let other = spire_identity(
+        &keys,
+        &spire_read("jwt-svid-other-audience.token"),
+        m["other_audience"].as_str().unwrap(),
+        m["iat"].as_u64().unwrap(),
+    );
+    other
+        .verify_identity(&request(m["spiffe_id"].as_str().unwrap(), card()))
+        .expect("the same token must verify for its own audience");
+}
+
+#[test]
+fn a_real_spire_svid_omits_iss_and_nbf() {
+    // Not a test of our code — a test of the assumption our code is allowed to make. SPIRE
+    // emits neither claim, so any future `set_required_spec_claims(["iss"])` or `nbf` floor
+    // would reject every real SVID while every fixture in `fixtures/attest/` kept passing.
+    // This test is here to fail first, with the reason attached.
+    let token = spire_read("jwt-svid.token");
+    let claims_b64 = token
+        .trim()
+        .split('.')
+        .nth(1)
+        .expect("a JWS has three parts");
+    let claims: Value =
+        serde_json::from_slice(&base64_url_decode(claims_b64)).expect("the claims are JSON");
+
+    assert!(
+        claims.get("iss").is_none(),
+        "SPIRE grew an `iss` claim: {claims}"
+    );
+    assert!(
+        claims.get("nbf").is_none(),
+        "SPIRE grew an `nbf` claim: {claims}"
+    );
+    assert!(
+        claims["aud"].is_array(),
+        "`aud` is an array even for one audience: {claims}"
+    );
+    for required in ["sub", "aud", "exp", "iat"] {
+        assert!(
+            claims.get(required).is_some(),
+            "SPIRE dropped `{required}`: {claims}"
+        );
+    }
+}
+
+#[test]
+fn a_real_spire_svid_is_refused_once_its_own_exp_passes() {
+    // SPIRE's default JWT-SVID lifetime is short by design, so the checked-in token is
+    // expired against the wall clock and always will be. Judged at an instant it chooses,
+    // the same token is accepted before `exp` and refused after — which is the whole reason
+    // `JwtSvidIdentity::now` is injected rather than read from the system.
+    let m = spire_manifest();
+    let (keys, _) = spire_bundle();
+    let exp = m["exp"].as_u64().unwrap();
+    let id = m["spiffe_id"].as_str().unwrap();
+
+    spire_identity(
+        &keys,
+        &spire_read("jwt-svid.token"),
+        m["audience"].as_str().unwrap(),
+        exp - 60,
+    )
+    .verify_identity(&request(id, card()))
+    .expect("valid a minute before exp");
+
+    let err = spire_identity(
+        &keys,
+        &spire_read("jwt-svid.token"),
+        m["audience"].as_str().unwrap(),
+        exp + 3600,
+    )
+    .verify_identity(&request(id, card()))
+    .expect_err("an hour past exp it must be refused, not carried");
+    assert_eq!(err.code(), Code::IDENTITY_UNVERIFIABLE);
+    assert!(err.detail().contains("expired at"), "{}", err.detail());
+}
+
+#[test]
+fn a_real_spire_svid_does_not_vouch_for_a_party_it_does_not_name() {
+    // The binding stage 1 exists for, against real material: cryptographically valid, and
+    // presented for somebody else.
+    let m = spire_manifest();
+    let (keys, _) = spire_bundle();
+    let identity = spire_identity(
+        &keys,
+        &spire_read("jwt-svid.token"),
+        m["audience"].as_str().unwrap(),
+        m["iat"].as_u64().unwrap(),
+    );
+    let err = identity
+        .verify_identity(&request(
+            "spiffe://example.org/ns/agents/sa/somebody-else",
+            card(),
+        ))
+        .expect_err("a valid SVID must not attest a party it does not name");
+    assert_eq!(err.code(), Code::IDENTITY_UNVERIFIABLE);
+    assert!(
+        err.detail().contains("registration claims"),
+        "the refusal should name the binding that failed: {}",
+        err.detail()
+    );
+}
+
+/// base64url without padding, for reading a JWS payload in a test.
+fn base64_url_decode(s: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s)
+        .expect("a JWS segment is base64url")
 }

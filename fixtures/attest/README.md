@@ -40,23 +40,29 @@ and they sign nothing outside it. Regenerating is `rm -rf fixtures/attest && pyt
 scripts/gen-attest-fixtures.py`; the script reuses existing keys so a routine
 regeneration does not invalidate a trust bundle somebody has configured against them.
 
-## What this still does not prove — P0 #3's remaining half
+## What this does not prove, and where that is now covered
 
-The material is the right *shape* and it did not come out of a SPIRE server or a build
-pipeline. That is why these are files rather than constants: point the test at real
-output and re-run it.
+The material here is the right *shape* and none of it came out of a SPIRE server or a
+build pipeline. Both real-issuer gaps are now closed by sibling directories rather than
+by replacing anything here — a spec reading and an implementation catch different
+disagreements, so both are kept:
+
+| Stage | Real output lives in | What it found |
+|---|---|---|
+| 1 · identity | [`fixtures/spire/`](../spire/README.md) — SPIRE 1.15.2 | no code defect; **four wrong commands in our own docs** |
+| 4 · provenance | [`fixtures/cosign/`](../cosign/README.md) — cosign v3.1.3 | two defects that made every real attestation fail |
 
 ```sh
-# stage 1, against a running SPIRE agent
-spire-agent api fetch jwt -audience warden-connect://control-plane/apac \
-  | sed -n 's/^ *token: *//p' > fixtures/attest/jwt-svid.token
-# and the bundle it should verify against. What SPIRE hands back is a JWKS, which
-# `IssuerKeys::add_jwks` now reads directly — the conversion step this line used to
-# ask for is gone.
-spire-agent api fetch jwtbundles > fixtures/attest/spiffe-bundle.jwks.json
-
-cargo test -p wc-e2e --test attest
+scripts/spire-fixtures.sh          # mints fixtures/spire/ from a real server
+cargo test -p wc-e2e --test attest # both fixture sets, one suite
 ```
 
-The audience, the SPIFFE ID in `manifest.json` and the trust-bundle `kid` all have to
-match what SPIRE actually issues, and the test will say which one does not.
+Stages 2 and 3 have no equivalent: there is no reference implementation of an A2A card
+signature to disagree with us. That remains the honest gap, and it is recorded in
+[`docs/limitations.md`](../../docs/limitations.md).
+
+> The procedure this section used to give was wrong in three ways, which is worth keeping
+> visible: it piped `spire-agent api fetch jwt` through `sed -n 's/^ *token: *//p'`, which
+> matches nothing because the real output reads `token(spiffe://…):` with the token on the
+> *next* line — so it would have written an **empty** file — and it called
+> `spire-agent api fetch jwtbundles`, which is not a subcommand SPIRE has.
