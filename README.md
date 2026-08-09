@@ -159,6 +159,7 @@ can live in an HSM, a smartcard or a KMS and never reach this process.
 | [docs/07-hld.md](docs/07-hld.md) | High-level design — the two-layer model, the artifact, the family |
 | [docs/08-lld.md](docs/08-lld.md) | Low-level design — every module, every check, the build order |
 | [docs/physical-architecture.md](docs/physical-architecture.md) | Four deployment variants: on-prem VMs, Kubernetes, AWS, Azure |
+| [docs/prerequisites.md](docs/prerequisites.md) | Every external dependency, what each unlocks, and `scripts/preflight.sh` to check |
 | [docs/threat-model.md](docs/threat-model.md) | The bug class this system produces, a review checklist, and the eleven threats as things to verify |
 | [docs/deployment.md](docs/deployment.md) | The four-stage adoption ladder, and a pre-production checklist |
 | [docs/runbook.md](docs/runbook.md) | Symptom-first incident response |
