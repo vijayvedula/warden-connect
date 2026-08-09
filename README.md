@@ -7,9 +7,11 @@ whether two parties may be *connected at all*, and bounds what that connection c
 ever carry. One is per-call authorisation. The other is the standing relationship the
 calls happen inside.
 
-> **Beta.** Not independently audited. See
-> [docs/production-readiness.md](docs/production-readiness.md) — it is a list of what is
-> missing, written before anyone asked.
+> **Beta.** Not independently audited, and no hardening pass has been run. Two documents you
+> should read before relying on this: [docs/limitations.md](docs/limitations.md) — everything
+> it does not do, in one place, labelled *by design* / *unbuilt* / *unproven* / *environmental*
+> — and [docs/production-readiness.md](docs/production-readiness.md), which tracks the work.
+> Both were written before anyone asked.
 
 ---
 
@@ -159,6 +161,7 @@ can live in an HSM, a smartcard or a KMS and never reach this process.
 | [docs/07-hld.md](docs/07-hld.md) | High-level design — the two-layer model, the artifact, the family |
 | [docs/08-lld.md](docs/08-lld.md) | Low-level design — every module, every check, the build order |
 | [docs/physical-architecture.md](docs/physical-architecture.md) | Four deployment variants: on-prem VMs, Kubernetes, AWS, Azure |
+| [docs/limitations.md](docs/limitations.md) | **Everything this does not do**, in one place |
 | [docs/prerequisites.md](docs/prerequisites.md) | Every external dependency, what each unlocks, and `scripts/preflight.sh` to check |
 | [docs/threat-model.md](docs/threat-model.md) | The bug class this system produces, a review checklist, and the eleven threats as things to verify |
 | [docs/deployment.md](docs/deployment.md) | The four-stage adoption ladder, and a pre-production checklist |

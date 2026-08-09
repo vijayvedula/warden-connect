@@ -3,7 +3,7 @@
 ## The film, vertical — for phones
 
 [`warden-connect-mobile.mp4`](warden-connect-mobile.mp4) · 1080×1920 · 9:16 ·
-30 fps · **3:55** · no audio track. Poster:
+30 fps · **5:33** · no audio track. Poster:
 [`warden-connect-mobile-poster.jpg`](warden-connect-mobile-poster.jpg).
 
 The web presentation *"Why agent connections need a control plane"* as a video a
@@ -16,15 +16,23 @@ tall. Every scene is authored portrait instead, and three of them read *better* 
 it — an agent above a service with the in-path check between them is what the request
 path actually looks like, which the landscape version had to lay out sideways.
 
-**Captions are the primary channel, and they are burned in.** Phone video is watched
-muted, so the narration is 56 px serif in a fixed band rather than a thin strip under
-the figure. The test it is built to pass: sound off, picture ignored, script still
-lands.
+**Captions are the primary channel, and they lead.** Phone video is watched muted, so
+the narration is 56 px serif — and it sits at the **top** of the frame, where reading
+starts, with the picture beneath it. The chapter name, which used to hold that spot, is
+now a quiet footer: it orients, it does not lead. The test it is built to pass: sound
+off, picture ignored, script still lands.
 
-**Fixed pacing, derived from the words.** The web version has a transport bar and is
-self-paced. Here each beat is held for its own reading time — 3.8 words/second,
-floored at 2.0 s so short beats do not flash and capped at 4.4 s so long ones do not
-stall. A viewer who needs longer can scrub; one who is bored leaves.
+**Read first, then watch.** Every content shot is **8 seconds**: the sentence is on
+screen *alone* for the first three, and only then does the picture cross-fade in and
+hold for five. A viewer is never asked to read and watch at the same time, and because
+every shot is the same length the rhythm stops being something to wonder about. The
+cross-fade is the same frame drawn with and without the stage, blended — so the text
+does not flicker when the picture arrives.
+
+**Fixed pacing.** The web version has a transport bar and is self-paced; this cannot
+be. Shot length is now a constant `SHOT = 8.0` rather than a reading estimate. The
+per-caption estimates are still computed and still in the source, so returning to
+text-length pacing is a one-line change in `Video.scene`.
 
 **A scene builds; it never fades itself out.** `p` completes at the end of the build,
 not the end of the shot, so a scene that faded itself at `p → 1` went dark for the
