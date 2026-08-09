@@ -126,6 +126,21 @@ otherwise let a single decision forge a second log line claiming an allow.
 
 These are the ones the design implies and nobody had written down.
 
+**They are now a loadable rules file with unit tests**, not snippets on this page:
+
+```sh
+promtool check rules deploy/prometheus/alerts.yml        # 9 rules
+promtool test rules  deploy/prometheus/alerts_test.yml   # each one proven to fire
+```
+
+`check` proves the file parses; **`test` proves an alert fires**, which is the part that
+matters — "the rule loaded" is the same half-claim as a control that reads as configured. The
+test file also asserts the cases each alert must stay **quiet** for, because an alert that
+fires on an idle estate gets muted, and a muted alert is the one you needed. Mutation-checked:
+inverting a threshold and removing the "chain is growing" guard both fail the suite.
+
+Writing them found a defect — see *The self-diagnostics* below.
+
 ### 1 · Containment is not landing
 
 ```promql
@@ -191,11 +206,29 @@ wc_contracts_expiring{window="1h"} > 0 and rate(wc_contracts_minted_total[1h]) =
 wc_anchor_age_seconds > 3600 and increase(wc_chain_length[1h]) > 0
 
 # A label set is being folded. Not urgent; means a dashboard is losing detail.
-wc_obs_series_dropped_total > 0
+increase(wc_obs_series_dropped_total[1h]) > 0
 
 # A metric name is misspelled somewhere in this codebase.
 wc_obs_unknown_family_total > 0
 ```
+
+### The self-diagnostics, and what writing the rules found
+
+Both of those series are **present at zero** on a healthy process. They were not: the
+exposition emitted them only once they had a value, which violated this system's own rule —
+*a family that appears only once it has a non-zero value cannot be alerted on.*
+
+For a bare `> 0` alert the conditional version happens to work. What it breaks is everything
+around it: `rate()` and `increase()` over a series with no prior sample are empty, a dashboard
+panel reads "no data" forever, and `absent()` cannot tell a healthy endpoint from one nobody
+is scraping. And `wc_obs_unknown_family_total` exists to catch a **misspelled metric name** —
+so having it invisible until the mistake happens is that same mistake, one level up. It
+survived because nothing had ever evaluated the alert against a live series.
+
+**The cost, stated:** `wc_obs_series_dropped_total` is per-family, so a control plane emits
+about 25 zero-valued series for it. Deliberate — the alert annotates with
+`{{ $labels.metric }}`, so an aggregate would say detail was being lost without saying where —
+and 25 series per process is worth an alert that can be graphed.
 
 ---
 

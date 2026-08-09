@@ -136,13 +136,17 @@ if have aws; then ok "aws cli" "AWS KMS as the delegated signer"; else
     warn "aws cli" "optional: an alternative to SoftHSM for --signer"; fi
 
 # --- observability ----------------------------------------------------------
-bold "Observability (P1 #11) — the four alerts have never been evaluated"
+bold "Observability (P1 #11) — the alert rules are unit-tested; a live scrape is extra"
 
-have prometheus && ok "prometheus" "evaluates the alert rules" \
-    || { miss "prometheus" "brew install prometheus — the four alerts are unevaluated PromQL"; DEEP_MISSING=1; }
+have prometheus && ok "prometheus" "a live scrape; the rules are already unit-tested" \
+    || { miss "prometheus" "brew install prometheus — for a live scrape of the rules"; DEEP_MISSING=1; }
 
-have promtool && ok "promtool" "syntax-checks the alert rules" \
-    || warn "promtool" "ships with prometheus"
+if have promtool; then
+    ok "promtool" "checks and TESTS deploy/prometheus/alerts.yml"
+else
+    miss "promtool" "ships with prometheus — needed to run the alert unit tests"
+    DEEP_MISSING=1
+fi
 
 if have caddy || have nginx || have haproxy; then
     ok "a TLS proxy" "exercises --behind-tls-proxy end to end"
@@ -171,7 +175,7 @@ if [ "$DEEP_MISSING" = 1 ]; then
   What each missing dependency unlocks is printed above. In value order:
     1 · SoftHSM     — the delegated-signer path, and the DER vs R||S trap it documents
     2 · SPIRE       — attestation stage 1 against a real issuer, and a real JWKS bundle
-    3 · Prometheus  — the four alerts, which are unevaluated PromQL today
+    3 · Prometheus  — a live scrape; `promtool test rules` already proves each alert fires
     4 · a TLS proxy — --behind-tls-proxy above the socket level
     5 · cosign      — attestation stage 4 against real provenance
 

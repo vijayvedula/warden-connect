@@ -221,6 +221,19 @@ jobs:
       # inventory its agents while being uninventoriable is asking for a trust it does not
       # extend. The check fails on a component with no licence and on a local path leaking
       # into the document.
+      # The alert rules, unit-tested. `check` proves the file parses; `test` proves each
+      # alert fires and — as importantly — stays quiet on an idle estate. Writing these
+      # found two rules referencing series that did not exist on a healthy control plane.
+      - name: alert rules
+        working-directory: warden-connect
+        run: |
+          if command -v promtool >/dev/null 2>&1; then
+            promtool check rules deploy/prometheus/alerts.yml
+            promtool test rules  deploy/prometheus/alerts_test.yml
+          else
+            echo "promtool absent; skipping (see scripts/preflight.sh)"
+          fi
+
       - name: SBOM of ourselves
         working-directory: warden-connect
         run: |

@@ -45,7 +45,7 @@
 | | Evidence |
 |---|---|
 | Modules delivered | All of P0–P4 (§8.16). `wc-core` 7 modules, `wc-control` 23, `wc-mediator` 8, `wc-cli` |
-| Tests | **978 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
+| Tests | **979 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
 | Conformance | 19 vectors in `fixtures/contracts/`, driven off `expected.json`; `connect verify` is the ground truth (§8.15.3) |
 | Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expect_used` warned workspace-wide |
 | CI | [`ci.yml`](../.github/workflows/ci.yml) — 5 jobs: stable, MSRV 1.89, release-mode latency gates, supply chain + dependency ceilings, nightly fuzz build |
@@ -619,6 +619,27 @@ by what unblocks the others.
 
   The seven original unlabelled series are still served under `_total` names. A renamed
   metric does not make a dashboard panel error; it makes it go blank.
+
+  **The alerts are now evaluated, and evaluating them found a defect.**
+  [`deploy/prometheus/alerts.yml`](../deploy/prometheus/alerts.yml) is nine loadable rules
+  with [unit tests](../deploy/prometheus/alerts_test.yml) — `promtool test rules` proves each
+  one *fires*, and asserts the cases each must stay **quiet** for, because an alert that
+  fires on an idle estate gets muted. Mutation-checked: inverting a threshold and removing
+  the "chain is growing" guard both fail the suite, so the tests are not decorative.
+
+  Verified against a live control plane under a real Prometheus scrape, all nine rules
+  healthy — which is how the defect surfaced. `wc_obs_series_dropped_total` and
+  `wc_obs_unknown_family_total` were emitted **only when non-zero**, so two rules referenced
+  series that did not exist on a healthy process. That violated this system's own rule, stated
+  three paragraphs above the offending code: *a family that appears only once it has a
+  non-zero value cannot be alerted on.* For a bare `> 0` alert it happens to work; it breaks
+  `increase()`, every dashboard panel, and `absent()`. And the family it broke worst is the
+  one that catches a **misspelled metric name** — invisible until the mistake happens, which
+  is that mistake one level up.
+
+  The live scrape also caught me evaluating against a stale binary: the fix was in the source
+  and the running process was the previous build, and the query returned zero series exactly
+  as it had before. A textual cross-check of metric names would not have noticed.
 
 - [x] **12. Config resolves flag over file over env, as §8.13 says it does.**
 

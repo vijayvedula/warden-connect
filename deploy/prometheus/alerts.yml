@@ -1,0 +1,151 @@
+# The four alerts warden-connect's design implies (docs/observability.md, P1 #11).
+#
+# They were PromQL in a document and had never been evaluated. An alert nobody has run is a
+# query — and writing this file found a real defect: two rules referenced series that did not
+# exist on a healthy control plane, because the metrics system emitted its own diagnostics
+# only once they were non-zero.
+#
+#   promtool check rules deploy/prometheus/alerts.yml
+#   promtool test rules  deploy/prometheus/alerts_test.yml
+#
+# `for:` durations are deliberately short on the two page-level alerts. Containment is a
+# 60-second promise (§7.10); a 5-minute `for:` would make the alert slower than the thing it
+# is watching.
+groups:
+  - name: warden-connect-containment
+    rules:
+      # 1 · Containment is not landing. THE most dangerous state this system has: every
+      # dashboard says the party was cut off and the party is still working.
+      - alert: WardenConnectMediatorUnconfirmed
+        expr: wc_mediator_unconfirmed > 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $value }} mediator(s) past a containment order's deadline"
+          description: >-
+            Unconfirmed is not contained. The registry transition is the control plane's own
+            state; the party keeps working until every mediator holding one of its contracts
+            stops honouring it. `connect mediators` names them.
+          runbook: docs/runbook.md#a-party-was-quarantined-but-is-still-working
+
+      # 2 · A distrusted revocation set. Mediator-side: the control plane cannot observe
+      # this, which is why the gauge lives there.
+      #
+      # Expect this to arrive as "all the agents are down". It is fail-closed working as
+      # designed and is indistinguishable from an outage from the outside.
+      - alert: WardenConnectRevocationDistrusted
+        expr: wc_revocation_trusted == 0
+        for: 30s
+        labels:
+          severity: page
+        annotations:
+          summary: "a mediator cannot verify the revocation feed and is refusing everything"
+          description: >-
+            Fix the feed's signature or its transport — never by disabling the check. A feed
+            you cannot verify is a feed an attacker may have written.
+          runbook: docs/runbook.md#all-the-agents-are-down
+
+      # The quieter, worse variant: the control plane serves no feed at all, so nothing it
+      # revokes can ever reach a mediator. Nothing else on the endpoint would say so.
+      - alert: WardenConnectNoRevocationFeed
+        expr: wc_revocation_feed_serving == 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "this control plane serves no revocation feed"
+          description: >-
+            Quarantine will record a transition and reach nothing. Supported as the
+            control-plane-only topology; not containment.
+
+  - name: warden-connect-slo
+    rules:
+      # 3 · ACK lag breaching §7.10's own 60-second claim. A ticket, not a page: this is the
+      # design's promise being measured, and drift here is what turns 60 seconds into a
+      # number nobody checks. Alert before the estate needs it to be true.
+      - alert: WardenConnectAckLagBreaching
+        expr: >-
+          (
+            1 - (
+              sum(rate(wc_mediator_ack_lag_seconds_bucket{le="60"}[30m]))
+              /
+              sum(rate(wc_mediator_ack_lag_seconds_count[30m]))
+            )
+          ) > 0.01
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of containment orders took over 60s"
+          description: >-
+            §7.10 states estate-wide propagation under 60 s. The 60 bucket exists so that
+            claim is measurable rather than asserted.
+
+      # 4 · A blocking sink that cannot deliver means issuance is REFUSED — there is no
+      # connection without a recorded trail (§7.8's fail-closed matrix). A fail-safe sink
+      # failing is a retention problem, not an availability one, so severity is on the
+      # operator to set per sink.
+      - alert: WardenConnectSinkFailing
+        expr: increase(wc_sink_failures_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "sink {{ $labels.sink }} is failing delivery"
+          description: >-
+            If this sink is `blocking`, the control plane is refusing to issue. If it is
+            `fail-safe`, evidence is reaching the chain and not being shipped.
+
+  - name: warden-connect-integrity
+    rules:
+      # Checkpoints have stopped while the chain is still growing. Liveness, not integrity:
+      # `wc_anchor_age_seconds` is read without verifying signatures, and is exactly the
+      # number an attacker who could rewrite the chain would want looking healthy.
+      # Integrity is `connect audit verify --anchor-pub`, on a schedule.
+      - alert: WardenConnectAnchorsStalled
+        expr: wc_anchor_age_seconds > 3600 and increase(wc_chain_length[1h]) > 0
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "the chain is growing and no checkpoint has been signed for an hour"
+
+      # The expiry sweep has stopped, as distinct from a busy estate: contracts inside the
+      # 1-hour window while nothing is being minted.
+      - alert: WardenConnectExpirySweepStalled
+        expr: wc_contracts_expiring{window="1h"} > 0 and rate(wc_contracts_minted_total[1h]) == 0
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "contracts expiring within the hour and nothing is being issued"
+
+  - name: warden-connect-telemetry-self
+    rules:
+      # The metrics system's own diagnostics. Both are present at zero on a healthy process —
+      # they were not, until writing these rules found that, and an alert on a series that
+      # only appears when it is non-zero cannot be graphed, rated, or distinguished from an
+      # endpoint nobody scrapes.
+      - alert: WardenConnectMetricMisspelled
+        expr: wc_obs_unknown_family_total > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "a metric name in this codebase does not match a declared family"
+          description: >-
+            Somewhere a call site emits to a family nobody registered. That series is
+            missing from every dashboard built on it, silently.
+
+      - alert: WardenConnectCardinalityFolding
+        expr: increase(wc_obs_series_dropped_total[1h]) > 0
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.metric }} is folding label sets into overflow"
+          description: >-
+            Past the 256-series cap. Detail is being lost, not data — the fold is deliberate
+            so a dashboard does not read a missing series as zero. Raise the cap
+            deliberately if this is a large estate.

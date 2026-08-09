@@ -1,0 +1,165 @@
+# Unit tests for the alert rules (`promtool test rules`).
+#
+# `promtool check rules` proves the file parses. It does **not** prove an alert fires — and
+# "the rule loaded" is exactly the kind of half-claim this repository keeps finding. These
+# tests synthesise the series and assert the alert appears, so each rule is proven against
+# the shape of data the exposition actually produces.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # --- 1 · containment not landing -----------------------------------------
+  - interval: 1m
+    name: an unconfirmed mediator pages, and a confirmed estate stays quiet
+    input_series:
+      - series: 'wc_mediator_unconfirmed'
+        values: "0 0 0 1 1 1 1"
+    alert_rule_test:
+      # Quiet while zero.
+      - eval_time: 2m
+        alertname: WardenConnectMediatorUnconfirmed
+        exp_alerts: []
+      # Non-zero, but inside `for: 1m` — pending, not firing.
+      - eval_time: 3m
+        alertname: WardenConnectMediatorUnconfirmed
+        exp_alerts: []
+      # Held for a minute: fires.
+      - eval_time: 5m
+        alertname: WardenConnectMediatorUnconfirmed
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "1 mediator(s) past a containment order's deadline"
+              description: "Unconfirmed is not contained. The registry transition is the control plane's own state; the party keeps working until every mediator holding one of its contracts stops honouring it. `connect mediators` names them."
+              runbook: docs/runbook.md#a-party-was-quarantined-but-is-still-working
+
+  # --- 2 · a distrusted revocation set -------------------------------------
+  - interval: 1m
+    name: a mediator that cannot verify the feed pages
+    input_series:
+      - series: 'wc_revocation_trusted'
+        values: "1 1 0 0 0"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: WardenConnectRevocationDistrusted
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: WardenConnectRevocationDistrusted
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "a mediator cannot verify the revocation feed and is refusing everything"
+              description: "Fix the feed's signature or its transport — never by disabling the check. A feed you cannot verify is a feed an attacker may have written."
+              runbook: docs/runbook.md#all-the-agents-are-down
+
+  # --- 3 · ACK lag breaching the 60-second claim ---------------------------
+  - interval: 1m
+    name: propagation slower than 60s for more than 1% of orders raises a ticket
+    input_series:
+      # 100 orders, 90 inside 60s. 10% breach — well past the 1% threshold.
+      - series: 'wc_mediator_ack_lag_seconds_bucket{le="60"}'
+        values: "0+90x60"
+      - series: 'wc_mediator_ack_lag_seconds_count'
+        values: "0+100x60"
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: WardenConnectAckLagBreaching
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: "10% of containment orders took over 60s"
+              description: "§7.10 states estate-wide propagation under 60 s. The 60 bucket exists so that claim is measurable rather than asserted."
+
+  - interval: 1m
+    name: propagation entirely inside 60s stays quiet
+    input_series:
+      - series: 'wc_mediator_ack_lag_seconds_bucket{le="60"}'
+        values: "0+100x60"
+      - series: 'wc_mediator_ack_lag_seconds_count'
+        values: "0+100x60"
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: WardenConnectAckLagBreaching
+        exp_alerts: []
+
+  # --- 4 · a failing sink --------------------------------------------------
+  - interval: 1m
+    name: a sink failing delivery pages, named
+    input_series:
+      - series: 'wc_sink_failures_total{sink="security-lake"}'
+        values: "0 0 0 1 2 3 4 5 6 7 8 9 10 11 12"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: WardenConnectSinkFailing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              sink: security-lake
+            exp_annotations:
+              summary: "sink security-lake is failing delivery"
+              description: "If this sink is `blocking`, the control plane is refusing to issue. If it is `fail-safe`, evidence is reaching the chain and not being shipped."
+
+  # --- the self-diagnostics, which is what these tests found ---------------
+  - interval: 1m
+    name: a misspelled metric name is caught, and zero stays quiet
+    input_series:
+      # Present at ZERO on a healthy process. This series existing at all is the fix these
+      # rules prompted: it used to appear only once non-zero, so the alert referenced
+      # something that did not exist on a healthy control plane.
+      - series: 'wc_obs_unknown_family_total'
+        values: "0 0 0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: WardenConnectMetricMisspelled
+        exp_alerts: []
+
+  - interval: 1m
+    name: a non-zero unknown-family count raises a ticket
+    input_series:
+      - series: 'wc_obs_unknown_family_total'
+        values: "0 0 3 3 3 3 3 3 3"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: WardenConnectMetricMisspelled
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: "a metric name in this codebase does not match a declared family"
+              description: "Somewhere a call site emits to a family nobody registered. That series is missing from every dashboard built on it, silently."
+
+  # --- integrity -----------------------------------------------------------
+  - interval: 1m
+    name: stalled checkpoints on a growing chain raise a ticket
+    input_series:
+      - series: 'wc_anchor_age_seconds'
+        values: "3700+60x80"
+      - series: 'wc_chain_length'
+        values: "100+5x80"
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: WardenConnectAnchorsStalled
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: "the chain is growing and no checkpoint has been signed for an hour"
+
+  - interval: 1m
+    name: a quiet chain with old anchors is not an alert
+    input_series:
+      # Nothing has been appended, so there is nothing to checkpoint. An alert here would
+      # fire on every idle estate, and an alert that fires on idleness gets muted.
+      - series: 'wc_anchor_age_seconds'
+        values: "3700+60x80"
+      - series: 'wc_chain_length'
+        values: "100+0x80"
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: WardenConnectAnchorsStalled
+        exp_alerts: []
