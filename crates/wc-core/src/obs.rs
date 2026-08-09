@@ -229,6 +229,9 @@ impl Registry {
     pub fn to_prometheus(&self) -> String {
         let families = self.lock();
         let mut out = String::new();
+        // Accumulated separately so the family's `# HELP`/`# TYPE` are written once, above
+        // all of its series, which is what the exposition format requires.
+        let mut dropped = String::new();
         for (name, family) in families.iter() {
             out.push_str(&format!("# HELP {name} {}\n", family.help));
             out.push_str(&format!("# TYPE {name} {}\n", family.kind.as_str()));
@@ -258,19 +261,36 @@ impl Registry {
                     }
                 }
             }
-            if family.dropped > 0 {
-                out.push_str(&format!(
-                    "wc_obs_series_dropped_total{{metric=\"{name}\"}} {}\n",
-                    family.dropped
-                ));
-            }
+            // Emitted at zero as well as non-zero. These two are the metrics system's own
+            // diagnostics, and they used to appear only once they had a value — which
+            // violated this module's own rule, three paragraphs up in `register`'s doc: *a
+            // family that appears only once it has a non-zero value cannot be alerted on*.
+            //
+            // For a bare `> 0` alert the conditional version happens to work. What it breaks
+            // is everything around it: `rate()` over a series with no prior sample is empty,
+            // a dashboard panel reads "no data" forever, and `absent()` cannot tell a healthy
+            // endpoint from one nobody is scraping. `wc_obs_unknown_family_total` exists to
+            // catch a *misspelled metric name*, so having it be invisible until the mistake
+            // happens is the mistake it is meant to catch, one level up.
+            dropped.push_str(&format!(
+                "wc_obs_series_dropped_total{{metric=\"{name}\"}} {}\n",
+                family.dropped
+            ));
         }
-        let unknown = self.unknown.load(Ordering::Relaxed);
-        if unknown > 0 {
-            out.push_str("# HELP wc_obs_unknown_family_total Emits naming an undeclared metric.\n");
-            out.push_str("# TYPE wc_obs_unknown_family_total counter\n");
-            out.push_str(&format!("wc_obs_unknown_family_total {unknown}\n"));
+        if !dropped.is_empty() {
+            out.push_str(
+                "# HELP wc_obs_series_dropped_total Series folded into overflow by the \
+                 cardinality cap.\n",
+            );
+            out.push_str("# TYPE wc_obs_series_dropped_total counter\n");
+            out.push_str(&dropped);
         }
+        out.push_str("# HELP wc_obs_unknown_family_total Emits naming an undeclared metric.\n");
+        out.push_str("# TYPE wc_obs_unknown_family_total counter\n");
+        out.push_str(&format!(
+            "wc_obs_unknown_family_total {}\n",
+            self.unknown.load(Ordering::Relaxed)
+        ));
         out
     }
 
@@ -607,6 +627,46 @@ mod tests {
             text.contains("wc_obs_series_dropped_total{metric=\"m\"} 7"),
             "the overflow has to be visible in the exposition: {text}"
         );
+    }
+
+    #[test]
+    fn the_self_diagnostics_are_present_at_zero_so_an_alert_can_resolve() {
+        // This module's own rule, applied to itself. Both series used to appear only once
+        // they had a value, which for a bare `> 0` alert happens to work and breaks
+        // everything around it: `rate()` over a series with no prior sample is empty, a
+        // panel reads "no data" forever, and `absent()` cannot tell a healthy endpoint from
+        // one nobody scrapes.
+        //
+        // `wc_obs_unknown_family_total` catches a **misspelled metric name**. Having it be
+        // invisible until the mistake happens is that same mistake, one level up — which is
+        // how it survived: the alert in `docs/observability.md` referenced a series that did
+        // not exist on a healthy control plane, and nothing said so.
+        let r = registry();
+        let text = r.to_prometheus();
+
+        assert!(
+            text.contains("# TYPE wc_obs_unknown_family_total counter"),
+            "declared on a clean registry: {text}"
+        );
+        assert!(
+            text.contains("\nwc_obs_unknown_family_total 0\n"),
+            "and present at zero: {text}"
+        );
+
+        // The per-family drop counter, likewise: zero for every declared family.
+        assert!(
+            text.contains("wc_obs_series_dropped_total{metric=\"wc_denials_total\"} 0"),
+            "a family that has dropped nothing still reports zero: {text}"
+        );
+
+        // And it still counts when something does drop.
+        let capped = Registry::new().with_cap(1);
+        capped.register("m", Kind::Counter, "h");
+        capped.inc("m", &[("a", "1")], 1);
+        capped.inc("m", &[("b", "2")], 1);
+        assert!(capped
+            .to_prometheus()
+            .contains("wc_obs_series_dropped_total{metric=\"m\"} 1"));
     }
 
     #[test]

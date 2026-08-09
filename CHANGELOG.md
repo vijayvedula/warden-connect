@@ -96,7 +96,7 @@ between here and a release.
 
 ### Tests and CI
 
-- **978 tests** across unit, e2e, failure-injection, property, fuzz and attestation-interop
+- **979 tests** across unit, e2e, failure-injection, property, fuzz and attestation-interop
   tiers, plus the conformance vectors.
 - CI: fmt, clippy with `-D warnings`, the full suite, MSRV 1.89, the §8.10.3 latency gates
   via `connect bench`, screening calibration, `cargo deny`, and per-crate dependency
