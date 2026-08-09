@@ -740,17 +740,15 @@ fn transport_policy(args: &Args, listen: &str) -> Result<wc_control::api::Transp
         return Ok(wc_control::api::Transport::Insecure);
     }
 
-    let trusted: Vec<std::net::IpAddr> = args
+    // An address or a CIDR block. Blocks matter because an AWS ALB answers from many
+    // addresses and a Kubernetes Ingress pod gets a new one on every restart, so exact
+    // matching made the strong configuration unusable in two of the four documented
+    // topologies — and the fallback is `--trusted-proxy` omitted, which believes the header
+    // from anywhere.
+    let trusted: Vec<wc_control::api::TrustedSource> = args
         .list("trusted-proxy")
         .iter()
-        .map(|raw| {
-            raw.parse().map_err(|_| {
-                WcError::with_detail(
-                    Code::CONFIG_INVALID,
-                    format!("--trusted-proxy {raw:?} is not an IP address"),
-                )
-            })
-        })
+        .map(|raw| wc_control::api::TrustedSource::parse(raw))
         .collect::<Result<_>>()?;
 
     if args.has("behind-tls-proxy") {
@@ -5397,9 +5395,12 @@ TRANSPORT  (serve speaks plain HTTP; TLS is terminated in front of it)
                         must then carry `x-forwarded-proto: https`, so a request
                         that reaches the port directly — bypassing the ingress —
                         is refused rather than trusted
-  --trusted-proxy ADDR  believe that header only from this address. Repeatable.
-                        Omitted means any source, which is correct only if nothing
-                        else can reach the port
+  --trusted-proxy ADDR  believe that header only from this address or CIDR block
+                        (10.0.1.5 or 10.0.1.0/24). Repeatable. Omitted means any
+                        source, which is correct only if nothing else can reach
+                        the port. A /0 is refused: it reads as a restriction and
+                        matches everything, so omit the flag instead and let the
+                        banner say so
   --insecure-plaintext  accept tokens over plaintext from anywhere. Named so it is
                         visible in the process list and in the startup banner
 

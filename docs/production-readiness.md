@@ -45,7 +45,7 @@
 | | Evidence |
 |---|---|
 | Modules delivered | All of P0–P4 (§8.16). `wc-core` 7 modules, `wc-control` 23, `wc-mediator` 8, `wc-cli` |
-| Tests | **980 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
+| Tests | **988 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
 | Conformance | 19 vectors in `fixtures/contracts/`, driven off `expected.json`; `connect verify` is the ground truth (§8.15.3) |
 | Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expect_used` warned workspace-wide |
 | CI | [`ci.yml`](../.github/workflows/ci.yml) — 5 jobs: stable, MSRV 1.89, release-mode latency gates, supply chain + dependency ceilings, nightly fuzz build |
@@ -377,7 +377,33 @@ by what unblocks the others.
   and proves a running mediator picks it up. The mechanism is tested; the procedure is
   not, and per P1 #9 an unrehearsed procedure is an assumption.
 
-- [x] **7. A non-loopback listener no longer accepts credentials in clear.**
+- [x] **7. A non-loopback listener no longer accepts credentials in clear, and the trust
+  list is now expressible.**
+
+  **Verified end to end behind a real terminating proxy** (Caddy), which is what found the
+  gap: `--trusted-proxy` took **exact addresses only**, and an AWS ALB answers from many
+  addresses while a Kubernetes Ingress pod gets a new one every restart. So in two of the four
+  topologies [physical-architecture.md](physical-architecture.md) documents, an operator either
+  enumerated addresses that changed underneath them or omitted the flag — and omitting it
+  believes the header from *anywhere*, which on a flat pod network restricts nothing. **A
+  control whose correct setting is impractical is a control everybody turns off.**
+
+  `TrustedSource` now takes an address or a CIDR block. A `/0` is **refused**: it parses, reads
+  as a restriction, and matches every address in existence, so the error names the honest
+  alternative — omit the flag and let the banner say so. Host bits are masked rather than
+  refused, because `10.0.1.5/24` is what an operator types, and treating it as a `/32` would
+  silently narrow the block to one address and break the next Ingress restart. The `/32` shift
+  boundary is tested, because a wrapping shift there would make the narrowest config match
+  every address.
+
+  **A limitation found and deliberately not fixed:** a process at a trusted address can forge
+  the header. With a same-host proxy, `--trusted-proxy 127.0.0.1` is satisfied by anything on
+  the box. The threat the control exists for is *remote* plaintext, which stays closed, and a
+  local process has better attacks available — but the address check is only as strong as the
+  separation between the proxy and everything else that can reach the port, and no CIDR fixes
+  that because the forger shares the address. Written up in
+  [threat-model.md](threat-model.md) so nobody assumes otherwise; the real mechanism would be
+  a shared secret between proxy and listener, which is not implemented.
 
   In-process TLS is deliberately **not** implemented, and that is the decision rather
   than the omission: every topology in
