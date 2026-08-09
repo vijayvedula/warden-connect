@@ -252,6 +252,23 @@ fn run() -> Result<(), String> {
     let mut trust = build_trust(&args)?;
     eprintln!("connect-mediate: issuer trust — {}", trust.describe(now()));
 
+    // --- telemetry (P1 #11) -----------------------------------------------
+    //
+    // The decision log is the only place a refused call is visible: the control plane sees
+    // issuance, and issuance stays healthy while every call in the estate is denied. It is
+    // on by default at `notable` — denials and observe-mode findings — because a default of
+    // `off` would mean the stream exists and nobody's deployment has it.
+    let level = match flag(&args, "decision-log") {
+        None => wc_core::obs::LogLevel::default(),
+        Some(word) => wc_core::obs::LogLevel::parse(&word)
+            .ok_or_else(|| format!("--decision-log {word:?} is not off, notable or all"))?,
+    };
+    let mut telemetry = wc_mediator::obs::Telemetry::new(level);
+    if let Some(path) = flag(&args, "metrics-file") {
+        telemetry = telemetry.with_metrics_file(path);
+    }
+    let telemetry = Arc::new(telemetry);
+
     let cache = Arc::new(Cache::new());
     let refresh_secs: u64 = flag(&args, "refresh")
         .and_then(|v| v.parse().ok())
@@ -335,6 +352,7 @@ fn run() -> Result<(), String> {
         let loop_client = client.clone();
         let loop_cache = Arc::clone(&cache);
         let loop_mediator = mediator_id.clone();
+        let loop_telemetry = Arc::clone(&telemetry);
         // The trust itself moves into the loop rather than being rebuilt from the PEM
         // here, which is what it used to be. Rebuilding meant the thread held a *copy*
         // of the startup trust: contracts refreshed every tick and the keys they were
@@ -379,6 +397,10 @@ fn run() -> Result<(), String> {
                     last_kids = kids;
                 }
 
+                loop_telemetry.cache_state(
+                    loop_cache.revocations().distrusted().is_none(),
+                    loop_cache.snapshot().len() as u64,
+                );
                 match client::refresh(&loop_client, &loop_cache, keys, &loop_mediator, seq, at) {
                     Ok(report) => {
                         seq = report.seq;
@@ -396,6 +418,16 @@ fn run() -> Result<(), String> {
             }
         });
     }
+
+    // The gauges, once the cache actually holds something, and a first flush so the metrics
+    // file exists from second zero. Without that flush a mediator living less than the
+    // interval writes **no file at all** — a per-task agent invocation is exactly that — and
+    // the staleness alert cannot tell "never started" from "started recently".
+    telemetry.cache_state(
+        cache.revocations().distrusted().is_none(),
+        cache.snapshot().len() as u64,
+    );
+    telemetry.flush();
 
     // --- peer identity (§8.6.6) ---
     //
@@ -447,23 +479,23 @@ fn run() -> Result<(), String> {
         cfg.zones = Box::new(wc_core::contract::AnyZone);
     }
 
-    // --- telemetry (P1 #11) -----------------------------------------------
-    //
-    // The decision log is the only place a refused call is visible: the control plane sees
-    // issuance, and issuance stays healthy while every call in the estate is denied. It is
-    // on by default at `notable` — denials and observe-mode findings — because a default of
-    // `off` would mean the stream exists and nobody's deployment has it.
-    let level = match flag(&args, "decision-log") {
-        None => wc_core::obs::LogLevel::default(),
-        Some(word) => wc_core::obs::LogLevel::parse(&word)
-            .ok_or_else(|| format!("--decision-log {word:?} is not off, notable or all"))?,
-    };
-    let mut telemetry = wc_mediator::obs::Telemetry::new(level);
-    if let Some(path) = flag(&args, "metrics-file") {
-        telemetry = telemetry.with_metrics_file(path);
-    }
-    let telemetry = Arc::new(telemetry);
     cfg.telemetry = Arc::clone(&telemetry);
+
+    // --- the gauges the alerts depend on ----------------------------------
+    //
+    // `wc_revocation_trusted` and `wc_contracts_held` were **declared and never set**, so
+    // the `wc_revocation_trusted == 0` alert — the most important of the four, a mediator
+    // refusing every connection — could never fire, because the series did not exist on a
+    // real mediator. `Telemetry::cache_state` existed with no caller. Exactly the defect
+    // class this component is about, in the telemetry meant to detect it.
+    //
+    // Reported after the contract set is installed and again on every refresh tick, because
+    // both answers change: a set is installed, and a feed can become distrusted at any pull.
+    // Written once now rather than only after the first tick. Without this a mediator that
+    // lives less than the flush interval writes **no file at all** — and a per-task agent
+    // invocation is exactly that. It also makes the staleness alert meaningful: absence can
+    // then only mean "never started", not "started recently".
+    telemetry.flush();
 
     // A file is only useful if something rewrites it. On its own thread rather than on the
     // request path: flushing per call would put a filesystem write between the agent and
@@ -559,5 +591,11 @@ fn run() -> Result<(), String> {
         let _ = worker.join();
     }
     gateway.checkpoint_audit();
+
+    // Beside `checkpoint_audit`, which had the same job for Warden core's audit and was
+    // already here. Telemetry missing from this line was the asymmetry that hid the bug:
+    // the audit was durable on exit and the counters were not, so a mediator that exited
+    // lost up to a full interval — and one that exited quickly lost everything.
+    telemetry.flush();
     Ok(())
 }

@@ -1197,3 +1197,35 @@ fn decisions_are_counted_by_code_so_a_spike_is_attributable() {
         Some(3)
     );
 }
+
+#[test]
+fn the_verify_histogram_is_populated_on_a_real_connection() {
+    // §8.14 declares `wc_verify_duration_seconds{path}` and `docs/observability.md` lists it
+    // as emitted. **Nothing observed it.** `Telemetry::verified` existed with no caller, so
+    // the family was declared, documented, and permanently empty — the defect class this
+    // component exists to catch, in the telemetry meant to catch it.
+    //
+    // Found by running a mediator and reading its metrics file rather than by reading code:
+    // the family appeared in the exposition with `# TYPE` and a count of zero, which is
+    // exactly what "declared and never populated" looks like from the outside.
+    let mut f = fixture(&["get_balance"]);
+    f.mediated.request(&initialize());
+
+    let r = f.telemetry.registry();
+    let text = r.to_prometheus();
+    assert!(
+        text.contains("wc_verify_duration_seconds_count 1"),
+        "one connection establishment must be one observation:\n{text}"
+    );
+    assert!(
+        text.contains("path=\"warm\""),
+        "the mediator verifies signatures once at install time, so every resolve is warm"
+    );
+
+    // And §7.10 bounds establishment at p99 < 5 ms, so the observation must land inside a
+    // bucket rather than only in +Inf — otherwise the histogram cannot measure the claim.
+    assert!(
+        text.contains("le=\"0.005\"} 1"),
+        "a resolve from an installed snapshot should be far inside 5 ms:\n{text}"
+    );
+}

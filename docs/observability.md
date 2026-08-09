@@ -22,6 +22,13 @@ would actually alert on.
 The mediator's metrics file is the node-exporter **textfile collector** convention: the
 scrape becomes somebody else's problem and this process keeps no socket open.
 
+It is written **at startup, every 10 s, and on exit**. The startup write matters more than it
+looks: without it a mediator that lives less than the interval wrote no file at all, which is
+exactly the shape of a per-task agent invocation — every counter lost while the decision log
+on stderr survived. The exit write matters for the same reason `checkpoint_audit` is on that
+line. A `SIGTERM` still loses at most one interval, which is bounded and acceptable because
+these are cumulative counters and the file is rewritten whole.
+
 ### The division that matters most
 
 **A healthy control plane tells you nothing about whether calls are succeeding.**

@@ -45,7 +45,7 @@
 | | Evidence |
 |---|---|
 | Modules delivered | All of P0–P4 (§8.16). `wc-core` 7 modules, `wc-control` 23, `wc-mediator` 8, `wc-cli` |
-| Tests | **979 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
+| Tests | **980 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
 | Conformance | 19 vectors in `fixtures/contracts/`, driven off `expected.json`; `connect verify` is the ground truth (§8.15.3) |
 | Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expect_used` warned workspace-wide |
 | CI | [`ci.yml`](../.github/workflows/ci.yml) — 5 jobs: stable, MSRV 1.89, release-mode latency gates, supply chain + dependency ceilings, nightly fuzz build |
@@ -640,6 +640,33 @@ by what unblocks the others.
   The live scrape also caught me evaluating against a stale binary: the fix was in the source
   and the running process was the previous build, and the query returned zero series exactly
   as it had before. A textual cross-check of metric names would not have noticed.
+
+  **Then running a mediator found three more, and the third is the worst.**
+
+  * **A mediator living less than the 10 s flush interval wrote no metrics file at all.**
+    Every counter lost. A per-task agent invocation is exactly that shape. The decision log
+    survived, because it goes to stderr — so the two halves of one telemetry had different
+    durability, and with `--decision-log off` a short-lived mediator produced *nothing*, while
+    `obs.rs` promises counters are kept at every level so turning logging down costs detail
+    rather than visibility.
+  * **No flush on exit.** `gateway.checkpoint_audit()` was already on that line doing exactly
+    this job for Warden core's audit. Telemetry's absence from it was the asymmetry that hid
+    the first bug: the audit was durable on exit and the counters were not.
+  * **`Telemetry::cache_state` and `verified` had no callers.** So
+    `wc_revocation_trusted`, `wc_contracts_held` and `wc_verify_duration_seconds` were
+    **declared, documented in [observability.md](observability.md), and never populated** —
+    and the `wc_revocation_trusted == 0` alert, the most important of the four because it
+    means a mediator is refusing every connection, **could never fire.** The series did not
+    exist on a real mediator. Written, documented, unit-tested at the type level, and dead at
+    the call site: the defect class this whole component is about, occurring inside the
+    telemetry built to detect it.
+
+  Fixed: flush at startup so the file exists from second zero, flush on exit beside
+  `checkpoint_audit`, `cache_state` reported after the contract set installs and on every
+  refresh tick, and the establishment path timed into `wc_verify_duration_seconds`. Pinned by
+  `the_verify_histogram_is_populated_on_a_real_connection`, which also asserts the observation
+  lands inside the 5 ms bucket §7.10 bounds establishment at — a histogram whose observations
+  all fall in `+Inf` cannot measure the claim it exists for.
 
 - [x] **12. Config resolves flag over file over env, as §8.13 says it does.**
 
