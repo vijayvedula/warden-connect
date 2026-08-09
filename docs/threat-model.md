@@ -123,6 +123,12 @@ and blocking is earned per estate.
 **Residual:** behaviour changing within an unchanged declared surface. That is
 `warden-trace`'s problem, and it is not covered here.
 
+**Interop is part of this threat.** Stage 4 rejected every real cosign attestation for two
+reasons — a missing `keyid` and a DER signature — so an estate wiring up genuine SLSA
+provenance would have been told its provenance was unverifiable and, reasonably, turned the
+requirement off. A control that refuses valid evidence is a control that gets disabled.
+`fixtures/cosign/` exists so that cannot recur.
+
 ### A5 · Shadow endpoint bypassing the mediator
 **Check:** this is a *deployment* property and the most commonly assumed-away threat. Confirm
 from the network side that the callee is unreachable except through the mediator. A mediator

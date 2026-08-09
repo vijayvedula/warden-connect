@@ -45,7 +45,7 @@
 | | Evidence |
 |---|---|
 | Modules delivered | All of P0–P4 (§8.16). `wc-core` 7 modules, `wc-control` 23, `wc-mediator` 8, `wc-cli` |
-| Tests | **988 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
+| Tests | **993 green** — unit, integration, 17 e2e (§8.15.4), 12 failure-injection (§8.15.5), 15 property (§8.15.1), 6 fuzz-mirror (§8.15.2), 9 attestation-interop, 8 transport |
 | Conformance | 19 vectors in `fixtures/contracts/`, driven off `expected.json`; `connect verify` is the ground truth (§8.15.3) |
 | Lint | `cargo clippy --workspace --all-targets` clean, `unwrap_used`/`expect_used` warned workspace-wide |
 | CI | [`ci.yml`](../.github/workflows/ci.yml) — 5 jobs: stable, MSRV 1.89, release-mode latency gates, supply chain + dependency ceilings, nightly fuzz build |
@@ -177,11 +177,37 @@ by what unblocks the others.
   jwtbundles` returns a JWKS and `IssuerKeys::add_jwks` ingests it, so the
   convert-to-PEM step between here and a real SPIRE is gone.
 
-  **What is still missing:** the material did not come out of a SPIRE server or a
-  build pipeline. Replacing the three files with real output and re-running
-  `cargo test -p wc-e2e --test attest` is the remaining step, and it is why they are
-  files on disk rather than constants in the test. Needs an integration environment
-  with SPIRE and a signing builder.
+  **Stage 4 now runs against real cosign output, and that found two defects that made
+  `DsseProvenanceVerifier` reject every real cosign attestation outright.**
+
+  `fixtures/cosign/` is an envelope from cosign v3.1.3 — an independent *implementation*,
+  where `gen-attest-fixtures.py` is an independent *reading*. The reading catches
+  disagreements about what the specs say; only the implementation catches disagreements about
+  what the ecosystem emits:
+
+  * **cosign omits `keyid`.** DSSE calls it an optional, unauthenticated *hint*; the verifier
+    required it and refused with *"signature has no keyid"*. An absent hint now means "try
+    every key this verifier already trusts", which is safe precisely because the candidate set
+    is our own configuration — an attacker choosing the hint may select among keys we trust and
+    can never introduce one. That is the distinction §7.8 A1 turns on, and it is why *this*
+    lookup may fall back where a contract's `kid` may not.
+  * **cosign signs ECDSA as DER.** The verifier expected raw `R‖S`, as JWS uses. DSSE
+    specifies no encoding, so it accepted exactly one dialect of a two-dialect format — its
+    own. **The third appearance of the DER trap**, and the worst placement: `key-custody.md`
+    documents it for signing, where the failure is contracts nobody can verify; here it
+    silently refused provenance that was perfectly valid.
+
+  Verified through the real CLI path — `register server --attest` against the cosign envelope
+  now records `Provenance Passed("dsse keyid=cosign-1 · subject matched · builder allowed")`.
+  Five interop tests keep it there, including one asserting the fixture *really does* omit
+  `keyid` and use DER, so the coverage cannot evaporate if cosign changes, and one asserting
+  the try-all-keys fallback still refuses an untrusted key.
+
+  **What is still missing:** stage 1. The SVID did not come out of a SPIRE server, and that
+  needs an integration environment. Stage 4's *signature* path is now real; its *builder
+  identity* is not — the cosign key is local, so `builder.id` is a string the fixture asserts
+  about itself, and `rekor inclusion not checked` in the verifier's own verdict says nothing
+  consults a transparency log.
 
 - [x] **4. Screening precision and recall are gated, and the corpus could not see
   its worst false-positive class.** This entry was wrong when written: precision

@@ -59,9 +59,15 @@ RED = (0xf2, 0x6b, 0x5b)
 # Chosen against a phone in a feed, not against a design grid.
 PAD = 72
 TOP_SAFE = 150          # feed chrome lives above this
-EYEBROW_Y = 168         # the chapter title
-STAGE_Y0, STAGE_Y1 = 262, 1120
-CAP_Y = 1188            # narration band, the part that must survive muting
+# The narration leads. A viewer reads the sentence, *then* the picture arrives to
+# illustrate it — so the words occupy the top of the frame and the stage sits under
+# them. The chapter name is demoted to a quiet footer: it orients, it does not lead.
+CAP_Y = 186             # narration band, the part that must survive muting
+# The tallest caption in the film is 252 px and so ends at 438; the stage starts
+# clear of that. Its height is unchanged from the old layout — the whole block just
+# moved down — so every scene's internal composition still holds.
+STAGE_Y0, STAGE_Y1 = 580, 1438
+CHAP_Y = 1560           # the chapter title, small
 PROG_Y = 1636
 MARK_Y = 1706
 BOT_SAFE = 1790         # nothing meaningful below
@@ -89,6 +95,8 @@ def sub(p, n, i):
 
 class Canvas:
     def __init__(self):
+        # False while a shot is still showing only its narration.
+        self.graphic = True
         self.im = Image.new("RGB", (W, H), BG)
         self.d = ImageDraw.Draw(self.im)
 
@@ -250,13 +258,10 @@ class Canvas:
 
     # -- furniture ----------------------------------------------------------
     def eyebrow(self, s, a=1.0):
+        """The chapter name. Quiet, at the foot — the narration is the headline now."""
         if a <= 0.01:
             return
-        self.text((W // 2, EYEBROW_Y), s, "serif", 46, YELLOW, a, anchor="ma")
-        f = font("serif", 46)
-        tw = self.d.textlength(s, font=f)
-        self.line((W // 2 - tw / 2, EYEBROW_Y + 66), (W // 2 + tw / 2, EYEBROW_Y + 66),
-                  YELLOW, a * 0.38, 2)
+        self.text((W // 2, CHAP_Y), s, "mono", 28, YELLOW, a * 0.75, anchor="ma")
 
     def caption(self, main, sub_=None, a=1.0, accent=None):
         """The band that has to work with the sound off.
@@ -270,13 +275,13 @@ class Canvas:
         y = CAP_Y
         width = W - PAD * 2 - 40
         for ln in self.lines(main, width, "serif", 56):
-            self._accented(y, ln, accent or {}, 56)
+            self._accented(y, ln, accent or {}, 56, a)
             y += int(56 * 1.28)
         if sub_:
             y += 14
             self.centred(y, sub_, width, "sans", 34, DIM, a * 0.92, leading=1.42)
 
-    def _accented(self, y, ln, accent, size):
+    def _accented(self, y, ln, accent, size, a=1.0):
         f = font("serif", size)
         total = self.d.textlength(ln, font=f)
         x = W // 2 - total / 2
@@ -296,7 +301,7 @@ class Canvas:
                     nxt.append((txt, c))
             pieces = nxt
         for txt, col in pieces:
-            self.d.text((x, y), txt, font=f, fill=col)
+            self.d.text((x, y), txt, font=f, fill=blend(col, a))
             x += self.d.textlength(txt, font=f)
 
     def progress(self, done, n, within=0.0):
@@ -331,8 +336,15 @@ class Canvas:
 # came to 0.8 s, which is not long enough to read anything — the number that matters
 # to a reader is "how many seconds is this frame in front of me", so that is the
 # number the code holds.
-BUILD = 1.2          # seconds of animation, then it stops moving
-MIN_STILL = 3.0      # seconds the finished frame is held, at minimum
+# A shot is read before it is watched. The narration is on screen alone for
+# TEXT_ONLY seconds — long enough to finish the sentence — and only then does the
+# picture arrive and hold. Every content shot is the same length, because a viewer
+# who has learned the rhythm stops wondering when the next thing happens.
+SHOT = 8.0           # seconds, start to start: 3 reading + 5 watching
+TEXT_ONLY = 3.0      # the sentence, alone
+G_FADE = 0.45        # the picture arrives over this
+BUILD = 1.2          # then animates
+MIN_STILL = 3.0      # kept for the title card, which has no two-phase shape
 FADE_IN = 0.13       # seconds
 FADE_OUT = 0.34      # seconds
 
@@ -374,23 +386,25 @@ class Video:
         self.path = path
         self.scenes = []
 
-    def scene(self, seconds):
-        """`seconds` is the reading estimate for this shot's caption.
+    def scene(self, seconds, shape="split"):
+        """`shape="split"` is the two-phase content shot: the sentence alone, then
+        the picture. It is a fixed `SHOT` seconds regardless of `seconds`, which is
+        kept only so the reading estimates stay in the source — flipping back to
+        text-length pacing is a one-line change here.
 
-        The still *is* the reading time, so it scales with the text and is floored at
-        `MIN_STILL`. Written as `max(seconds, BUILD + MIN_STILL)` instead, every shot
-        came out at exactly 4.5 s — the floor swallowed the variation and forty-two
-        identical shots is a metronome. `FADE_OUT` is added on top so the floor is
-        3 s of *fully opaque* frame rather than 3 s ending in a dip.
+        `shape="plain"` is the old single-phase shot, used by the title card.
         """
         def deco(fn):
-            total = BUILD + max(MIN_STILL, seconds) + FADE_OUT
-            self.scenes.append((max(1, int(total * FPS)), fn))
+            if shape == "split":
+                total = SHOT
+            else:
+                total = BUILD + max(MIN_STILL, seconds) + FADE_OUT
+            self.scenes.append((max(1, int(total * FPS)), fn, shape))
             return fn
         return deco
 
     def render(self):
-        total = sum(n for n, _ in self.scenes)
+        total = sum(n for n, _, _ in self.scenes)
         proc = subprocess.Popen(
             ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
              "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-",
@@ -401,15 +415,32 @@ class Video:
             stderr=subprocess.DEVNULL)
         fin, fout = int(FPS * FADE_IN), int(FPS * FADE_OUT)
         zin = max(1, int(FPS * ZOOM_IN))
-        for count, fn in self.scenes:
+        t_on = int(FPS * TEXT_ONLY)
+        nfade = max(1, int(FPS * G_FADE))
+        for count, fn, shape in self.scenes:
+            split = shape == "split"
             # The build finishes here, not at the last frame. Everything after is the
-            # same picture, held — at least MIN_STILL of it.
-            build = max(1, min(int(BUILD * FPS),
-                                count - int((MIN_STILL + FADE_OUT) * FPS)) - 1)
+            # same picture, held.
+            build = (max(1, int(BUILD * FPS)) if split else
+                     max(1, min(int(BUILD * FPS),
+                                count - int((MIN_STILL + FADE_OUT) * FPS)) - 1))
             for i in range(count):
-                c = Canvas()
-                fn(c, clamp(i / build))
-                im = c.im
+                if split:
+                    on = i >= t_on                      # is the picture up yet?
+                    g = clamp((i - t_on) / build) if on else 0.0
+                    ga = clamp((i - t_on) / nfade) if on else 0.0
+                else:
+                    on, g, ga = True, clamp(i / build), 1.0
+                if on and ga < 0.999:
+                    # Cross-fade the picture in without touching the text: the same
+                    # frame drawn with and without the stage, blended.
+                    a0 = Canvas(); a0.graphic = False; fn(a0, g)
+                    a1 = Canvas(); a1.graphic = True; fn(a1, g)
+                    im = Image.blend(a0.im, a1.im, ga)
+                else:
+                    c = Canvas(); c.graphic = on
+                    fn(c, g)
+                    im = c.im
                 # A short dip through the page colour at each edge. Not to black:
                 # blending toward the ground means the content fades and the ground
                 # stays, which reads as a soft cut rather than a dropped frame.
@@ -1456,7 +1487,7 @@ def build():
     n_ch = len(CHAPTERS)
 
     # --- title ---
-    @v.scene(3.6)
+    @v.scene(3.6, shape="plain")
     def _title(c, p):
         # `p` completes at the end of the BUILD, not the end of the shot, so a
         # scene that fades *itself* out at p→1 goes dark for the whole still —
@@ -1484,7 +1515,8 @@ def build():
                     gp = (bi + p) / n_beats
                     a_in = smooth(clamp(p * 5))
                     c.eyebrow(CHAPTERS[ci], 1.0 if bi else a_in)
-                    SCENES[ci](c, gp, bi, n_beats)
+                    if c.graphic:
+                        SCENES[ci](c, gp, bi, n_beats)
                     c.caption(main, sub_, 1.0, accent)
                     c.progress(ci, n_ch, (bi + p) / n_beats)
                     c.mark(0.45)
@@ -1497,13 +1529,14 @@ def build():
         def _p(c, p, who=who, head=head, body=body, line=line, col=col, pi=pi):
             a = smooth(clamp(p * 4))
             c.eyebrow("Five Readings", a)
-            c.text((W // 2, STAGE_Y0 + 24), who, "mono", 28, col, a, anchor="ma")
-            PERSONA_FIGS[pi](c, clamp(p * 1.08))
-            c.text((W // 2, STAGE_Y1 - 12), line, "mono", 26, col, a, anchor="ma")
-            for k in range(5):
-                x = W // 2 - 68 + k * 34
-                c.dot(x, STAGE_Y1 + 36, 7, col if k == pi else RULE,
-                      a if k == pi else a * 0.8)
+            if c.graphic:
+                c.text((W // 2, STAGE_Y0 + 24), who, "mono", 28, col, a, anchor="ma")
+                PERSONA_FIGS[pi](c, clamp(p * 1.08))
+                c.text((W // 2, STAGE_Y1 - 12), line, "mono", 26, col, a, anchor="ma")
+                for k in range(5):
+                    x = W // 2 - 68 + k * 34
+                    c.dot(x, STAGE_Y1 + 36, 7, col if k == pi else RULE,
+                          a if k == pi else a * 0.8)
             # The figure carries the argument now, so the caption carries the words:
             # the role's own headline, then its own sentence.
             c.caption(head, body, 1.0, {})
@@ -1530,7 +1563,9 @@ def build():
         def _c(c, p, k=k, main=main, sub_=sub_, accent=accent):
             a = smooth(clamp(p * 4))
             c.eyebrow("Plainly", a)
-            if k == 0:
+            if not c.graphic:
+                pass
+            elif k == 0:
                 y = STAGE_Y0 + 210
                 for i, (t, cost) in enumerate(LADDER):
                     tt = clamp(p * 2.2 - i * 0.14)

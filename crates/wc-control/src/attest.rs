@@ -491,11 +491,74 @@ pub struct DsseEnvelope {
 /// One DSSE signature.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DsseSignature {
-    /// Key id.
+    /// Key id. **Optional in DSSE**, and absent in everything cosign produces.
+    ///
+    /// The spec calls it an *unauthenticated hint*, which is the right reading: it selects
+    /// among keys the verifier already trusts and can never introduce one. When it is absent
+    /// the verifier tries every trusted key, which is what a hint being absent means.
     #[serde(default)]
     pub keyid: String,
-    /// Base64 signature.
+    /// Base64 signature. Raw `R‖S` or DER for ECDSA — both occur in the wild.
     pub sig: String,
+}
+
+/// Convert a DER-wrapped ECDSA signature to the raw `R‖S` form JWS verification wants.
+///
+/// **cosign, and every other Sigstore producer, emits DER.** DSSE does not specify an
+/// encoding, so both forms are legitimate and a verifier that accepts only one rejects half
+/// the ecosystem — which is what this one did: a real `cosign attest-blob` envelope was
+/// refused outright.
+///
+/// The third appearance of this trap. `docs/key-custody.md` documents it for *signing*, and
+/// `examples/signers/kms-der.py` converts in that direction. Here it is on the **reading**
+/// side, in somebody else's artifact, which is worse: a signing bug produces contracts nobody
+/// can verify, and this one silently refuses provenance that is perfectly valid.
+///
+/// Returns `None` when the input is not DER, so a raw signature passes through untouched.
+fn der_ecdsa_to_raw(der: &[u8], coord_len: usize) -> Option<Vec<u8>> {
+    if der.first() != Some(&0x30) {
+        return None;
+    }
+    // SEQUENCE header: tag, then a short or long length.
+    let mut i = 1;
+    if *der.get(i)? & 0x80 != 0 {
+        i += 1 + usize::from(*der.get(i)? & 0x7F);
+    } else {
+        i += 1;
+    }
+
+    let read_int = |pos: usize| -> Option<(Vec<u8>, usize)> {
+        if *der.get(pos)? != 0x02 {
+            return None;
+        }
+        let len = usize::from(*der.get(pos + 1)?);
+        let start = pos + 2;
+        let raw = der.get(start..start + len)?;
+        // DER integers are signed, so a coordinate with its top bit set carries a leading
+        // zero. Left-pad the other way: a short coordinate must reach the curve width or the
+        // concatenation is the wrong length and fails for a reason nobody can see.
+        let trimmed: Vec<u8> = raw.iter().copied().skip_while(|b| *b == 0).collect();
+        if trimmed.len() > coord_len {
+            return None;
+        }
+        let mut padded = vec![0u8; coord_len - trimmed.len()];
+        padded.extend_from_slice(&trimmed);
+        Some((padded, start + len))
+    };
+
+    let (r, next) = read_int(i)?;
+    let (sig_s, _) = read_int(next)?;
+    let mut out = r;
+    out.extend_from_slice(&sig_s);
+    Some(out)
+}
+
+/// How many bytes one ECDSA coordinate takes for an algorithm.
+fn coord_len(alg: Algorithm) -> usize {
+    match alg {
+        Algorithm::ES384 => 48,
+        _ => 32,
+    }
 }
 
 /// DSSE Pre-Authentication Encoding.
@@ -602,35 +665,63 @@ impl DsseProvenanceVerifier<'_> {
         let mut signer: Option<String> = None;
         let mut last: Option<WcError> = None;
         for sig in &envelope.signatures {
-            if sig.keyid.is_empty() {
+            // `keyid` is an unauthenticated *hint* in DSSE, and cosign omits it entirely. So
+            // an absent hint means "try every key this verifier already trusts" rather than
+            // "refuse" — which is what this did, rejecting every real cosign attestation.
+            //
+            // Safe because the candidate set is our own configuration: an attacker choosing
+            // the hint can only select a key we already trust, never introduce one. That is
+            // the distinction §7.8 A1 turns on, and it is why *this* lookup may fall back to
+            // trying all keys while a contract's `kid` may not.
+            let candidates: Vec<(String, &(Algorithm, DecodingKey))> = if sig.keyid.is_empty() {
+                self.keys
+                    .kids()
+                    .into_iter()
+                    .filter_map(|kid| self.keys.get(&kid).map(|k| (kid, k)))
+                    .collect()
+            } else {
+                match self.keys.get(&sig.keyid) {
+                    Some(k) => vec![(sig.keyid.clone(), k)],
+                    None => {
+                        last = Some(WcError::with_detail(
+                            Code::PROVENANCE_UNVERIFIABLE,
+                            format!("keyid {:?} is not a trusted provenance key", sig.keyid),
+                        ));
+                        continue;
+                    }
+                }
+            };
+            if candidates.is_empty() {
                 last = Some(WcError::with_detail(
                     Code::PROVENANCE_UNVERIFIABLE,
-                    "signature has no keyid",
+                    "the envelope names no keyid and no provenance key is configured",
                 ));
                 continue;
             }
-            let Some((alg, key)) = self.keys.get(&sig.keyid) else {
+
+            let raw_sig = b64std(&sig.sig)?;
+            for (kid, (alg, key)) in candidates {
+                // Either encoding. cosign and the rest of Sigstore emit DER; our own minter
+                // emits raw `R‖S` because that is what JWS uses. DSSE specifies neither, so a
+                // verifier accepting only one rejects half the ecosystem.
+                let attempt =
+                    der_ecdsa_to_raw(&raw_sig, coord_len(*alg)).unwrap_or_else(|| raw_sig.clone());
+                let sig_url = {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&attempt)
+                };
+                if verify_raw(&sig_url, &signed, key, *alg)? {
+                    signer = Some(kid);
+                    break;
+                }
                 last = Some(WcError::with_detail(
                     Code::PROVENANCE_UNVERIFIABLE,
-                    format!("keyid {:?} is not a trusted provenance key", sig.keyid),
+                    format!("signature does not verify under trusted key {kid:?}"),
                 ));
-                continue;
-            };
-            // DSSE signatures are standard base64; `verify_raw` wants base64url.
-            // Re-encode rather than assume the two coincide, because they only do
-            // when the bytes happen to avoid `+` and `/`.
-            let sig_url = {
-                use base64::Engine as _;
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b64std(&sig.sig)?)
-            };
-            if verify_raw(&sig_url, &signed, key, *alg)? {
-                signer = Some(sig.keyid.clone());
+            }
+            if signer.is_some() {
                 break;
             }
-            last = Some(WcError::with_detail(
-                Code::PROVENANCE_UNVERIFIABLE,
-                format!("signature under keyid {:?} does not verify", sig.keyid),
-            ));
         }
         let signer = signer.ok_or_else(|| {
             last.unwrap_or_else(|| {
