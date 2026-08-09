@@ -110,9 +110,9 @@ else
 fi
 
 if have cosign; then
-    ok "cosign" "stage 4: a real DSSE/in-toto envelope"
+    ok "cosign" "stage 4 already verified against real output; re-runnable"
 else
-    miss "cosign" "brew install cosign — unlocks stage 4 against real provenance"
+    miss "cosign" "brew install cosign — to regenerate fixtures/cosign/"
     DEEP_MISSING=1
 fi
 
@@ -177,7 +177,7 @@ if [ "$DEEP_MISSING" = 1 ]; then
     2 · SPIRE       — attestation stage 1 against a real issuer, and a real JWKS bundle
     3 · Prometheus  — a live scrape; `promtool test rules` already proves each alert fires
     4 · a TLS proxy — to re-verify --behind-tls-proxy end to end (done once already)
-    5 · cosign      — attestation stage 4 against real provenance
+    5 · cosign      — to regenerate fixtures/cosign/ (stage 4 already verified)
 
 BLOCKED
     exit 2

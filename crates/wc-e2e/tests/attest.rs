@@ -548,3 +548,153 @@ fn full(
         },
     )
 }
+
+// ===========================================================================
+// Interop: an attestation produced by cosign, not by us
+// ===========================================================================
+//
+// Everything in `fixtures/attest/` is minted by `scripts/gen-attest-fixtures.py`, which is an
+// independent *reading* of SPIFFE/DSSE/in-toto and catches disagreements about what the specs
+// say. It cannot catch a disagreement about what the ecosystem actually emits — and that is
+// where stage 4 was broken.
+//
+// `fixtures/cosign/` is real cosign v3.1.3 output. Adding it found two defects, either of
+// which alone made `DsseProvenanceVerifier` **reject every real cosign attestation**:
+//
+//   · cosign omits `keyid`, which DSSE calls an optional unauthenticated hint. The verifier
+//     required it and refused with "signature has no keyid".
+//   · cosign signs ECDSA as **DER**. The verifier expected raw `R‖S`, as JWS uses. DSSE
+//     specifies no encoding, so it accepted exactly one dialect of a two-dialect format —
+//     its own.
+
+const COSIGN_ENVELOPE: &str = include_str!("../../../fixtures/cosign/provenance.dsse.json");
+const COSIGN_PUB: &[u8] = include_bytes!("../../../fixtures/cosign/cosign.pub.pem");
+const COSIGN_DIGEST: &str =
+    "sha256:145325314c684ce617a7806cd03fd87338c5e365d3ef6aa1b61b4143aaeace7b";
+const COSIGN_BUILDER: &str =
+    "https://github.com/vijayvedula/warden-connect/.github/workflows/release.yml";
+
+fn cosign_keys() -> wc_core::contract::IssuerKeys {
+    let mut keys = wc_core::contract::IssuerKeys::new();
+    keys.add_ec_pem("cosign-1", COSIGN_PUB, wc_core::contract::Algorithm::ES256)
+        .expect("cosign's public key is a P-256 SPKI PEM");
+    keys
+}
+
+/// A verifier over the real cosign envelope, with the builder and digest it names.
+fn cosign_verifier<'a>(
+    keys: &'a wc_core::contract::IssuerKeys,
+    digest: Option<&str>,
+    builder: &str,
+) -> wc_control::attest::DsseProvenanceVerifier<'a> {
+    wc_control::attest::DsseProvenanceVerifier {
+        keys,
+        envelopes: vec![serde_json::from_str(COSIGN_ENVELOPE).expect("the fixture is JSON")],
+        artifact_digest: digest.map(str::to_string),
+        allowed_builders: [builder.to_string()].into_iter().collect(),
+    }
+}
+
+#[test]
+fn a_real_cosign_attestation_verifies() {
+    // The end the whole fixture exists for. If this fails, stage 4 works only against
+    // envelopes we produced ourselves — which is what P0 #3 warned about in the first place:
+    // *a fixture produced by the same code that reads it proves only that the code agrees
+    // with itself.*
+    let keys = cosign_keys();
+    let verifier = cosign_verifier(&keys, Some(COSIGN_DIGEST), COSIGN_BUILDER);
+    let envelope = verifier.envelopes[0].clone();
+
+    let (_bindings, _refs, method) = verifier
+        .verify_envelope(&envelope)
+        .expect("a real cosign envelope must verify");
+
+    assert!(
+        method.contains("subject matched"),
+        "the digest binds the statement to the artifact: {method}"
+    );
+    assert!(method.contains("builder allowed"), "{method}");
+    // Attributed to the key that actually verified it, even though the envelope named none.
+    assert!(method.contains("cosign-1"), "{method}");
+}
+
+#[test]
+fn the_cosign_envelope_really_does_omit_keyid_and_use_der() {
+    // Guards the *premise* of the two fixes. If a future cosign starts emitting a keyid, or
+    // raw `R‖S`, this fixture stops exercising the paths it was added for — and the test above
+    // would keep passing while the interop coverage quietly evaporated.
+    let envelope: serde_json::Value = serde_json::from_str(COSIGN_ENVELOPE).unwrap();
+    let sig = &envelope["signatures"][0];
+
+    assert!(
+        sig.get("keyid").is_none() || sig["keyid"].as_str() == Some(""),
+        "the fixture is meant to have no keyid: {sig}"
+    );
+
+    use base64::Engine as _;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(sig["sig"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        raw.first(),
+        Some(&0x30),
+        "the fixture is meant to carry a DER signature, not raw R||S"
+    );
+    assert_ne!(raw.len(), 64, "64 bytes would be raw R||S and not DER");
+}
+
+#[test]
+fn a_cosign_attestation_for_a_different_artifact_does_not_bind() {
+    // The subject digest is what binds a statement to an artifact; without it the envelope
+    // vouches for nothing in particular. Accepting DER and a missing keyid must not have
+    // loosened that.
+    let keys = cosign_keys();
+    let other = format!("sha256:{}", "00".repeat(32));
+    let verifier = cosign_verifier(&keys, Some(&other), COSIGN_BUILDER);
+    let envelope = verifier.envelopes[0].clone();
+
+    match verifier.verify_envelope(&envelope) {
+        Err(e) => assert_eq!(e.code(), Code::PROVENANCE_UNVERIFIABLE),
+        Ok((_, _, method)) => assert!(
+            !method.contains("subject matched"),
+            "a statement about another artifact must not report a matched subject: {method}"
+        ),
+    }
+}
+
+#[test]
+fn a_cosign_attestation_from_an_untrusted_builder_does_not_pass() {
+    let keys = cosign_keys();
+    let verifier = cosign_verifier(&keys, Some(COSIGN_DIGEST), "https://builder.example/other");
+    let envelope = verifier.envelopes[0].clone();
+
+    match verifier.verify_envelope(&envelope) {
+        Err(e) => assert_eq!(e.code(), Code::PROVENANCE_UNVERIFIABLE),
+        Ok((_, _, method)) => assert!(
+            !method.contains("builder allowed"),
+            "an untrusted builder must not read as allowed: {method}"
+        ),
+    }
+}
+
+#[test]
+fn an_untrusted_key_is_still_refused_when_the_envelope_names_no_keyid() {
+    // The security question the "try every trusted key" fallback raises, asserted directly:
+    // trying all *configured* keys must not become trying *any* key. An attacker omitting the
+    // hint may only select among keys the verifier already trusts.
+    let mut wrong = wc_core::contract::IssuerKeys::new();
+    wrong
+        .add_ec_pem(
+            "not-cosign",
+            include_bytes!("../../../fixtures/keys/test_issuer_es256_pub.pem"),
+            wc_core::contract::Algorithm::ES256,
+        )
+        .unwrap();
+    let verifier = cosign_verifier(&wrong, Some(COSIGN_DIGEST), COSIGN_BUILDER);
+    let envelope = verifier.envelopes[0].clone();
+
+    let err = verifier
+        .verify_envelope(&envelope)
+        .expect_err("a key we do not trust must not verify it");
+    assert_eq!(err.code(), Code::PROVENANCE_UNVERIFIABLE);
+}

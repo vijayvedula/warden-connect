@@ -96,7 +96,7 @@ between here and a release.
 
 ### Tests and CI
 
-- **988 tests** across unit, e2e, failure-injection, property, fuzz and attestation-interop
+- **993 tests** across unit, e2e, failure-injection, property, fuzz and attestation-interop
   tiers, plus the conformance vectors.
 - CI: fmt, clippy with `-D warnings`, the full suite, MSRV 1.89, the §8.10.3 latency gates
   via `connect bench`, screening calibration, `cargo deny`, and per-crate dependency
@@ -123,6 +123,17 @@ mode this component exists to prevent, occurring inside it:
   and the keys checking them never did.
 - **A non-loopback listener accepted bearer tokens in clear.** The deployment contract was
   documented and unenforced.
+- **Stage 4 rejected every real cosign attestation.** `keyid` was required though DSSE calls
+  it an optional hint and cosign omits it; and the verifier expected raw `R‖S` while cosign,
+  like all of Sigstore, signs ECDSA as DER. It accepted exactly one dialect of a two-dialect
+  format — its own.
+- **Three mediator metric families were declared, documented, and never populated**, so the
+  `wc_revocation_trusted == 0` alert could never fire.
+- **A mediator living under the flush interval wrote no metrics file at all**, and there was
+  no flush on exit beside the audit checkpoint that was already there.
+- **`--trusted-proxy` took exact addresses only**, which made the strong configuration
+  unusable behind an ALB or an Ingress whose address moves — so the practical choice was to
+  omit it and believe the header from anywhere.
 - **`--require-external-signing` reached one signing role in six.** It was checked in the
   issuer path and the anchor path and nowhere else, so both revocation keys, the approver
   keys and the bundle envelope could only ever use a key on local disk — while the estate
