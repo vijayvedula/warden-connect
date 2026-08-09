@@ -161,6 +161,35 @@ dual control at tier 1 is the preventive half.
 `max_depth` enforced against the **originating** contract, not per hop.
 **Residual:** requires `warden-delegate` on every hop. Not deployable today.
 
+### The transport control's honest limit
+
+`--behind-tls-proxy --trusted-proxy` believes `x-forwarded-proto: https` from a named address
+or CIDR block. Verified end to end behind a real terminating proxy (Caddy): the forwarded
+request is admitted, and a direct request with no header is refused.
+
+**What it does not stop is a process at a trusted address forging the header.** If the proxy
+runs on the same host as the listener — a localhost-terminating sidecar, which is a common
+shape — then `--trusted-proxy 127.0.0.1` is satisfied by anything on that box, and a local
+process can present a bearer token over plaintext and be believed.
+
+Why this is a documented limit rather than a defect:
+
+* **The threat the control exists for is *remote* plaintext** — "a pod bound to `0.0.0.0`
+  shipped approval tokens in clear with nothing objecting". A remote client cannot source from
+  a trusted address, so that threat is closed.
+* **A local process has strictly better attacks available.** It can read `tokens.toml`, or the
+  signing key if custody has not been delegated.
+
+What it means operationally: **the address check is only as strong as the separation between
+the proxy and everything else that can reach the port.** Put the proxy in its own network
+namespace, or on its own host, and the check is real. Co-locate it with untrusted workloads
+and the check is decorative — and no CIDR narrow enough fixes that, because the forger shares
+the address.
+
+If you need the stronger property, the mechanism is a shared secret the proxy sets and the
+listener requires, so forging needs the secret rather than the address. That is not
+implemented, and this paragraph exists so nobody assumes it is.
+
 ---
 
 ## Part 4 · The fail-closed matrix

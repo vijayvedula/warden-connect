@@ -330,12 +330,154 @@ pub enum Transport {
     /// sidecar-only network namespace makes it true, and refused by
     /// [`Transport::describe`] telling the operator plainly what they chose.
     TlsProxy {
-        /// Addresses whose `x-forwarded-proto` may be believed.
-        trusted: Vec<IpAddr>,
+        /// Sources whose `x-forwarded-proto` may be believed.
+        trusted: Vec<TrustedSource>,
     },
     /// No requirement at all. For a test, or a deployment that has accepted the
     /// consequence in writing.
     Insecure,
+}
+
+/// One source `x-forwarded-proto` may be believed from: an address, or a network.
+///
+/// Networks exist because exact addresses made the **strong** configuration unusable in two
+/// of the four topologies `docs/physical-architecture.md` documents. An AWS ALB answers from
+/// many addresses; a Kubernetes Ingress pod gets a new one every restart. With exact matching
+/// an operator either enumerates addresses that change underneath them, or omits
+/// `--trusted-proxy` entirely — and omitting it means *believe the header from anywhere*,
+/// which on a flat pod network is no restriction at all.
+///
+/// A control whose correct setting is impractical is a control everybody turns off. Found by
+/// putting a real terminating proxy in front of a real listener rather than by reading the
+/// flag's documentation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrustedSource {
+    /// Exactly this address.
+    Exact(IpAddr),
+    /// Any address inside this network.
+    Network {
+        /// The network address, already masked.
+        base: IpAddr,
+        /// Prefix length in bits.
+        prefix: u8,
+    },
+}
+
+impl TrustedSource {
+    /// Parse `10.0.1.5` or `10.0.1.0/24`.
+    ///
+    /// Refuses a `/0`. It parses, it reads as a restriction, and it matches every address in
+    /// existence — which is exactly the shape of defect this repository keeps finding. An
+    /// operator who means "anywhere" omits the flag and is told so by the startup banner.
+    pub fn parse(raw: &str) -> Result<TrustedSource> {
+        let Some((addr, bits)) = raw.split_once('/') else {
+            return raw
+                .parse::<IpAddr>()
+                .map(TrustedSource::Exact)
+                .map_err(|_| {
+                    WcError::with_detail(
+                        Code::CONFIG_INVALID,
+                        format!("--trusted-proxy {raw:?} is not an IP address or CIDR block"),
+                    )
+                });
+        };
+
+        let base: IpAddr = addr.parse().map_err(|_| {
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!("--trusted-proxy {raw:?}: {addr:?} is not an IP address"),
+            )
+        })?;
+        let prefix: u8 = bits.parse().map_err(|_| {
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!("--trusted-proxy {raw:?}: {bits:?} is not a prefix length"),
+            )
+        })?;
+
+        let width = if base.is_ipv4() { 32 } else { 128 };
+        if prefix > width {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!("--trusted-proxy {raw:?}: /{prefix} is wider than the {width}-bit address"),
+            ));
+        }
+        if prefix == 0 {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!(
+                    "--trusted-proxy {raw:?} matches every address, so it restricts nothing. \
+                     Omit --trusted-proxy if that is what you mean — the startup banner then \
+                     says so plainly instead of a CIDR implying otherwise"
+                ),
+            ));
+        }
+
+        Ok(TrustedSource::Network {
+            base: mask(base, prefix),
+            prefix,
+        })
+    }
+
+    /// Whether an address is this source.
+    #[must_use]
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match self {
+            TrustedSource::Exact(want) => *want == ip,
+            TrustedSource::Network { base, prefix } => {
+                // A v4 address must not match a v6 network, and the reverse. Masking alone
+                // would compare a mapped form and quietly say yes.
+                if base.is_ipv4() != ip.is_ipv4() {
+                    return false;
+                }
+                mask(ip, *prefix) == *base
+            }
+        }
+    }
+
+    /// How this source reads in the startup banner.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            TrustedSource::Exact(ip) => ip.to_string(),
+            TrustedSource::Network { base, prefix } => format!("{base}/{prefix}"),
+        }
+    }
+}
+
+impl std::str::FromStr for TrustedSource {
+    type Err = WcError;
+
+    /// So `"10.0.1.0/24".parse()` works, which is what a caller reaches for.
+    fn from_str(raw: &str) -> std::result::Result<TrustedSource, WcError> {
+        TrustedSource::parse(raw)
+    }
+}
+
+/// Zero every bit below the prefix.
+fn mask(ip: IpAddr, prefix: u8) -> IpAddr {
+    match ip {
+        IpAddr::V4(v4) => {
+            let bits = u32::from(v4);
+            // `checked_shl` rather than `<<`: shifting a u32 by 32 is undefined-ish and in
+            // release builds wraps to a no-op, which would make /32 match everything.
+            let m = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - u32::from(prefix))
+            };
+            IpAddr::V4(std::net::Ipv4Addr::from(bits & m))
+        }
+        IpAddr::V6(v6) => {
+            let bits = u128::from(v6);
+            let m = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - u32::from(prefix))
+            };
+            IpAddr::V6(std::net::Ipv6Addr::from(bits & m))
+        }
+    }
 }
 
 impl Transport {
@@ -353,8 +495,10 @@ impl Transport {
                 None => Err("the peer address is unknown, so loopback cannot be proved"),
             },
             Transport::TlsProxy { trusted } => {
-                let from_trusted =
-                    trusted.is_empty() || req.peer.is_some_and(|ip| trusted.contains(&ip));
+                let from_trusted = trusted.is_empty()
+                    || req
+                        .peer
+                        .is_some_and(|ip| trusted.iter().any(|t| t.contains(ip)));
                 if !from_trusted {
                     return Err("not from a trusted proxy address");
                 }
@@ -384,7 +528,7 @@ impl Transport {
                 "behind a TLS proxy at {} (x-forwarded-proto: https required)",
                 trusted
                     .iter()
-                    .map(ToString::to_string)
+                    .map(TrustedSource::describe)
                     .collect::<Vec<_>>()
                     .join(", ")
             ),

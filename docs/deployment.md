@@ -78,6 +78,15 @@ an address you named — so a request reaching the port directly, bypassing the 
 refused rather than trusted. Omitting `--trusted-proxy` means *any* source may assert its own
 security, which is correct only if nothing else can reach the port.
 
+`--trusted-proxy` takes an address or a **CIDR block**, so an Ingress whose pod address moves
+on restart is `--trusted-proxy 10.42.0.0/16` rather than a list you maintain by hand. A `/0`
+is refused — it reads as a restriction and matches everything.
+
+**The check is only as strong as the separation between the proxy and everything else that can
+reach the port.** A process at a trusted address can forge the header, so a proxy co-located
+with untrusted workloads makes this decorative. See the transport limit in
+[threat-model.md](threat-model.md).
+
 `--insecure-plaintext` exists for demos. It is named so it appears in the process list and
 shouts in the banner.
 

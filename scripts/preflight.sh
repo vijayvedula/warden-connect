@@ -149,9 +149,9 @@ else
 fi
 
 if have caddy || have nginx || have haproxy; then
-    ok "a TLS proxy" "exercises --behind-tls-proxy end to end"
+    ok "a TLS proxy" "--behind-tls-proxy already verified behind Caddy; re-runnable"
 else
-    miss "a TLS proxy" "brew install caddy — --behind-tls-proxy is asserted only at socket level"
+    miss "a TLS proxy" "brew install caddy — to re-verify --behind-tls-proxy end to end"
     DEEP_MISSING=1
 fi
 
@@ -176,7 +176,7 @@ if [ "$DEEP_MISSING" = 1 ]; then
     1 · SoftHSM     — the delegated-signer path, and the DER vs R||S trap it documents
     2 · SPIRE       — attestation stage 1 against a real issuer, and a real JWKS bundle
     3 · Prometheus  — a live scrape; `promtool test rules` already proves each alert fires
-    4 · a TLS proxy — --behind-tls-proxy above the socket level
+    4 · a TLS proxy — to re-verify --behind-tls-proxy end to end (done once already)
     5 · cosign      — attestation stage 4 against real provenance
 
 BLOCKED

@@ -28,6 +28,7 @@ use wc_control::evidence::Evidence;
 use wc_control::http::{self, Shutdown};
 use wc_control::store::Store;
 use wc_core::contract::{Algorithm, IssuerKey};
+use wc_core::error::Code;
 
 const ISSUER_PRIV: &[u8] = include_bytes!("../../../fixtures/keys/test_issuer_es256_priv.pem");
 const TOKEN: &str = "tok-reader";
@@ -220,5 +221,126 @@ fn an_unauthenticated_route_is_unaffected() {
         text.starts_with("HTTP/1.1 200"),
         "{}",
         &text[..40.min(text.len())]
+    );
+}
+
+// ===========================================================================
+// CIDR-scoped proxy trust
+// ===========================================================================
+//
+// Exact addresses made the *strong* configuration unusable in two of the four topologies
+// `docs/physical-architecture.md` documents: an AWS ALB answers from many addresses, and a
+// Kubernetes Ingress pod gets a new one every restart. So an operator either enumerated
+// addresses that changed underneath them or omitted `--trusted-proxy` — and omitting it
+// believes the header from anywhere, which on a flat pod network restricts nothing.
+//
+// A control whose correct setting is impractical is a control everybody turns off. Found by
+// putting a real terminating proxy in front of a real listener, not by reading the flag.
+
+use wc_control::api::TrustedSource;
+
+#[test]
+fn a_cidr_block_admits_the_proxy_and_excludes_everything_else() {
+    let net: TrustedSource = "10.0.1.0/24".parse().unwrap();
+    assert!(
+        net.contains("10.0.1.5".parse().unwrap()),
+        "inside the block"
+    );
+    assert!(
+        net.contains("10.0.1.255".parse().unwrap()),
+        "the broadcast address is inside"
+    );
+    assert!(
+        !net.contains("10.0.2.1".parse().unwrap()),
+        "the next block is outside"
+    );
+    assert!(!net.contains("127.0.0.1".parse().unwrap()));
+    assert_eq!(net.describe(), "10.0.1.0/24");
+}
+
+#[test]
+fn a_host_bit_in_the_block_is_masked_rather_than_refused() {
+    // `10.0.1.5/24` is what an operator types when they copy the proxy's address and add a
+    // prefix. Refusing it would be pedantry; treating it as a /32 would silently narrow the
+    // block to one address and break the next Ingress restart — the failure this whole
+    // change exists to prevent.
+    let net: TrustedSource = "10.0.1.5/24".parse().unwrap();
+    assert_eq!(net.describe(), "10.0.1.0/24");
+    assert!(net.contains("10.0.1.200".parse().unwrap()));
+}
+
+#[test]
+fn a_slash_thirtytwo_is_exactly_one_address() {
+    // The shift boundary: `u32::MAX << 0` must be all ones, not zero. A wrapping shift here
+    // would make /32 match every address — the widest possible failure from the narrowest
+    // possible config.
+    let net: TrustedSource = "10.0.1.5/32".parse().unwrap();
+    assert!(net.contains("10.0.1.5".parse().unwrap()));
+    assert!(!net.contains("10.0.1.6".parse().unwrap()));
+    assert!(!net.contains("10.0.2.5".parse().unwrap()));
+}
+
+#[test]
+fn a_slash_zero_is_refused_because_it_reads_as_a_restriction() {
+    // It parses, it looks like a policy, and it matches every address in existence. That is
+    // exactly the defect class this repository keeps finding, so it is refused and the error
+    // names the honest alternative.
+    for raw in ["0.0.0.0/0", "10.0.1.0/0", "::/0"] {
+        let err = raw.parse::<TrustedSource>().unwrap_err();
+        assert_eq!(err.code(), Code::CONFIG_INVALID, "{raw}");
+        assert!(
+            format!("{err}").contains("restricts nothing"),
+            "{raw}: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_v4_address_does_not_match_a_v6_block_or_the_reverse() {
+    // Masking alone would compare a mapped form and quietly say yes, which would let an
+    // IPv4 client through a v6-only trust list.
+    let v6: TrustedSource = "2001:db8::/32".parse().unwrap();
+    assert!(v6.contains("2001:db8::1".parse().unwrap()));
+    assert!(!v6.contains("10.0.1.5".parse().unwrap()));
+
+    let v4: TrustedSource = "10.0.0.0/8".parse().unwrap();
+    assert!(!v4.contains("2001:db8::1".parse().unwrap()));
+}
+
+#[test]
+fn a_prefix_wider_than_the_address_is_refused() {
+    for raw in ["10.0.1.0/33", "2001:db8::/129"] {
+        let err = raw.parse::<TrustedSource>().unwrap_err();
+        assert!(format!("{err}").contains("wider than"), "{raw}: {err}");
+    }
+}
+
+#[test]
+fn an_exact_address_still_works_and_is_still_exact() {
+    // The existing behaviour, unchanged. Every test above this section uses it.
+    let one: TrustedSource = "10.0.1.5".parse().unwrap();
+    assert!(one.contains("10.0.1.5".parse().unwrap()));
+    assert!(!one.contains("10.0.1.6".parse().unwrap()));
+    assert_eq!(one.describe(), "10.0.1.5");
+}
+
+#[test]
+fn a_request_from_inside_a_trusted_block_is_admitted_over_a_socket() {
+    // The whole point, driven over a real socket: loopback is inside 127.0.0.0/8, so a
+    // forwarded request is believed — which is how an operator would write it for an
+    // Ingress whose address moves.
+    let r = rig(Transport::TlsProxy {
+        trusted: vec!["127.0.0.0/8".parse().unwrap()],
+    });
+    assert_eq!(status(r.port, &[("X-Forwarded-Proto", "https")]), 200);
+
+    // And a block that excludes loopback still refuses it.
+    let elsewhere = rig(Transport::TlsProxy {
+        trusted: vec!["10.9.0.0/16".parse().unwrap()],
+    });
+    assert_eq!(
+        status(elsewhere.port, &[("X-Forwarded-Proto", "https")]),
+        401,
+        "the request came from loopback, which is outside 10.9.0.0/16"
     );
 }
