@@ -50,6 +50,7 @@ Written after the build, and downstream of what the code turned out to need:
 
 | Document | What it gives you |
 |---|---|
+| [prerequisites.md](prerequisites.md) | Every external dependency for executing flows end to end, what each unlocks, the two verified delegated-signer wrappers, and what no installation fixes |
 | [threat-model.md](threat-model.md) | The defect class this codebase produces and a six-question review checklist, the trust boundaries, the eleven §7.8 threats as operator checks, the fail-closed matrix, and what is deliberately out of scope |
 | [deployment.md](deployment.md) | Nothing to enforcing, in four stages, with a pre-production checklist |
 | [runbook.md](runbook.md) | Symptom-first incident response: what "all the agents are down" usually means, and every refusal-to-start message |
