@@ -47,8 +47,17 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
 
 ## 2 · Attestation and provenance
 
-* **Stage 1 has never run against a real SPIRE server.** `JwtSvidIdentity` is verified against
-  a JWT-SVID minted by `scripts/gen-attest-fixtures.py`. *(Environmental)*
+* **Stages 2 and 3 have no real-implementation counterpart.** Stage 1 now runs against a real
+  SPIRE 1.15.2 server ([`fixtures/spire/`](../fixtures/spire/README.md)) and stage 4 against
+  real cosign output ([`fixtures/cosign/`](../fixtures/cosign/README.md)). The card stages are
+  verified only against material `scripts/gen-attest-fixtures.py` mints from the spec text,
+  because there is no reference implementation of a signed A2A card to disagree with. That is
+  the same position stage 4 was in before cosign, and stage 4 turned out to be **rejecting
+  every real attestation**. *(Environmental)*
+* **A SPIRE trust bundle is only as good as its trust domain.** `fixtures/spire/` uses a
+  throwaway CA and `insecure_bootstrap = true`, which is right for a fixture and wrong for
+  anything else. What stage 1 verifies is that an SVID was signed by a key in the bundle you
+  configured; who is entitled to be in that bundle is SPIRE's problem, not ours. *(By design)*
 * **Provenance proves a signature, not a builder.** `fixtures/cosign/` is a real cosign
   envelope with a real DER signature, so stage 4's *verification* path is genuine — but the
   key is local, which makes `builder.id` a string the fixture asserts about itself.
@@ -244,6 +253,12 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
   means a 2× regression in `blast_radius` or `rebuild` would slip through; it is not tighter
   because a shared runner swings more than 50% between runs and a flaky gate gets disabled.
   *(By design, and stated on the constants)*
+* **Nothing checks the commands in these documents.** Standing up a real SPIRE server turned up
+  **four wrong commands in this repository's own SPIRE procedure** — a `brew` formula that does
+  not exist, two subcommands SPIRE does not have, and a `sed` that would have written an *empty*
+  token file. Every one had been written, reviewed and left alone. The scripts under `scripts/`
+  are executable and therefore checkable; a fenced block in a `.md` is neither. Assume any
+  procedure here that is not backed by a script has not been run. *(Unproven)*
 
 ---
 

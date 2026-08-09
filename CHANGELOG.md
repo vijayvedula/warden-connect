@@ -36,7 +36,10 @@ between here and a release.
 - **Real attestation verifiers** — SPIFFE JWT-SVID, signed A2A agent cards, DSSE/in-toto
   SLSA provenance. Fixtures are minted by an independent implementation
   (`scripts/gen-attest-fixtures.py`, using `cryptography`), so agreement is two readings
-  of a spec rather than one implementation talking to itself.
+  of a spec rather than one implementation talking to itself. Two stages go further and
+  run against other *implementations*: stage 1 against a real **SPIRE 1.15.2** server and
+  agent (`fixtures/spire/`, minted by `scripts/spire-fixtures.sh`) and stage 4 against real
+  **cosign v3.1.3** output (`fixtures/cosign/`).
 - **Declared-surface injection screening** (A4) with observe/flag/enforce modes, a
   calibrated rule set, and precision and recall both gated in CI.
 - **Connection policy** — zone bars, standing caps, `policy lint`, `policy show`,
@@ -155,6 +158,14 @@ mode this component exists to prevent, occurring inside it:
 - **Screening refused every localised tool server** — the S1 rule read localisation
   controls in complex scripts as concealment.
 - **A latency gate pointed at a benchmark that did not exist**, so it silently never ran.
+- **The documented SPIRE procedure was wrong in four ways**, and running one turned all four
+  up at once: `brew install spire` (SPIRE publishes no darwin build at all), `spire-agent api
+  fetch jwtbundles` and `spire-server bundle show -format jwks` (neither exists), and a `sed`
+  that matched nothing — the real output is `token(spiffe://…):` with the token on the *next*
+  line, so it would have written an **empty** token file. `scripts/preflight.sh` compounded it
+  by gating stage 1 on `command -v spire-server`, a check that can never pass on a Mac. No
+  code was wrong; the instructions for exercising it were, which is how a control ends up
+  never exercised.
 
 ### Known gaps
 
@@ -163,8 +174,10 @@ code-complete; what remains needs something a commit cannot supply:
 
 * **A hardware token and a KMS key** (P0 #5) — the custody seams and their enforcement are
   built; the procurement and the runbook are not.
-* **A SPIRE server and a signing builder** (P0 #3) — the verifiers run against material
-  minted by an independent implementation, not against real output.
+* **A signing builder, and a reference A2A card signer** (P0 #3) — stages 1 and 4 now run
+  against real output from SPIRE 1.15.2 and cosign v3.1.3. Stages 2 and 3 have no other
+  implementation to disagree with, and stage 4's builder key is still local, which makes
+  `builder.id` a string the fixture asserts about itself.
 * **crates.io publishing** (P1 #13) — structurally blocked while Warden core is a path
   dependency. Changing that changes the family's coupling model.
 * **Evidence segment retirement** (P1 #14) — retention reports the window and deletes

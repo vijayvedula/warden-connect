@@ -1,0 +1,12 @@
+{
+  "_": "Real output from SPIRE. Minted by scripts/spire-fixtures.sh. Do not hand-edit.",
+  "spire_version": "1.15.2",
+  "trust_domain": "example.org",
+  "spiffe_id": "spiffe://example.org/ns/agents/sa/recon",
+  "audience": "warden-connect://control-plane/apac",
+  "other_audience": "warden-connect://control-plane/emea",
+  "jwt_svid_kid": "V0SidMJdeG7VITHGyWJ0nOk8wlr2wvVm",
+  "alg": "ES256",
+  "iat": 1786264031,
+  "exp": 1786267631
+}

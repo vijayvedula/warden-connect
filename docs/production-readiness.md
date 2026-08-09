@@ -173,9 +173,20 @@ by what unblocks the others.
   talking to itself. It also surfaced a defect: `JwtSvidIdentity` read the system
   clock, so its expiry check could not be tested at all.
 
-  Since P0 #6, a SPIRE JWT bundle is readable as it comes — `spire-agent api fetch
-  jwtbundles` returns a JWKS and `IssuerKeys::add_jwks` ingests it, so the
+  Since P0 #6, a SPIRE JWT bundle is readable as it comes — `spire-server bundle show
+  -format spiffe` returns a JWKS and `IssuerKeys::add_jwks` ingests it, so the
   convert-to-PEM step between here and a real SPIRE is gone.
+
+  **Stage 1 now runs against a real SPIRE 1.15.2 server and agent, and — alone among the
+  integrations in this build — needed no code change.** `fixtures/spire/` is real output
+  from a server stood up by [`scripts/spire-fixtures.sh`](../scripts/spire-fixtures.sh);
+  six interop tests drive `JwtSvidIdentity` through it. Recorded as a result rather than
+  assumed, because the point of running a thing is that you do not know in advance.
+
+  What it did find was **four wrong commands in this repository's own documented
+  procedure** — including a `sed` that would have written an empty token file, and two
+  subcommands SPIRE does not have. A procedure nobody has run is not a procedure; see
+  [`fixtures/spire/README.md`](../fixtures/spire/README.md).
 
   **Stage 4 now runs against real cosign output, and that found two defects that made
   `DsseProvenanceVerifier` reject every real cosign attestation outright.**
@@ -396,8 +407,10 @@ by what unblocks the others.
     ingest. That is the test that could not be written while the path was write-only.
 
   It also removes the "convert the JWKS to PEM" step from
-  `fixtures/attest/README.md` — `spire-agent api fetch jwtbundles` returns a JWKS, so
-  a SPIRE trust bundle is now readable as it comes.
+  `fixtures/attest/README.md` — `spire-server bundle show -format spiffe` returns a JWKS,
+  so a SPIRE trust bundle is now readable as it comes. Since exercised against a real one:
+  a SPIFFE bundle carries the x509-svid key, which has no `kid`, beside the JWT signing
+  key, so the skip-and-report path is the ordinary case rather than an edge one.
 
   **Still outstanding:** the rotation *drill* — a rehearsal that publishes a new `kid`
   and proves a running mediator picks it up. The mechanism is tested; the procedure is

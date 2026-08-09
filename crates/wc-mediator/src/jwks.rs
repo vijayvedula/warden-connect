@@ -41,9 +41,9 @@ use wc_core::error::{Code, Result, WcError};
 pub enum Origin {
     /// An HTTPS URL, re-fetched on the TTL.
     Url(String),
-    /// A file on disk — a SPIRE bundle written by `spire-agent api fetch jwtbundles`,
-    /// or a ConfigMap mount. Re-read on the same TTL, because a mounted file changes
-    /// under a running process without the process being told.
+    /// A file on disk — a SPIRE bundle written by `spire-server bundle show -format
+    /// spiffe`, or a ConfigMap mount. Re-read on the same TTL, because a mounted file
+    /// changes under a running process without the process being told.
     File(PathBuf),
 }
 

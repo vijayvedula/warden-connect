@@ -969,9 +969,15 @@ impl IssuerKeys {
     /// The ingest direction, which did not exist: `keys::jwk_from_pem` could *emit* a
     /// JWKS and nothing could read one back. That made key rotation a deployment event
     /// — a new `jwks.json` copied to every mediator — and it is also what stood between
-    /// this and a real SPIRE integration, because `spire-agent api fetch jwtbundles`
-    /// hands you a JWKS and the only way to use it was to convert each key to PEM by
-    /// hand.
+    /// this and a real SPIRE integration, because `spire-server bundle show -format
+    /// spiffe` hands you a JWKS and the only way to use it was to convert each key to PEM
+    /// by hand.
+    ///
+    /// Since exercised against a real SPIRE 1.15.2 bundle (`fixtures/spire/`), which is
+    /// where the skip rules stopped being hypothetical: that bundle carries the
+    /// **x509-svid key with no `kid`** beside the JWT signing key, so an operator pasting
+    /// the whole document gets the usable key trusted, the other one reported, and
+    /// `is_complete() == false`.
     ///
     /// # What is skipped rather than refused
     ///
