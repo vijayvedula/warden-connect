@@ -257,6 +257,10 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "artifact-digest",
             "bind-surface",
             "builder",
+            "oidc-token",
+            "oidc-issuer",
+            "oidc-label",
+            "oidc-subject-claim",
         ],
         "register agent" => &[
             "card",
@@ -283,6 +287,10 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "artifact-digest",
             "bind-surface",
             "builder",
+            "oidc-token",
+            "oidc-issuer",
+            "oidc-label",
+            "oidc-subject-claim",
         ],
         "activate" => &["id", "why"],
         "unquarantine" => &["id", "approver", "why"],
@@ -1133,6 +1141,51 @@ fn admit_and_record(
         None => None,
     };
     if let Some(v) = &svid_identity {
+        ctx.identity = v;
+    }
+
+    // Stage 1 for an estate with no SPIRE, which is most of them: a Kubernetes projected
+    // service-account token, IRSA, Azure workload identity, a GCP service account or a
+    // Vault identity token. All are JWTs with a published JWKS and a subject that is not a
+    // SPIFFE URI, so `--svid` could never accept one and the party stayed Unattested
+    // forever — which made enforce mode unreachable and `--observe` the only option.
+    //
+    // `--oidc-token` selects this path. It is mutually exclusive with `--svid`: two
+    // identity verifiers would mean whichever ran last decided who the party is, and a
+    // precedence rule between two authentications is not something an operator should have
+    // to know.
+    let oidc_identity = match args.get("oidc-token") {
+        Some(path) => {
+            if args.get("svid").is_some() {
+                return Err(WcError::with_detail(
+                    Code::CONFIG_INVALID,
+                    "--svid and --oidc-token are two different stage-1 verifiers; pass one. \
+                     A precedence rule between two authentications is not a thing to guess",
+                ));
+            }
+            let token = std::fs::read_to_string(path)
+                .map_err(|e| {
+                    WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}"))
+                        .with_source(e)
+                })?
+                .trim()
+                .to_string();
+            Some(attest::OidcIdentity {
+                keys: &trust_keys,
+                // Every one of these is refused when unset rather than defaulted — see
+                // `OidcIdentity::check_config` for what each vacuous default would admit.
+                issuer: args.get("oidc-issuer").unwrap_or_default().to_string(),
+                label: args.get("oidc-label").unwrap_or_default().to_string(),
+                audience: args.get("aud").unwrap_or_default().to_string(),
+                subject_claim: args.get("oidc-subject-claim").unwrap_or("sub").to_string(),
+                token,
+                leeway: args.number("leeway").unwrap_or(60),
+                now: ctx.now,
+            })
+        }
+        None => None,
+    };
+    if let Some(v) = &oidc_identity {
         ctx.identity = v;
     }
 
@@ -5393,6 +5446,20 @@ REGISTER
 
   ATTESTATION (any subset; each stage stays skipped without its material)
     --svid FILE --trust-key KID=PEM[:ALG] --aud NAME [--leeway N]   stage 1
+    ...or stage 1 WITHOUT SPIRE, for a Kubernetes projected service-account
+    token, IRSA, Azure workload identity, a GCP service account or a Vault
+    identity token — all JWTs with a published JWKS and a subject that is not
+    a spiffe:// URI, which --svid cannot accept:
+    --oidc-token FILE --oidc-issuer URL --oidc-label NAME
+      [--oidc-subject-claim sub] --trust-key KID=PEM --aud NAME
+      The entity id is DERIVED, not asserted:
+          urn:wc:oidc:<label>:<subject>
+      Register the party under exactly that. --oidc-label is your short name
+      for the issuer and is folded in, because two clusters both mint
+      `system:serviceaccount:default:default` and they are not one party. A
+      label containing ':' is refused: it would make the derivation ambiguous.
+      --oidc-issuer is required — without it any key in the trust set would
+      authenticate a token from whichever issuer holds that key.
     --card-key KID=PEM[:ALG] [--require-card-signature]             stage 3
     --attest FILE --prov-key KID=PEM[:ALG] --builder ID             stage 4
       and one of --artifact-digest sha256:... | --bind-surface

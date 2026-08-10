@@ -166,6 +166,31 @@ mode this component exists to prevent, occurring inside it:
 - **Screening refused every localised tool server** — the S1 rule read localisation
   controls in complex scripts as concealment.
 - **A latency gate pointed at a benchmark that did not exist**, so it silently never ran.
+- **Admission stage 1 no longer requires SPIRE.** `--oidc-token` admits a Kubernetes
+  projected service-account token, IRSA, Azure workload identity, a GCP service account or a
+  Vault identity token — all JWTs with a published JWKS and a subject that is not a
+  `spiffe://` URI, which `--svid` could never accept. Before this, an estate without SPIFFE
+  could not pass stage 1, stayed `Unattested`, and had every mediated call refused
+  `WC-3109`; `--observe` was the only workable configuration. **Enforce mode was effectively
+  SPIRE-only, and that was never a design decision** — it was an unnoticed consequence of one
+  verifier. Verified end to end with a Kubernetes SA token: `Attested`, a contract minted, and
+  a mediated call that executes the contracted tool and blocks the uncontracted one, with no
+  SPIFFE identity anywhere.
+
+  The entity id is **derived, not asserted** — `urn:wc:oidc:<label>:<subject>` — so a token
+  for one subject can only ever authenticate as the one id derived from it, and there is no
+  mapping table whose editor could re-point an identity. `--oidc-label` folds the issuer in,
+  because every cluster mints `system:serviceaccount:default:default` and two clusters are not
+  one party; a label containing `:` is refused, since it would make the derivation ambiguous.
+  `--oidc-issuer` is required rather than defaulted: without it, any key in the trust set
+  authenticates a token from whichever issuer holds that key.
+
+  What still requires SPIFFE is the mediator's *authenticated* peer modes (`mtls`, `mesh`,
+  `jwt-svid`), which resolve through a SPIFFE URI. `configured` — the default and the honest
+  mode for a sidecar — accepts a derived id, so the sidecar topology loses nothing.
+  [`docs/identity-without-spire.md`](docs/identity-without-spire.md) has the per-issuer
+  settings and the two things it does not change.
+
 Closing the remaining **Unbuilt** items that a commit can close — and one of them turned out
 to be a control that could not be reached:
 
