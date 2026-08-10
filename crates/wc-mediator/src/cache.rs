@@ -181,6 +181,25 @@ impl Snapshot {
         self.by_cid.len()
     }
 
+    /// Whether any held contract carries a rate or spend ceiling.
+    ///
+    /// Exists so the startup banner can say the one thing a signed
+    /// `max_calls_per_hour` does not: [`crate::ceiling::Ceilings`] counts **in this
+    /// process**, so a mediator that lives less than an hour enforces a fraction of an
+    /// hourly ceiling and the next process starts from zero. Measured: a 3-per-hour
+    /// contract executed three calls per process and nine across three, in the same hour.
+    ///
+    /// A long-lived sidecar in front of a long-running agent enforces it as written; a
+    /// per-task invocation does not. The mediator cannot know which it is, and the
+    /// operator can — so it is stated rather than assumed either way.
+    #[must_use]
+    pub fn has_rate_or_spend_ceiling(&self) -> bool {
+        self.by_cid.values().any(|c| {
+            let terms = &c.payload.terms;
+            terms.max_calls_per_hour.is_some() || terms.max_spend_usd_per_day.is_some()
+        })
+    }
+
     /// Whether the set is empty — a mediator in this state admits nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
