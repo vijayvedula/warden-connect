@@ -32,7 +32,12 @@ pass through the same pipeline and meet different thresholds in it.
 | **T1.2** Mutual channel authentication | Peer mismatch → connection refused **before the first frame** |
 | **T1.5** Agent-card signature verification | Unsigned or mis-signed card → not admitted |
 
-```mermaid
+<img alt="B2.1 Identity attestation — sequence diagram" src="img/B2.1.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Wl as agent workload
@@ -65,6 +70,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 **What the diagram argues.** Identity is checked twice, and the second check is the
 one that matters. Admission binds a name to a key. The mediator then refuses any
 channel whose peer is not the party the contract names — so the contract cannot be
@@ -81,7 +88,12 @@ replayed by whoever obtains a copy of it.
 |---|---|
 | **T1.4** Build provenance verification | Unverifiable provenance → admission denied, **or `posture: unattested` in observe mode** |
 
-```mermaid
+<img alt="B2.2 Build provenance verification — sequence diagram" src="img/B2.2.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Dev as Developer
@@ -112,6 +124,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 **What the diagram argues.** The observe branch is not a weakening — it is the only
 order in which the control can be introduced. An estate turning this on for the first
 time has zero attested parties, so an enforce-first deployment would deny every
@@ -130,7 +144,12 @@ admission and be removed within a day. Posture is the intermediate state that le
 | **T5.2** Declared-surface injection screening | Finding → admission blocked, or tier escalated |
 | **T2.2** Surface pinning | Presented hash ≠ pinned hash → refused, drift event raised |
 
-```mermaid
+<img alt="B2.3 Declared-surface screening — sequence diagram" src="img/B2.3.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant MCP as tool server
@@ -158,6 +177,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 **What the diagram argues.** Screening happens at admission, *before* the surface is
 pinned — so the hash that every later drift check compares against is a hash of a
 surface that has already been read for hostile content. Pinning an unscreened
@@ -175,7 +196,12 @@ surface would faithfully preserve a poisoned description forever.
 | **T2.1** Registry tier field | — |
 | **T8.2** Policy-as-code | Invalid policy → keep last-known-good, alert |
 
-```mermaid
+<img alt="B2.4 Risk tiering & assurance bar — sequence diagram" src="img/B2.4.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Adm as admission
@@ -197,6 +223,8 @@ sequenceDiagram
     Note over Pol,Reg: Every later capability reads this field.<br/>B3.8 auto-approval, B4.2 zone crossing and<br/>B5.3 re-attestation intervals are all<br/>tier-conditioned.
 ```
 
+</details>
+
 **What the diagram argues.** Tier is derived, not declared. A team cannot self-select
 a lower bar, because the inputs — zone, data class, whether the surface contains a
 write — are properties of the registration rather than assertions in it.
@@ -214,7 +242,12 @@ write — are properties of the registration rather than assertions in it.
 | **T1.5** Agent-card signature verification | Unsigned or mis-signed card → not admitted |
 | **T1.4** Build provenance verification | Unverifiable provenance → denied or unattested |
 
-```mermaid
+<img alt="B2.5 Third-party / partner agent onboarding — sequence diagram" src="img/B2.5.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor TPR as Third-Party Risk
@@ -242,6 +275,8 @@ sequenceDiagram
     Note over Adm,Partner: Neither side has listed a catalogue.<br/>What crossed the boundary is one signed<br/>entity statement and one signed card.
 ```
 
+</details>
+
 **What the diagram argues.** The supplier gate is a trust-chain resolution, not a
 questionnaire. That is what compresses the cycle time — and the two organisations
 exchange signed statements about *named* entities, never a directory either could
@@ -260,7 +295,12 @@ enumerate.
 | **T3.8** Standing-policy auto-approval | Ambiguity → escalate to a human, **never auto-allow** |
 | **T8.2** Policy-as-code | Invalid policy → keep last-known-good, alert |
 
-```mermaid
+<img alt="B2.6 Self-service developer onboarding — sequence diagram" src="img/B2.6.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Dev as Developer
@@ -289,6 +329,8 @@ sequenceDiagram
     API-->>-CI: request outcome
     deactivate CI
 ```
+
+</details>
 
 **What the diagram argues.** The paved road and the approval gate are the same code
 path with different inputs. There is no "fast lane" that skips checks — the fast case

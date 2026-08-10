@@ -30,7 +30,12 @@ convenient. A boundary you forgot to declare behaves like the hardest one you ha
 | **T4.2** Zone-crossing enforcement | **Unclassified pair → treated as most-restrictive** |
 | **T8.2** Policy-as-code | Invalid policy → keep last-known-good, alert |
 
-```mermaid
+<img alt="B4.1 Trust-zone model — sequence diagram" src="img/B4.1.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Arch as Security Architecture
@@ -55,6 +60,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 **What the diagram argues.** The dry-run is part of the model, not an optional
 convenience. A zone policy that cannot be evaluated against the contracts already
 issued is a policy nobody can safely tighten — so the ability to ask *"what would
@@ -73,7 +80,12 @@ this have refused"* is what makes the model changeable at all.
 | **T3.1** Contract minting | Any policy miss → no contract issued |
 | **T7.1** Connection-lifecycle audit | Chain break on verify → alert |
 
-```mermaid
+<img alt="B4.2 Zone-crossing control — sequence diagram" src="img/B4.2.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Dev as Developer
@@ -102,6 +114,8 @@ sequenceDiagram
     Note over Med: At connect time the mediator re-checks the<br/>zone pair from the registry, not from the<br/>contract — so a party that moved zones<br/>after minting is caught.
 ```
 
+</details>
+
 **What the diagram argues.** The zone is re-resolved at connect time rather than
 trusted from the contract. A contract is immutable once signed, but a party's zone is
 not — moving a service from `internal` to `partner` must invalidate crossings that
@@ -119,7 +133,12 @@ were approved under the old classification.
 | **T2.3** Mediated discovery | Unknown asker → empty result set, never an error that confirms existence |
 | **T2.4** Anti-enumeration | Enumeration attempt → throttled and logged as reconnaissance |
 
-```mermaid
+<img alt="B4.3 Mediated discovery (anti-reconnaissance) — sequence diagram" src="img/B4.3.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Agent as agent
@@ -142,6 +161,8 @@ sequenceDiagram
     Brk--)Agent: throttled
 ```
 
+</details>
+
 **What the diagram argues.** Timing matters as much as content. If a forbidden
 capability returned faster than a non-existent one, the latency itself would be the
 oracle — so the answer must be uniform in shape *and* cost. And the throttle counter
@@ -159,7 +180,12 @@ is a detection source: forty near-misses is not a broken client, it is a search.
 | **T7.6** Cross-org federation | Untrusted federation entity → no resolution |
 | **T1.5** Agent-card signature verification | Unsigned or mis-signed card → not admitted |
 
-```mermaid
+<img alt="B4.4 Cross-org federation — sequence diagram" src="img/B4.4.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant OurCt as our contract service
@@ -189,6 +215,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 **What the diagram argues.** Federation is peer-to-peer at the *anchor* level and
 independent at the *enforcement* level. Each side keeps its own approvers, its own
 policy and its own mediator — what crosses is a signed artifact naming specific
@@ -207,7 +235,12 @@ becoming the other's authorisation authority.
 | **T4.5** Egress control | **Undeclared class or jurisdiction → deny** |
 | **T3.6** Terms enforcement | Condition false → deny or hold |
 
-```mermaid
+<img alt="B4.5 Egress control for external agents — sequence diagram" src="img/B4.5.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Agent as internal agent
@@ -235,6 +268,8 @@ sequenceDiagram
         Med-->>-Agent: result
     end
 ```
+
+</details>
 
 **What the diagram argues.** The declaration is made once, at approval time, by
 someone accountable — and then checked on every call against real argument values.

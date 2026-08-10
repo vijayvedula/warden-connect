@@ -31,7 +31,12 @@ is what lets assurance run in a production estate without becoming an outage sou
 | **T5.1** Drift detection | Drift → **connection suspended pending re-approval** |
 | **T2.2** Surface pinning | Presented hash ≠ pinned hash → refused, drift event raised |
 
-```mermaid
+<img alt="B5.1 Surface-drift detection — sequence diagram" src="img/B5.1.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Asr as assurance
@@ -62,6 +67,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 **What the diagram argues.** The check runs on a schedule **and** at every connect,
 and the reason is different in each case. The schedule bounds mean-time-to-detect.
 The connect-time check makes it impossible to use a drifted surface even in the
@@ -78,7 +85,12 @@ window before the scheduler next runs.
 |---|---|
 | **T5.3** Scheduled re-attestation | Overdue → posture `degraded` → **contract not renewed** |
 
-```mermaid
+<img alt="B5.2 Scheduled re-attestation — sequence diagram" src="img/B5.2.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Sch as scheduler
@@ -105,6 +117,8 @@ sequenceDiagram
     deactivate Asr
 ```
 
+</details>
+
 **What the diagram argues.** Nothing is cut. A party that stops meeting the bar keeps
 its existing connectivity until the contract expires, and then simply does not get a
 new one. That is the difference between an assurance control teams tolerate and one
@@ -122,7 +136,12 @@ they disable — and it is why the KPI is *re-attested within SLA* rather than
 |---|---|
 | **T5.4** Posture scoring | — |
 
-```mermaid
+<img alt="B5.3 Posture scoring — sequence diagram" src="img/B5.3.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Asr as assurance
@@ -146,6 +165,8 @@ sequenceDiagram
     Note over CISO: Ranked by tier, not by count.<br/>Nine unattested tier-3 reporting agents<br/>matter less than one degraded tier-1<br/>payments agent.
 ```
 
+</details>
+
 **What the diagram argues.** Posture is a *derived* value with no inputs of its own —
 every signal it consumes was already recorded by another capability. That is what
 makes it cheap to add and impossible to game: there is no posture field anyone can
@@ -163,7 +184,12 @@ set.
 | **T5.5** Credential-expiry watch | Expiring → pre-emptive alert. **Expired → refuse** |
 | **T1.6** Identity lifecycle sync | Owner leaves → connections flagged, then expired |
 
-```mermaid
+<img alt="B5.4 Certificate / key / owner hygiene — sequence diagram" src="img/B5.4.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Asr as assurance
@@ -192,6 +218,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 **What the diagram argues.** The two tracks look similar and behave differently. A
 lapsed *owner* degrades gracefully — contracts run to expiry. A lapsed *issuer key* is
 a cliff: every contract it signed stops verifying simultaneously. Which is why the
@@ -210,7 +238,12 @@ credential alert carries the blast radius, and the owner alert does not need to.
 | **T7.2** SIEM export | Blocking sink unavailable → connection not issued |
 | **T7.4** Regulatory register export | — |
 
-```mermaid
+<img alt="B5.5 Continuous control monitoring & attestation reporting — sequence diagram" src="img/B5.5.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Ct as contract
@@ -236,6 +269,8 @@ sequenceDiagram
     Ev-->>-Audit: every approval with signer, key id, timestamp and policy version
     Note over Audit: The sample is the population.<br/>There is no reason to test 25 of 412 when<br/>all 412 are individually verifiable.
 ```
+
+</details>
 
 **What the diagram argues.** The evidence sink is *blocking*. That is an unusual and
 deliberate choice — it means an evidence outage stops new connections being issued
