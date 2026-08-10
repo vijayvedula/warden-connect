@@ -65,6 +65,7 @@ The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 | injection screening | never read a JSON object **key**, so a poisoned parameter name scored zero where the same string in `required` scored a block |
 | `drain`/`abort` on revocation | has no caller and no flag: the stated `Abort` default is not in force |
 | `max_calls_per_hour` | counts per **process**, so a 3-per-hour contract served 9 calls in one hour across three short-lived mediators |
+| a quarantine | could never be lifted — no command, no route — so a false positive bricked a party permanently |
 
 ### The review checklist
 
@@ -229,9 +230,18 @@ namespace, or on its own host, and the check is real. Co-locate it with untruste
 and the check is decorative — and no CIDR narrow enough fixes that, because the forger shares
 the address.
 
-If you need the stronger property, the mechanism is a shared secret the proxy sets and the
-listener requires, so forging needs the secret rather than the address. That is not
-implemented, and this paragraph exists so nobody assumes it is.
+The stronger property is now available: **`--proxy-secret-file`**. The proxy sets
+`x-warden-proxy-secret`, the listener requires it, and forging then costs the secret rather
+than the position — so a co-located process at `--trusted-proxy 127.0.0.1` is refused.
+Verified over a socket from loopback, which is exactly the forger's own address: the request
+that used to be admitted now returns 401. The secret is at least 32 characters, read from a
+file so it stays out of the process list, compared in constant time, and it **narrows only**
+— the address check and the `https` claim both still apply.
+
+It is optional, because requiring it would break every existing deployment on upgrade. So
+the weak configuration is still expressible, and the banner says so in those words: *"NO
+proxy secret — any process at that address can forge the header"*. **Check the banner, not
+the flags** — a `--trusted-proxy` line looks strict either way.
 
 ---
 

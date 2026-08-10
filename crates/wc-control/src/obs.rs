@@ -29,15 +29,16 @@
 //! # What is not emitted, and why
 //!
 //! Named here rather than left as a hole, because a dashboard with a panel that is always
-//! zero teaches an operator to ignore the panel:
+//! zero teaches an operator to ignore the panel. `wc_quarantine_duration_seconds` used to
+//! be on this list; closing it turned out to need a `connect unquarantine` command,
+//! because there was no way to clear a quarantine at all and therefore no duration to
+//! observe. A metric nobody can populate is usually a path nobody can take.
 //!
 //! * `wc_verify_duration_seconds{path}`, `wc_filter_tools{state}`,
 //!   `wc_filter_failclosed_total`, `wc_ceiling_breaches_total{kind}` — these describe the
 //!   **data plane**. They belong to the mediator, which has no `/metrics` endpoint at all
 //!   (it speaks stdio to one agent), so it emits them through the decision log instead.
 //!   See `wc_mediator::obs`.
-//! * `wc_quarantine_duration_seconds` — needs the interval between a quarantine and its
-//!   clearing. Both events are in the chain; nothing computes the pairing yet.
 //! * `wc_standing_share` — §8.17-Q4 cap utilisation. The cap is enforced in `cpolicy`;
 //!   expressing utilisation as a single ratio across zone pairs needs a definition nobody
 //!   has written down, and inventing one would put a number on a dashboard that means
@@ -78,6 +79,16 @@ const SCORE_BUCKETS: &[f64] = &[20.0, 40.0, 60.0, 80.0, 85.0, 95.0, 100.0];
 /// under 60 s estate-wide, so `wc_mediator_ack_lag_seconds_bucket{le="60"}` versus
 /// `_count` is that claim, measured.
 const ACK_LAG_BUCKETS: &[f64] = &[1.0, 5.0, 15.0, 30.0, 60.0, 300.0, 3_600.0];
+
+/// Buckets for how long a party stayed quarantined, in seconds.
+///
+/// Both tails are the interesting ones and the buckets are chosen to separate them. Under
+/// an hour is a contained incident or — more often — a mistake being undone, and a
+/// quarantine cleared in **under five minutes** is worth being able to count, because a
+/// containment that keeps getting reversed that fast is a false-positive detector wearing
+/// out the operator who answers it. Past thirty days is a party nobody ever came back to,
+/// which is an estate-hygiene question rather than an incident.
+const QUARANTINE_BUCKETS: &[f64] = &[300.0, 3_600.0, 86_400.0, 604_800.0, 2_592_000.0];
 
 /// Windows reported by `wc_contracts_expiring`.
 const EXPIRY_WINDOWS: &[(&str, u64)] = &[("1h", 3_600), ("24h", 86_400), ("7d", 604_800)];
@@ -129,6 +140,13 @@ pub const CHAIN_LENGTH: &str = "wc_chain_length";
 pub const ANCHOR_AGE: &str = "wc_anchor_age_seconds";
 /// Per-mediator acknowledgement lag.
 pub const ACK_LAG: &str = "wc_mediator_ack_lag_seconds";
+/// How long a party stayed quarantined, observed when the quarantine is cleared.
+///
+/// Observed at the clearing rather than derived at scrape time, because deriving it
+/// means pairing two events across the evidence chain and the chain grows monotonically
+/// — retention retires segments and deletes nothing — so a scrape-time scan gets slower
+/// for the life of the estate. `Entity::quarantined_at` makes the pairing local.
+pub const QUARANTINE_DURATION: &str = "wc_quarantine_duration_seconds";
 /// Mediators that have not confirmed an order past its deadline.
 pub const ACK_UNCONFIRMED: &str = "wc_mediator_unconfirmed";
 /// Whether this control plane serves a revocation feed at all.
@@ -219,6 +237,11 @@ pub fn register(registry: &Registry) {
         ACK_LAG,
         "Seconds between a containment order and a mediator confirming it.",
         ACK_LAG_BUCKETS,
+    );
+    registry.register_histogram(
+        QUARANTINE_DURATION,
+        "Seconds a party stayed quarantined, observed when the quarantine is cleared.",
+        QUARANTINE_BUCKETS,
     );
 }
 
@@ -359,6 +382,17 @@ pub fn ack_lag(registry: &Registry, mediator: &str, seconds: u64) {
 /// Observe a contract's TTL at mint time.
 pub fn contract_ttl(registry: &Registry, seconds: u64) {
     registry.observe(CONTRACT_TTL, &[], seconds as f64);
+}
+
+/// Observe how long a party stayed quarantined, at the moment it is cleared.
+///
+/// Unlabelled deliberately. Per-party would be an unbounded label set — one series per
+/// entity that was ever contained, kept for as long as Prometheus retains it — and the
+/// question this answers ("are containments short-lived, and how often") is a
+/// distribution, not a per-party fact. The per-party record is the evidence chain, which
+/// is where an auditor should be looking anyway.
+pub fn quarantine_duration(registry: &Registry, seconds: u64) {
+    registry.observe(QUARANTINE_DURATION, &[], seconds as f64);
 }
 
 fn posture_label(posture: Posture) -> &'static str {

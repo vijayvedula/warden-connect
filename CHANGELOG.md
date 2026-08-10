@@ -166,6 +166,41 @@ mode this component exists to prevent, occurring inside it:
 - **Screening refused every localised tool server** — the S1 rule read localisation
   controls in complex scripts as concealment.
 - **A latency gate pointed at a benchmark that did not exist**, so it silently never ran.
+Closing the remaining **Unbuilt** items that a commit can close — and one of them turned out
+to be a control that could not be reached:
+
+- **A quarantine could never be lifted.** `Registry::clear_quarantine` existed,
+  dual-controlled and tested, with **no CLI command and no API route**. So quarantine was a
+  one-way door in the shipped product: a false-positive containment bricked a party for good,
+  and the only recovery was hand-editing a hash-linked state log, which breaks every row after
+  the edit. Found while wiring `wc_quarantine_duration_seconds`, whose only input is a
+  clearing that could not happen — a metric nobody can populate is usually a path nobody can
+  take. Now `connect unquarantine <id> --approver a --approver b` and
+  `POST /v1/quarantine/clear`, dual-controlled like the order they lift, because clearing is
+  the more dangerous direction: it restores a party the estate decided to cut. Contracts stay
+  revoked, and the command, the response and the evidence record all say so, since "cleared"
+  reads like "restored".
+- **`wc_quarantine_duration_seconds` is emitted.** Observed at the clearing, from a new
+  explicit `Entity::quarantined_at` — not from `updated_at`, which any unrelated write moves,
+  and not derived at scrape time by pairing chain events, because the chain grows monotonically
+  and every scrape would get slower than the last. A quarantine predating the field reports
+  *no* duration rather than one measured from the epoch.
+- **`--proxy-secret-file` closes the trusted-proxy forgery gap.** The address check's honest
+  limit was that a process *sharing* a trusted address can forge `x-forwarded-proto`, and no
+  CIDR fixes it because the forger shares the address — the ordinary shape when the proxy is a
+  localhost sidecar. The proxy now sets `x-warden-proxy-secret` and the listener requires it,
+  so forging costs the secret rather than the position. Verified over a socket from loopback,
+  which is the forger's own address: the request that was admitted before returns 401. At least
+  32 characters, read from a file so it stays out of the process list, compared in constant
+  time, never rendered by `Debug` or the banner, and **narrowing only** — the address check and
+  the `https` claim both still apply. Optional, because requiring it would break every existing
+  deployment, so the banner names the weak configuration outright.
+- **The SDK has tests that need no control plane.** Its only verification was "the examples run
+  against a live control plane", which needs an estate, keys and an approver registry, and
+  therefore never ran in CI. Twenty tests over what a status means, whether a retry is safe,
+  and whether a refusal keeps its `WC-*` code — including the replay trap that was a real
+  defect, and mutation-checked by reintroducing it. In CI now.
+
 Found by the **second adversarial hardening pass**, over the five areas the first left
 untouched — `screen`, the ceilings, the drain path, federation, residency:
 
