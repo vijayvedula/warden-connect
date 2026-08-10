@@ -50,6 +50,7 @@ use wc_control::issuance::{
     self as issuance, ApprovalProof, ApproverRegistry, Issued, Issuer, Outcome, PendingRequest,
     RequestInput, RequestStatus,
 };
+use wc_control::rekor;
 use wc_control::screen;
 use wc_control::store::{Actor, Store};
 use wc_core::canon::{self, Limits, SurfaceKind};
@@ -294,7 +295,15 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "oidc-label",
             "oidc-subject-claim",
         ],
-        "attest verify" => &["file", "prov-key", "builder", "artifact-digest", "artifact"],
+        "attest verify" => &[
+            "file",
+            "prov-key",
+            "builder",
+            "artifact-digest",
+            "artifact",
+            "rekor-proof",
+            "rekor-body",
+        ],
         "activate" => &["id", "why"],
         "unquarantine" => &["id", "approver", "why"],
         "quarantine" => &[
@@ -2284,6 +2293,59 @@ fn attest_verify_cmd(args: &Args) -> Result<()> {
     };
     let (bindings, refs, method) = verifier.verify_envelope(&envelope)?;
 
+    // Transparency-log inclusion, when a proof is supplied. `bindings.log_checked` was
+    // permanently false and the method string said so — honest, and now it can be true.
+    //
+    // The leaf is the log entry's *body*, not the envelope: Rekor hashes what it stored, and
+    // hashing the artifact or the envelope here would produce a leaf that matches nothing and
+    // fail for a reason nobody could diagnose.
+    let inclusion = match args.get("rekor-proof") {
+        None => None,
+        Some(proof_path) => {
+            let raw = read_json(proof_path)?;
+            // Accept a whole entry response or just the proof object, because the two are
+            // what an operator actually has to hand.
+            let proof_value = raw
+                .get("verification")
+                .and_then(|v| v.get("inclusionProof"))
+                .or_else(|| raw.get("inclusionProof"))
+                .cloned()
+                .unwrap_or_else(|| raw.clone());
+            let proof: rekor::InclusionProof =
+                serde_json::from_value(proof_value).map_err(|e| {
+                    WcError::with_detail(
+                        Code::CONFIG_INVALID,
+                        format!("{proof_path} is not a Rekor inclusion proof"),
+                    )
+                    .with_source(e)
+                })?;
+
+            let body_b64 = match args.get("rekor-body") {
+                Some(p) => std::fs::read_to_string(p)
+                    .map_err(|e| {
+                        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {p}"))
+                            .with_source(e)
+                    })?
+                    .trim()
+                    .to_string(),
+                None => raw
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        WcError::with_detail(
+                            Code::CONFIG_INVALID,
+                            "the proof file carries no `body`, so pass --rekor-body FILE with                              the log entry's base64 body: the leaf is a hash of what the log                              stored, not of the artifact",
+                        )
+                    })?
+                    .to_string(),
+            };
+            let body = wc_core::util::base64_decode(&body_b64).ok_or_else(|| {
+                WcError::with_detail(Code::CONFIG_INVALID, "the Rekor entry body is not base64")
+            })?;
+            Some(rekor::verify(&rekor::leaf_hash(&body), &proof)?)
+        }
+    };
+
     // Every binding is reported, and a missing one is a refusal rather than a footnote.
     // `verify_envelope` returns the bindings even when one did not hold, so this command
     // owes the decision — silently printing "verified" beside `subject_matched: false` is
@@ -2299,6 +2361,8 @@ fn attest_verify_cmd(args: &Args) -> Result<()> {
     } else if !bindings.builder_allowed {
         missing.push("the statement's builder is not in the allowlist");
     }
+    // Not in `missing`: inclusion is additional assurance, and its absence is the documented
+    // default rather than a broken binding. Saying nothing at all would be the mistake.
 
     if args.has("json") {
         println!(
@@ -2310,7 +2374,15 @@ fn attest_verify_cmd(args: &Args) -> Result<()> {
                 "builder": bindings.builder,
                 "subject_matched": bindings.subject_matched,
                 "builder_allowed": bindings.builder_allowed,
-                "rekor_inclusion_checked": bindings.log_checked,
+                "rekor_inclusion_checked": inclusion.is_some(),
+                "rekor": inclusion.as_ref().map(|i| json!({
+                    "leaf_hash": i.leaf_hash,
+                    "root": i.computed_root,
+                    "tree_size": i.tree_size,
+                    "checkpoint_agrees": i.checkpoint_agrees,
+                    "origin": i.origin,
+                    "root_trust": i.root_trust,
+                })),
                 "missing": missing,
                 "refs": refs.len(),
             }))?
@@ -2329,14 +2401,21 @@ fn attest_verify_cmd(args: &Args) -> Result<()> {
             "  bound      subject {} · builder {}",
             bindings.subject_matched, bindings.builder_allowed
         );
-        println!(
-            "  rekor      {}",
-            if bindings.log_checked {
-                "inclusion checked"
-            } else {
-                "inclusion NOT checked"
+        match &inclusion {
+            None => println!("  rekor      inclusion NOT checked (pass --rekor-proof)"),
+            Some(i) => {
+                println!(
+                    "  rekor      included in a tree of {} leaves, root {}…",
+                    i.tree_size,
+                    &i.computed_root[..16]
+                );
+                match &i.origin {
+                    Some(o) => println!("             checkpoint {o}"),
+                    None => println!("             no checkpoint"),
+                }
+                println!("             {}", i.root_trust);
             }
-        );
+        }
         for m in &missing {
             println!("  UNBOUND    {m}");
         }
