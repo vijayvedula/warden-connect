@@ -38,6 +38,15 @@ pub fn sha256_bytes(input: &[u8]) -> [u8; 32] {
     Sha256::digest(input).into()
 }
 
+/// `sha256:` hex over bytes — what an artifact digest looks like on the wire.
+///
+/// Named separately from [`sha256_hex`], which takes a `&str`: a caller hashing a *file*
+/// would otherwise have to go through `String::from_utf8`, and a release binary is not UTF-8.
+#[must_use]
+pub fn sha256_prefixed(bytes: &[u8]) -> String {
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+}
+
 /// Deterministic JSON serialisation with object keys sorted, so hashes are
 /// stable regardless of map ordering.
 ///

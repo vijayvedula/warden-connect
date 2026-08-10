@@ -158,20 +158,52 @@ names against the Rust source, correctly standing down outside a checkout).
 
 ## Provenance
 
-This repository verifies **other people's** provenance —
-`wc_control::attest::DsseProvenanceVerifier` checks DSSE/in-toto SLSA envelopes — and
-produces none of its own. A release should be signed and attested, and the honest statement
-today is that it is not:
+This repository verifies **other people's** provenance and used to produce none of its own,
+so trust in a downloaded binary rested on the transport — the residual §7.8 A8 describes for a
+control plane. `release.yml` closes that **in the format this component already accepts**,
+which is the whole reason it is worth doing this way rather than adopting a second toolchain:
 
-* no signed tag requirement,
-* no SLSA provenance for the binaries or the image,
-* no cosign signature on the image,
-* no reproducible-build claim.
+* each binary carries a DSSE / in-toto **SLSA v1** envelope, signed keyless through Fulcio so
+  there is no signing key in repository secrets;
+* the workflow **verifies what it just attested, with our own verifier**, in the same run. If
+  that step fails the release does not ship, which is what keeps this section true rather than
+  turning it into prose;
+* a downloader runs `scripts/verify-release.sh`, which needs **no Sigstore client, no network
+  and no cosign** — a `connect` binary they already trust and the public key.
 
-The verifier already exists, so the shortest path is to attest releases with the format this
-component already accepts, and then verify our own artifacts with our own code. Until that
-happens, an operator's trust in a downloaded binary rests on the transport, which is exactly
-the residual §7.8 A8 describes for a control plane.
+```sh
+scripts/verify-release.sh connect connect.dsse.json builder-pub.pem \
+  https://github.com/vijayvedula/warden-connect/.github/workflows/release.yml
+```
+
+Three bindings, all required, because a valid signature vouches for nothing in particular:
+signed by the key you expected, `subject[].digest.sha256` equal to **the file in front of
+you**, and `builder.id` in an allowlist you wrote. The script computes the digest from the
+bytes rather than reading `SHA256SUMS`, because a digest retyped from a release page is a
+digest whoever controls the page chose. `SHA256SUMS` ships for humans.
+
+### What is still not done
+
+* **Keyless signing means the verifying key is in a certificate.** `connect attest verify` is
+  offline and Sigstore-free by design, so it checks the envelope and the bindings and does
+  **not** walk the Fulcio chain. Both halves are needed: run `cosign verify-blob-attestation`
+  as well, with `--certificate-identity` and `--certificate-oidc-issuer`. Neither substitutes
+  for the other, and a release note that mentioned only one would be worse than mentioning
+  neither.
+* **Rekor inclusion is not verified.** `connect attest verify` prints *"inclusion NOT
+  checked"* rather than implying otherwise.
+* **No signed git tags, and no reproducible-build claim.** Tag signing is a key-custody
+  decision like every other; reproducibility has not been measured.
+* **The image is not signed.** `release.yml` covers the binaries; the container image is
+  built in CI and not attested.
+
+> **`release.yml` has never run.** It is written from the actions' and cosign's documentation
+> — the position `limitations.md` describes for anything not backed by an executed script, and
+> the class the four wrong SPIRE commands came from. What *is* verified is the half that can be:
+> `connect attest verify` and `scripts/verify-release.sh` against **real cosign v3.1.3 output**
+> in `fixtures/cosign/`, including every refusal — a substituted artifact, an unlisted builder,
+> an untrusted key, a missing allowlist, and a missing subject. Run the workflow with
+> `workflow_dispatch` and verify the artefacts by hand before tagging.
 
 ## What is verified where
 

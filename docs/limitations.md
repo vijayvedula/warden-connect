@@ -319,10 +319,20 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
   of `wc-mediator` would fail; of `wc-core` would succeed and publish half a product. Making
   this publishable means giving core a registry version — a change to the family's coupling
   model, not a packaging chore. *(By design, until that decision changes)*
-* **No release provenance.** This component *verifies* DSSE/in-toto SLSA envelopes and produces
-  none of its own: no signed tags, no SLSA provenance for the binaries or image, no cosign
-  signature, no reproducible-build claim. Trust in a downloaded binary rests on the transport.
-  *(Unbuilt)*
+* **Release provenance is built and the workflow has never run.** `release.yml` attests each
+  binary with a DSSE/in-toto SLSA v1 envelope, signed keyless, and verifies what it just
+  attested with our own verifier in the same run. A downloader runs
+  `scripts/verify-release.sh`, which needs no Sigstore client, no network and no cosign.
+  `connect attest verify` — the standalone command that makes it possible — is verified against
+  **real cosign v3.1.3 output**, including a substituted artifact, an unlisted builder, an
+  untrusted key and a missing allowlist. The workflow itself is written from documentation, so
+  run it with `workflow_dispatch` before tagging.
+
+  Still not done: **no signed git tags** (a key-custody decision like the rest), **no
+  reproducible-build claim** (unmeasured), **the image is not attested** (only the binaries),
+  and `connect attest verify` does **not** walk the Fulcio certificate chain — it is offline by
+  design, so `cosign verify-blob-attestation` is the other required half and neither
+  substitutes for the other. *(Unproven workflow; the rest Unbuilt)*
 * **The SDK is not released.** `sdk/python` is installable from a checkout and has no packaged
   release **yet**. It has a test suite that needs no control plane — 20 tests over what a
   status means, whether a retry is safe, and whether a refusal keeps its `WC-*` code, run in
