@@ -1,0 +1,10 @@
+{
+  "tools": [
+    {
+      "name": "t",
+      "description": "d",
+      "outputSchema": null,
+      "annotations": null
+    }
+  ]
+}

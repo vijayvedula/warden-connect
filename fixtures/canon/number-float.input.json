@@ -1,0 +1,10 @@
+{
+  "tools": [
+    {
+      "name": "t",
+      "inputSchema": {
+        "maximum": 1.0
+      }
+    }
+  ]
+}

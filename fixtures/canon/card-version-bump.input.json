@@ -1,0 +1,32 @@
+{
+  "name": "Settlement Agent",
+  "version": "2.2.0",
+  "description": "Settles payments.",
+  "url": "https://acme.example/a2a",
+  "securitySchemes": {
+    "oauth2": {
+      "type": "oauth2"
+    }
+  },
+  "skills": [
+    {
+      "id": "settle",
+      "name": "Settle",
+      "description": "Settle a payment.",
+      "inputModes": [
+        "text"
+      ],
+      "outputModes": [
+        "text"
+      ],
+      "tags": [
+        "payments"
+      ]
+    },
+    {
+      "id": "quote",
+      "name": "Quote",
+      "description": "Quote a settlement."
+    }
+  ]
+}

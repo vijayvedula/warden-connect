@@ -1132,4 +1132,119 @@ mod golden {
         }
         assert_eq!(expected["alg"].as_str().unwrap(), PIN_ALG);
     }
+
+    // --- the published vector set ---------------------------------------
+    //
+    // `fixtures/canon/` is the interoperability contract for `wcs1`: input surface ->
+    // canonical bytes -> digest, for a third party to check their own implementation
+    // against with `scripts/canon-conformance.sh`. Published vectors that nothing checks
+    // rot into fiction, so the whole set runs here too.
+    //
+    // If one of these fails, the answer is almost never to regenerate. `wcs1` is frozen —
+    // a moved digest invalidates every pin in every registry, and the path is `wcs2` with
+    // a shadow re-pin (§8.7.1).
+
+    const VECTORS: &str = include_str!("../../../fixtures/canon/expected.json");
+
+    #[test]
+    fn every_published_vector_still_holds() {
+        let spec: Value = serde_json::from_str(VECTORS).unwrap();
+        let entity = EntityId::new(spec["entity"].as_str().unwrap()).unwrap();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/canon");
+
+        let vectors = spec["vectors"].as_object().unwrap();
+        assert!(
+            vectors.len() >= 31,
+            "the set shrank: {} vectors",
+            vectors.len()
+        );
+        let mut accepted = 0;
+        let mut refused = 0;
+
+        for (name, want) in vectors {
+            let raw: Value =
+                serde_json::from_slice(&std::fs::read(dir.join(name)).unwrap()).unwrap();
+            let kind = match want["kind"].as_str().unwrap() {
+                "mcp" => SurfaceKind::McpTools,
+                "a2a" => SurfaceKind::A2aCard,
+                other => panic!("{name}: unknown kind {other}"),
+            };
+            let result = canonicalise(kind, &entity, &raw, &Limits::default());
+
+            match want["expect"].as_str().unwrap() {
+                "accept" => {
+                    let surface = result
+                        .unwrap_or_else(|e| panic!("{name} must canonicalise: {}", e.detail()));
+                    assert_eq!(
+                        surface.document,
+                        want["document"].as_str().unwrap(),
+                        "{name}: canonical bytes moved — rule: {}",
+                        want["rule"].as_str().unwrap()
+                    );
+                    assert_eq!(
+                        surface.manifest_hash(),
+                        want["manifest"].as_str().unwrap(),
+                        "{name}: manifest digest moved"
+                    );
+                    for (item, hash) in surface.item_hashes() {
+                        assert_eq!(
+                            want["items"][&item].as_str().unwrap(),
+                            hash,
+                            "{name}: item {item} digest moved"
+                        );
+                    }
+                    accepted += 1;
+                }
+                code => match result {
+                    Ok(_) => panic!("{name} must be refused with {code}, it was accepted"),
+                    Err(err) => {
+                        assert_eq!(err.code().to_string(), code, "{name}: wrong refusal code");
+                        refused += 1;
+                    }
+                },
+            }
+        }
+        assert!(
+            accepted > 0 && refused > 0,
+            "the set must cover both outcomes"
+        );
+    }
+
+    #[test]
+    fn the_vectors_own_identity_claims_hold() {
+        // Three equalities and three inequalities the set asserts about itself in prose.
+        // Without these the README could claim a collision the digests do not have.
+        let spec: Value = serde_json::from_str(VECTORS).unwrap();
+        let v = &spec["vectors"];
+        let m = |name: &str| v[name]["manifest"].as_str().unwrap().to_string();
+
+        assert_eq!(
+            m("nfc.input.json"),
+            m("nfc-precomposed.input.json"),
+            "NFC: decomposed and precomposed are the same surface"
+        );
+        assert_eq!(m("baseline.input.json"), m("key-order.input.json"));
+        assert_eq!(m("baseline.input.json"), m("tool-order.input.json"));
+
+        assert_ne!(
+            m("number-integer.input.json"),
+            m("number-float.input.json"),
+            "1 and 1.0 are different bytes and must stay different digests"
+        );
+        assert_ne!(
+            m("skill-examples.input.json"),
+            m("skill-examples-reordered.input.json"),
+            "example order is authored, so it is not sorted away"
+        );
+        assert_ne!(
+            v["card-baseline.input.json"]["manifest"],
+            v["card-version-bump.input.json"]["manifest"],
+            "a version bump moves the manifest"
+        );
+        assert_eq!(
+            v["card-baseline.input.json"]["items"]["settle"],
+            v["card-version-bump.input.json"]["items"]["settle"],
+            "...and must not move a contracted skill"
+        );
+    }
 }

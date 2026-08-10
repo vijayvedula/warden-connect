@@ -1,0 +1,38 @@
+{
+  "tools": [
+    {
+      "name": "get_balance",
+      "description": "Read an account balance.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id"
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "title": "Get balance"
+      }
+    },
+    {
+      "name": "wire_funds",
+      "description": "Move money between accounts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "amount"
+        ]
+      }
+    }
+  ]
+}

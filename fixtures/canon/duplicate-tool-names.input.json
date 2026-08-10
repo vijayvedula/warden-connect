@@ -1,0 +1,12 @@
+{
+  "tools": [
+    {
+      "name": "t",
+      "description": "first"
+    },
+    {
+      "name": "t",
+      "description": "second"
+    }
+  ]
+}

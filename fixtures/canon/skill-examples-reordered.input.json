@@ -1,0 +1,15 @@
+{
+  "name": "A",
+  "version": "1.0.0",
+  "skills": [
+    {
+      "id": "s",
+      "name": "S",
+      "description": "d",
+      "examples": [
+        "Show unmatched rows",
+        "Reconcile yesterday's ledger"
+      ]
+    }
+  ]
+}

@@ -19,8 +19,10 @@
 > segment retirement does not exist.
 >
 > **P2: all five done.** #15–#19 are closed. The remaining work in each is named in its entry
-> and needs an environment rather than a commit: a longer fuzz campaign, `wcs1` digest
-> vectors for third parties, a packaged SDK release, and two real regions with two volumes.
+> and needs an environment rather than a commit: a longer fuzz campaign, a **second
+> implementation** to run the `wcs1` vectors against (the vectors themselves now exist —
+> `fixtures/canon/`, 31 of them, with a harness), a packaged SDK release, and two real
+> regions with two volumes.
 >
 > **Nineteen items: fifteen `[x]`, four `[~]`, none untouched.** What is left in the four is
 > procurement (a hardware token, a KMS key), an integration environment (SPIRE, a signing
