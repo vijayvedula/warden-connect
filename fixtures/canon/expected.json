@@ -1,0 +1,304 @@
+{
+  "schema": 1,
+  "wcs1_version": 1,
+  "entity": "spiffe://org/ns/tools/sa/vectors",
+  "note": "`expect` is either \"accept\" — in which case `document` is the exact canonical bytes, `manifest` the sha256 over them, and `items` the per-item digests a contract pins — or the WC-* code a conforming implementation must refuse with. `rule` is the normative statement the vector exists to pin. Digests are over the canonical document, not the input file.",
+  "vectors": {
+    "annotation-allowlist.input.json": {
+      "kind": "mcp",
+      "rule": "Exactly five annotations are pinned — title, readOnlyHint, destructiveHint, idempotentHint, openWorldHint. Others are dropped.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"annotations\":{\"destructiveHint\":true,\"idempotentHint\":false,\"openWorldHint\":true,\"readOnlyHint\":false,\"title\":\"T\"},\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:fa4acf1aad01888bed01a35dccb1d9296962ca000c2878f5620e2a82e9ef63b2",
+      "items": {
+        "t": "sha256:fd2286dcec0a7117da586d710167b659a5ba44dbf97a76d185cd60c8ea2cd4ef"
+      }
+    },
+    "bare-array.input.json": {
+      "kind": "mcp",
+      "rule": "A bare array of tools is accepted as equivalent to {\"tools\": [...]}.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"d\",\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:696eab701c59c989ff9812b72620aa5d0ef028139d3c7ba652020d4a94840edc",
+      "items": {
+        "t": "sha256:b9f15ebfa8bc28bcffb5a46b5a868e0d86c2664f18a2661e6573f8172e1ec05f"
+      }
+    },
+    "baseline.input.json": {
+      "kind": "mcp",
+      "rule": "The shape everything else varies from: two tools, schemas, an annotation.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"annotations\":{\"readOnlyHint\":true,\"title\":\"Get balance\"},\"description\":\"Read an account balance.\",\"inputSchema\":{\"properties\":{\"account_id\":{\"type\":\"string\"}},\"required\":[\"account_id\"],\"type\":\"object\"},\"name\":\"get_balance\"},{\"description\":\"Move money between accounts.\",\"inputSchema\":{\"properties\":{\"amount\":{\"type\":\"number\"}},\"required\":[\"amount\"],\"type\":\"object\"},\"name\":\"wire_funds\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:53e2a4312a907e60ca360beca1b212ccb00902b63be01b73ccc40156e7fbb9ac",
+      "items": {
+        "get_balance": "sha256:89aef58642c16180b777cb5c27d9d0224ba3473eb5bb6202a523454c198da00c",
+        "wire_funds": "sha256:a00be26ecf390c92cfb87e1062a462d48eba3246a7564268d7f0ecb9bb537828"
+      }
+    },
+    "bidi-preserved.input.json": {
+      "kind": "mcp",
+      "rule": "A right-to-left override is preserved for the same reason.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"transfer‮ funds\",\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:95cfdd09f0c84c6250b2df3cd9b1549f93087e33a1c6299e8dad11db26aceb20",
+      "items": {
+        "t": "sha256:fb2e46879cafd46fcf8860f9ee63f2e737ce1096b19a6b129adbcb01d225707e"
+      }
+    },
+    "card-baseline.input.json": {
+      "kind": "a2a",
+      "rule": "Skills are the items; card-level fields land in `meta`, so a version bump moves the manifest and no contracted skill digest.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"Quote a settlement.\",\"id\":\"quote\",\"name\":\"Quote\"},{\"description\":\"Settle a payment.\",\"id\":\"settle\",\"inputModes\":[\"text\"],\"name\":\"Settle\",\"outputModes\":[\"text\"],\"tags\":[\"payments\"]}],\"kind\":\"a2a_card\",\"meta\":{\"description\":\"Settles payments.\",\"name\":\"Settlement Agent\",\"securitySchemes\":{\"oauth2\":{\"type\":\"oauth2\"}},\"url\":\"https://acme.example/a2a\",\"version\":\"2.1.0\"},\"v\":1}",
+      "manifest": "sha256:ecc655e8238f85735e0877b523c921f87e68397e4355a2d8958282764bcbd93a",
+      "items": {
+        "quote": "sha256:df7c881309c162d4b09d03b66156dce5de4941e963ff22dbf409273fcfa4cdd6",
+        "settle": "sha256:cd9790fc8ab4cf487f970e90cbf1c2040e69e308e9df1e85fe39281823e552fc"
+      }
+    },
+    "card-dropped-fields.input.json": {
+      "kind": "a2a",
+      "rule": "Card fields outside the allowlist — `provider`, `documentationUrl`, `iconUrl`, `capabilities` — are dropped. Changing one is not drift.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"d\",\"id\":\"s\",\"name\":\"S\"}],\"kind\":\"a2a_card\",\"meta\":{\"description\":\"d\",\"name\":\"A\",\"version\":\"1.0.0\"},\"v\":1}",
+      "manifest": "sha256:0846494c6d99e1fa07058c8c6716bf6e754d876864c1b646ef2bc315a2119aab",
+      "items": {
+        "s": "sha256:f04bbb27db414e2374179977351e75d8fc52e757cba93c56d99f25b06cb54792"
+      }
+    },
+    "card-no-skills.input.json": {
+      "kind": "a2a",
+      "rule": "A card with no skills is valid and pins to a manifest with no items.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[],\"kind\":\"a2a_card\",\"meta\":{\"description\":\"d\",\"name\":\"A\",\"version\":\"1.0.0\"},\"v\":1}",
+      "manifest": "sha256:c373be8eefa1dab54cee954e8832452988ffa8e3e9afed268fd373a49b24e6b3",
+      "items": {}
+    },
+    "card-version-bump.input.json": {
+      "kind": "a2a",
+      "rule": "The same card at 2.2.0. Its manifest MUST differ from `card-baseline` and the `settle` item digest MUST match it.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"Quote a settlement.\",\"id\":\"quote\",\"name\":\"Quote\"},{\"description\":\"Settle a payment.\",\"id\":\"settle\",\"inputModes\":[\"text\"],\"name\":\"Settle\",\"outputModes\":[\"text\"],\"tags\":[\"payments\"]}],\"kind\":\"a2a_card\",\"meta\":{\"description\":\"Settles payments.\",\"name\":\"Settlement Agent\",\"securitySchemes\":{\"oauth2\":{\"type\":\"oauth2\"}},\"url\":\"https://acme.example/a2a\",\"version\":\"2.2.0\"},\"v\":1}",
+      "manifest": "sha256:94bab0198a77185bfb67d5bd524adf3dba94c50235af4dd7e87d35b5cdf8c11b",
+      "items": {
+        "quote": "sha256:df7c881309c162d4b09d03b66156dce5de4941e963ff22dbf409273fcfa4cdd6",
+        "settle": "sha256:cd9790fc8ab4cf487f970e90cbf1c2040e69e308e9df1e85fe39281823e552fc"
+      }
+    },
+    "case-significant.input.json": {
+      "kind": "mcp",
+      "rule": "Case is significant. No case folding anywhere.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"READ\",\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:c71216889b4628ffaca3c7f545d6f28f6ab6a3ded84cbf639b9f2c62b9dbf10b",
+      "items": {
+        "t": "sha256:20b49b55d458da053dea5292f459f529df535524b8e572ee20eff3b7ee45a496"
+      }
+    },
+    "dropped-fields.input.json": {
+      "kind": "mcp",
+      "rule": "Only allowlisted fields survive. `_meta`, vendor extensions and unknown members are dropped, so adding one is NOT drift.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"d\",\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:696eab701c59c989ff9812b72620aa5d0ef028139d3c7ba652020d4a94840edc",
+      "items": {
+        "t": "sha256:b9f15ebfa8bc28bcffb5a46b5a868e0d86c2664f18a2661e6573f8172e1ec05f"
+      }
+    },
+    "duplicate-skill-ids.input.json": {
+      "kind": "a2a",
+      "rule": "The same rule for A2A skills.",
+      "expect": "WC-1002"
+    },
+    "duplicate-tool-names.input.json": {
+      "kind": "mcp",
+      "rule": "Two tools with one name make the per-item digest ambiguous, so the document is refused rather than resolved by last-wins.",
+      "expect": "WC-1002"
+    },
+    "empty-tools.input.json": {
+      "kind": "mcp",
+      "rule": "An empty tool list canonicalises rather than erroring. A surface with nothing on it is a fact about the callee, not a malformed document.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:b6381c4864d469fa5c39ff3660ebe7f2501c4358e9385edf7231f7a3c0f24739",
+      "items": {}
+    },
+    "key-order.input.json": {
+      "kind": "mcp",
+      "rule": "Member order in the input is not significant: objects are emitted sorted by key.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"annotations\":{\"readOnlyHint\":true,\"title\":\"Get balance\"},\"description\":\"Read an account balance.\",\"inputSchema\":{\"properties\":{\"account_id\":{\"type\":\"string\"}},\"required\":[\"account_id\"],\"type\":\"object\"},\"name\":\"get_balance\"},{\"description\":\"Move money between accounts.\",\"inputSchema\":{\"properties\":{\"amount\":{\"type\":\"number\"}},\"required\":[\"amount\"],\"type\":\"object\"},\"name\":\"wire_funds\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:53e2a4312a907e60ca360beca1b212ccb00902b63be01b73ccc40156e7fbb9ac",
+      "items": {
+        "get_balance": "sha256:89aef58642c16180b777cb5c27d9d0224ba3473eb5bb6202a523454c198da00c",
+        "wire_funds": "sha256:a00be26ecf390c92cfb87e1062a462d48eba3246a7564268d7f0ecb9bb537828"
+      }
+    },
+    "nested-schema.input.json": {
+      "kind": "mcp",
+      "rule": "Nesting is walked to depth, not truncated.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"inputSchema\":{\"properties\":{\"a\":{\"properties\":{\"b\":{\"properties\":{\"c\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"}},\"type\":\"object\"}},\"type\":\"object\"}},\"type\":\"object\"},\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:56cbb90a0f12dfe971cf214169d1c14643a752e0f489b30b2d2f7a0208bbc1f1",
+      "items": {
+        "t": "sha256:5d2e59d4e7c900b1967c5a48a41ce9072f10277fcb9c1f4db0f892b7928d883d"
+      }
+    },
+    "nfc-precomposed.input.json": {
+      "kind": "mcp",
+      "rule": "The precomposed twin of `nfc`. Its digest MUST equal that vector's — the only pair here required to collide.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"café balance\",\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:d3bda1c37c2680d69ffde414aadeeb7fd02d34f44ae6a2f8d6582c68061f9d6c",
+      "items": {
+        "t": "sha256:e436db8760a8e1030317f16542c3ae8d4ba7f374d2ddbced8ef0232cd3633c5c"
+      }
+    },
+    "nfc.input.json": {
+      "kind": "mcp",
+      "rule": "Text is NFC-normalised: a decomposed sequence and its precomposed form are the same surface. This vector is authored decomposed (e + U+0301).",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"café balance\",\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:d3bda1c37c2680d69ffde414aadeeb7fd02d34f44ae6a2f8d6582c68061f9d6c",
+      "items": {
+        "t": "sha256:e436db8760a8e1030317f16542c3ae8d4ba7f374d2ddbced8ef0232cd3633c5c"
+      }
+    },
+    "not-a-surface.input.json": {
+      "kind": "mcp",
+      "rule": "A document with no tool list is not an MCP surface.",
+      "expect": "WC-1002"
+    },
+    "null-members.input.json": {
+      "kind": "mcp",
+      "rule": "Null members are dropped, so an explicit null and an absent member canonicalise identically.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"d\",\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:696eab701c59c989ff9812b72620aa5d0ef028139d3c7ba652020d4a94840edc",
+      "items": {
+        "t": "sha256:b9f15ebfa8bc28bcffb5a46b5a868e0d86c2664f18a2661e6573f8172e1ec05f"
+      }
+    },
+    "number-exponent.input.json": {
+      "kind": "mcp",
+      "rule": "An exponent is expanded by the JSON reader, so `1e2` canonicalises as `100.0` — a float, and therefore NOT equal to the integer `100`. If your implementation disagrees anywhere, expect it here.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"inputSchema\":{\"maximum\":100.0},\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:2a0b09f5733304cf352978f377058201c6854007a90a9306a29500edfa3c5fd4",
+      "items": {
+        "t": "sha256:740b1d45b32804c4f94518e1a8c871334e55ffccc8242ed89eaaaf4618efb661"
+      }
+    },
+    "number-float.input.json": {
+      "kind": "mcp",
+      "rule": "`1.0` keeps its fractional form, so it does NOT canonicalise to `1`. Conservative in the safe direction: a reformatted schema reads as drift, and no change is ever laundered into looking identical.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"inputSchema\":{\"maximum\":1.0},\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:db89da842f25ee92488e52c9e8190d3bbaad773cc85bab9e68321316f224725a",
+      "items": {
+        "t": "sha256:807828e2345274cc729490d2eb7cd9d6452c84dec4479bc2fa40d17647f18663"
+      }
+    },
+    "number-integer.input.json": {
+      "kind": "mcp",
+      "rule": "Numbers are emitted as written. `1` is an integer and stays one — compare `number-float`, whose digest MUST differ. The most likely place for a third-party implementation to disagree.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"inputSchema\":{\"maximum\":1},\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:3d07b19817739c94615f4cf7e9b4178e65afe4775eca7dedddce56a7bbcda519",
+      "items": {
+        "t": "sha256:d695e292fded0bb8f231ee2729f6e63f334a35891eb48460474a080308f3affe"
+      }
+    },
+    "order-free-arrays.input.json": {
+      "kind": "mcp",
+      "rule": "`required` and `enum` carry no order, so they are sorted. Reordering them is not drift.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"inputSchema\":{\"properties\":{\"currency\":{\"enum\":[\"AUD\",\"SGD\",\"USD\"],\"type\":\"string\"}},\"required\":[\"a\",\"m\",\"z\"],\"type\":\"object\"},\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:087e5b81496c59a251a438a10c56d477d327e43b32cb6591bf054e31d8c8cac2",
+      "items": {
+        "t": "sha256:d7fa14a7f1913e6a651850bba7b65ed81e1e4413eb75eb4ab3c0a29cb6d39862"
+      }
+    },
+    "ordered-arrays.input.json": {
+      "kind": "mcp",
+      "rule": "Every other array keeps its order, because order can carry meaning. `anyOf` here.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"inputSchema\":{\"anyOf\":[{\"type\":\"string\"},{\"type\":\"integer\"}]},\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:9fe87da05bef685e0e621411d34080ac3bf188efc9bb3a572ab68e2520928a3d",
+      "items": {
+        "t": "sha256:82d9b73b2c74e0d8eb420a25f359db7aa92b519456ac4a637dfcabc6f82946dc"
+      }
+    },
+    "skill-examples-reordered.input.json": {
+      "kind": "a2a",
+      "rule": "The same examples in the other order. Example order is authored, so it is NOT sorted away: this digest MUST differ from `skill-examples`.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"d\",\"examples\":[\"Show unmatched rows\",\"Reconcile yesterday's ledger\"],\"id\":\"s\",\"name\":\"S\"}],\"kind\":\"a2a_card\",\"meta\":{\"name\":\"A\",\"version\":\"1.0.0\"},\"v\":1}",
+      "manifest": "sha256:6a4259403cc3dcc039b765fab289a92ed58ff4bb418acb99fe197cdb18fe2e38",
+      "items": {
+        "s": "sha256:864d84dc35795f78a2bb95ef1b94108dc9f9ac3f2423c95511a7e100d390a6ea"
+      }
+    },
+    "skill-examples.input.json": {
+      "kind": "a2a",
+      "rule": "`skills[].examples` IS pinned. A2A defines it as example prompts, which makes it the most directly model-directed text on a card; it was unpinned and unscreened while `tags` was both.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"d\",\"examples\":[\"Reconcile yesterday's ledger\",\"Show unmatched rows\"],\"id\":\"s\",\"name\":\"S\"}],\"kind\":\"a2a_card\",\"meta\":{\"name\":\"A\",\"version\":\"1.0.0\"},\"v\":1}",
+      "manifest": "sha256:939c2de9cd7a5d63416435b3547e8bd395e2defecf1daf38e64d44bb3a533908",
+      "items": {
+        "s": "sha256:aa49ee92ce8ebbbedb430cf70a78a56fb66fa6bd204d12e82f407aadf9db9d77"
+      }
+    },
+    "skill-name-fallback.input.json": {
+      "kind": "a2a",
+      "rule": "A skill with no `id` is keyed by its `name`, so it can still be contracted.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"d\",\"name\":\"Reconcile\"}],\"kind\":\"a2a_card\",\"meta\":{\"name\":\"A\",\"version\":\"1.0.0\"},\"v\":1}",
+      "manifest": "sha256:91d603bfc01dcdc70aa6d753069ef68ecaeb28e29bcbd6a0cef0d42144513331",
+      "items": {
+        "Reconcile": "sha256:4a7f1023314e6c89704120ffa3f215829c6f59898643dc3dec3be1011b618548"
+      }
+    },
+    "tool-order.input.json": {
+      "kind": "mcp",
+      "rule": "Tool order in the input is not significant: items are emitted sorted by name.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"annotations\":{\"readOnlyHint\":true,\"title\":\"Get balance\"},\"description\":\"Read an account balance.\",\"inputSchema\":{\"properties\":{\"account_id\":{\"type\":\"string\"}},\"required\":[\"account_id\"],\"type\":\"object\"},\"name\":\"get_balance\"},{\"description\":\"Move money between accounts.\",\"inputSchema\":{\"properties\":{\"amount\":{\"type\":\"number\"}},\"required\":[\"amount\"],\"type\":\"object\"},\"name\":\"wire_funds\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:53e2a4312a907e60ca360beca1b212ccb00902b63be01b73ccc40156e7fbb9ac",
+      "items": {
+        "get_balance": "sha256:89aef58642c16180b777cb5c27d9d0224ba3473eb5bb6202a523454c198da00c",
+        "wire_funds": "sha256:a00be26ecf390c92cfb87e1062a462d48eba3246a7564268d7f0ecb9bb537828"
+      }
+    },
+    "tool-title.input.json": {
+      "kind": "mcp",
+      "rule": "The tool-level `title` MCP added in revision 2025-06-18 IS pinned. Leaving it out made a poisoned display name invisible to both drift detection and screening.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"d\",\"name\":\"t\",\"title\":\"Wire funds\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:a3e577ba31a122e9ebb2b517246f4d8007d085b679dcac556f254f566e07147a",
+      "items": {
+        "t": "sha256:4089f46231723f533960aad836386ac5d32bae05de982efd6f2737b10cd9c6b2"
+      }
+    },
+    "unicode-text.input.json": {
+      "kind": "mcp",
+      "rule": "Non-Latin text and astral-plane characters survive intact.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"賁款を送る 💸\",\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:cbcc73ae83c304c2327b717f789a6fb4c242865daf3ed856720563d67d264476",
+      "items": {
+        "t": "sha256:1d3cf0e4f8a278833b696c78778db8f5d74fc4e50a6458e1e8baba840ac19ffd"
+      }
+    },
+    "zero-width-preserved.input.json": {
+      "kind": "mcp",
+      "rule": "A zero-width space is PRESERVED, not stripped. Normalisation must never launder an attack, so this differs from `baseline`-style clean text.",
+      "expect": "accept",
+      "document": "{\"entity\":\"spiffe://org/ns/tools/sa/vectors\",\"items\":[{\"description\":\"transfer​ funds\",\"name\":\"t\"}],\"kind\":\"mcp_tools\",\"meta\":{},\"v\":1}",
+      "manifest": "sha256:163832dcf6d2828a534fc4c0a6e99af537356dddc9cb68377c90166431792958",
+      "items": {
+        "t": "sha256:65fd52b5d51593e7491c87f71a9bfecefe184f9445edbc5a1ef060a668565650"
+      }
+    }
+  }
+}

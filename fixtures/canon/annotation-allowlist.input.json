@@ -1,0 +1,15 @@
+{
+  "tools": [
+    {
+      "name": "t",
+      "annotations": {
+        "title": "T",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "vendorHint": "dropped"
+      }
+    }
+  ]
+}

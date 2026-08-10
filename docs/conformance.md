@@ -159,10 +159,14 @@ the implementation that defines it.
   prose description of what a mediator must do with them. A real mediator conformance kit
   needs peers, presented surfaces and revocation feeds as fixtures too — that is a larger
   piece of work and it is not done.
-* **`wcs1` canonicalisation vectors.** `surface_digest` is what pins a surface, and two
-  implementations must agree on it byte for byte. There are unit tests and a fuzz target;
-  there is no published vector set of *input surface → expected digest*, which is what a
-  third party would need. This is the most valuable thing missing here.
+* **A second implementation of `wcs1`.** The vector set itself is now published —
+  [`fixtures/canon/`](../fixtures/canon/README.md), 31 vectors, driven by
+  `scripts/canon-conformance.sh` on the same calling-convention pattern as this kit. What is
+  unproven is agreement: it has been run against our canonicaliser and against a deliberately
+  wrong one, never against a real second implementation. The three rules most likely to be
+  implemented differently — preserved zero-width and bidi characters, numbers kept in the form
+  they were written, and the field allowlist — are written out in that README so a disagreement
+  arrives as a citation rather than as two hex strings.
 * **A signed distribution.** The vectors are files in a git repository. Nothing attests
   that the set you downloaded is the set we published — see the provenance gap in
   [releasing.md](releasing.md).

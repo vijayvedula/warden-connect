@@ -192,11 +192,14 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
 
 ## 8 · Interoperability
 
-* **No `wcs1` canonicalisation vectors. This is the most valuable thing missing.**
-  `surface_digest` is what pins a surface, so two implementations must agree on it byte for
-  byte. There are unit tests and a fuzz target but **no published *input surface → expected
-  digest* set** — which is exactly what a third party needs, and without it drift detection is
-  only verifiable against our own implementation. *(Unbuilt)*
+* **The `wcs1` vectors exist; nobody outside this repository has run them.**
+  [`fixtures/canon/`](../fixtures/canon/README.md) publishes 31 *input surface → canonical
+  bytes → digest* vectors with a harness (`scripts/canon-conformance.sh`), which is what was
+  missing. What is still open is the part only a second implementation supplies: the set was
+  checked against a deliberately wrong canonicaliser — it catches stripped zero-width
+  characters, `1.0` normalised to `1`, and over-eager array sorting — and never against a real
+  one. Three rules are the likely disagreements and are called out in that README: preserved
+  invisibles, numbers kept in the form they were written, and the allowlist. *(Unproven)*
 * **The conformance kit covers 15 of 19 vectors.** The four context-stage vectors need an
   authenticated peer, a presented surface and a revocation feed; a CLI verifier must admit
   them and the harness reports them as **deferred**, never as passes. Covering them means

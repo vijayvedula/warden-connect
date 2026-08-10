@@ -1,0 +1,23 @@
+{
+  "tools": [
+    {
+      "name": "t",
+      "description": "d",
+      "_meta": {
+        "trace": "abc"
+      },
+      "x-vendor": {
+        "anything": [
+          1,
+          2,
+          3
+        ]
+      },
+      "unknownField": "ignored"
+    }
+  ],
+  "serverInfo": {
+    "name": "banner",
+    "version": "9.9.9"
+  }
+}

@@ -27,6 +27,14 @@ between here and a release.
   normalisation must never launder an attack.
 - **Nineteen conformance vectors** in `fixtures/contracts/` with an `expected.json` naming
   the `WC-*` code a conforming verifier must return for each.
+- **Thirty-one `wcs1` canonicalisation vectors** in `fixtures/canon/` — *input surface →
+  canonical bytes → digest*, each carrying the normative rule it pins, driven by
+  `scripts/canon-conformance.sh` against any canonicaliser. Two implementations that disagree
+  about these bytes cannot share a drift verdict, so this is the second half of the
+  independence argument; the first was `fixtures/contracts/`. The harness compares the
+  *document*, not only the digest, and reports the first differing byte — and it was checked
+  against a deliberately wrong canonicaliser (stripped zero-width characters, `1.0`
+  normalised to `1`, over-eager array sorting) so that it is known to fail when it should.
 - **The `WC-*` taxonomy** with categories, so a code's class is machine-readable.
 
 ### The control plane

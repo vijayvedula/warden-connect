@@ -1,0 +1,20 @@
+{
+  "name": "A",
+  "version": "1.0.0",
+  "description": "d",
+  "provider": {
+    "organization": "Acme"
+  },
+  "documentationUrl": "https://acme.example/docs",
+  "iconUrl": "https://acme.example/icon.png",
+  "capabilities": {
+    "streaming": true
+  },
+  "skills": [
+    {
+      "id": "s",
+      "name": "S",
+      "description": "d"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "A",
+  "version": "1.0.0",
+  "skills": [
+    {
+      "id": "s",
+      "name": "One",
+      "description": "d"
+    },
+    {
+      "id": "s",
+      "name": "Two",
+      "description": "d"
+    }
+  ]
+}

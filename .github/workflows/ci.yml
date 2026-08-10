@@ -101,6 +101,14 @@ jobs:
         working-directory: warden-connect
         run: cargo test -p wc-core --lib conformance -- --nocapture
 
+      # The `wcs1` vector set, through its harness, for the same reason the contract kit
+      # runs through its own: `every_published_vector_still_holds` checks the digests, and
+      # only the harness checks that a third party can actually drive them. A published
+      # vector set with a broken harness is a vector set nobody outside this repo can use.
+      - name: wcs1 canonicalisation vectors, through the harness
+        working-directory: warden-connect
+        run: ./scripts/canon-conformance.sh
+
       # §8.16's P2 exit criterion is a number: screening precision >= 0.98 on the
       # labelled corpus. Named here, with output, because a criterion buried in a
       # green summary line is a criterion nobody reads. Recall is gated too — a false
