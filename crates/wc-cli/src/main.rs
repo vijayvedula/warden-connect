@@ -5923,6 +5923,250 @@ mod tests {
         assert_eq!(positional_or_flag(&flagged, "file").unwrap(), "x.wcb");
     }
 
+    /// Every `connect …` line in every Markdown file names a real command with real flags.
+    ///
+    /// Standing up a SPIRE server turned up **four wrong commands in this repository's own
+    /// documented procedure** — a `brew` formula that does not exist, two subcommands SPIRE
+    /// does not have, and a `sed` that would have written an empty file. Every one had been
+    /// written, reviewed and left alone, because a fenced block in a `.md` is not executable
+    /// and therefore not checkable. `limitations.md` recorded the general form: *nothing
+    /// checks the commands in these documents.*
+    ///
+    /// This checks ours. It lives here rather than in a script because `COMMANDS` and
+    /// `accepted_flags` are in scope — a shell checker would need its own copy of both
+    /// tables, and two copies of a table is how they drift.
+    ///
+    /// Synopsis notation (`[optional]`, `a|b`, `<placeholder>`) is stripped rather than
+    /// skipped, so a usage line claiming `[--export FILE]` still has `--export` checked
+    /// against the command it is claimed for.
+    #[test]
+    fn every_documented_command_exists_with_the_flags_it_claims() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut checked = 0usize;
+        let mut problems: Vec<String> = Vec::new();
+
+        for file in markdown_files(&root) {
+            let text = match std::fs::read_to_string(&file) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let shown = file
+                .strip_prefix(&root)
+                .unwrap_or(&file)
+                .display()
+                .to_string();
+
+            for line in shell_lines(&text) {
+                let Some(rest) = strip_invocation(&line) else {
+                    continue;
+                };
+                let cleaned = strip_synopsis(&rest);
+                let tokens: Vec<&str> = cleaned.split_whitespace().collect();
+                if tokens.is_empty() {
+                    continue;
+                }
+
+                // Two-word commands first, or `audit verify` resolves to `audit`.
+                let two = if tokens.len() >= 2 {
+                    format!("{} {}", tokens[0], tokens[1])
+                } else {
+                    String::new()
+                };
+                let (command, flag_start) = if TWO_WORD.contains(&two.as_str()) {
+                    (two, 2)
+                } else {
+                    (tokens[0].to_string(), 1)
+                };
+
+                if !COMMANDS.contains(&command.as_str()) {
+                    problems.push(format!(
+                        "{shown}: `connect {command}` is not a command\n      line: {line}"
+                    ));
+                    continue;
+                }
+                checked += 1;
+
+                let accepted = accepted_flags(&command);
+                for token in &tokens[flag_start.min(tokens.len())..] {
+                    let Some(flag) = token.strip_prefix("--") else {
+                        continue;
+                    };
+                    // `--flag=value` and a trailing comma from prose.
+                    let flag = flag.split('=').next().unwrap_or(flag).trim_end_matches(',');
+                    if flag.is_empty() {
+                        continue;
+                    }
+                    if !accepted.contains(&flag) && !GLOBAL_FLAGS.contains(&flag) {
+                        problems.push(format!(
+                            "{shown}: `connect {command}` does not accept --{flag}\n      line: {line}"
+                        ));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            checked >= 40,
+            "only {checked} documented commands were checked; the extractor has stopped \
+             finding them, which would make this test pass by looking at nothing"
+        );
+        assert!(
+            problems.is_empty(),
+            "{} documented command(s) do not exist as written:\n  {}",
+            problems.len(),
+            problems.join("\n  ")
+        );
+    }
+
+    /// Every `scripts/…` path named in the docs exists and is executable.
+    #[test]
+    fn every_documented_script_exists() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut checked = 0usize;
+        let mut missing: Vec<String> = Vec::new();
+
+        for file in markdown_files(&root) {
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let shown = file
+                .strip_prefix(&root)
+                .unwrap_or(&file)
+                .display()
+                .to_string();
+            for line in shell_lines(&text) {
+                for token in line.split_whitespace() {
+                    let candidate = token
+                        .trim_start_matches("./")
+                        .trim_end_matches(&[',', '`'][..]);
+                    if !candidate.starts_with("scripts/") {
+                        continue;
+                    }
+                    if candidate.contains('*') || candidate.contains('<') {
+                        continue;
+                    }
+                    checked += 1;
+                    let path = root.join(candidate);
+                    if !path.is_file() {
+                        missing.push(format!("{shown}: {candidate} does not exist"));
+                    }
+                }
+            }
+        }
+        assert!(checked >= 5, "only {checked} script references found");
+        assert!(missing.is_empty(), "{}", missing.join("\n  "));
+    }
+
+    /// Every Markdown file in the repository, skipping build output and vendored trees.
+    fn markdown_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                if path.is_dir() {
+                    // `explainer` holds film scripts, not procedures.
+                    if matches!(
+                        name.as_str(),
+                        "target" | ".git" | "node_modules" | "explainer"
+                    ) {
+                        continue;
+                    }
+                    stack.push(path);
+                } else if name.ends_with(".md") {
+                    out.push(path);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Lines inside fenced shell blocks, with `\`-continuations joined.
+    fn shell_lines(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut in_block = false;
+        let mut pending = String::new();
+        for raw in text.lines() {
+            let trimmed = raw.trim();
+            if trimmed.starts_with("```") {
+                // A fence closes any half-built continuation rather than letting it
+                // swallow prose from beyond the block.
+                if !pending.is_empty() {
+                    out.push(std::mem::take(&mut pending));
+                }
+                in_block = matches!(
+                    trimmed.trim_start_matches('`'),
+                    "sh" | "bash" | "console" | "shell"
+                );
+                continue;
+            }
+            if !in_block {
+                continue;
+            }
+            let line = trimmed.trim_start_matches("$ ").trim();
+            if let Some(head) = line.strip_suffix('\\') {
+                pending.push_str(head.trim_end());
+                pending.push(' ');
+                continue;
+            }
+            if pending.is_empty() {
+                out.push(line.to_string());
+            } else {
+                pending.push_str(line);
+                out.push(std::mem::take(&mut pending));
+            }
+        }
+        if !pending.is_empty() {
+            out.push(pending);
+        }
+        out
+    }
+
+    /// The part after `connect`, for a line that invokes it. `None` for anything else.
+    fn strip_invocation(line: &str) -> Option<String> {
+        let line = line.trim();
+        for prefix in [
+            "connect ",
+            "./connect ",
+            "./target/release/connect ",
+            "./target/debug/connect ",
+            "$CONNECT ",
+            "\"$CONNECT\" ",
+        ] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                // `connect-mediate` is a different binary with its own flags.
+                if prefix == "connect " && line.starts_with("connect-mediate") {
+                    return None;
+                }
+                return Some(rest.to_string());
+            }
+        }
+        None
+    }
+
+    /// Remove synopsis notation so a usage line can still be checked for real flags.
+    fn strip_synopsis(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut depth = 0usize;
+        for ch in s.chars() {
+            match ch {
+                '<' => depth += 1,
+                '>' if depth > 0 => depth -= 1,
+                '[' | ']' | '|' | '`' => out.push(' '),
+                // A comment ends the command.
+                '#' => break,
+                c if depth == 0 => out.push(c),
+                _ => {}
+            }
+        }
+        out
+    }
+
     #[test]
     fn every_two_word_command_is_dispatchable_as_two_words() {
         // Adding `keys list` to COMMANDS without adding it to TWO_WORD made every

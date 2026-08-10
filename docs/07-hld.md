@@ -339,9 +339,12 @@ connect discover --capability "payments.balance.read" --as agent:recon-bot-7
 connect request  --from agent:recon-bot-7 --to server:payments-mcp \
                  --tools get_balance,list_transactions --justify "APAC recon" --ttl 30d
 connect approve  <req-id> --by human:cecil@org --approver-key ~/.keys/cecil.pem
-connect contracts list | show <cid> | renew <cid> | revoke <cid>
-connect quarantine agent:recon-bot-7 --reason "SOC-2291"
-connect posture --shadow --expiring --drift
+connect contracts | contracts <cid>
+connect quarantine spiffe://org/ns/agents/sa/recon --reason "SOC-2291" \
+                 --approver human:cecil@org --approver human:dana@org
+connect unquarantine spiffe://org/ns/agents/sa/recon \
+                 --approver human:cecil@org --approver human:dana@org
+connect posture --expiring --unattested --score
 connect blast-radius agent:recon-bot-7
 connect export --format dora --as-of 2026-06-30
 connect verify <contract.jws>          # conformance ground truth
