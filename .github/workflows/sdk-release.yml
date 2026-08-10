@@ -1,0 +1,121 @@
+# Publish the Python SDK to PyPI.
+#
+# Trusted publishing (OIDC), **not** an API token. There is no secret to store, rotate or
+# leak: PyPI verifies a short-lived token GitHub mints for this repository, this workflow
+# file and this environment. Storing a long-lived `PYPI_API_TOKEN` in repository secrets
+# would put a credential that can publish under this name into the same place a compromised
+# workflow can read it — and the whole point of the provenance work is not to do that.
+#
+# One-time setup on PyPI (nobody can do this from here — it needs the project owner):
+#
+#   1  create the project `warden-connect-sdk`, or claim the name;
+#   2  Manage → Publishing → add a GitHub publisher:
+#        owner            vijayvedula
+#        repository       warden-connect
+#        workflow         sdk-release.yml
+#        environment      pypi
+#   3  Settings → Environments → new environment `pypi`, with required reviewers.
+#
+# Step 3 is what makes publishing a decision rather than a side effect of pushing a tag.
+#
+# UNVERIFIED. This workflow has never run. It is written from PyPI's and the action's
+# documentation, which is exactly the position `docs/limitations.md` describes for anything
+# not backed by an executed script — so treat the first run as the test, and do it against
+# TestPyPI with `workflow_dispatch` before tagging anything.
+
+name: SDK release
+
+on:
+  push:
+    tags:
+      # Prefixed, so a Rust release tag does not publish a Python package.
+      - "sdk-v*"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+permissions:
+  contents: read
+
+jobs:
+  # The gate runs first and separately, so a failing test cannot be skipped by a
+  # publish job that happens to start. A published version cannot be replaced on
+  # PyPI — only yanked — so this is the last point at which anything is recoverable.
+  test:
+    name: Tests before anything is built
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9" # the floor `requires-python` claims
+      - name: Tests on the minimum Python
+        working-directory: sdk/python
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest tests/ -q
+
+  build:
+    name: Build and check the artefacts
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel and sdist
+        working-directory: sdk/python
+        run: |
+          python -m pip install --quiet build twine
+          python -m build
+          # `twine check` catches a README that renders as a wall of text on PyPI, which is
+          # not fatal and is the first thing anybody sees.
+          python -m twine check dist/*
+      - name: The wheel must work from outside the checkout
+        working-directory: sdk/python
+        run: |
+          # Installing and importing from a temporary directory, because a package that only
+          # works from its own source tree passes every test here and fails for every user.
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install --quiet dist/*.whl
+          cd /tmp && /tmp/verify/bin/python -c "
+          from warden_connect import Connect, Outcome, ConnectError, ROLES
+          o = Outcome(status=200, body={'outcome': 'awaiting_approval'})
+          assert o.replayed and o.awaiting_approval and not o.issued
+          assert len(ROLES) >= 7
+          print('installed wheel imports and behaves')
+          "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: sdk/python/dist/
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    # Named so PyPI's trusted publisher can be scoped to it, and so a human approval sits
+    # in front of an irreversible action.
+    environment: ${{ github.event_name == 'push' && 'pypi' || inputs.target }}
+    permissions:
+      # The only privilege this job has. No `contents: write`, no secrets.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to TestPyPI
+        if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+      - name: Publish to PyPI
+        if: github.event_name == 'push' || inputs.target == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1

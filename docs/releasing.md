@@ -120,6 +120,42 @@ Making this publishable means giving Warden core a registry version and dependin
 version — which changes the family's coupling model, not just its packaging. That is a
 design decision, not a release chore, and it is why P1 #13 stays partial.
 
+## Publishing the Python SDK
+
+The SDK versions and ships **independently of the Rust crates**, and it can ship, because it
+has no path dependency to resolve. `sdk-release.yml` is the workflow, triggered by a
+`sdk-v*` tag — prefixed so a Rust release tag cannot publish a Python package by accident.
+
+It uses **PyPI trusted publishing (OIDC), not an API token.** There is no secret to store,
+rotate or leak: PyPI verifies a short-lived credential GitHub mints for this repository, this
+workflow file and a named environment. A long-lived `PYPI_API_TOKEN` in repository secrets
+would put a credential that can publish under this name where a compromised workflow can read
+it, which would sit badly beside the rest of this document.
+
+One-time setup nobody can do from a checkout, because it needs the project owner:
+
+1. create or claim `warden-connect-sdk` on PyPI;
+2. **Manage → Publishing → add a GitHub publisher**: owner `vijayvedula`, repository
+   `warden-connect`, workflow `sdk-release.yml`, environment `pypi`;
+3. **Settings → Environments → `pypi`**, with required reviewers.
+
+Step 3 is the one that matters: it makes publishing a decision somebody approves rather than
+a side effect of pushing a tag. A published version cannot be replaced on PyPI, only yanked.
+
+The workflow gates in order — tests on **Python 3.9**, the floor `requires-python` claims,
+then a build, then `twine check`, then installing the built wheel into a fresh venv and
+importing it **from outside the checkout**, because a package that only works from its own
+source tree passes every test here and fails for every user. Only then does it publish.
+
+> **This workflow has never run.** It is written from PyPI's and the action's documentation,
+> which is the position `limitations.md` describes for anything not backed by an executed
+> script. Run it once with `workflow_dispatch` against **TestPyPI** before tagging.
+
+What *has* been verified locally: the wheel and sdist build, the wheel installs into a clean
+3.9 venv and behaves when imported from `/tmp`, and the sdist's own tests pass when run from
+the unpacked sdist (19 passed, 1 skipped — the skip is the check that cross-references role
+names against the Rust source, correctly standing down outside a checkout).
+
 ## Provenance
 
 This repository verifies **other people's** provenance —
