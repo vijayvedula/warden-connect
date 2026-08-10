@@ -362,7 +362,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "audit verify" => &["anchor-pub"],
         "backup" => &["out", "anchor-pub", "now"],
         "restore" => &["from", "into"],
-        "retention" => &["contracts", "discovery", "now"],
+        "retention" => &["contracts", "discovery", "now", "retire", "anchor-pub"],
         "export" => &["format", "as-of", "id", "anchor-pub", "out"],
         "canon" => &["file", "kind", "entity", "document"],
         "screen" => &[
@@ -3613,6 +3613,37 @@ fn retention_cmd(args: &Args) -> Result<()> {
     if let Some(v) = args.get("discovery").and_then(cpolicy::parse_duration) {
         policy.discovery = v;
     }
+    // `--retire N` is the half that acts. Everything above still runs first, because an
+    // operator should be able to see the window before moving any of it — and the report is
+    // what tells them which N to pass.
+    if let Some(upto) = args.number("retire") {
+        let anchor_pub = read_optional(args, "anchor-pub")?.ok_or_else(|| {
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "--retire needs --anchor-pub: retiring rows the anchor key never attested is                  indistinguishable from truncating them, so the key is not optional here",
+            )
+        })?;
+        let horizon = ts.saturating_sub(policy.contracts);
+        let out = wc_control::chain::retire_segment(&p.evidence, upto, horizon, &anchor_pub, ts)?;
+        let r = &out.retirement;
+        println!("retired seq {}..{} ({} rows)", r.from, r.to, r.count);
+        println!("  archive        {}", out.segment_path.display());
+        println!("  digest         {}", r.segment_digest);
+        println!("  attested by    checkpoint at seq {}", r.anchor_seq);
+        println!(
+            "  live chain     {} rows, starting at seq {}",
+            out.remaining,
+            r.to + 1
+        );
+        println!("  newest retired {}", r.newest_retired_ts);
+        println!();
+        println!("The rows were MOVED, not deleted. Ship the archive to WORM storage and");
+        println!("delete it yourself — a control plane that can erase its own evidence is a");
+        println!("control plane whose evidence is worth less. `connect audit verify` still");
+        println!("passes; the archive is checkable with the digest above.");
+        return Ok(());
+    }
+
     let report = wc_control::backup::retention_report(&p.evidence, &policy, ts)?;
 
     if args.has("json") {
@@ -3683,6 +3714,8 @@ fn audit_verify(args: &Args) -> Result<()> {
                 // Linking proves nothing about rows that are gone. A consumer that
                 // reads only `intact` would treat a truncated chain as healthy, so
                 // both facts are emitted and named differently.
+                "retired_through": report.retired_through,
+                "anchors_retired": report.anchors_retired,
                 "truncation_checked": report.truncation_was_checked(),
                 "complete_to_seq": report.highest_checkpoint_seq,
                 "problems": report.problems,
@@ -3703,6 +3736,15 @@ fn audit_verify(args: &Args) -> Result<()> {
             // Chain-only verification cannot detect a wholesale rewrite, and
             // saying so is more useful than a bare "ok".
             println!("anchors          not checked (pass --anchor-pub to verify signatures)");
+        }
+        if report.retired_through > 0 {
+            // Without this, "entries 4 / head seq 8" reads as four missing rows. The
+            // boundary is the difference between a retired chain and a truncated one.
+            println!(
+                "retired          seq 1..{} moved to retired/ ({} checkpoint(s) attest rows \
+                 no longer here)",
+                report.retired_through, report.anchors_retired
+            );
         }
         println!("completeness     {}", report.completeness());
         for problem in &report.problems {
@@ -5546,9 +5588,16 @@ EVIDENCE
             writing anything, refuses to merge into an occupied root, and holds
             the writer lock while it places
   retention [--contracts 7y] [--discovery 90d] [--json]
-            the window of evidence this root holds. Deletes nothing: the chain is
-            hash-linked, so retention is segment retirement rather than row
-            deletion, and a row-level delete would break every row after it
+            the window of evidence this root holds
+  retention --retire SEQ --anchor-pub PEM [--contracts 7y]
+            retire sequences 1..SEQ out of the live chain. A row delete would break
+            every row after it, so whole ranges move to retired/segment-*.jsonl and
+            a verifiable tombstone takes their place — `audit verify` keeps passing
+            and reports where the chain now starts. Four refusals: a chain that does
+            not verify, a row still inside its retention window, a range no SIGNED
+            checkpoint covers (without one, retiring and truncating are the same
+            operation), and retiring the head. Nothing is deleted: ship the archive
+            to WORM storage and remove it at your own hand
   export --format csv|json|dora|cps230|oscal|bom [--as-of TS]
          [--anchor-pub PEM] [--id ID for bom] [--out FILE]
 

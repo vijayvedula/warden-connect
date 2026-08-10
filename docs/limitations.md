@@ -202,10 +202,18 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
 
 ## 7 · Evidence and retention
 
-* **Retention deletes nothing.** Removing a row from a hash-linked chain breaks every row
-  after it, so retention here is *segment retirement* — retire whole segments once every row
-  is past its clock, keep the anchor that covered them. That design does not exist, so the
-  chain grows monotonically. `connect retention` reports the window and says so. *(Unbuilt)*
+* **Segment retirement exists; it moves evidence and never deletes it.**
+  `connect retention --retire SEQ --anchor-pub PEM` retires sequences `1..SEQ` out of the live
+  chain into `retired/segment-*.jsonl`, leaving a tombstone that keeps `audit verify` passing
+  and reports where the chain now starts. Four refusals: a chain that does not verify, a row
+  still inside its retention window, a range **no signed checkpoint covers** — without one,
+  retiring and truncating are the same operation — and retiring the head.
+
+  Two things remain yours. **The archive is moved, not deleted**: shipping it to WORM storage
+  and removing it is your hand, deliberately, because a control plane that can erase its own
+  evidence is a control plane whose evidence is worth less. And **nothing schedules it** —
+  there is no rotation daemon, so retirement is a cron job you write against the window
+  `connect retention` reports. *(By design that it does not delete; scheduling is Unbuilt)*
 * **`connect serve` requires durable storage.** An evidence chain that restarts on reschedule
   has no history, which for the regulatory purpose it serves is the same as none. No
   `emptyDir`. *(By design)*

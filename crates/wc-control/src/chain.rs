@@ -52,6 +52,10 @@ pub const ENTRY_SCHEMA: u16 = 1;
 pub const CHAIN_FILE: &str = "chain.jsonl";
 /// Anchor file name.
 pub const ANCHOR_FILE: &str = "anchor.jsonl";
+/// The tombstone left behind when a segment is retired.
+pub const RETIRED_FILE: &str = "retired.json";
+/// Where retired segments are moved to.
+pub const RETIRED_DIR: &str = "retired";
 
 /// The `kid` an anchor stamps into its checkpoints.
 ///
@@ -334,7 +338,8 @@ pub fn verify_anchors(
     anchor_path: &Path,
     pub_pem: &[u8],
     entries: &[Entry],
-) -> Result<(u64, Vec<u64>)> {
+    retired: Option<&Retirement>,
+) -> Result<AnchorTally> {
     let key = DecodingKey::from_ec_pem(pub_pem).map_err(|e| {
         WcError::with_detail(Code::CHAIN_BROKEN, "anchor public key is not an EC PEM")
             .with_source(e)
@@ -342,7 +347,7 @@ pub fn verify_anchors(
 
     let text = match std::fs::read_to_string(anchor_path) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, Vec::new())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(AnchorTally::default()),
         Err(e) => return Err(io_err(anchor_path, e)),
     };
 
@@ -352,6 +357,7 @@ pub fn verify_anchors(
     validation.validate_aud = false;
 
     let mut verified = 0u64;
+    let mut retired_count = 0u64;
     let mut mismatches: Vec<u64> = Vec::new();
 
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -369,6 +375,27 @@ pub fn verify_anchors(
         })?;
         let checkpoint = data.claims;
 
+        // Three cases once segments can be retired, and conflating them was the first
+        // thing retirement broke: every checkpoint for a retired row read as a mismatch,
+        // so retiring evidence made `audit verify` report tampering. An operator would
+        // have concluded retention corrupts the chain and switched it off.
+        let boundary = retired.map_or(0, |r| r.to);
+        if checkpoint.seq < boundary {
+            // The row it attests is in the archive. Not checkable here, and not a
+            // mismatch — `verify_retired_segment` is what checks it. Counted separately so
+            // "attested but not here" never reads as "verified".
+            retired_count += 1;
+            continue;
+        }
+        if checkpoint.seq == boundary {
+            // The boundary is checkable for free: the tombstone carries that row's hash,
+            // so a retirement cannot excuse a checkpoint it does not actually match.
+            match retired {
+                Some(r) if r.last_row_hash == checkpoint.row_hash => verified += 1,
+                _ => mismatches.push(checkpoint.seq),
+            }
+            continue;
+        }
         match entries.iter().find(|e| e.seq == checkpoint.seq) {
             Some(entry) if entry.row_hash == checkpoint.row_hash => verified += 1,
             // Either the row was altered, or it is gone entirely. Both mean the
@@ -376,7 +403,22 @@ pub fn verify_anchors(
             _ => mismatches.push(checkpoint.seq),
         }
     }
-    Ok((verified, mismatches))
+    Ok(AnchorTally {
+        verified,
+        mismatches,
+        retired: retired_count,
+    })
+}
+
+/// What checking an anchor file came to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AnchorTally {
+    /// Checkpoints that matched a live row, or the retirement boundary.
+    pub verified: u64,
+    /// Checkpoint sequences that disagreed with what is here.
+    pub mismatches: Vec<u64>,
+    /// Checkpoints for rows that have been retired — attested once, not checkable now.
+    pub retired: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -403,9 +445,18 @@ impl Chain {
 
         let path = dir.join(CHAIN_FILE);
         let entries = read_entries(&path)?;
-        let (last_seq, last_hash) = entries
-            .last()
-            .map_or((0, String::new()), |e| (e.seq, e.row_hash.clone()));
+        // An empty live chain after a retirement is not a new chain. Resuming from zero
+        // there would restart numbering at 1 and link to nothing, which is a fork — so the
+        // tombstone is the fallback, not `(0, "")`.
+        let retired = read_retirement(dir)?;
+        let (last_seq, last_hash) = entries.last().map_or_else(
+            || {
+                retired
+                    .as_ref()
+                    .map_or((0, String::new()), |r| (r.to, r.last_row_hash.clone()))
+            },
+            |e| (e.seq, e.row_hash.clone()),
+        );
 
         let file = OpenOptions::new()
             .create(true)
@@ -525,8 +576,22 @@ impl Chain {
             ..Default::default()
         };
 
-        let mut expected_prev = String::new();
-        let mut expected_seq = 1u64;
+        // Retirement moves the chain's beginning out of this file, so verification starts
+        // where the tombstone says it does. Without this the first surviving row reads as a
+        // numbering break and a broken link — retiring evidence would make `audit verify`
+        // report a corrupt chain, which is the fastest way to get retention switched off.
+        let retired = read_retirement(dir)?;
+        let (mut expected_prev, mut expected_seq) = match &retired {
+            Some(r) => (r.last_row_hash.clone(), r.to + 1),
+            None => (String::new(), 1u64),
+        };
+        if let Some(r) = &retired {
+            report.retired_through = r.to;
+            // The tombstone is checked, not believed: its `anchor_row_hash` must belong to a
+            // checkpoint, which is what `verify_anchors` below confirms when a key is
+            // supplied. Said in the report either way so an operator knows which it was.
+            report.problems.extend(retirement_problems(r, &entries));
+        }
         for entry in &entries {
             if entry.seq != expected_seq {
                 report.broken_at.get_or_insert(entry.seq);
@@ -583,8 +648,10 @@ impl Chain {
         }
 
         if let Some(pem) = anchor_pub_pem {
-            let (verified, mismatches) = verify_anchors(&dir.join(ANCHOR_FILE), pem, &entries)?;
+            let tally = verify_anchors(&dir.join(ANCHOR_FILE), pem, &entries, retired.as_ref())?;
+            let (verified, mismatches) = (tally.verified, tally.mismatches);
             report.anchors_verified = verified;
+            report.anchors_retired = tally.retired;
             for seq in &mismatches {
                 report
                     .problems
@@ -608,6 +675,358 @@ impl Chain {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Segment retirement
+// ---------------------------------------------------------------------------
+
+/// The tombstone a retired segment leaves in the live chain's place.
+///
+/// Retention on a hash-linked chain cannot be a row delete: removing a row breaks every row
+/// after it. So it is *segment retirement* — whole contiguous ranges leave the live chain and
+/// this record replaces them, carrying exactly what verification needs to keep going.
+///
+/// # It is verified, not trusted
+///
+/// The obvious mistake would be to sign this with the anchor key and believe it. Then
+/// "retirement" is a signed permission slip to delete evidence, and whoever holds the key can
+/// erase the chain's beginning at will. Instead every field is *checkable against something
+/// that already exists*:
+///
+/// * `last_row_hash` must equal the surviving first row's `prev_hash`, or the survivors do
+///   not link to what was retired;
+/// * `anchor_seq`/`anchor_row_hash` must match a **signed checkpoint**, which is what proves
+///   the retired rows existed and were attested before they were moved;
+/// * `segment_digest` must match the file the rows were moved to, so the archive cannot be
+///   edited after the fact and still satisfy the tombstone.
+///
+/// An attacker rewriting this file to claim more rows were retired needs a signed checkpoint
+/// at that sequence to be believed — which is the same thing they would need to forge to
+/// truncate. Retirement therefore adds no new authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retirement {
+    /// First sequence retired. Always 1: retirement is from the beginning, because a hole
+    /// in the middle is not something the chain can express.
+    pub from: u64,
+    /// Last sequence retired.
+    pub to: u64,
+    /// How many rows moved.
+    pub count: u64,
+    /// The `row_hash` of sequence `to` — what the surviving chain links back to.
+    pub last_row_hash: String,
+    /// The checkpoint that attested the retired range.
+    pub anchor_seq: u64,
+    /// That checkpoint's head hash.
+    pub anchor_row_hash: String,
+    /// The file the rows were moved to, relative to the evidence directory.
+    pub segment_file: String,
+    /// `sha256:…` over that file's bytes.
+    pub segment_digest: String,
+    /// When retirement ran.
+    pub retired_at: u64,
+    /// The newest timestamp among the retired rows — the boundary an auditor asks about.
+    pub newest_retired_ts: u64,
+}
+
+/// What a retirement did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetirementOutcome {
+    /// The tombstone written.
+    pub retirement: Retirement,
+    /// Rows left in the live chain.
+    pub remaining: u64,
+    /// Where the segment now lives, absolute.
+    pub segment_path: PathBuf,
+}
+
+/// Retire sequences `1..=upto` out of the live chain.
+///
+/// Four refusals, in this order, and each of them is the point rather than a formality:
+///
+/// 1. **A chain that does not verify is not retired from.** Same stance as
+///    [`crate::backup`]: acting on a broken chain launders the break into the archive.
+/// 2. **Every retired row must be older than `horizon`.** Retiring evidence still inside its
+///    retention window is precisely what retention exists to prevent, so the clock is checked
+///    against the rows rather than trusted from the caller's arithmetic.
+/// 3. **A signed checkpoint must cover the range.** Without one the operation is
+///    indistinguishable from truncation — and `--anchor-pub` is required for exactly that
+///    reason, so this cannot be run "just this once" without the key.
+/// 4. **The head is never retired.** Retiring everything would leave a chain with no rows
+///    and no way to append that links to anything.
+///
+/// Nothing is deleted. The rows move to `retired/segment-*.jsonl`, which the operator ships
+/// to WORM storage and then removes at their own hand — because a control plane that can
+/// delete its own evidence is a control plane whose evidence is worth less.
+pub fn retire_segment(
+    dir: impl AsRef<Path>,
+    upto: u64,
+    horizon: u64,
+    anchor_pub_pem: &[u8],
+    now: u64,
+) -> Result<RetirementOutcome> {
+    let dir = dir.as_ref();
+
+    // 1 · the chain must verify, including any earlier retirement.
+    let report = Chain::verify(dir, Some(anchor_pub_pem))?;
+    if !report.is_intact() {
+        return Err(WcError::with_detail(
+            Code::CHAIN_BROKEN,
+            format!(
+                "refusing to retire from a chain that does not verify: {}",
+                report.problems.join("; ")
+            ),
+        ));
+    }
+
+    let entries = read_entries(&dir.join(CHAIN_FILE))?;
+    let previous = read_retirement(dir)?;
+    let from = previous.as_ref().map_or(1, |r| r.to + 1);
+    if upto < from {
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!("sequences up to {} are already retired", from - 1),
+        ));
+    }
+
+    let (retiring, surviving): (Vec<&Entry>, Vec<&Entry>) =
+        entries.iter().partition(|e| e.seq <= upto);
+    if retiring.is_empty() {
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!("no rows at or below seq {upto} are in the live chain"),
+        ));
+    }
+
+    // 4 · never retire the head.
+    if surviving.is_empty() {
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            "retiring every row would leave a chain with nothing to append to; keep at \
+             least the head",
+        ));
+    }
+
+    // 2 · the clock, against the rows.
+    if let Some(young) = retiring.iter().find(|e| e.ts >= horizon) {
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!(
+                "seq {} is dated {} which is inside the retention window (horizon {horizon}); \
+                 retiring it is what retention exists to prevent",
+                young.seq, young.ts
+            ),
+        ));
+    }
+
+    // 3 · a signed checkpoint covering the range.
+    let tally = verify_anchors(
+        &dir.join(ANCHOR_FILE),
+        anchor_pub_pem,
+        &entries,
+        previous.as_ref(),
+    )?;
+    if !tally.mismatches.is_empty() {
+        return Err(WcError::with_detail(
+            Code::CHAIN_BROKEN,
+            format!(
+                "checkpoints disagree with the chain at {:?}",
+                tally.mismatches
+            ),
+        ));
+    }
+    let covering = covering_checkpoint(&dir.join(ANCHOR_FILE), anchor_pub_pem, upto, &entries)?
+        .ok_or_else(|| {
+            WcError::with_detail(
+                Code::CHAIN_BROKEN,
+                format!(
+                    "no signed checkpoint covers seq {upto}; without one, retiring these rows \
+                     is indistinguishable from truncating them. Checkpoint first \
+                     (--anchor-key, or a shorter --anchor-interval)"
+                ),
+            )
+        })?;
+
+    // --- write the segment, then the tombstone, then the survivors ---------
+    //
+    // In that order on purpose. A crash after the segment leaves an orphan file and an
+    // unchanged chain, which is safe; a crash after the tombstone leaves survivors that
+    // still verify against it. The reverse order could leave a chain whose beginning is
+    // gone with nothing recording it.
+    let last = retiring.last().unwrap_or_else(|| unreachable!());
+    let newest_retired_ts = retiring.iter().map(|e| e.ts).max().unwrap_or(0);
+    let archive_dir = dir.join(RETIRED_DIR);
+    std::fs::create_dir_all(&archive_dir).map_err(|e| io_err(&archive_dir, e))?;
+    let segment_name = format!("segment-{from:06}-{upto:06}.jsonl");
+    let segment_path = archive_dir.join(&segment_name);
+
+    let mut body = String::new();
+    for entry in &retiring {
+        body.push_str(
+            &serde_json::to_string(entry)
+                .map_err(|e| WcError::with_detail(Code::CHAIN_BROKEN, "row").with_source(e))?,
+        );
+        body.push('\n');
+    }
+    std::fs::write(&segment_path, &body).map_err(|e| io_err(&segment_path, e))?;
+
+    let retirement = Retirement {
+        from,
+        to: upto,
+        count: retiring.len() as u64,
+        last_row_hash: last.row_hash.clone(),
+        anchor_seq: covering.seq,
+        anchor_row_hash: covering.row_hash,
+        segment_file: format!("{RETIRED_DIR}/{segment_name}"),
+        segment_digest: format!("sha256:{}", sha256_hex(&body)),
+        retired_at: now,
+        newest_retired_ts,
+    };
+    let tombstone = dir.join(RETIRED_FILE);
+    std::fs::write(
+        &tombstone,
+        serde_json::to_string_pretty(&retirement)
+            .map_err(|e| WcError::with_detail(Code::CHAIN_BROKEN, "tombstone").with_source(e))?
+            + "\n",
+    )
+    .map_err(|e| io_err(&tombstone, e))?;
+
+    let mut kept = String::new();
+    for entry in &surviving {
+        kept.push_str(
+            &serde_json::to_string(entry)
+                .map_err(|e| WcError::with_detail(Code::CHAIN_BROKEN, "row").with_source(e))?,
+        );
+        kept.push('\n');
+    }
+    let chain_path = dir.join(CHAIN_FILE);
+    std::fs::write(&chain_path, kept).map_err(|e| io_err(&chain_path, e))?;
+
+    Ok(RetirementOutcome {
+        remaining: surviving.len() as u64,
+        retirement,
+        segment_path,
+    })
+}
+
+/// The tombstone, if this chain has retired anything.
+pub fn read_retirement(dir: impl AsRef<Path>) -> Result<Option<Retirement>> {
+    let path = dir.as_ref().join(RETIRED_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err(&path, e)),
+    };
+    serde_json::from_str(&text).map(Some).map_err(|e| {
+        WcError::with_detail(Code::CHAIN_BROKEN, "retired.json is not a tombstone").with_source(e)
+    })
+}
+
+/// The lowest-sequence signed checkpoint at or after `upto`, verified.
+fn covering_checkpoint(
+    anchor_path: &Path,
+    pub_pem: &[u8],
+    upto: u64,
+    entries: &[Entry],
+) -> Result<Option<Checkpoint>> {
+    let key = DecodingKey::from_ec_pem(pub_pem).map_err(|e| {
+        WcError::with_detail(Code::CHAIN_BROKEN, "anchor public key is not an EC PEM")
+            .with_source(e)
+    })?;
+    let text = match std::fs::read_to_string(anchor_path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err(anchor_path, e)),
+    };
+    let mut validation = Validation::new(Algorithm::ES256);
+    validation.required_spec_claims.clear();
+    validation.validate_exp = false;
+    validation.validate_aud = false;
+
+    let mut best: Option<Checkpoint> = None;
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(data) = jsonwebtoken::decode::<Checkpoint>(line, &key, &validation) else {
+            continue;
+        };
+        let cp = data.claims;
+        if cp.seq < upto {
+            continue;
+        }
+        // The checkpoint must actually match the chain it claims to attest, or a stale
+        // signed checkpoint from a rewritten chain would authorise the retirement.
+        if !entries
+            .iter()
+            .any(|e| e.seq == cp.seq && e.row_hash == cp.row_hash)
+        {
+            continue;
+        }
+        if best.as_ref().is_none_or(|b| cp.seq < b.seq) {
+            best = Some(cp);
+        }
+    }
+    Ok(best)
+}
+
+/// Verify a retired segment against the tombstone that replaced it.
+///
+/// Separate from [`Chain::verify`] because the archive is normally *not present* — it has
+/// been shipped to WORM storage — and a verifier that failed when it was absent would make
+/// shipping it look like corruption. This is what an auditor runs when they bring it back.
+pub fn verify_retired_segment(dir: impl AsRef<Path>) -> Result<Vec<String>> {
+    let dir = dir.as_ref();
+    let Some(retirement) = read_retirement(dir)? else {
+        return Ok(vec!["no segment has been retired".to_string()]);
+    };
+    let path = dir.join(&retirement.segment_file);
+    let mut problems = Vec::new();
+
+    let body = match std::fs::read_to_string(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(vec![format!(
+                "{} is not here; bring the archive back to verify it",
+                retirement.segment_file
+            )])
+        }
+        Err(e) => return Err(io_err(&path, e)),
+    };
+    if format!("sha256:{}", sha256_hex(&body)) != retirement.segment_digest {
+        problems.push("the segment file does not match the digest in the tombstone".to_string());
+    }
+
+    let rows: Vec<Entry> = body
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(serde_json::from_str)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| {
+            WcError::with_detail(Code::CHAIN_BROKEN, "a retired row is not an entry").with_source(e)
+        })?;
+
+    let mut expected_prev = String::new();
+    let mut expected_seq = retirement.from;
+    for row in &rows {
+        if row.seq != expected_seq {
+            problems.push(format!("retired seq {} breaks numbering", row.seq));
+        }
+        if row.prev_hash != expected_prev && expected_seq != retirement.from {
+            problems.push(format!("retired seq {} does not link", row.seq));
+        }
+        if !row.is_intact() {
+            problems.push(format!(
+                "retired seq {} does not match its row_hash",
+                row.seq
+            ));
+        }
+        expected_prev = row.row_hash.clone();
+        expected_seq = row.seq + 1;
+    }
+    if rows.last().map(|r| r.row_hash.as_str()) != Some(retirement.last_row_hash.as_str()) {
+        problems.push(
+            "the segment's last row_hash is not the one the live chain links back to".to_string(),
+        );
+    }
+    Ok(problems)
+}
+
 /// The result of verifying a chain.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ChainReport {
@@ -624,6 +1043,19 @@ pub struct ChainReport {
     pub anchors_verified: u64,
     /// Checkpoint sequences that disagreed with the chain.
     pub anchor_mismatches: Vec<u64>,
+    /// Checkpoints whose rows have been retired — attested once, not checkable here.
+    ///
+    /// Reported separately from `anchors_verified` so "attested but in the archive" can
+    /// never be read as "verified just now". Retirement made every such checkpoint look
+    /// like a mismatch at first, which would have told an operator that retaining evidence
+    /// corrupts the chain.
+    pub anchors_retired: u64,
+    /// Highest retired sequence, or zero when nothing has been retired.
+    ///
+    /// The live chain starts at `retired_through + 1`. An export or an auditor asking "what
+    /// window does this root hold" needs this, or they read the head-minus-count and get an
+    /// answer that stopped being true the first time a segment was retired.
+    pub retired_through: u64,
     /// Highest sequence any checkpoint claims, read without verifying signatures.
     ///
     /// This is the only thing bounding truncation, so it is reported rather than
@@ -676,6 +1108,35 @@ impl ChainReport {
                 .to_string()
         }
     }
+}
+
+/// What is wrong with a tombstone, judged against the live rows it sits in front of.
+///
+/// Two checks, and the first is the one that matters: the surviving chain must link back to
+/// the row the tombstone says was last. Without it, a tombstone could claim any range and the
+/// remaining rows would verify happily among themselves.
+fn retirement_problems(r: &Retirement, entries: &[Entry]) -> Vec<String> {
+    let mut problems = Vec::new();
+    if r.to < r.from {
+        problems.push(format!(
+            "retired.json claims {}..{}, which is not a range",
+            r.from, r.to
+        ));
+    }
+    match entries.first() {
+        Some(first) if first.prev_hash != r.last_row_hash => problems.push(format!(
+            "retired.json says seq {} ended in {} but the live chain starts from {}",
+            r.to,
+            &r.last_row_hash[..r.last_row_hash.len().min(12)],
+            &first.prev_hash[..first.prev_hash.len().min(12)]
+        )),
+        Some(first) if first.seq != r.to + 1 => problems.push(format!(
+            "retired.json retires through seq {} but the live chain starts at seq {}",
+            r.to, first.seq
+        )),
+        _ => {}
+    }
+    problems
 }
 
 /// Read and parse a chain file. Unlike the state log, a truncated tail is **not**
@@ -1382,5 +1843,294 @@ mod tests {
         b.detail = json!({"a": 2, "b": 1});
         assert_eq!(a.compute_row_hash(), b.compute_row_hash());
         assert_eq!(a.compute_row_hash(), a.compute_row_hash());
+    }
+
+    // --- segment retirement ---------------------------------------------
+    //
+    // `connect retention` reported a window and deleted nothing, because a row delete breaks
+    // every row after it. These cover the alternative: whole ranges leave the live chain,
+    // a tombstone keeps verification going, and — the part that matters — retirement grants
+    // no authority a truncation would not already need.
+
+    fn seeded_chain(tmp: &TmpDir, rows: u64, interval: u64) -> std::path::PathBuf {
+        let anchor_path = tmp.path().join(ANCHOR_FILE);
+        {
+            let mut chain = Chain::open(tmp.path())
+                .unwrap()
+                .with_anchor(PRIV, &anchor_path, interval)
+                .unwrap();
+            for i in 0..rows {
+                chain.append(draft("e"), 1_000 + i).unwrap();
+            }
+        }
+        tmp.path().to_path_buf()
+    }
+
+    #[test]
+    fn a_retired_segment_leaves_a_chain_that_still_verifies() {
+        let tmp = TmpDir::new("retire-ok");
+        let dir = seeded_chain(&tmp, 8, 2);
+
+        // Retire the first four. `horizon` is later than their timestamps, so they are
+        // outside the window; the newest rows are not.
+        let out = retire_segment(&dir, 4, 1_004, PUB, 9_999).unwrap();
+        assert_eq!(out.retirement.from, 1);
+        assert_eq!(out.retirement.to, 4);
+        assert_eq!(out.retirement.count, 4);
+        assert_eq!(out.remaining, 4);
+        assert!(
+            out.segment_path.is_file(),
+            "the rows are moved, not deleted"
+        );
+
+        // The live chain verifies, and says where it starts.
+        let report = Chain::verify(&dir, Some(PUB)).unwrap();
+        assert!(report.is_intact(), "{report:?}");
+        assert_eq!(report.retired_through, 4);
+        assert_eq!(report.entries, 4);
+        assert_eq!(report.head_seq, 8);
+
+        // The archive verifies against the tombstone.
+        assert!(verify_retired_segment(&dir).unwrap().is_empty());
+
+        // And the chain is still appendable, continuing the numbering.
+        {
+            let mut chain = Chain::open(&dir).unwrap();
+            let e = chain.append(draft("after"), 2_000).unwrap();
+            assert_eq!(e.seq, 9);
+        }
+        assert!(Chain::verify(&dir, Some(PUB)).unwrap().is_intact());
+    }
+
+    #[test]
+    fn retirement_without_a_covering_checkpoint_is_refused() {
+        // The property that stops retirement being a permission slip for truncation. With no
+        // checkpoint at or past the range, "retired" and "deleted" are the same operation.
+        let tmp = TmpDir::new("retire-unanchored");
+        {
+            let mut chain = Chain::open(tmp.path()).unwrap();
+            for i in 0..6 {
+                chain.append(draft("e"), 1_000 + i).unwrap();
+            }
+        }
+        let err = retire_segment(tmp.path(), 3, 1_004, PUB, 9_999).unwrap_err();
+        assert_eq!(err.code(), Code::CHAIN_BROKEN);
+        assert!(
+            err.detail().contains("indistinguishable from truncating"),
+            "{}",
+            err.detail()
+        );
+        // Nothing moved.
+        assert_eq!(Chain::verify(tmp.path(), None).unwrap().entries, 6);
+    }
+
+    #[test]
+    fn a_checkpoint_that_only_covers_part_of_the_range_does_not_authorise_it() {
+        // A checkpoint at seq 2 attests rows 1-2. It must not authorise retiring row 3.
+        let tmp = TmpDir::new("retire-partial");
+        let anchor_path = tmp.path().join(ANCHOR_FILE);
+        {
+            // Interval 10 with 6 rows: no checkpoint is written at all past seq 0...
+            let mut chain = Chain::open(tmp.path())
+                .unwrap()
+                .with_anchor(PRIV, &anchor_path, 2)
+                .unwrap();
+            for i in 0..4 {
+                chain.append(draft("e"), 1_000 + i).unwrap();
+            }
+            // ...so checkpoints exist at 2 and 4. Retiring through 3 needs one at >= 3.
+        }
+        let ok = retire_segment(tmp.path(), 2, 1_004, PUB, 9_999);
+        assert!(ok.is_ok(), "seq 2 is checkpointed: {ok:?}");
+
+        let tmp2 = TmpDir::new("retire-partial2");
+        let anchor2 = tmp2.path().join(ANCHOR_FILE);
+        {
+            let mut chain = Chain::open(tmp2.path())
+                .unwrap()
+                .with_anchor(PRIV, &anchor2, 5)
+                .unwrap();
+            for i in 0..7 {
+                chain.append(draft("e"), 1_000 + i).unwrap();
+            }
+        }
+        // Checkpoint at 5 only. Retiring through 6 is unauthorised.
+        let err = retire_segment(tmp2.path(), 6, 1_010, PUB, 9_999).unwrap_err();
+        assert!(
+            err.detail().contains("no signed checkpoint covers seq 6"),
+            "{}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn rows_inside_the_retention_window_are_refused() {
+        // Retention exists to keep evidence for a period. Retiring inside that period is the
+        // one thing this command must never do, so the clock is checked against the rows.
+        let tmp = TmpDir::new("retire-young");
+        let dir = seeded_chain(&tmp, 6, 2);
+        let err = retire_segment(&dir, 4, 1_000, PUB, 9_999).unwrap_err();
+        assert_eq!(err.code(), Code::CONFIG_INVALID);
+        assert!(
+            err.detail().contains("inside the retention window"),
+            "{}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn retiring_the_whole_chain_is_refused() {
+        let tmp = TmpDir::new("retire-all");
+        let dir = seeded_chain(&tmp, 4, 2);
+        let err = retire_segment(&dir, 4, 9_000, PUB, 9_999).unwrap_err();
+        assert!(
+            err.detail().contains("keep at least the head"),
+            "{}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn a_broken_chain_is_not_retired_from() {
+        // Same stance as `backup`: acting on a break launders it into the archive.
+        let tmp = TmpDir::new("retire-broken");
+        let dir = seeded_chain(&tmp, 6, 2);
+        let path = dir.join(CHAIN_FILE);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut rows: Vec<&str> = text.lines().collect();
+        rows.swap(2, 3);
+        std::fs::write(&path, rows.join("\n") + "\n").unwrap();
+
+        let err = retire_segment(&dir, 2, 9_000, PUB, 9_999).unwrap_err();
+        assert_eq!(err.code(), Code::CHAIN_BROKEN);
+        assert!(err.detail().contains("does not verify"), "{}", err.detail());
+    }
+
+    #[test]
+    fn a_forged_tombstone_does_not_make_a_short_chain_verify() {
+        // The attack retirement could otherwise enable: delete the beginning, then write a
+        // tombstone claiming it was retired. The surviving rows link to each other, so only
+        // the tombstone's own claim can catch it — and it must link to what remains.
+        let tmp = TmpDir::new("retire-forged");
+        let dir = seeded_chain(&tmp, 8, 2);
+        let entries = Chain::entries(&dir).unwrap();
+
+        // Cut rows 1-4 by hand and forge a tombstone with a plausible-but-wrong hash.
+        let kept: String = entries[4..]
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap() + "\n")
+            .collect();
+        std::fs::write(dir.join(CHAIN_FILE), kept).unwrap();
+        let forged = Retirement {
+            from: 1,
+            to: 4,
+            count: 4,
+            last_row_hash: "0".repeat(64),
+            anchor_seq: 4,
+            anchor_row_hash: "0".repeat(64),
+            segment_file: "retired/nope.jsonl".to_string(),
+            segment_digest: format!("sha256:{}", "0".repeat(64)),
+            retired_at: 1,
+            newest_retired_ts: 1,
+        };
+        std::fs::write(
+            dir.join(RETIRED_FILE),
+            serde_json::to_string(&forged).unwrap(),
+        )
+        .unwrap();
+
+        let report = Chain::verify(&dir, Some(PUB)).unwrap();
+        assert!(!report.is_intact(), "a forged tombstone must not verify");
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.contains("the live chain starts from")),
+            "{:?}",
+            report.problems
+        );
+    }
+
+    #[test]
+    fn an_edited_archive_is_caught_by_its_digest() {
+        let tmp = TmpDir::new("retire-edited");
+        let dir = seeded_chain(&tmp, 8, 2);
+        let out = retire_segment(&dir, 4, 1_004, PUB, 9_999).unwrap();
+        assert!(verify_retired_segment(&dir).unwrap().is_empty());
+
+        let text = std::fs::read_to_string(&out.segment_path).unwrap();
+        std::fs::write(&out.segment_path, text.replace("\"e\"", "\"tampered\"")).unwrap();
+        let problems = verify_retired_segment(&dir).unwrap();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("does not match the digest")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_shipped_away_archive_is_reported_as_absent_not_as_corrupt() {
+        // The normal state: the segment is in WORM storage. A verifier that failed here
+        // would make shipping evidence off-box look like losing it.
+        let tmp = TmpDir::new("retire-shipped");
+        let dir = seeded_chain(&tmp, 8, 2);
+        let out = retire_segment(&dir, 4, 1_004, PUB, 9_999).unwrap();
+        std::fs::remove_file(&out.segment_path).unwrap();
+
+        let problems = verify_retired_segment(&dir).unwrap();
+        assert_eq!(problems.len(), 1);
+        assert!(
+            problems[0].contains("bring the archive back"),
+            "{problems:?}"
+        );
+        // And the live chain is unaffected by the archive being gone.
+        assert!(Chain::verify(&dir, Some(PUB)).unwrap().is_intact());
+    }
+
+    #[test]
+    fn retirement_is_resumable_and_never_reruns_a_range() {
+        let tmp = TmpDir::new("retire-twice");
+        let dir = seeded_chain(&tmp, 10, 2);
+        retire_segment(&dir, 4, 1_005, PUB, 9_999).unwrap();
+
+        // The same range again is refused rather than double-archived.
+        let err = retire_segment(&dir, 4, 1_006, PUB, 9_999).unwrap_err();
+        assert!(err.detail().contains("already retired"), "{}", err.detail());
+
+        // A later range continues from where the first stopped.
+        let second = retire_segment(&dir, 6, 1_007, PUB, 9_999).unwrap();
+        assert_eq!(second.retirement.from, 5);
+        assert_eq!(second.retirement.to, 6);
+        let report = Chain::verify(&dir, Some(PUB)).unwrap();
+        assert!(report.is_intact(), "{report:?}");
+        assert_eq!(report.retired_through, 6);
+    }
+
+    #[test]
+    fn truncation_after_a_retirement_is_still_detected() {
+        // The two features must not cancel out: retirement moves the boundary, and the
+        // truncation check has to move with it rather than treat a retired chain as short.
+        let tmp = TmpDir::new("retire-then-truncate");
+        let dir = seeded_chain(&tmp, 10, 2);
+        retire_segment(&dir, 4, 1_005, PUB, 9_999).unwrap();
+
+        let text = std::fs::read_to_string(dir.join(CHAIN_FILE)).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        std::fs::write(dir.join(CHAIN_FILE), lines[..2].join("\n") + "\n").unwrap();
+
+        let report = Chain::verify(&dir, None).unwrap();
+        assert!(
+            !report.is_intact(),
+            "a truncated retired chain must not verify"
+        );
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.contains("have been removed")),
+            "{:?}",
+            report.problems
+        );
     }
 }
