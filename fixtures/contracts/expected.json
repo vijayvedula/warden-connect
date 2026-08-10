@@ -5,8 +5,47 @@
   },
   "media_type": "warden-connection+jws",
   "mediator_id": "warden:mediator:apac-ops",
-  "note": "`expect` is the WC-* code a conforming verifier must produce; null means the contract must be admitted. `stage` is `artifact` for checks a verifier can make from the artifact and a trusted key alone, and `context` for checks needing an authenticated peer, a presented surface, a revocation feed or zone policy — a command-line verifier must ADMIT those and a mediator must refuse them.",
+  "note": "`expect` is the WC-* code a conforming verifier must produce; null means the contract must be admitted. `stage` is `artifact` for checks a verifier can make from the artifact and a trusted key alone, and `context` for checks needing an authenticated peer, a presented surface, a revocation feed or zone policy \u2014 a command-line verifier must ADMIT those and a mediator must refuse them.",
   "now": 1785312500,
+  "scenario_note": "A mediator scenario carries the context an artifact-only verifier does not have: an authenticated peer pair, the surface the callee presented, a revocation feed and local zone policy. `expect` is \"admit\" or the WC-* code a conforming MEDIATOR must return. These are what makes the four context-stage vectors checkable instead of deferred.",
+  "scenarios": {
+    "peer-mismatch.json": {
+      "contract": "valid-es256.jws",
+      "description": "A valid contract presented for a caller it does not name.",
+      "expect": "WC-3106",
+      "rule": "The check the whole two-plane design rests on: identity is AUTHENTICATED and compared to the contract's claim, never taken from the claim. Uses the valid artifact deliberately \u2014 the artifact is not the thing that is wrong."
+    },
+    "posture-unattested.json": {
+      "contract": "posture-unattested.jws",
+      "description": "A valid artifact whose counterparty is not attested.",
+      "expect": "WC-3109",
+      "rule": "Posture is carried in the artifact and enforced by the mediator, not by the issuer. In enforce mode an unattested counterparty is refused; in observe it becomes a finding."
+    },
+    "revoked-jti.json": {
+      "contract": "revoked-jti.jws",
+      "description": "The artifact id is on the revocation feed.",
+      "expect": "WC-3105",
+      "rule": "Revocation is consulted at admission, so a contract that verified a moment ago stops verifying the moment the feed says so \u2014 no cache rebuild."
+    },
+    "surface-superset.json": {
+      "contract": "surface-superset.jws",
+      "description": "The contract claims a tool the callee does not present.",
+      "expect": "WC-3108",
+      "rule": "The pin is compared over the contracted subset, so an additive tool outside the contract is benign and a contracted item that is absent or changed is always drift. Paths in a scenario resolve relative to the scenario file."
+    },
+    "valid-es256.json": {
+      "contract": "valid-es256.jws",
+      "description": "The positive control: every context check satisfied.",
+      "expect": "admit",
+      "rule": "A conformance set of refusals alone is passed by an implementation that refuses everything. This is the vector that makes the other five mean something."
+    },
+    "zone-crossing.json": {
+      "contract": "zone-crossing.jws",
+      "description": "internal to partner with no local rule permitting it.",
+      "expect": "WC-3110",
+      "rule": "Zone policy is the mediator's, not the contract's. A signed contract cannot open a crossing local policy has not declared."
+    }
+  },
   "schema": 1,
   "vectors": {
     "alg-confusion-ed-for-es.jws": {

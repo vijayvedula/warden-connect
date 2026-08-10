@@ -1,0 +1,4 @@
+{
+  "caller": "spiffe://org/ns/agents/sa/somebody-else",
+  "callee": "spiffe://org/ns/tools/sa/payments-mcp"
+}

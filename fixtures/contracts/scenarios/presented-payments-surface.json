@@ -1,0 +1,12 @@
+{
+  "tools": [
+    {
+      "name": "get_balance",
+      "description": "Read an account balance."
+    },
+    {
+      "name": "list_transactions",
+      "description": "List recent transactions."
+    }
+  ]
+}

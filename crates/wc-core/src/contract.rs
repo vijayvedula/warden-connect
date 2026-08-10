@@ -1568,7 +1568,29 @@ impl VerifiedContract {
             .ok_or_else(|| {
                 WcError::with_detail(Code::PIN_MISMATCH, "contract carries no surface digest")
             })?;
-        let actual = presented.surface_digest(&self.payload.surface.items())?;
+        // A contracted item the callee no longer presents is **drift**, and it has to be
+        // reported as drift. `Pin::surface_digest` raises `SURFACE_NOT_SUBSET` for a missing
+        // name because that is the right answer at *mint* time — asking for a tool the callee
+        // does not declare. Letting it escape from here gave a mediator an issuance-stage
+        // code for a runtime condition: an operator whose runbook maps `WC-3010` to "somebody
+        // requested too much" would be sent to the issuance path, while the actual event is a
+        // contracted tool disappearing from a live callee, which is what `WC-3108` and the
+        // drift alerting exist for. Found while building the mediator conformance scenarios.
+        let actual = presented
+            .surface_digest(&self.payload.surface.items())
+            .map_err(|e| {
+                if e.code() == Code::SURFACE_NOT_SUBSET {
+                    WcError::with_detail(
+                        Code::PIN_MISMATCH,
+                        format!(
+                            "the callee no longer presents a contracted item: {}",
+                            e.detail()
+                        ),
+                    )
+                } else {
+                    e
+                }
+            })?;
         if actual != expected {
             return Err(WcError::with_detail(
                 Code::PIN_MISMATCH,
@@ -3162,6 +3184,63 @@ mod conformance {
         assert_eq!(
             mint(&wrong_typ, &signer).unwrap_err().code(),
             Code::SCHEMA_UNKNOWN
+        );
+    }
+
+    #[test]
+    fn a_contracted_item_the_callee_stopped_presenting_is_drift_not_a_subset_error() {
+        // Found while building the mediator conformance scenarios. `Pin::surface_digest`
+        // raises `SURFACE_NOT_SUBSET` for a name it cannot find, which is the right answer
+        // at *mint* time — asking for a tool the callee does not declare. Escaping from
+        // `check_pin` it gave a mediator an issuance-stage code for a runtime event: an
+        // operator whose runbook maps WC-3010 to "somebody requested too much" would be
+        // sent to the issuance path, when a contracted tool has vanished from a live callee
+        // and the drift alerting is what should have fired.
+        // The contract must actually cover the tool that vanishes — dropping an
+        // *uncontracted* tool is benign and already covered by
+        // `an_additive_tool_outside_the_contract_still_admits`.
+        let mut wide = payload();
+        wide.surface.tools.push("wire_funds".to_string());
+        wide.callee.surface_digest =
+            Some(callee_pin().surface_digest(&wide.surface.items()).unwrap());
+        let jws = mint(&wide, &es256()).unwrap();
+        let keys = trusted_keys();
+        let verified = verify_artifact(&jws, &VerifyOpts::new(&keys, MEDIATOR, NOW)).unwrap();
+
+        // The callee now presents everything except that contracted tool.
+        let shrunk = canon::pin(
+            SurfaceKind::McpTools,
+            &server(),
+            &json!({"tools": [
+                {"name": "get_balance", "description": "Read an account balance."},
+                {"name": "list_transactions", "description": "List recent transactions."}
+            ]}),
+            &Limits::default(),
+            NOW - 100,
+        )
+        .unwrap();
+
+        let err = verified.check_pin(&shrunk).unwrap_err();
+        assert_eq!(
+            err.code(),
+            Code::PIN_MISMATCH,
+            "a vanished contracted item is drift: {}",
+            err.detail()
+        );
+        assert!(
+            err.detail().contains("no longer presents"),
+            "the detail should name what happened: {}",
+            err.detail()
+        );
+
+        // And the mint-time meaning is untouched: asking for an undeclared tool is still a
+        // subset error, because there the callee never offered it in the first place.
+        assert_eq!(
+            shrunk
+                .surface_digest(&["wire_funds".to_string()])
+                .unwrap_err()
+                .code(),
+            Code::SURFACE_NOT_SUBSET
         );
     }
 
