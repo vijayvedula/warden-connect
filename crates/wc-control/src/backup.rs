@@ -402,12 +402,14 @@ pub struct RetentionReport {
 
 /// Report what is past its retention clock.
 ///
-/// **Nothing is deleted, and that is not an omission.** The evidence chain is hash-linked:
-/// removing a row breaks every row after it, so "retention" on this structure is not a
-/// delete but a *segment boundary* — you retire whole segments once every row in one is
-/// past its clock, and you keep the anchor that covered them. That is a rotation design
-/// this build does not have, and implementing a row-level delete would silently destroy the
-/// property the chain exists for.
+/// **This reports; it never deletes.** The evidence chain is hash-linked, so removing a row
+/// breaks every row after it — "retention" here is not a delete but a *segment boundary*.
+/// Retiring whole ranges is [`crate::chain::retire_segment`], reached by
+/// `connect retention --retire SEQ --anchor-pub PEM`, and it refuses any range no signed
+/// checkpoint covers because retirement must not become a permission slip for truncation.
+///
+/// The split is deliberate: an operator should be able to see the window, and pick the
+/// sequence to retire *from that report*, before anything moves.
 ///
 /// So this reports the window, which is the thing an auditor asks for and the thing an
 /// operator needs before sizing a volume.
@@ -434,7 +436,10 @@ pub fn retention_report(
         retained,
         oldest,
         note: "the chain is hash-linked, so retention is segment retirement rather than \
-               row deletion: removing a row would break every row after it",
+               row deletion. `connect retention --retire SEQ --anchor-pub PEM` moves whole \
+               ranges to retired/ and leaves a verifiable tombstone; it refuses a range no \
+               signed checkpoint covers, because retiring and truncating would otherwise be \
+               the same operation",
     })
 }
 
