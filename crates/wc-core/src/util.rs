@@ -38,6 +38,31 @@ pub fn sha256_bytes(input: &[u8]) -> [u8; 32] {
     Sha256::digest(input).into()
 }
 
+/// Lowercase hex. Re-exported from here so callers need not add `hex` as a dependency —
+/// §8.3 caps the count, and every crate that needs hex already needs `wc-core`.
+#[must_use]
+pub fn hex_encode(bytes: &[u8]) -> String {
+    hex::encode(bytes)
+}
+
+/// Decode lowercase or uppercase hex. `None` rather than an error type, so a caller can
+/// attach its own code and detail — a hex failure means different things in a Merkle path and
+/// in a config file.
+#[must_use]
+pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    hex::decode(s.trim()).ok()
+}
+
+/// Decode standard (padded) base64 — what DSSE payloads and Rekor bodies use, as distinct
+/// from the base64url a JWS segment uses. `None` so the caller attaches its own code.
+#[must_use]
+pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(s.trim())
+        .ok()
+}
+
 /// `sha256:` hex over bytes — what an artifact digest looks like on the wire.
 ///
 /// Named separately from [`sha256_hex`], which takes a `&str`: a caller hashing a *file*

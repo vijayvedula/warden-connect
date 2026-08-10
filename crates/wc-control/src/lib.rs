@@ -35,6 +35,7 @@ pub mod keys;
 pub mod lock;
 pub mod obs;
 pub mod registry;
+pub mod rekor;
 pub mod screen;
 pub mod signer;
 pub mod sink;

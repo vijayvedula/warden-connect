@@ -89,9 +89,18 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
   key is local, which makes `builder.id` a string the fixture asserts about itself.
   Provenance that means anything comes from a builder whose own identity is attested.
   *(Environmental)*
-* **No transparency log is consulted.** The verifier's own verdict says
-  `rekor inclusion not checked`. An unchecked inclusion proof reported as verified provenance
-  would be worse than none, so it is reported as unchecked. *(Unbuilt)*
+* **Transparency-log inclusion is verified; the checkpoint's signature is not.**
+  `connect attest verify --rekor-proof` performs the RFC 6962 §2.1.1 computation offline — no
+  HTTP, no Sigstore client — and is tested against a **real entry from the public Rekor log**
+  (`fixtures/rekor/`), including a substituted leaf, a tampered path, a reordered path, a
+  truncated and a padded path, an out-of-range index, and a checkpoint that disagrees.
+
+  What it establishes is that a leaf is in a tree **with a given root**, and that a checkpoint
+  commits to the same root. What it does **not** do is verify that checkpoint's signature,
+  which needs the log's public key as a configured trust root. So a response carrying both a
+  proof and its root is still only self-consistent, and `Inclusion::root_trust` says so in
+  words on every result rather than leaving the distinction to the reader. *(Unbuilt: the
+  checkpoint signature)*
 * **Stages are skipped, never assumed.** Not a limitation so much as the thing to understand:
   supply no material for a stage and the party simply does not attest for it. Read
   `connect posture` rather than assuming a green registration means five green stages.
