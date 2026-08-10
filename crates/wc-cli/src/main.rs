@@ -376,6 +376,8 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "estate",
         ],
         "verify" => &[
+            "scenario",
+            "enforce",
             "file",
             "issuer-pub",
             "jwks",
@@ -4153,13 +4155,241 @@ fn screen_cmd(args: &Args) -> Result<()> {
 // verify — the conformance ground truth (§7.4)
 // ---------------------------------------------------------------------------
 
+/// A mediator scenario: the context the artifact stage does not carry.
+///
+/// One file rather than a dozen flags, because the set is open — a mediator conformance
+/// scenario needs peers, a presented surface, a feed and zone policy today, and whatever the
+/// next context check needs after that. A positional-argument convention would have to break
+/// to add one.
+#[derive(serde::Deserialize)]
+struct Scenario {
+    /// Authenticated caller, as the peer layer resolved it.
+    caller: String,
+    /// Authenticated callee.
+    callee: String,
+    /// The surface the callee presented at `initialize`, as an MCP tools document or an
+    /// A2A card. Absent means "exactly what the contract pinned", which is the ordinary
+    /// case and keeps a scenario that is only testing zones from needing a surface file.
+    #[serde(default)]
+    presented_surface: Option<String>,
+    /// `mcp` or `a2a`, for the presented surface.
+    #[serde(default)]
+    presented_kind: Option<String>,
+    /// Revoked artifact ids.
+    #[serde(default)]
+    revoked_jtis: Vec<String>,
+    /// Revoked connection ids.
+    #[serde(default)]
+    revoked_cids: Vec<String>,
+    /// Revoked or quarantined parties.
+    #[serde(default)]
+    revoked_parties: Vec<String>,
+    /// Zone pairs local policy permits, `[caller, callee]`. Absent means the default
+    /// same-trust-level rule, which is what a mediator ships with.
+    #[serde(default)]
+    permitted_zone_pairs: Option<Vec<Vec<String>>>,
+    /// `wcid` from the session token, when there is one.
+    #[serde(default)]
+    token_wcid: Option<String>,
+}
+
+/// Revocations from a scenario file.
+struct ScenarioRevocations {
+    jtis: std::collections::BTreeSet<String>,
+    cids: std::collections::BTreeSet<String>,
+    parties: std::collections::BTreeSet<String>,
+}
+
+impl contract::RevocationView for ScenarioRevocations {
+    fn jti_revoked(&self, jti: &str) -> bool {
+        self.jtis.contains(jti)
+    }
+    fn cid_revoked(&self, cid: &str) -> bool {
+        self.cids.contains(cid)
+    }
+    fn party_revoked(&self, party: &str) -> bool {
+        self.parties.contains(party)
+    }
+}
+
+/// Zone policy from a scenario file.
+///
+/// An explicit pair list rather than a policy file, so a vector can state "this crossing is
+/// not permitted" without also needing a whole `connect-policy.toml` to be interpreted the
+/// same way by a third party.
+struct ScenarioZones(Option<Vec<(String, String)>>);
+
+impl contract::ZoneRule for ScenarioZones {
+    fn permits(&self, caller: &wc_core::model::ZoneId, callee: &wc_core::model::ZoneId) -> bool {
+        match &self.0 {
+            None => contract::SameTrustLevel.permits(caller, callee),
+            Some(pairs) => pairs
+                .iter()
+                .any(|(a, b)| a == caller.as_str() && b == callee.as_str()),
+        }
+    }
+}
+
+fn verify_with_scenario(
+    args: &Args,
+    jws: &str,
+    keys: &IssuerKeys,
+    mediator: &str,
+    at: u64,
+    leeway: u64,
+    path: &str,
+) -> Result<()> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+    })?;
+    let scenario: Scenario = serde_json::from_str(&text).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("{path} is not a scenario"))
+            .with_source(e)
+    })?;
+
+    let revocations = ScenarioRevocations {
+        jtis: scenario.revoked_jtis.iter().cloned().collect(),
+        cids: scenario.revoked_cids.iter().cloned().collect(),
+        parties: scenario.revoked_parties.iter().cloned().collect(),
+    };
+    let mut opts = VerifyOpts::new(keys, mediator, at);
+    opts.leeway = leeway;
+    opts.revoked = &revocations;
+
+    // The artifact stage first, with the feed attached — revocation is an artifact-stage
+    // check that needs a context input, which is exactly why `revoked-jti` was deferred.
+    let verified = contract::verify_artifact(jws, &opts)?;
+
+    // The presented surface, when the scenario supplies one. Check 8 needs the real
+    // document — `Pin::surface_digest` hashes each item's own digest, so a pin cannot be
+    // fabricated from the contract's digest alone. A scenario testing zone policy therefore
+    // does not have to restate a surface, and **check 8 is then not run**, which is said out
+    // loud below rather than left for the reader to infer from a passing exit code.
+    let presented = match (&scenario.presented_surface, &scenario.presented_kind) {
+        (Some(surface_path), kind) => {
+            // Relative to the scenario file, not the working directory. A scenario
+            // references its own neighbours, and a kit that only worked when run from one
+            // directory is a kit a third party cannot use.
+            let resolved = std::path::Path::new(path).parent().map_or_else(
+                || std::path::PathBuf::from(surface_path),
+                |d| d.join(surface_path),
+            );
+            let raw = read_json(&resolved.to_string_lossy())?;
+            let entity = EntityId::new(&scenario.callee)?;
+            let kind = match kind.as_deref().unwrap_or("mcp") {
+                "mcp" => SurfaceKind::McpTools,
+                "a2a" => SurfaceKind::A2aCard,
+                other => {
+                    return Err(WcError::with_detail(
+                        Code::CONFIG_INVALID,
+                        format!("presented_kind must be mcp or a2a, got {other:?}"),
+                    ))
+                }
+            };
+            Some(wc_core::canon::pin(
+                kind,
+                &entity,
+                &raw,
+                &wc_core::canon::Limits::default(),
+                at,
+            )?)
+        }
+        (None, _) => None,
+    };
+
+    let peer = contract::PeerIdentity {
+        caller: EntityId::new(&scenario.caller)?,
+        callee: EntityId::new(&scenario.callee)?,
+    };
+    let zones = ScenarioZones(scenario.permitted_zone_pairs.as_ref().map(|pairs| {
+        pairs
+            .iter()
+            .filter_map(|p| match p.as_slice() {
+                [a, b] => Some((a.clone(), b.clone())),
+                _ => None,
+            })
+            .collect()
+    }));
+
+    // `Pin::empty` stands in when no surface is supplied and is never read: the `None` arm
+    // calls `admit_context`, which does not touch it. Built here so the borrow lives as long
+    // as the context does.
+    let empty = wc_core::model::Pin::empty(at);
+    let ctx = contract::AdmitCtx {
+        peer: &peer,
+        presented: presented.as_ref().unwrap_or(&empty),
+        token_wcid: scenario.token_wcid.as_deref(),
+        zones: &zones,
+        mode: mode(args),
+    };
+    let (admitted, pin_checked) = match presented.is_some() {
+        true => (verified.admit(&ctx)?, true),
+        // `admit_context` is checks 6, 7, 9, 10 and 11. Its own doc comment says a caller
+        // using it **owes a `check_pin`**, and this is the one place that debt is acceptable:
+        // the scenario declared it has no surface to present. It is reported, not assumed.
+        false => (verified.admit_context(&ctx)?, false),
+    };
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "verdict": "admitted",
+                "cid": admitted.cid.as_str(),
+                "jti": admitted.jti.as_str(),
+                "items": admitted.items.iter().collect::<Vec<_>>(),
+                "exp": admitted.exp,
+                "findings": admitted.findings.iter()
+                    .map(|(c, d)| json!({"code": c.to_string(), "detail": d}))
+                    .collect::<Vec<_>>(),
+                "pin_checked": pin_checked,
+                "checked": ["artifact stage", "revocation", "peer identity",
+                            "zone policy", "token binding", "posture"],
+                "not_checked": if pin_checked { Vec::<&str>::new() }
+                               else { vec!["presented surface digest"] },
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("admitted  {}", admitted.cid);
+    println!(
+        "  surface    {}",
+        admitted
+            .items
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!("  expires    {}", admitted.exp);
+    for (code, detail) in &admitted.findings {
+        println!("  finding    {code} {detail}");
+    }
+    println!();
+    if pin_checked {
+        println!("Every check ran, including the ones a bare `connect verify` cannot reach:");
+        println!("peer identity, the presented surface digest, zone policy and posture.");
+    } else {
+        println!("Checks 6, 7, 9, 10 and 11 ran. Check 8 — the presented surface digest —");
+        println!("did NOT: this scenario supplies no surface. A mediator owes that check");
+        println!("before forwarding a call, so a scenario without a surface is testing the");
+        println!("other five and is not evidence that drift would be caught.");
+    }
+    Ok(())
+}
+
 /// Check a `warden-connection+jws` against a trusted issuer key.
 ///
-/// This is what makes the artifact a candidate standard rather than a product
-/// format: any implementation may mint a contract, and a contract is valid iff
-/// this accepts it. Only the artifact checks (1–5) run here — the context checks
-/// need an authenticated peer and a presented surface, which a command-line tool
-/// does not have. The exit code is the verdict.
+/// This is what makes the artifact a candidate standard rather than a product format: any
+/// implementation may mint a contract, and a contract is valid iff this accepts it.
+///
+/// Without `--scenario` only the artifact checks run, because the context checks need an
+/// authenticated peer, a presented surface, a revocation feed and zone policy — none of which
+/// a command-line tool has. **With** `--scenario` all eleven run: that is the mediator's view,
+/// and it is what makes the four context vectors checkable rather than deferred.
+///
+/// The exit code is the verdict.
 fn verify_cmd(args: &Args) -> Result<()> {
     let path = positional_or_flag(args, "file")?;
     let jws = std::fs::read_to_string(path)
@@ -4227,6 +4457,19 @@ fn verify_cmd(args: &Args) -> Result<()> {
     let at = args.number("now").unwrap_or_else(now);
     let mut opts = VerifyOpts::new(&keys, mediator, at);
     opts.leeway = args.number("leeway").unwrap_or(0);
+
+    // `--scenario` supplies what the artifact stage deliberately does not have: an
+    // authenticated peer pair, the surface the callee actually presented, a revocation feed
+    // and local zone policy. Without it this command checks the artifact in isolation and
+    // **admits** the context vectors, which is correct for a command-line verifier and is
+    // why four of the nineteen were reported as deferred rather than as passes.
+    //
+    // With it, this is the mediator's view of the same artifact, and those four become
+    // checkable by any implementation — which is what a conformance kit for a *mediator*
+    // needs and what the kit did not have.
+    if let Some(path) = args.get("scenario") {
+        return verify_with_scenario(args, &jws, &keys, mediator, at, opts.leeway, path);
+    }
 
     let verified = contract::verify_artifact(&jws, &opts)?;
     let p = &verified.payload;

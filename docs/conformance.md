@@ -53,7 +53,7 @@ artifact's claim is left to be something your verifier fails to resolve.
 Found by running this harness against our own verifier, which is why
 `scripts/conformance.sh` with no arguments is a self-check rather than a convenience.
 
-## The two stages, and why four vectors defer
+## The two stages, and the scenarios that close the second
 
 Verification splits in two (§8.6.3), and the manifest now says which is which in a
 `stage` field rather than leaving it to prose in a README:
@@ -64,22 +64,36 @@ Verification splits in two (§8.6.3), and the manifest now says which is which i
 | `context` | 4 | an authenticated peer, the callee's presented surface, a revocation feed, or local zone policy |
 
 A command-line verifier has none of the context inputs, so **the four context vectors are
-valid artifacts to it and it must admit them.** The harness reports those as `DEFR` —
-deferred — and never as passes:
+valid artifacts to it and it must admit them.** Counting that as a pass would tell an
+implementer they had covered nineteen checks when they had covered fifteen, so the harness
+reports them as `DEFR` — deferred — and never as passes.
+
+**The scenarios close them.** `fixtures/contracts/scenarios/` supplies what the context stage
+needs, and the harness runs a second pass:
 
 ```
-CONFORMANT  15/15 artifact-stage vectors
-4 vector(s) deferred: they need an authenticated peer, a presented
-surface, a revocation feed or zone policy, so only a mediator can answer them.
+<your-mediator> <artifact.jws> <issuer-pub.pem> <kid> <mediator-id> <unix-time> <alg> <scenario.json>
 ```
 
-Counting them as passes would tell an implementer they had covered nineteen checks when
-they had covered fifteen — and the four they had not are the ones that need a mediator,
-which is the harder half of the work.
+The convention is the verifier's plus one argument, so an artifact-only implementation that
+ignores the eighth fails the context vectors rather than silently appearing to pass them.
+Point the harness at yours with `MEDIATOR_CMD=./my-mediator scripts/conformance.sh`.
 
-To cover the context stage you need to be a mediator, not a verifier: hold the contract,
-compare it against an authenticated peer and a presented surface, and apply a revocation
-feed. `crates/wc-mediator` is the reference for that, and §8.6.3 lists the eleven checks in
+Six scenarios, and **one of them must be admitted** — `valid-es256.json`, every context check
+satisfied. Without it an implementation that refuses everything would pass all five refusals.
+The harness is mutation-checked against exactly those two wrong implementations: an
+artifact-only verifier (5 failures) and a refuse-everything stub (6 failures).
+
+| Scenario | Code | What it pins |
+|---|---|---|
+| `valid-es256.json` | *admit* | the positive control |
+| `peer-mismatch.json` | `WC-3106` | identity is authenticated and compared, never taken from the contract's claim |
+| `revoked-jti.json` | `WC-3105` | revocation applies at admission, with no cache rebuild |
+| `surface-superset.json` | `WC-3108` | a contracted item the callee no longer presents is drift |
+| `posture-unattested.json` | `WC-3109` | posture travels in the artifact and is enforced by the mediator |
+| `zone-crossing.json` | `WC-3110` | zone policy is the mediator's; a signed contract cannot open a crossing |
+
+`crates/wc-mediator` is the reference implementation, and §8.6.3 lists the eleven checks in
 order.
 
 ## The vectors
@@ -156,9 +170,11 @@ the implementation that defines it.
 ## What this kit does not yet cover
 
 * **The mediator's eleven checks as vectors.** The context stage is four artifacts and a
-  prose description of what a mediator must do with them. A real mediator conformance kit
-  needs peers, presented surfaces and revocation feeds as fixtures too — that is a larger
-  piece of work and it is not done.
+  prose description of what a mediator must do with them. **That is now done**:
+  `fixtures/contracts/scenarios/` carries the peers, presented surfaces, revocation feeds and
+  zone policy, driven by `connect verify --scenario` and by this harness's mediator pass. Six
+  scenarios, one of them a positive control. What remains is a second implementation to run
+  them against.
 * **A second implementation of `wcs1`.** The vector set itself is now published —
   [`fixtures/canon/`](../fixtures/canon/README.md), 31 vectors, driven by
   `scripts/canon-conformance.sh` on the same calling-convention pattern as this kit. What is

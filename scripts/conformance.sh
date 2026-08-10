@@ -65,7 +65,26 @@ if [ -z "$VERIFIER" ]; then
 exec "$OURS" verify "\$1" --issuer-pub "\$2" --kid "\$3" --mediator-id "\$4" --now "\$5" --alg "\$6"
 SHIM
     chmod +x "$VERIFIER"
-    trap 'rm -f "$REPO/scripts/.conformance-ours.sh"' EXIT
+    trap 'rm -f "$REPO/scripts/.conformance-ours.sh" "$REPO/scripts/.conformance-ours-med.sh"' EXIT
+fi
+
+# The mediator convention is the verifier's plus a scenario file. An implementation that
+# ignores the eighth argument fails the context vectors, which is correct and visible — an
+# artifact-only verifier must not be able to claim mediator conformance.
+MEDIATOR_CMD="${MEDIATOR_CMD:-}"
+if [ -z "$MEDIATOR_CMD" ]; then
+    OURS_MED="$REPO/target/release/connect"
+    [ -x "$OURS_MED" ] || OURS_MED="$REPO/target/debug/connect"
+    if [ -x "$OURS_MED" ]; then
+        MEDIATOR_CMD="$REPO/scripts/.conformance-ours-med.sh"
+        {
+            echo '#!/usr/bin/env bash'
+            echo '# Adapter from the harness mediator convention to `connect verify --scenario`.'
+            echo "exec \"$OURS_MED\" verify \"\$1\" --issuer-pub \"\$2\" --kid \"\$3\" \\"
+            echo '    --mediator-id "$4" --now "$5" --alg "$6" --scenario "$7" --enforce'
+        } > "$MEDIATOR_CMD"
+        chmod +x "$MEDIATOR_CMD"
+    fi
 fi
 
 [ -x "$VERIFIER" ] || { echo "$VERIFIER is not executable" >&2; exit 2; }
@@ -144,6 +163,56 @@ while IFS="$US" read -r file expect stage kid alg keypath description; do
     fi
 done <<< "$PLAN"
 
+# --- the mediator pass ------------------------------------------------------
+#
+# The four context vectors are reported as deferred above, which is honest — a command-line
+# verifier cannot answer them. It was also this kit's biggest hole: covering them means being
+# a mediator, and there were no fixtures for that. These are those fixtures. Each scenario
+# carries what checks 6-11 need, so any implementation can be driven through all eleven.
+SCEN_PASS=0
+SCEN_FAIL=0
+SCEN_PLAN=$(python3 "$REPO/scripts/.conformance-scenarios.py" "$EXPECTED")
+
+if [ -n "$SCEN_PLAN" ] && [ -n "$MEDIATOR_CMD" ] && [ -x "$MEDIATOR_CMD" ]; then
+    [ "$JSON" = 0 ] && printf '\n\033[1mmediator scenarios\033[0m  %s\n\n' "$MEDIATOR_CMD"
+    while IFS="$US" read -r scen contract expect kid alg keypath description; do
+        [ -z "$scen" ] && continue
+        pub="$REPO/$keypath"
+        out=$("$MEDIATOR_CMD" "$VECTORS/$contract" "$pub" "$kid" "$MEDIATOR" "$NOW" "$alg" \
+              "$VECTORS/scenarios/$scen" 2>&1) && status=0 || status=$?
+        if [ "$expect" = admit ]; then
+            if [ "$status" = 0 ]; then
+                verdict=ok; SCEN_PASS=$((SCEN_PASS + 1))
+            else
+                got=$(printf '%s' "$out" | grep -oE 'WC-[0-9]{4}' | head -1)
+                verdict="REFUSED a connection that must be admitted (${got:-no code})"
+                SCEN_FAIL=$((SCEN_FAIL + 1))
+            fi
+        elif [ "$status" = 0 ]; then
+            verdict="ADMITTED, expected $expect"; SCEN_FAIL=$((SCEN_FAIL + 1))
+        elif printf '%s' "$out" | grep -q "$expect"; then
+            verdict=ok; SCEN_PASS=$((SCEN_PASS + 1))
+        else
+            got=$(printf '%s' "$out" | grep -oE 'WC-[0-9]{4}' | head -1)
+            verdict="expected $expect, got ${got:-no WC code}"; SCEN_FAIL=$((SCEN_FAIL + 1))
+        fi
+
+        if [ "$JSON" = 1 ]; then
+            RESULTS="$RESULTS$(printf '{"scenario":"%s","contract":"%s","expected":"%s","verdict":"%s"}' \
+                "$scen" "$contract" "$expect" "$verdict"),"
+        elif [ "$verdict" = ok ]; then
+            printf '  \033[32mPASS\033[0m %-32s %-9s %s\n' "$scen" "$expect" "$description"
+        else
+            printf '  \033[31mFAIL\033[0m %-32s %-9s \033[31m%s\033[0m\n' \
+                "$scen" "$expect" "$verdict"
+        fi
+    done <<< "$SCEN_PLAN"
+    # An artifact vector deferred above is no longer a hole once its scenario covers it.
+    [ "$SCEN_FAIL" = 0 ] && DEFERRED=0
+fi
+
+FAIL=$((FAIL + SCEN_FAIL))
+PASS=$((PASS + SCEN_PASS))
 TOTAL=$((PASS + FAIL + DEFERRED))
 
 if [ "$JSON" = 1 ]; then

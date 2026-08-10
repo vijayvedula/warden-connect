@@ -263,10 +263,17 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
   characters, `1.0` normalised to `1`, and over-eager array sorting — and never against a real
   one. Three rules are the likely disagreements and are called out in that README: preserved
   invisibles, numbers kept in the form they were written, and the allowlist. *(Unproven)*
-* **The conformance kit covers 15 of 19 vectors.** The four context-stage vectors need an
-  authenticated peer, a presented surface and a revocation feed; a CLI verifier must admit
-  them and the harness reports them as **deferred**, never as passes. Covering them means
-  being a mediator, and there are no fixtures for that. *(Unbuilt)*
+* **The conformance kit covers all nineteen vectors, plus six mediator scenarios.** The four
+  context-stage vectors used to be reported as **deferred**, because a command-line verifier
+  cannot answer them and covering them meant being a mediator with no fixtures for it.
+  `fixtures/contracts/scenarios/` is those fixtures: each carries the authenticated peer pair,
+  the presented surface, the revocation feed and the zone policy checks 6–11 need, and
+  `connect verify --scenario` runs them. One is a **positive control** — without it an
+  implementation that refuses everything would pass every refusal vector.
+
+  What is still missing is the same thing as everywhere else: **no second implementation has
+  run them.** The harness is mutation-checked against an artifact-only verifier and a
+  refuse-everything stub, not against a real second mediator. *(Unproven)*
 * **The vector set is not signed.** Nothing attests that the vectors you downloaded are the
   ones published. *(Unbuilt)*
 * **Interop is only as good as the implementations tried.** Two defects in stage 4 survived
