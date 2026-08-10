@@ -1044,12 +1044,33 @@ by what unblocks the others.
 
 ---
 
-## Hardening review — first pass run
+## Hardening review — two passes run
 
-> **Run.** All six paths, by executing the binaries against scratch estates rather than by
-> reading. It found **six defects of the characteristic shape, plus two reporting gaps**, all
-> now fixed with regression tests; they are listed in [CHANGELOG.md](../CHANGELOG.md) and
-> tabulated in [threat-model.md](threat-model.md) Part 1. The headline three:
+> **Pass two.** The five areas pass one left untouched: `screen`, the ceilings, the drain path,
+> federation, residency. Three more findings, from three questions worth reusing:
+>
+> * **What can this control not see?** One injection string in six callee-controlled positions.
+>   Five scored a block; the property *name* scored **zero** — the field walk used JSON object
+>   keys to build a path label and never as content, so the one position a parameter name
+>   occupies was the one nobody screened.
+> * **Which flag turns this on?** `grep` for callers of every module. **`drain` had none** — no
+>   `--on-revoke`, no reference from the binary, so its own stated `abort` default is not in
+>   force and the in-flight call finishes bounded by `--upstream-timeout`.
+> * **What does this counter reset with?** **Ceilings are per process.** A 3-per-hour contract
+>   served 3 calls in one mediator and 9 across three, inside one hour.
+>
+> **Federation and residency came out clean** — the first areas to do so. Federation refused
+> eleven hostile chains with the right codes and its documented exit codes hold exactly; a
+> request declaring no jurisdiction, or the wrong one, fails closed to the default.
+>
+> Still not done: an **independent** reviewer. Both passes were run by the author of the code,
+> and pass two still found three in five areas.
+
+> **Pass one.** All six paths below, by executing the binaries against scratch estates rather
+> than by reading. It found **six defects of the characteristic shape, plus two reporting
+> gaps**, all now fixed with regression tests; they are listed in
+> [CHANGELOG.md](../CHANGELOG.md) and tabulated in [threat-model.md](threat-model.md) Part 1.
+> The headline three:
 >
 > * **the pin ignored MCP's `title` and A2A's `examples`** — model-visible text where an
 >   injection moved no digest and scored zero, so screening and drift detection were blind
@@ -1066,7 +1087,7 @@ by what unblocks the others.
 > second pass, which has not been run.
 >
 > What this pass did *not* cover: `screen` beyond the allowlist question, the ceilings, the
-> drain path, federation, and residency. Those remain for a second pass.
+> drain path, federation, and residency — all five taken up by pass two, above.
 
 ### The original plan
 

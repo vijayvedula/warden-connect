@@ -15,7 +15,7 @@ Four kinds of entry, labelled, because they have different answers:
 | **Unproven** | The mechanism is built and tested; the *procedure* or the *scale* has not been exercised. |
 | **Environmental** | Blocked on hardware, a cloud account, or a second environment — not on code. |
 
-Status: pre-1.0, no independent audit, no hardening pass yet.
+Status: pre-1.0, no independent audit, two internal hardening passes run.
 [production-readiness.md](production-readiness.md) tracks the work; this tracks the gaps.
 
 ---
@@ -104,7 +104,21 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
   mediator picks it up without a restart. The mechanism is tested; the procedure is not.
   *(Unproven)*
 
-## 4 · The transport control
+## 4 · Ceilings
+
+* **`max_calls_per_hour` and `max_spend_usd_per_day` count per mediator process, not per hour
+  or per day.** The sliding window and the spend total live in memory, so a restart starts them
+  again. Measured: a contract with a 3-per-hour ceiling executed exactly 3 calls in one mediator
+  and **9 across three**, inside the same hour. A long-lived sidecar in front of a long-running
+  agent enforces the figure as written; a per-task invocation — a fresh mediator per task, which
+  is a shape this codebase names elsewhere — enforces it per task. The mediator cannot know its
+  own lifetime, so it says this at startup whenever a contract carries either ceiling. The
+  remedy if you need the real thing is persistence with a cross-process lock, and it is not
+  built. *(By design, and now announced)*
+* **`max_concurrent` is per process for the same reason**, and in the stdio sidecar there is
+  one synchronous call at a time, so it does not bind there at all. *(By design)*
+
+## 5 · The transport control
 
 * **A process at a trusted address can forge `x-forwarded-proto`.** With a same-host proxy,
   `--trusted-proxy 127.0.0.1` is satisfied by anything on the box, so a local process can
@@ -120,7 +134,7 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
   in front, so an in-process listener would be a security-critical path almost nobody runs.
   *(By design)*
 
-## 5 · Containment
+## 6 · Containment
 
 * **Unconfirmed is not contained.** A quarantine transitions the registry immediately; the
   party keeps working until every mediator holding its contracts stops honouring it. If a
@@ -136,6 +150,14 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
 * **Propagation has never been timed.** §7.10 promises under 60 s estate-wide;
   `wc_mediator_ack_lag_seconds` has a bucket at 60 so the claim is measurable, and nobody has
   measured it on a real estate. *(Unproven)*
+* **The drain/abort choice does not exist yet.** `wc_mediator::drain` defines `drain` and
+  `abort` for work in flight when a revocation lands, and **nothing calls it** — there is no
+  `--on-revoke` flag. New calls are refused the moment a revocation is installed, which is the
+  containment half and works; the in-flight call finishes, bounded by `--upstream-timeout`
+  (30 s) rather than by a drain window. So the module's stated default — `abort`, because
+  `drain` is the permissive reading — is not in force. For the stdio sidecar that is one
+  already-authorised call; the distinction belongs to the shared-gateway topology, which is not
+  deployable either. *(Unbuilt, and stated in the module)*
 * **A `--contract FILE` mediator cannot be contained at all.** Revocation reaches a mediator
   only through the control-plane pull, so a mediator handed contract artifacts on disk serves
   them until they expire and no quarantine can arrive. It reported
@@ -145,7 +167,7 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
   there is contract TTL, so the TTL is the containment decision.** *(By design, and now
   visible)*
 
-## 6 · Evidence and retention
+## 7 · Evidence and retention
 
 * **Retention deletes nothing.** Removing a row from a hash-linked chain breaks every row
   after it, so retention here is *segment retirement* — retire whole segments once every row
@@ -174,7 +196,7 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
   production-sized root and recorded the time. "We can restore" and "we can restore inside our
   RTO" are different claims. *(Unproven)*
 
-## 7 · Availability
+## 8 · Availability
 
 * **`flock` does not fence a partitioned active.** It is advisory and node-local, so the
   storage layer must guarantee single attachment — `ReadWriteOnce`, one EBS volume, one
@@ -190,7 +212,7 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
 * **A `SIGTERM` loses up to one metrics flush interval.** Bounded and acceptable for
   cumulative counters. *(By design)*
 
-## 8 · Interoperability
+## 9 · Interoperability
 
 * **The `wcs1` vectors exist; nobody outside this repository has run them.**
   [`fixtures/canon/`](../fixtures/canon/README.md) publishes 31 *input surface → canonical
@@ -212,7 +234,7 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
   verifier accepted only its own dialect. Assume the same is true of anything not yet tried
   against real output.
 
-## 9 · Observability
+## 10 · Observability
 
 * **`wc_quarantine_duration_seconds` is not emitted.** Needs the interval between a quarantine
   and its clearing; both events are in the chain and nothing computes the pairing. *(Unbuilt)*
@@ -230,7 +252,7 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
   `overflow="true"` and the fold is counted. `wc_contracts_active{zone_pair,tier}` is quadratic
   in zones and is the family most likely to reach it. *(By design)*
 
-## 10 · Multi-tenancy and residency
+## 11 · Multi-tenancy and residency
 
 * **Residency escalates; it does not prevent.** §8.7.3's rule is that jurisdictions spanning
   more than one residency group escalate the tier one step, pulling the connection into human
@@ -244,7 +266,7 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
   and escalation — not two volumes, two failure domains, and a partner federation across them.
   *(Environmental)*
 
-## 11 · Packaging and supply chain
+## 12 · Packaging and supply chain
 
 * **Nothing is published to crates.io, and cannot be.** Every crate is `publish = false`
   because `warden` is a path dependency that cannot resolve from a registry. `cargo publish`
@@ -261,7 +283,7 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
 * **The image is verified in CI only** for the arm64/amd64 pair CI builds; no multi-arch
   manifest is published.
 
-## 12 · Configuration
+## 13 · Configuration
 
 * **Ten §8.13 keys are refused rather than honoured**, because the behaviour does not exist:
   `[server].tls`, `[policy].hot_reload` and `pdp_url`, `[admission].rekor` and
@@ -271,16 +293,17 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
 * **No policy hot reload.** A policy change needs a restart. *(Unbuilt)*
 * **No AuthZEN PDP passthrough.** *(Unbuilt)*
 
-## 13 · Testing depth
+## 14 · Testing depth
 
-* **One hardening pass has been run; it is not enough.** The first adversarial pass covered
-  the six paths in [production-readiness.md](production-readiness.md) and found **six defects
-  of the usual shape plus two reporting gaps** — all fixed, all tabulated in
-  [threat-model.md](threat-model.md) Part 1. The reason this stays on the list is the hit
-  rate: a single pass over six paths still found six, so the next pass should be expected to
-  find more rather than to confirm the code is clean. Not yet exercised adversarially:
-  `screen` beyond the field allowlist, the ceilings, the drain path, federation, residency.
-  *(Unproven)*
+* **Two hardening passes have been run; neither was independent.** The first covered the six
+  paths in [production-readiness.md](production-readiness.md); the second covered the five areas
+  it left — `screen`, the ceilings, the drain path, federation, residency. Together **nine
+  defects of the usual shape plus two reporting gaps**, all fixed or documented, all tabulated
+  in [threat-model.md](threat-model.md) Part 1. Federation and residency came out clean under
+  the same probing, which is the first time any area has.
+  The reason this stays on the list is that both passes were run by the same author as the
+  code, and the hit rate has not fallen off: pass two still found three in five areas. An
+  independent reviewer is a different instrument, and there has not been one. *(Unproven)*
 * **Fuzzing is smoke depth.** One minute per target. The nightly workflow turns that into hours
   per week and has not run yet. *(Unproven)*
 * **No 10⁵-contract estate has been operated**, only benchmarked. The scale gates measure

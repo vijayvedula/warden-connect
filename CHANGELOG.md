@@ -166,7 +166,38 @@ mode this component exists to prevent, occurring inside it:
 - **Screening refused every localised tool server** — the S1 rule read localisation
   controls in complex scripts as concealment.
 - **A latency gate pointed at a benchmark that did not exist**, so it silently never ran.
-Found by the **adversarial hardening pass** over the six paths in
+Found by the **second adversarial hardening pass**, over the five areas the first left
+untouched — `screen`, the ceilings, the drain path, federation, residency:
+
+- **Injection screening never read a JSON object key.** One string in six callee-controlled
+  positions: `description`, a property `description`, an `enum` value, an entry in `required`
+  and a schema `title` all scored a **block**; the property **name** scored **zero**.
+  `walk_text` used keys to build the path label and never as content — so the one position a
+  parameter name actually occupies was the one nobody screened, while the same name listed in
+  `required` was screened. Parameter names are what a model reads to decide how to call a
+  tool. Keys are now screened; precision and recall stay at 1.000 on the labelled corpus.
+- **The drain path has no caller and no flag.** `OnRevoke` — `drain` vs `abort` for work in
+  flight when a revocation lands — is referenced by nothing outside its own module. There is
+  no `--on-revoke`, and `connect-mediate` never mentions it. So the module's own rule that
+  **`Abort` is the default because `drain` is the permissive reading** is not in force: the
+  in-flight call finishes, bounded by `--upstream-timeout` rather than `drain_timeout`. The
+  containment half — new calls refused at lookup time — is real and unaffected. Not wired up,
+  deliberately: a flag that cannot interrupt a blocking upstream read would be the same defect
+  in a new place. Stated at the top of the module, in `limitations.md`, and pinned by a test
+  that fails if somebody wires it without deleting the disclaimer.
+- **Ceilings count per process, not per hour.** A contract with `max_calls_per_hour = 3`
+  executed exactly 3 calls in one mediator and **9 across three**, in the same hour, because
+  the sliding window is in memory. Correct for a long-lived sidecar; wrong for the per-task
+  invocation shape this codebase names elsewhere. `max_spend_usd_per_day` behaves the same.
+  The mediator now says so at startup when a contract carries either ceiling.
+
+**Clean under the same probing:** federation refused all eleven hostile chains with the right
+codes — `alg=none` → `WC-3101`, unknown anchor → `WC-2030`, 51 statements, null and numeric
+elements, 200-deep nesting — and its documented exit codes hold exactly (0 valid, 3 stale
+anchor, 4 unverifiable). Residency fails closed: a request declaring no jurisdiction, or the
+wrong one, does not match a jurisdiction-scoped rule and lands on the default.
+
+Found by the **first adversarial hardening pass** over the six paths in
 `docs/production-readiness.md`, by running the binaries:
 
 - **The pinned surface ignored two model-visible fields, so screening and drift detection

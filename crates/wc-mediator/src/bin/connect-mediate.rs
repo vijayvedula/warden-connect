@@ -426,6 +426,19 @@ fn run() -> Result<(), String> {
     // file exists from second zero. Without that flush a mediator living less than the
     // interval writes **no file at all** — a per-task agent invocation is exactly that — and
     // the staleness alert cannot tell "never started" from "started recently".
+    if cache.snapshot().has_rate_or_spend_ceiling() {
+        // The ceiling is honoured exactly, within this process. `max_calls_per_hour` is
+        // signed into the contract and reads as an estate-wide rate; the counter is in
+        // memory, so a restart starts it again. Measured: a 3-per-hour contract executed
+        // 3 calls per process and 9 across three processes inside one hour.
+        eprintln!(
+            "connect-mediate: NOTE a contract sets a rate or spend ceiling. Ceilings count \
+             within THIS process — a restart resets them, so a short-lived per-task mediator \
+             enforces a fraction of an hourly figure. Keep this process alive for the window \
+             you are limiting, or treat the ceiling as per-invocation"
+        );
+    }
+
     let has_revocation_source = client.is_some();
     if !has_revocation_source {
         // Said out loud for the same reason `--peer-mode configured` is: this process

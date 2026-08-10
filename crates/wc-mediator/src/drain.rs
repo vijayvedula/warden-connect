@@ -24,6 +24,32 @@
 //! Either way `new calls are refused` is unconditional. That half is the
 //! containment; the drain window only decides how gracefully the current call
 //! ends.
+//!
+//! # NOT WIRED — read this before believing the table above
+//!
+//! **Nothing in this crate calls [`OnRevoke`].** There is no `--on-revoke` flag on
+//! `connect-mediate`, the binary does not reference this module, and no mediation path
+//! consults it. So the table describes a design, and the shipped behaviour is:
+//!
+//! * **new calls are refused** — this half is real, and it is the containment half.
+//!   [`crate::cache::Cache`] applies revocation at *lookup* time, so the next call after a
+//!   pull installs a revocation is refused with no cache rebuild;
+//! * **the in-flight call finishes**, bounded only by `--upstream-timeout` (30s by
+//!   default) rather than by `drain_timeout`.
+//!
+//! Which means the effective mode is `drain` with the wrong bound — and this file's own
+//! rule is that `abort` is the default *because* `drain` is the permissive reading. The
+//! stated default is not in force.
+//!
+//! For the stdio sidecar the exposure is one already-authorised call, bounded by the
+//! upstream timeout, which is why this is documented rather than urgently fixed. The
+//! distinction this module exists for belongs to the shared-gateway topology, and that
+//! topology is not deployable either (`docs/limitations.md`). Wiring a flag that could
+//! not interrupt a blocking upstream read would be worse than having none: a control that
+//! reads as configured and does nothing is the defect class this codebase keeps producing.
+//!
+//! Found by the second hardening pass, by grepping for callers of a module that had tests
+//! and asking which flag turns it on. The answer was none.
 
 use std::time::Duration;
 
@@ -285,5 +311,24 @@ mod tests {
             }
         );
         assert!(!t.is_empty());
+    }
+
+    #[test]
+    fn this_module_is_still_not_wired_into_the_binary() {
+        // A guard on the module docs, not on behaviour. `OnRevoke` has no caller: no
+        // `--on-revoke` flag, no reference from `connect-mediate`, nothing in the
+        // mediation path. The docs say so at the top, and a doc comment is not a control —
+        // so if somebody wires it, this test fails and the docs get corrected with it.
+        //
+        // Deliberately checks the *source* rather than behaviour, because "is this
+        // reachable from the thing that deploys it?" is the question the second hardening
+        // pass was built around and it is not answerable from inside a unit test any
+        // other way.
+        let binary = include_str!("bin/connect-mediate.rs");
+        assert!(
+            !binary.contains("OnRevoke") && !binary.contains("on-revoke"),
+            "drain is now wired — delete the NOT WIRED section from this module's docs, \
+             the drain entry in docs/limitations.md, and this test"
+        );
     }
 }

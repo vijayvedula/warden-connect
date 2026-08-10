@@ -19,12 +19,24 @@ They were a control that read as configured and did nothing.** Not one was found
 the code, and several survived a test suite that asserted the configuration rather than the
 effect.
 
-The adversarial pass below was run against the six paths in
-[production-readiness.md](production-readiness.md), by executing the binaries, and it found
-**six more of exactly this shape** — the last six rows. Two of them had passing unit tests
-sitting beside them: `SurfaceMatch::matches` was covered only for `write = false`, and the
-chain had tests for edited, deleted and reordered rows but none for a **truncated** one.
-A one-sided test is how a one-sided control survives review.
+Two adversarial passes have now been run against the paths in
+[production-readiness.md](production-readiness.md), by executing the binaries, and together
+they found **nine more of exactly this shape** — the last nine rows. Several had passing unit
+tests sitting beside them: `SurfaceMatch::matches` was covered only for `write = false`; the
+chain had tests for edited, deleted and reordered rows but none for a **truncated** one; and
+`drain` had nine tests and no caller. A one-sided test is how a one-sided control survives
+review, and a well-tested module is not a reachable one.
+
+The second pass was built around three questions, each of which found something:
+
+1. **What can this control not see?** One injection string in six callee-controlled
+   positions. Five scored a block; the property *name* scored zero, because the field walk
+   used object keys to build a path and never as content.
+2. **Which flag turns this on?** `grep` for callers of every module. `drain` had none.
+3. **What does this counter reset with?** Ceilings are in-process, so a per-task mediator
+   starts every allowance from zero.
+
+Those three questions are cheaper than reading the code and they found more.
 
 The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 
@@ -50,6 +62,9 @@ The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 | dual control at tier 1 | was enforced for `quarantine` and inexpressible for issuance |
 | `audit verify` | said **"chain is intact"** on a chain whose most recent rows had been deleted |
 | `wc_revocation_trusted 1` | on a mediator with no feed at all, so the containment alert could never fire for the topology with no containment |
+| injection screening | never read a JSON object **key**, so a poisoned parameter name scored zero where the same string in `required` scored a block |
+| `drain`/`abort` on revocation | has no caller and no flag: the stated `Abort` default is not in force |
+| `max_calls_per_hour` | counts per **process**, so a 3-per-hour contract served 9 calls in one hour across three short-lived mediators |
 
 ### The review checklist
 
