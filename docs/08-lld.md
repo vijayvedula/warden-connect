@@ -879,31 +879,62 @@ a database row an operator with SQL access can forge.
 
 ### 8.5.11 `wc-cli` — command tree and exit codes
 
-The HLD's CLI (§7.6) plus the operator verbs the LLD needs:
+The HLD's CLI (§7.6) plus the operator verbs the LLD needs.
+
+> **This block is the design, and it had drifted from the build.** A test —
+> `every_documented_command_exists_with_the_flags_it_claims` in `wc-cli` — now parses every
+> `connect …` line in every Markdown file here and checks it against `COMMANDS` and
+> `accepted_flags`. On its first run it found **thirteen** claims that did not hold, all of
+> them in this file and §7.6: seven flags never built, one command renamed, and the mediator
+> block describing a different binary with different flag names.
+>
+> That is the same class as the SPIRE procedure with four wrong commands. A design document
+> is allowed to describe intent — it is not allowed to read as an interface an operator can
+> use. So the synopsis below is what the binary accepts, and anything designed and **not
+> built** is marked, not quietly corrected.
 
 ```sh
-connect serve            --config connect.toml
-connect register agent   --card … --attest … --owner … [--observe]
-connect register server  --endpoint … --tier … --zone … [--insecure-skip-provenance]
+connect serve            --listen … --issuer-key … --kid …
+connect register agent   --card … --attest … --owner … [--enforce]
+connect register server  --endpoint … --tier … --zone … [--enforce]
 connect discover         --capability … --as … [--jurisdiction …]
-connect request | approve | deny | contracts {list,show,renew,revoke}
+connect request | approve | deny | contracts
 connect breakglass       --from … --to … --tools … --incident … --justify … --ttl …
                          --by … --approver-key … --second … --second-key …
-connect quarantine <party> --reason … [--drain|--abort] [--confirm-blast-radius]
-connect posture          [--drift|--expiring|--unattested|--shadow] [--json]
-connect blast-radius <id> [--depth N]
+connect quarantine <party> --reason … [--approver human:a --approver human:b]
+connect unquarantine <party> --approver human:a --approver human:b [--why …]
+connect posture          [--expiring|--unattested|--score] [--json]
+connect blast-radius <id> [--depth N] [--services]
 connect export           --format dora|cps230|oscal|csv|json|bom [--as-of TS]
                          [--anchor-pub PEM] [--out FILE] [--id ID]   # id: bom only
-connect verify           <contract.jws> [--mediator-id …] [--pins pins.json]
-connect audit verify     [--export <file>]
+connect verify           <contract.jws> --mediator-id … [--jwks FILE | --issuer-pub PEM]
+connect audit verify     [--anchor-pub PEM] [--json]
 connect canon            <surface.json>          # print the wcs1 doc + pin
 connect screen           <surface.json>          # screening report, exit 5 on block
 connect policy           lint | dry-run | show
 connect keys             list | new | add | rotate | note | retire | jwks
-connect bundle           export --mediator … --signing-key … --keyring … --out b.wcb
+connect bundle           export --mediator … --signing-key … --kid … --out b.wcb
 connect bundle           verify <b.wcb> --envelope-pub … --kid … --mediator …
-connect bench            [--verify|--filter|--mint]              # perf gates
+connect bench            [--gate NAME] [--iterations N] [--scale N]
+connect federate         <chain.json> --anchors anchors.toml
+connect caep ingest      <token.jwt> --transmitters streams.toml
+connect backup | restore | retention | mediators | tenants | activate | show | entities
 ```
+
+**Designed here and not built.** Each was a flag in this synopsis that no command accepts;
+they are listed rather than deleted because the design reasoning for them is still in this
+document and a reader should know which sentence describes something that runs:
+
+| Claimed | State |
+|---|---|
+| `register … [--observe]` | The mode flag is `--enforce`; observe is the **default**, which inverts the design's polarity. Deliberate — enforce is the switch you throw, not the one you forget. |
+| `register server [--insecure-skip-provenance]` | Never built. A flag whose name argues against itself; stage 4 is skipped by supplying no material, which is visible in `connect posture` instead of being asserted on a command line. |
+| `quarantine [--drain\|--abort]` | **`wc_mediator::drain` exists and has no caller** — no flag, no reference from the mediator binary. Its stated `abort` default is not in force. See `limitations.md` §6. |
+| `quarantine [--confirm-blast-radius]` | Never built. `connect blast-radius <id>` is a separate command, run before the order rather than as a confirmation on it. |
+| `posture [--drift\|--shadow]` | Neither built. `--shadow` was shadow-endpoint detection, which §7.8 A5 states is a *deployment* property this codebase cannot verify — so the flag could never have meant what it says. |
+| `verify [--pins pins.json]` | Never built. A verifier checks the pin inside the contract; a second pin file would be a second source of truth. |
+| `audit verify [--export <file>]` | Never built. §8.5.9's export-proof idea; `connect export --anchor-pub` covers the verifiable half. |
+| `connect mediate` | The binary is **`connect-mediate`**, and its flags are `--contracts`, `--token`, `--observe`, `--refresh`, `--contract` — not the `--connect-*` prefixed names §8.6.9 used. |
 
 | Exit | Meaning |
 |---|---|
@@ -2246,17 +2277,23 @@ contracts = "7y"
 discovery = "90d"
 ```
 
-Mediator flags (`connect mediate`, composing unmodified Warden core):
+Mediator flags (`connect-mediate`, composing unmodified Warden core). The design used
+`--connect-*` prefixes and a separate binary name; the built flags are unprefixed, because
+inside a binary whose only job is mediation the prefix distinguishes nothing:
 
 ```sh
-connect mediate --upstream … --policy warden.policy.toml \
-  --connect-contracts    https://connect.internal/v1/mediators/apac-ops-1 \
-  --connect-issuer-jwks  /keys/connect.jwks.json \
-  --mediator-id          warden:mediator:apac-ops \
-  --connect-mode         enforce \
-  --connect-refresh      5 \
-  --on-revoke            abort \
-  --connect-bundle       ./bundle.wcb        # air-gapped alternative
+connect-mediate --upstream … --policy warden.policy.toml \
+  --contracts     https://connect.internal/v1/mediators/apac-ops-1 \
+  --token         "$WARDEN_CONNECT_TOKEN" \
+  --issuer-pub    /keys/connect-issuer.pub.pem --kid issuer-1 \
+  --mediator-id   warden:mediator:apac-ops \
+  --refresh       5 \
+  --caller        spiffe://org/ns/agents/sa/recon \
+  --callee        spiffe://org/ns/tools/sa/payments-mcp
+  # --observe records findings instead of denying; enforce is the default.
+  # --contract FILE is the air-gapped alternative to --contracts, and a mediator
+  #   given files has NO revocation source — see limitations.md §6.
+  # --on-revoke was designed here and is not built: `drain` has no caller.
 ```
 
 Env equivalents: `WARDEN_CONNECT_*` for every key

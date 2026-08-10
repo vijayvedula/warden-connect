@@ -348,12 +348,18 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
   means a 2× regression in `blast_radius` or `rebuild` would slip through; it is not tighter
   because a shared runner swings more than 50% between runs and a flaky gate gets disabled.
   *(By design, and stated on the constants)*
-* **Nothing checks the commands in these documents.** Standing up a real SPIRE server turned up
-  **four wrong commands in this repository's own SPIRE procedure** — a `brew` formula that does
-  not exist, two subcommands SPIRE does not have, and a `sed` that would have written an *empty*
-  token file. Every one had been written, reviewed and left alone. The scripts under `scripts/`
-  are executable and therefore checkable; a fenced block in a `.md` is neither. Assume any
-  procedure here that is not backed by a script has not been run. *(Unproven)*
+* **Our own commands in these documents are checked; third-party commands are not.**
+  `every_documented_command_exists_with_the_flags_it_claims` parses every `connect …` line in
+  every Markdown file — 72 of them — and validates the subcommand and every flag against
+  `COMMANDS` and `accepted_flags`, with the tables in scope rather than copied. On its first
+  run it found **thirteen** claims that did not hold, all in the HLD and LLD: seven flags never
+  built, one command renamed, and a mediator block describing a different binary. Those are
+  fixed or marked.
+
+  What is still unchecked is every command belonging to somebody else — `kubectl`, `openssl`,
+  `spire-agent`, `brew`. The SPIRE procedure's four wrong commands were all of that kind, and
+  nothing here can validate them short of running them. Assume any *third-party* invocation in
+  these docs has not been run. *(Unproven, for third-party commands)*
 
 ---
 
