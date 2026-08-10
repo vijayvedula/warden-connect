@@ -176,6 +176,7 @@ const COMMANDS: &[&str] = &[
     "discover",
     "blast-radius",
     "quarantine",
+    "unquarantine",
     "mediators",
     "federate",
     "keys list",
@@ -284,6 +285,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "builder",
         ],
         "activate" => &["id", "why"],
+        "unquarantine" => &["id", "approver", "why"],
         "quarantine" => &[
             "id",
             "reason",
@@ -420,6 +422,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "standby-timeout",
             "behind-tls-proxy",
             "trusted-proxy",
+            "proxy-secret-file",
             "insecure-plaintext",
             "policy",
             "issuer-key",
@@ -550,6 +553,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "discover" => discover_cmd(args)?,
         "blast-radius" => blast_radius_cmd(args)?,
         "quarantine" => quarantine(args)?,
+        "unquarantine" => unquarantine(args)?,
         "mediators" => mediators_cmd(args)?,
         "federate" => federate_cmd(args)?,
         "tenants" => tenants_cmd(args)?,
@@ -751,8 +755,31 @@ fn transport_policy(args: &Args, listen: &str) -> Result<wc_control::api::Transp
         .map(|raw| wc_control::api::TrustedSource::parse(raw))
         .collect::<Result<_>>()?;
 
+    // The secret closes the address check's honest limit: a process sharing a trusted
+    // address can forge `x-forwarded-proto`, and no CIDR is narrow enough to stop it
+    // because the forger shares the address. Read from a file rather than taken inline,
+    // because a secret on a command line is in the process list and in shell history.
+    let secret = match args.get("proxy-secret-file") {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path).map_err(|e| {
+                WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}"))
+                    .with_source(e)
+            })?;
+            Some(wc_control::api::ProxySecret::new(raw.trim())?)
+        }
+        None => None,
+    };
+
     if args.has("behind-tls-proxy") {
-        return Ok(wc_control::api::Transport::TlsProxy { trusted });
+        return Ok(wc_control::api::Transport::TlsProxy { trusted, secret });
+    }
+    if secret.is_some() {
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            "--proxy-secret-file is only meaningful with --behind-tls-proxy; on a loopback \
+             listener there is no forwarding hop to share a secret with, and accepting it \
+             here would suggest a protection that is not in play",
+        ));
     }
     if !trusted.is_empty() {
         return Err(WcError::with_detail(
@@ -1359,6 +1386,73 @@ fn resolve_revocation_custody(args: &Args) -> Result<Option<RevocationSigning>> 
     let role = declared.authorise(&kid, args.has("break-glass"))?;
     let key = custody_key(args, role, &kid, args.get("alg"))?;
     Ok(Some(RevocationSigning { kid, role, key }))
+}
+
+/// Lift a quarantine, returning the party to `Pending` so the full admission pipeline has
+/// to run again (UC-07 A3).
+///
+/// This had no command and no API route. `Registry::clear_quarantine` existed,
+/// dual-controlled and tested, and nothing could reach it — so **quarantine was a one-way
+/// door in the shipped product**: a false positive permanently bricked a party, and the
+/// only recovery was hand-editing a hash-linked state log, which breaks every row after
+/// the edit. Found while wiring `wc_quarantine_duration_seconds`, whose whole input is a
+/// clearing that could not happen.
+///
+/// Dual-controlled like the order it lifts, and for a sharper reason: an attacker who can
+/// quarantine causes an outage somebody will notice, while one who can *un*-quarantine
+/// restores a party the estate decided to cut. Clearing is the more dangerous direction.
+///
+/// Contracts stay revoked. Clearing restores the party's ability to be re-admitted, never
+/// its former authority — [`wc_core::model::Entity::clear_quarantine`] enforces that and
+/// this command says it out loud, because "cleared" reads like "back to normal".
+fn unquarantine(args: &Args) -> Result<()> {
+    let id = EntityId::new(positional_or_flag(args, "id")?)?;
+    let approvers: Vec<HumanRef> = args
+        .list("approver")
+        .into_iter()
+        .map(HumanRef::new)
+        .collect::<Result<Vec<_>>>()?;
+    let why = args.get("why").unwrap_or("quarantine lifted").to_string();
+
+    let ts = now();
+    let mut store = open_store(args)?;
+    let held_for = store
+        .registry(actor(args)?, ts)
+        .clear_quarantine(&id, &approvers)?;
+
+    let mut evidence = open_evidence(args)?;
+    let recorded = evidence.record(
+        &LifecycleEvent::new(EventKind::QuarantineCleared, actor_id(args))
+            .with_entities([id.as_str()])
+            .with_reason(why.clone())
+            .with_detail(json!({
+                "approvers": approvers.iter().map(HumanRef::as_str).collect::<Vec<_>>(),
+                "held_for_seconds": held_for,
+                "contracts_restored": false,
+            })),
+        ts,
+    )?;
+
+    println!("quarantine lifted for {id}");
+    println!("  posture            Unattested (re-admission required)");
+    println!("  lifecycle          Pending");
+    match held_for {
+        Some(seconds) => println!("  held for           {}", human_duration(seconds)),
+        None => println!("  held for           unknown (quarantined before this was recorded)"),
+    }
+    println!(
+        "  approvers          {}",
+        approvers
+            .iter()
+            .map(HumanRef::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!("  evidence seq       {}", recorded.seq);
+    println!();
+    println!("Contracts stay revoked. This party can be admitted again; it has not");
+    println!("regained the authority it held, and nothing it used to hold is live.");
+    Ok(())
 }
 
 fn quarantine(args: &Args) -> Result<()> {
@@ -5334,6 +5428,11 @@ ESTATE
            [--jurisdiction SG] [--data-class financial] [--limit N] [--json]
   posture [--unattested] [--expiring] [--score] [--json]
   blast-radius <id> [--depth 3] [--services] [--json]   exit 1 if truncated
+  unquarantine <id> --approver human:a --approver human:b [--why REASON]
+                  lift a quarantine: posture returns to Unattested and lifecycle to
+                  Pending, so full admission runs again. Contracts STAY revoked.
+                  Dual-controlled — clearing containment is the more dangerous
+                  direction, because it restores a party the estate decided to cut
   quarantine <id> --reason R [--approver human:a --approver human:b]
                   [--revocation-key PEM | --revocation-signer CMD] [--kid KID]
                   [--revocation-kid KID] [--break-glass-kid KID] [--break-glass]
@@ -5444,6 +5543,16 @@ TRANSPORT  (serve speaks plain HTTP; TLS is terminated in front of it)
                         the port. A /0 is refused: it reads as a restriction and
                         matches everything, so omit the flag instead and let the
                         banner say so
+  --proxy-secret-file F a secret the proxy sets in x-warden-proxy-secret and this
+                        listener requires. Closes the address check's real limit:
+                        a process SHARING a trusted address can forge the header,
+                        and no CIDR fixes that because the forger shares the
+                        address — which is the ordinary shape when the proxy is a
+                        localhost sidecar. With a secret, forging costs the secret
+                        instead of the position. From a file, not a flag value, so
+                        it stays out of the process list; >= 32 chars, checked in
+                        constant time, and narrowing only — the address check still
+                        applies. `openssl rand -hex 32 > proxy.secret`
   --insecure-plaintext  accept tokens over plaintext from anywhere. Named so it is
                         visible in the process list and in the startup banner
 
@@ -6126,7 +6235,8 @@ mod tests {
         assert_eq!(
             t,
             wc_control::api::Transport::TlsProxy {
-                trusted: vec!["10.0.0.1".parse().unwrap()]
+                trusted: vec!["10.0.0.1".parse().unwrap()],
+                secret: None,
             }
         );
         // And the escape hatch, which has to exist or an operator reaches for worse.

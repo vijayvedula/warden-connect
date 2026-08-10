@@ -117,6 +117,18 @@ jobs:
         working-directory: warden-connect
         run: cargo test -p wc-control --lib calibration -- --nocapture
 
+      # The SDK's only verification used to be "the examples run against a live control
+      # plane" — an integration test needing an estate, keys and an approver registry, so
+      # it never ran here and the client's logic went unchecked. These need no server:
+      # they pin what a status means, that a retry reuses its idempotency key, and that a
+      # refusal keeps its WC-* code. No dependencies beyond pytest, because the SDK
+      # deliberately has none.
+      - name: SDK tests
+        working-directory: warden-connect/sdk/python
+        run: |
+          python3 -m pip install --quiet pytest
+          python3 -m pytest tests/ -q
+
   # ---------------------------------------------------------------------------
   msrv:
     name: MSRV 1.89

@@ -120,16 +120,20 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
 
 ## 5 · The transport control
 
-* **A process at a trusted address can forge `x-forwarded-proto`.** With a same-host proxy,
-  `--trusted-proxy 127.0.0.1` is satisfied by anything on the box, so a local process can
-  present a bearer token over plaintext and be believed. Confirmed by doing it.
+* **Without `--proxy-secret-file`, a process at a trusted address can forge
+  `x-forwarded-proto`.** With a same-host proxy, `--trusted-proxy 127.0.0.1` is satisfied by
+  anything on the box, so a local process could present a bearer token over plaintext and be
+  believed. Confirmed by doing it — and closed by `--proxy-secret-file`, a secret the proxy
+  sets in `x-warden-proxy-secret` and the listener requires, so forging costs the secret
+  rather than the position. Verified over a socket from loopback, which *is* the co-located
+  forger: the same request that was admitted before is now refused.
 
-  The threat the control exists for — *remote* plaintext — stays closed, since a remote client
-  cannot source from a trusted address, and a local process has better attacks available
-  starting with reading `tokens.toml`. But **the check is only as strong as the separation
-  between the proxy and everything else that can reach the port**, and no CIDR narrow enough
-  fixes it because the forger shares the address. The real mechanism is a shared secret
-  between proxy and listener. *(Unbuilt)*
+  What remains: the secret is **optional**, because requiring it would break every existing
+  deployment on upgrade. So the weak configuration is still expressible, and the startup
+  banner names it — *"NO proxy secret — any process at that address can forge the header"* —
+  rather than leaving an operator to infer it from a configuration that looks strict. A local
+  process also still has better attacks available, starting with reading `tokens.toml`.
+  *(By design that it is optional; the mechanism is built)*
 * **TLS is not terminated in-process, ever.** Deliberate: every supported topology terminates
   in front, so an in-process listener would be a security-critical path almost nobody runs.
   *(By design)*
@@ -150,6 +154,13 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
 * **Propagation has never been timed.** §7.10 promises under 60 s estate-wide;
   `wc_mediator_ack_lag_seconds` has a bucket at 60 so the claim is measurable, and nobody has
   measured it on a real estate. *(Unproven)*
+* **Lifting a quarantine is dual-controlled and deliberately incomplete.** `connect
+  unquarantine` and `POST /v1/quarantine/clear` return a party to `Pending` for full
+  re-admission — a path that did not exist at all until the metric work went looking for it,
+  which made quarantine a one-way door whose only recovery was hand-editing a hash-linked log.
+  What clearing does **not** do is restore contracts: they stay revoked, and the party has to
+  be issued new ones. That is intended, and it is stated in the command's output and in the
+  evidence record because "cleared" reads like "back to normal". *(By design)*
 * **The drain/abort choice does not exist yet.** `wc_mediator::drain` defines `drain` and
   `abort` for work in flight when a revocation lands, and **nothing calls it** — there is no
   `--on-revoke` flag. New calls are refused the moment a revocation is installed, which is the
@@ -236,8 +247,6 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
 
 ## 10 · Observability
 
-* **`wc_quarantine_duration_seconds` is not emitted.** Needs the interval between a quarantine
-  and its clearing; both events are in the chain and nothing computes the pairing. *(Unbuilt)*
 * **`wc_standing_share` is not emitted.** §8.17-Q4 cap utilisation. The cap is enforced;
   expressing utilisation as one ratio across zone pairs needs a definition nobody has written
   down, and inventing one would put a number on a dashboard that means whatever the
@@ -277,9 +286,12 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
   none of its own: no signed tags, no SLSA provenance for the binaries or image, no cosign
   signature, no reproducible-build claim. Trust in a downloaded binary rests on the transport.
   *(Unbuilt)*
-* **The SDK is not released.** `sdk/python` is installable from a checkout, has no packaged
-  release, and has no test suite beyond an import check — its verification is the examples run
-  against a live control plane. *(Unbuilt)*
+* **The SDK is not released.** `sdk/python` is installable from a checkout and has no packaged
+  release. It now has a test suite that needs no control plane — 20 tests over what a status
+  means, whether a retry is safe, and whether a refusal keeps its `WC-*` code, run in CI and
+  mutation-checked against a reintroduced replay bug. What is still missing is the *packaging*:
+  a version on PyPI, and the examples running against a live plane in CI rather than by hand.
+  *(Unbuilt)*
 * **The image is verified in CI only** for the arm64/amd64 pair CI builds; no multi-arch
   manifest is published.
 

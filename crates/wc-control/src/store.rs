@@ -758,8 +758,12 @@ impl Projection {
                 Some(entity) => {
                     // Contracts stay revoked: clearing quarantine restores the
                     // party's ability to be re-admitted, never its old authority.
+                    // The duration is deliberately dropped here. This runs on every
+                    // rebuild, so observing the metric from the projection would
+                    // re-observe every historical quarantine each time the log is
+                    // replayed. It is observed once, on the live path, in `registry`.
                     match entity.clear_quarantine(framed.ts) {
-                        Ok(()) => report.applied += 1,
+                        Ok(_) => report.applied += 1,
                         Err(e) => report.inconsistent.push(format!(
                             "seq {}: clear_quarantine on {party}: {e}",
                             framed.seq

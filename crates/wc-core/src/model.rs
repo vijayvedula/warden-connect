@@ -628,6 +628,15 @@ pub struct Entity {
     pub created_at: u64,
     /// Last-update timestamp.
     pub updated_at: u64,
+    /// When the current quarantine began; zero when the party is not quarantined.
+    ///
+    /// Recorded explicitly rather than read from `updated_at`, which any unrelated
+    /// change moves — a re-pin or a posture rescore between the order and the clearing
+    /// would silently shorten the measured containment. `#[serde(default)]` so a state
+    /// log written before this field existed still rebuilds, and a party quarantined at
+    /// that time reports no duration rather than a duration measured from the epoch.
+    #[serde(default)]
+    pub quarantined_at: u64,
     /// Record schema version.
     #[serde(default = "default_schema")]
     pub schema: u16,
@@ -671,6 +680,7 @@ impl Entity {
             reattested_at: 0,
             created_at: now,
             updated_at: now,
+            quarantined_at: 0,
             schema: ENTITY_SCHEMA,
         }
     }
@@ -731,22 +741,28 @@ impl Entity {
         self.posture_score = 0;
         self.lifecycle = Lifecycle::Suspended;
         self.updated_at = now;
+        self.quarantined_at = now;
     }
 
     /// Lift quarantine by returning the entity to `Pending`, which forces the
     /// full admission pipeline to run again (UC-07 A3).
-    pub fn clear_quarantine(&mut self, now: u64) -> Result<()> {
+    /// Returns how long the party was contained, when that is measurable — the number
+    /// `wc_quarantine_duration_seconds` observes. `None` for a state log written before
+    /// `quarantined_at` existed, because a made-up duration is worse than a missing one.
+    pub fn clear_quarantine(&mut self, now: u64) -> Result<Option<u64>> {
         if self.posture != Posture::Quarantined {
             return Err(WcError::with_detail(
                 Code::ILLEGAL_TRANSITION,
                 format!("{} is not quarantined", self.id),
             ));
         }
+        let held_for = (self.quarantined_at > 0).then(|| now.saturating_sub(self.quarantined_at));
         self.posture = Posture::Unattested;
         self.posture_score = 0;
         self.lifecycle = Lifecycle::Pending;
         self.updated_at = now;
-        Ok(())
+        self.quarantined_at = 0;
+        Ok(held_for)
     }
 
     /// Record a new pin, returning the structural diff against the old one.

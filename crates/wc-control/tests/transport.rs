@@ -22,7 +22,7 @@ use std::net::TcpStream;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use wc_control::api::{roles, Api, ControlPlane, Transport};
+use wc_control::api::{roles, Api, ControlPlane, ProxySecret, Transport};
 use wc_control::cpolicy::ConnectPolicy;
 use wc_control::evidence::Evidence;
 use wc_control::http::{self, Shutdown};
@@ -126,6 +126,7 @@ fn behind_a_proxy_a_request_that_did_not_come_through_it_is_refused() {
     // `x-forwarded-proto`, because nothing forwarded it.
     let r = rig(Transport::TlsProxy {
         trusted: vec!["127.0.0.1".parse().unwrap()],
+        secret: None,
     });
     assert_eq!(
         status(r.port, &[]),
@@ -138,6 +139,7 @@ fn behind_a_proxy_a_request_that_did_not_come_through_it_is_refused() {
 fn behind_a_proxy_the_forwarded_request_is_admitted() {
     let r = rig(Transport::TlsProxy {
         trusted: vec!["127.0.0.1".parse().unwrap()],
+        secret: None,
     });
     assert_eq!(status(r.port, &[("X-Forwarded-Proto", "https")]), 200);
     // Header names are matched case-insensitively, so the proxy's choice of casing is
@@ -151,6 +153,7 @@ fn a_proxy_that_terminated_plaintext_is_refused() {
     // before it got here. The header being present is not the point; what it says is.
     let r = rig(Transport::TlsProxy {
         trusted: vec!["127.0.0.1".parse().unwrap()],
+        secret: None,
     });
     assert_eq!(status(r.port, &[("X-Forwarded-Proto", "http")]), 401);
 }
@@ -163,6 +166,7 @@ fn the_header_is_only_believed_from_the_named_address() {
     // the hop that set it.
     let r = rig(Transport::TlsProxy {
         trusted: vec!["10.9.9.9".parse().unwrap()],
+        secret: None,
     });
     assert_eq!(
         status(r.port, &[("X-Forwarded-Proto", "https")]),
@@ -188,7 +192,11 @@ fn loopback_refuses_a_token_that_did_not_come_from_loopback() {
 
     // An empty trusted list is legitimate — a sidecar in its own network namespace —
     // but the operator has to be told what it means rather than left to assume.
-    let any = Transport::TlsProxy { trusted: vec![] }.describe();
+    let any = Transport::TlsProxy {
+        trusted: vec![],
+        secret: None,
+    }
+    .describe();
     assert!(any.contains("ANY source address"), "{any}");
 }
 
@@ -208,6 +216,7 @@ fn an_unauthenticated_route_is_unaffected() {
     // credential policy would take the pod down for the wrong reason.
     let r = rig(Transport::TlsProxy {
         trusted: vec!["10.9.9.9".parse().unwrap()],
+        secret: None,
     });
     let mut stream = TcpStream::connect(("127.0.0.1", r.port)).unwrap();
     stream
@@ -331,16 +340,185 @@ fn a_request_from_inside_a_trusted_block_is_admitted_over_a_socket() {
     // Ingress whose address moves.
     let r = rig(Transport::TlsProxy {
         trusted: vec!["127.0.0.0/8".parse().unwrap()],
+        secret: None,
     });
     assert_eq!(status(r.port, &[("X-Forwarded-Proto", "https")]), 200);
 
     // And a block that excludes loopback still refuses it.
     let elsewhere = rig(Transport::TlsProxy {
         trusted: vec!["10.9.0.0/16".parse().unwrap()],
+        secret: None,
     });
     assert_eq!(
         status(elsewhere.port, &[("X-Forwarded-Proto", "https")]),
         401,
         "the request came from loopback, which is outside 10.9.0.0/16"
     );
+}
+
+// ===========================================================================
+// The proxy secret — closing the address check's honest limit
+// ===========================================================================
+//
+// The gap this exists for, stated in `docs/threat-model.md`: **a process at a trusted
+// address can forge `x-forwarded-proto`.** When the proxy terminates on localhost — a
+// common shape — `--trusted-proxy 127.0.0.1` is satisfied by anything on the box, and no
+// CIDR is narrow enough to fix it because the forger *shares* the address.
+//
+// These tests are driven over a real socket from loopback, which means the client here IS
+// the co-located forger. That is the point: every request below comes from a trusted
+// address, so the address check passes every time and only the secret decides.
+
+fn secret(raw: &str) -> ProxySecret {
+    ProxySecret::new(raw).expect("a test secret must be long enough")
+}
+
+const GOOD: &str = "0123456789abcdef0123456789abcdef";
+
+#[test]
+fn a_forger_at_a_trusted_address_is_refused_once_a_secret_is_required() {
+    // The same request that `behind_a_proxy_the_forwarded_request_is_admitted` admits,
+    // from the same address, with the same header — refused, because it cannot produce
+    // the secret. This single pair is the whole value of the control.
+    let r = rig(Transport::TlsProxy {
+        trusted: vec!["127.0.0.1".parse().unwrap()],
+        secret: Some(secret(GOOD)),
+    });
+    assert_eq!(
+        status(r.port, &[("X-Forwarded-Proto", "https")]),
+        401,
+        "a co-located process forging the header must not authenticate"
+    );
+
+    // And the real proxy, which has the secret, still works.
+    assert_eq!(
+        status(
+            r.port,
+            &[
+                ("X-Forwarded-Proto", "https"),
+                ("X-Warden-Proxy-Secret", GOOD)
+            ]
+        ),
+        200
+    );
+}
+
+#[test]
+fn a_wrong_or_partial_secret_is_refused() {
+    let r = rig(Transport::TlsProxy {
+        trusted: vec!["127.0.0.1".parse().unwrap()],
+        secret: Some(secret(GOOD)),
+    });
+    for (label, presented) in [
+        ("a different secret", "ffffffffffffffffffffffffffffffff"),
+        (
+            "the right secret truncated",
+            "0123456789abcdef0123456789abcde",
+        ),
+        (
+            "the right secret plus a byte",
+            "0123456789abcdef0123456789abcdefx",
+        ),
+        ("empty", ""),
+        // Case matters: this is a shared secret, not an identifier.
+        ("wrong case", "0123456789ABCDEF0123456789ABCDEF"),
+    ] {
+        assert_eq!(
+            status(
+                r.port,
+                &[
+                    ("X-Forwarded-Proto", "https"),
+                    ("X-Warden-Proxy-Secret", presented)
+                ]
+            ),
+            401,
+            "{label} must be refused"
+        );
+    }
+}
+
+#[test]
+fn the_secret_narrows_and_never_widens() {
+    // Both checks still apply. A request carrying the secret but no protocol claim is
+    // still refused, so adding a secret cannot be a way to skip the original control —
+    // which is the mistake a "stronger" check usually introduces.
+    let r = rig(Transport::TlsProxy {
+        trusted: vec!["127.0.0.1".parse().unwrap()],
+        secret: Some(secret(GOOD)),
+    });
+    assert_eq!(
+        status(r.port, &[("X-Warden-Proxy-Secret", GOOD)]),
+        401,
+        "the secret does not excuse a missing x-forwarded-proto"
+    );
+    assert_eq!(
+        status(
+            r.port,
+            &[
+                ("X-Forwarded-Proto", "http"),
+                ("X-Warden-Proxy-Secret", GOOD)
+            ]
+        ),
+        401,
+        "the secret does not excuse a plaintext hop"
+    );
+
+    // And the address check survives too: a secret plus a source outside the block is
+    // still refused.
+    let elsewhere = rig(Transport::TlsProxy {
+        trusted: vec!["10.9.0.0/16".parse().unwrap()],
+        secret: Some(secret(GOOD)),
+    });
+    assert_eq!(
+        status(
+            elsewhere.port,
+            &[
+                ("X-Forwarded-Proto", "https"),
+                ("X-Warden-Proxy-Secret", GOOD)
+            ]
+        ),
+        401,
+        "holding the secret does not put the caller inside the trusted block"
+    );
+}
+
+#[test]
+fn a_short_secret_is_refused_at_construction_and_never_stored() {
+    // A guessable secret is worse than none, because the banner would claim the strong
+    // posture while the local process this control is for could brute-force it.
+    let err = ProxySecret::new("tooshort").expect_err("8 characters is not a secret");
+    assert_eq!(err.code(), Code::CONFIG_INVALID);
+    assert!(err.detail().contains("at least"), "{}", err.detail());
+    // Exactly at the boundary is accepted, so the message's number is the real one.
+    assert!(ProxySecret::new(&"a".repeat(ProxySecret::MIN_LEN)).is_ok());
+    assert!(ProxySecret::new(&"a".repeat(ProxySecret::MIN_LEN - 1)).is_err());
+}
+
+#[test]
+fn the_secret_is_not_recoverable_from_debug_or_the_banner() {
+    // A secret that leaks through a log line, a panic message or `/healthz` is not a
+    // secret. Both renderings are asserted because both are printed on a real path.
+    let s = secret(GOOD);
+    assert!(!format!("{s:?}").contains(GOOD), "Debug leaked the secret");
+    let t = Transport::TlsProxy {
+        trusted: vec!["127.0.0.1".parse().unwrap()],
+        secret: Some(secret(GOOD)),
+    };
+    assert!(!t.describe().contains(GOOD), "the banner leaked the secret");
+    assert!(!format!("{t:?}").contains(GOOD), "Debug leaked the secret");
+    // The banner must still say a secret is in force, or the posture is invisible.
+    assert!(t.describe().contains("proxy secret"), "{}", t.describe());
+}
+
+#[test]
+fn without_a_secret_the_banner_says_the_gap_is_open() {
+    // The configuration that looks strict and is not. An operator reading the banner
+    // should learn that a co-located process can forge the header.
+    let t = Transport::TlsProxy {
+        trusted: vec!["127.0.0.1".parse().unwrap()],
+        secret: None,
+    };
+    let described = t.describe();
+    assert!(described.contains("NO proxy secret"), "{described}");
+    assert!(described.contains("forge"), "{described}");
 }

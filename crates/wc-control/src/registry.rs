@@ -321,7 +321,18 @@ impl Registry<'_> {
     ///
     /// Also dual-controlled: clearing containment is at least as consequential as
     /// applying it.
-    pub fn clear_quarantine(&mut self, party: &EntityId, approvers: &[HumanRef]) -> Result<()> {
+    /// Returns how long the party was contained, for
+    /// [`crate::obs::quarantine_duration`] — `None` when the quarantine predates
+    /// `Entity::quarantined_at`, because a fabricated duration is worse than a gap.
+    ///
+    /// Read here rather than observed inside the projection: `Projection::apply` runs on
+    /// every rebuild, so a metric there would re-observe every quarantine in the log each
+    /// time the state is replayed.
+    pub fn clear_quarantine(
+        &mut self,
+        party: &EntityId,
+        approvers: &[HumanRef],
+    ) -> Result<Option<u64>> {
         let entity = self.require(party)?;
         if entity.posture != Posture::Quarantined {
             return Err(WcError::with_detail(
@@ -329,6 +340,8 @@ impl Registry<'_> {
                 format!("{party} is not quarantined"),
             ));
         }
+        let held_for =
+            (entity.quarantined_at > 0).then(|| self.now.saturating_sub(entity.quarantined_at));
         require_dual_control(Tier::ONE, approvers)?;
 
         self.store.commit(
@@ -340,7 +353,7 @@ impl Registry<'_> {
             self.now,
             Durability::Durable,
         )?;
-        Ok(())
+        Ok(held_for)
     }
 
     /// Whether this party may currently be one end of a new connection.
@@ -867,6 +880,87 @@ mod tests {
                 .code(),
             Code::ILLEGAL_TRANSITION
         );
+    }
+
+    #[test]
+    fn clearing_reports_how_long_the_party_was_held() {
+        // The input to `wc_quarantine_duration_seconds`. Measured from an explicit
+        // `quarantined_at` rather than from `updated_at`, so an unrelated change in
+        // between cannot shorten it — which is what the second half of this test pins.
+        let tmp = TmpDir::new("qduration");
+        let mut store = seeded(&tmp);
+        store
+            .registry(actor(), 1_000)
+            .quarantine(&server_id(), "SOC-1", &[])
+            .unwrap();
+
+        let held = store
+            .registry(actor(), 4_600)
+            .clear_quarantine(&server_id(), &[priya(), cecil()])
+            .unwrap();
+        assert_eq!(held, Some(3_600), "held from 1_000 to 4_600");
+
+        // Cleared, so nothing is being held any more.
+        assert_eq!(store.projection.entities[&server_id()].quarantined_at, 0);
+    }
+
+    #[test]
+    fn an_unrelated_update_does_not_shorten_the_measured_containment() {
+        // `updated_at` was the tempting field and it is the wrong one: any write moves
+        // it, so a re-pin or a rescore between the order and the clearing would report a
+        // containment shorter than it was — an under-report on exactly the number an
+        // incident review reads.
+        let tmp = TmpDir::new("qduration-touch");
+        let mut store = seeded(&tmp);
+        store
+            .registry(actor(), 1_000)
+            .quarantine(&server_id(), "SOC-1", &[])
+            .unwrap();
+
+        // Something touches the entity midway.
+        {
+            let e = store.projection.entities.get_mut(&server_id()).unwrap();
+            e.updated_at = 4_000;
+            assert_eq!(
+                e.quarantined_at, 1_000,
+                "the quarantine instant is its own field"
+            );
+        }
+
+        let held = store
+            .registry(actor(), 4_600)
+            .clear_quarantine(&server_id(), &[priya(), cecil()])
+            .unwrap();
+        assert_eq!(
+            held,
+            Some(3_600),
+            "the duration must be measured from the order, not from the last write"
+        );
+    }
+
+    #[test]
+    fn a_quarantine_predating_the_field_reports_no_duration() {
+        // A state log written before `quarantined_at` existed rebuilds with zero there.
+        // `None` rather than a duration measured from the epoch: a fabricated 56-year
+        // containment on a dashboard is worse than a gap, because somebody would act on it.
+        let tmp = TmpDir::new("qduration-legacy");
+        let mut store = seeded(&tmp);
+        store
+            .registry(actor(), 1_000)
+            .quarantine(&server_id(), "SOC-1", &[])
+            .unwrap();
+        store
+            .projection
+            .entities
+            .get_mut(&server_id())
+            .unwrap()
+            .quarantined_at = 0;
+
+        let held = store
+            .registry(actor(), 4_600)
+            .clear_quarantine(&server_id(), &[priya(), cecil()])
+            .unwrap();
+        assert_eq!(held, None);
     }
 
     #[test]

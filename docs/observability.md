@@ -254,8 +254,6 @@ should raise it deliberately rather than discover the fold.
 
 Named because a dashboard panel that is always zero teaches an operator to ignore the panel:
 
-* **`wc_quarantine_duration_seconds`** — needs the interval between a quarantine and its
-  clearing. Both events are in the chain; nothing computes the pairing.
 * **`wc_standing_share`** (§8.17-Q4 cap utilisation) — the cap is enforced in `cpolicy`, but
   expressing utilisation as one ratio across zone pairs needs a definition nobody has
   written down. Inventing one would put a number on a dashboard that means whatever the

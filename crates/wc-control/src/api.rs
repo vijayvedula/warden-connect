@@ -332,10 +332,93 @@ pub enum Transport {
     TlsProxy {
         /// Sources whose `x-forwarded-proto` may be believed.
         trusted: Vec<TrustedSource>,
+        /// A secret the proxy sets in `x-warden-proxy-secret` and this listener
+        /// requires, when one is configured.
+        ///
+        /// The address check's honest limit was that **a process at a trusted address
+        /// can forge the header**. For a localhost-terminating sidecar — a common shape
+        /// — `--trusted-proxy 127.0.0.1` is satisfied by anything on the box, so a local
+        /// process could present a bearer token over plaintext and be believed. No CIDR
+        /// is narrow enough to fix that, because the forger shares the address.
+        ///
+        /// With a secret, forging needs the secret rather than the position. It is
+        /// checked in constant time and it is checked **in addition to** the address, so
+        /// configuring one narrows and never widens.
+        secret: Option<ProxySecret>,
     },
     /// No requirement at all. For a test, or a deployment that has accepted the
     /// consequence in writing.
     Insecure,
+}
+
+/// The header the proxy secret travels in.
+pub const PROXY_SECRET_HEADER: &str = "x-warden-proxy-secret";
+
+/// A shared secret between the terminating proxy and this listener.
+///
+/// Stored as a digest, not as the secret: a `Debug` on the config, a panic message or a
+/// `/healthz` body that echoed it would hand over the thing it exists to protect. The
+/// comparison is therefore digest-against-digest, which is also what makes it constant
+/// time — `sha256` of the presented value against `sha256` of the configured one, compared
+/// byte by byte with no early return.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProxySecret {
+    /// Hex `sha256`, via `wc_core::util` rather than a new dependency — §8.3 caps the
+    /// dependency count and this needs no crate that is not already here.
+    digest: String,
+}
+
+impl std::fmt::Debug for ProxySecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Not even the digest: a digest is a verifier for a low-entropy secret.
+        f.write_str("ProxySecret(<redacted>)")
+    }
+}
+
+impl ProxySecret {
+    /// The minimum length worth calling a secret.
+    ///
+    /// A short shared secret is guessable by exactly the local process this control is
+    /// for, and it would be worse than none because the banner would claim the strong
+    /// posture. Refused at startup rather than accepted with a warning.
+    pub const MIN_LEN: usize = 32;
+
+    /// Build from the configured value, refusing one too short to be worth having.
+    pub fn new(raw: &str) -> Result<ProxySecret> {
+        if raw.len() < Self::MIN_LEN {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!(
+                    "--proxy-secret is {} characters; at least {} are required, because a \
+                     guessable secret would let the banner claim a posture the listener does \
+                     not have. Generate one with `openssl rand -hex 32`",
+                    raw.len(),
+                    Self::MIN_LEN
+                ),
+            ));
+        }
+        Ok(ProxySecret {
+            digest: wc_core::util::sha256_hex(raw),
+        })
+    }
+
+    /// Whether a presented value matches, in constant time.
+    #[must_use]
+    pub fn matches(&self, presented: &str) -> bool {
+        let got = wc_core::util::sha256_hex(presented);
+        // Fold every byte before deciding. `==` on strings compares lengths first and
+        // then short-circuits, and the timing of that short-circuit is a byte-at-a-time
+        // oracle. Both sides are a fixed-width hex digest, so lengths always agree and
+        // the loop always runs to the end.
+        if got.len() != self.digest.len() {
+            return false;
+        }
+        let mut diff = 0u8;
+        for (a, b) in self.digest.as_bytes().iter().zip(got.as_bytes()) {
+            diff |= a ^ b;
+        }
+        diff == 0
+    }
 }
 
 /// One source `x-forwarded-proto` may be believed from: an address, or a network.
@@ -494,13 +577,27 @@ impl Transport {
                                 start with --behind-tls-proxy to accept forwarded ones"),
                 None => Err("the peer address is unknown, so loopback cannot be proved"),
             },
-            Transport::TlsProxy { trusted } => {
+            Transport::TlsProxy { trusted, secret } => {
                 let from_trusted = trusted.is_empty()
                     || req
                         .peer
                         .is_some_and(|ip| trusted.iter().any(|t| t.contains(ip)));
                 if !from_trusted {
                     return Err("not from a trusted proxy address");
+                }
+                // Checked after the address and before the protocol claim, so a
+                // configured secret only ever narrows. This is what makes forging cost
+                // the secret rather than the position: a local process at
+                // `--trusted-proxy 127.0.0.1` passes the check above and fails here.
+                if let Some(secret) = secret {
+                    match req.headers.get(PROXY_SECRET_HEADER) {
+                        Some(presented) if secret.matches(presented) => {}
+                        Some(_) => return Err("the proxy secret does not match"),
+                        None => {
+                            return Err("no proxy secret: this request did not come through \
+                                        the terminating proxy, whatever its source address")
+                        }
+                    }
                 }
                 match req.headers.get("x-forwarded-proto").map(String::as_str) {
                     Some(p) if p.eq_ignore_ascii_case("https") => Ok(()),
@@ -519,18 +616,32 @@ impl Transport {
     pub fn describe(&self) -> String {
         match self {
             Transport::Loopback => "loopback-only (credentials refused from off-box)".into(),
-            Transport::TlsProxy { trusted } if trusted.is_empty() => {
-                "behind a TLS proxy, ANY source address trusted for \
-                 x-forwarded-proto — correct only if nothing else can reach this port"
-                    .into()
+            Transport::TlsProxy { trusted, secret } if trusted.is_empty() => {
+                if secret.is_some() {
+                    "behind a TLS proxy, any source address, but a proxy secret is \
+                     required — forging x-forwarded-proto needs the secret, not an address"
+                        .into()
+                } else {
+                    "behind a TLS proxy, ANY source address trusted for \
+                     x-forwarded-proto — correct only if nothing else can reach this port"
+                        .into()
+                }
             }
-            Transport::TlsProxy { trusted } => format!(
-                "behind a TLS proxy at {} (x-forwarded-proto: https required)",
+            Transport::TlsProxy { trusted, secret } => format!(
+                "behind a TLS proxy at {} (x-forwarded-proto: https required{})",
                 trusted
                     .iter()
                     .map(TrustedSource::describe)
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join(", "),
+                if secret.is_some() {
+                    ", proxy secret required"
+                } else {
+                    // Named on the banner rather than left to the reader, because the
+                    // gap is invisible: the configuration looks strict and a process
+                    // sharing the address can still forge the header.
+                    ", NO proxy secret — any process at that address can forge the header"
+                }
             ),
             Transport::Insecure => {
                 "INSECURE — bearer tokens accepted over plaintext from anywhere".into()
@@ -632,6 +743,15 @@ fn route(cp: &Arc<ControlPlane>, caller: &Caller, req: &Request) -> Result<Respo
         ("POST", ["v1", "quarantine"]) => {
             require_role(cp, caller, roles::SECOPS)?;
             idempotent(cp, req, |cp| quarantine(cp, caller, req))
+        }
+        // Lifting had no route and no CLI command, which made quarantine a one-way door:
+        // a false positive bricked a party for good, recoverable only by hand-editing a
+        // hash-linked log. Same role as ordering it, and dual control is enforced below
+        // by the registry — clearing is the more dangerous direction, because it restores
+        // a party the estate decided to cut.
+        ("POST", ["v1", "quarantine", "clear"]) => {
+            require_role(cp, caller, roles::SECOPS)?;
+            idempotent(cp, req, |cp| clear_quarantine(cp, caller, req))
         }
 
         // --- the data plane ---
@@ -1255,6 +1375,70 @@ fn quarantine(cp: &Arc<ControlPlane>, caller: &Caller, req: &Request) -> Result<
             "party": outcome.party.as_str(),
             "revoked": outcome.revoked.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
             "impacted_services": outcome.impacted_services,
+        })
+        .to_string(),
+    ))
+}
+
+/// Lift a quarantine, returning the party to `Pending` for full re-admission.
+///
+/// The one place `wc_quarantine_duration_seconds` is observed. It is a histogram over
+/// clearings, so it is recorded here — where the pairing is a single field read — rather
+/// than derived at scrape time from the evidence chain, which grows monotonically and
+/// would make every scrape slower than the last.
+fn clear_quarantine(cp: &Arc<ControlPlane>, caller: &Caller, req: &Request) -> Result<Response> {
+    let body = body_json(req)?;
+    let party = EntityId::new(field(&body, "party")?)?;
+    let approvers: Vec<HumanRef> = string_list(&body, "approvers")
+        .into_iter()
+        .map(HumanRef::new)
+        .collect::<Result<Vec<_>>>()?;
+    let why = body
+        .get("why")
+        .and_then(|v| v.as_str())
+        .unwrap_or("quarantine lifted")
+        .to_string();
+
+    let now = (cp.now)();
+    let held_for = {
+        let mut store = lock(&cp.store);
+        store
+            .registry(actor_for(caller), now)
+            .clear_quarantine(&party, &approvers)?
+    };
+
+    if let Some(seconds) = held_for {
+        crate::obs::quarantine_duration(&cp.registry, seconds);
+    }
+
+    {
+        let mut evidence = lock(&cp.evidence);
+        evidence.record(
+            &crate::evidence::LifecycleEvent::new(
+                crate::evidence::EventKind::QuarantineCleared,
+                caller.subject.clone(),
+            )
+            .with_entities([party.as_str()])
+            .with_reason(why)
+            .with_detail(json!({
+                "approvers": approvers.iter().map(HumanRef::as_str).collect::<Vec<_>>(),
+                "held_for_seconds": held_for,
+                // Said in the record, not only in the prose: "cleared" reads like
+                // "restored", and it is not.
+                "contracts_restored": false,
+            })),
+            now,
+        )?;
+    }
+
+    Ok(Response::json(
+        202,
+        json!({
+            "party": party.as_str(),
+            "posture": "unattested",
+            "lifecycle": "pending",
+            "held_for_seconds": held_for,
+            "contracts_restored": false,
         })
         .to_string(),
     ))

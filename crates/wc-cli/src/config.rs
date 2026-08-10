@@ -77,6 +77,10 @@ const MAPPINGS: &[Mapping] = &[
         flag: "trusted-proxy",
     },
     Mapping {
+        path: "server.proxy_secret_file",
+        flag: "proxy-secret-file",
+    },
+    Mapping {
         path: "server.insecure_plaintext",
         flag: "insecure-plaintext",
     },
