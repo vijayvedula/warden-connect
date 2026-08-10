@@ -3,7 +3,7 @@
 ## The film, vertical — for phones
 
 [`warden-connect-mobile.mp4`](warden-connect-mobile.mp4) · 1080×1920 · 9:16 ·
-30 fps · **5:33** · no audio track. Poster:
+30 fps · **6:55** · no audio track. Poster:
 [`warden-connect-mobile-poster.jpg`](warden-connect-mobile-poster.jpg).
 
 The web presentation *"Why agent connections need a control plane"* as a video a
@@ -22,15 +22,15 @@ starts, with the picture beneath it. The chapter name, which used to hold that s
 now a quiet footer: it orients, it does not lead. The test it is built to pass: sound
 off, picture ignored, script still lands.
 
-**Read first, then watch.** Every content shot is **8 seconds**: the sentence is on
-screen *alone* for the first three, and only then does the picture cross-fade in and
+**Read first, then watch.** Every content shot is **10 seconds**: the sentence is on
+screen *alone* for the first five, and only then does the picture cross-fade in and
 hold for five. A viewer is never asked to read and watch at the same time, and because
 every shot is the same length the rhythm stops being something to wonder about. The
 cross-fade is the same frame drawn with and without the stage, blended — so the text
 does not flicker when the picture arrives.
 
 **Fixed pacing.** The web version has a transport bar and is self-paced; this cannot
-be. Shot length is now a constant `SHOT = 8.0` rather than a reading estimate. The
+be. Shot length is now a constant `SHOT = 10.0` rather than a reading estimate. The
 per-caption estimates are still computed and still in the source, so returning to
 text-length pacing is a one-line change in `Video.scene`.
 
@@ -69,45 +69,39 @@ cd ../src && python3 film_mobile.py
 cp out/warden-connect-mobile.mp4 ../video/
 ```
 
-### It opens by earning the problem
+### It opens by asking, not explaining
 
-*Software Used To Be Predictable* — the chapter that has to work hardest, because
+*Four Questions With No Owner* — the chapter that has to work hardest, because
 everything after it is a solution to a problem the viewer has not yet agreed exists.
 
-It was called *The Assumption*, which named the fact that there is one without ever
-saying what it is. The label now states the assumption itself, in the past tense, so it
-still reads correctly across all five beats while the chapter takes it apart.
+Two earlier versions got the audience wrong. The first stated facts about software;
+the second (*Software Used To Be Predictable*) argued that agents are
+non-deterministic and that the old assumption had died. Both are lectures, and anyone
+already operating an agent estate has heard them. The audience for this film is
+experienced: they do not need to be told what an agent is, and being told is a reason
+to stop watching.
 
-The film used to begin with the solution. *What Changed* now comes between the title
-and the two layers, and it is the only chapter that argues the problem **exists**
-rather than describing it — because "agents are non-deterministic" is a sentence
-people nod at without changing their mind about anything.
+So the chapter argues nothing. It asks four questions about the viewer's **own
+estate** and, each time, draws the empty slot where the answer should be. An
+experienced viewer supplies the argument themselves, which is the only way they will
+accept it.
 
-The first script for it stated facts about software: true, and a lecture. It is now an
-assumption, its quiet death, the turn where the feature *is* the problem, the chain
-that loses the human, and then the consequence — and it addresses the viewer directly,
-because *"every control you own"* is a claim people want to argue with, and arguing is
-a form of paying attention.
-
-Five beats, each a picture rather than a sentence:
-
-1. **One straight line.** A program: one path in, one path out, reviewable once and
-   true for ever.
-2. **The line becomes a tree.** An agent chooses its tools at runtime. The straight
-   line stays on screen as one faint branch among many, so the before and after are
-   in the same frame.
-3. **The same request, twice, taking different branches.** *"Which is why you bought
-   it"* — the feature and the problem are the same property, which is the turn the
-   chapter needs to avoid sounding like a complaint about agents.
-4. **The enterprise shape: a chain of hops.** A person asks an agent, which delegates
-   to another, which calls a tool, which feeds a third. The column on the right is the
-   argument — `human:priya@org` at the top, `svc:orchestrator` at hop 1,
-   `svc:research` at hop 2, and by hop 4 **the person the request was made for is not
-   in the identity any more**. That is the accountability gap in one look, and it is
-   the enterprise reality the single-call diagram never shows.
-5. **Two questions with nobody to answer them**, drawn as two empty brackets — sitting
-   exactly where the next chapter's two planes will, so the shape is already familiar
-   when the answer arrives.
+0. **The three controls you already run.** Identity, policy, audit — each drawn
+   solid, each ticked, because each of them works. Beneath them, a bordered region
+   with nothing in it: *nothing owns this one.*
+1. **Which of these parties are allowed to talk to each other at all?** Twelve edges
+   across a small mesh, every one identical. One is picked out and marked with a
+   question mark — not *can* it, but *is it permitted*, and no system holds the answer.
+2. **Who approved that, when, and against what justification?** An approval record
+   with three fields — WHO, WHEN, WHY — and a dashed empty rule where each value
+   should be. The ticket was closed; the approver changed teams.
+3. **What is the most this connection could ever do?** The policy engine
+   misconfigured, the token over-scoped, the agent compromised — three red crosses —
+   and then the ceiling that remains: *everything the callee exposes.* This is the
+   contract-as-ceiling argument stated negatively, before the idea has a name.
+4. **When something goes wrong, what else did that party reach?** One agent turns
+   red, its reachable set resolves to question marks, and the counter reads
+   `REACHED: ?`
 
 ### The scenes are portrait-native, not portrait-fitted
 

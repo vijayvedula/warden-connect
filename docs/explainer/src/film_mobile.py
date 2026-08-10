@@ -340,8 +340,8 @@ class Canvas:
 # TEXT_ONLY seconds — long enough to finish the sentence — and only then does the
 # picture arrive and hold. Every content shot is the same length, because a viewer
 # who has learned the rhythm stops wondering when the next thing happens.
-SHOT = 8.0           # seconds, start to start: 3 reading + 5 watching
-TEXT_ONLY = 3.0      # the sentence, alone
+SHOT = 10.0          # seconds, start to start: 5 reading + 5 watching
+TEXT_ONLY = 5.0      # the sentence, alone
 G_FADE = 0.45        # the picture arrives over this
 BUILD = 1.2          # then animates
 MIN_STILL = 3.0      # kept for the title card, which has no two-phase shape
@@ -557,10 +557,9 @@ PERSONAS = [
      "12 / 13 confirmed - 41s", RED),
 ]
 
-# Named for the assumption itself, not for the fact that there is one — and in
-# the past tense, so the label works across all five beats while the chapter
-# takes it apart.
-CHAPTERS = ["Software Used To Be Predictable", "The Two Layers", "The Connection", "The Obvious Fix",
+# The chapter is the four questions themselves, so the label counts them. It used
+# to be "The Assumption", which named neither the assumption nor the questions.
+CHAPTERS = ["Four Questions With No Owner", "The Two Layers", "The Connection", "The Obvious Fix",
             "The Idea", "On the Path", "Five Readings", "Plainly"]
 
 
@@ -676,7 +675,7 @@ CONTRACT = [
     ("surface", "get_balance", "surface"),
     ("", "list_transactions", "surface"),
     ("expires", "30 days, then nothing", "expiry"),
-    ("approval", "human:cecil + human:dana", "approval"),
+    ("approval", "human:vijay + human:dana", "approval"),
     ("mediator", "warden:mediator:apac", "mediator"),
     ("revocable", "one verb, per-node proof", "revoke"),
 ]
@@ -745,157 +744,151 @@ def readout(c, y0, rows, appear, step=52):
 # Scenes
 # ---------------------------------------------------------------------------
 
-def scene_changed(c, p, beat, n_beats):
-    """One path becomes every path, and the same request takes two of them.
+def scene_questions(c, p, beat, n_beats):
+    """Four questions an estate cannot answer, drawn as four missing answers.
 
-    The film's premise, and the only chapter that argues for the *existence* of the
-    problem rather than describing it. It has to be a picture rather than a claim,
-    because "agents are non-deterministic" is a sentence people nod at without
-    changing their mind about anything.
+    This chapter used to argue that agents are non-deterministic. That is a lecture
+    for anyone who has run one, and this film's audience has. So it argues nothing:
+    it asks four questions about the viewer's own estate and shows, each time, the
+    empty slot where the answer would be. An experienced viewer supplies the
+    argument themselves, which is the only way they will accept it.
 
-    A program is one line: reviewable once, true for ever. An agent is the whole
-    tree, and which branch it takes is decided at runtime — so the line stays on
-    screen as one faint branch among many, which is the before and after in a single
-    frame.
+    Each beat is its own picture rather than a state of the previous one, so the
+    stage is drawn per beat instead of accumulating.
     """
-    top, bot = STAGE_Y0 + 60, STAGE_Y1 - 150
-    levels = [[W // 2],
-              [W // 2 - 210, W // 2 + 210],
-              [STAGE_X0 + 130 + i * 226 for i in range(4)],
-              [STAGE_X0 + 46 + i * 121 for i in range(8)]]
-    ys = [top, lerp(top, bot, 0.34), lerp(top, bot, 0.67), bot]
+    t = smooth(clamp(sub(p, n_beats, beat) * 1.7))
+    if t <= 0:
+        return
+    y0 = STAGE_Y0 + 40
 
-    # 1 · the straight line: what software used to be
-    a0 = smooth(clamp(sub(p, n_beats, 0) * 2.6))
-    grown = smooth(clamp(sub(p, n_beats, 1) * 1.5))
-    spine = a0 * (1 - grown * 0.72)
-    c.line((W // 2, top), (W // 2, bot), INK, spine, 5)
-    c.dot(W // 2, top, 11, INK, a0)
-    c.dot(W // 2, bot, 11, INK, a0)
+    # --- 0 · the three controls you already run, and the gap under them --------
     if beat == 0:
-        c.text((W // 2 + 34, top - 12), "IN", "mono", 24, DIM, a0)
-        c.text((W // 2 + 34, bot - 12), "OUT", "mono", 24, DIM, a0)
-        c.plate(bot + 74, "ONE PATH  ·  REVIEWED ONCE", "mono", 28, DIM, a0)
-
-    # 2 · the tree: what it is now
-    if grown > 0:
-        for li in range(3):
-            for pi_, px in enumerate(levels[li]):
-                kids = levels[li + 1]
-                span = len(kids) // len(levels[li])
-                for k in range(span):
-                    kx = kids[pi_ * span + k]
-                    t = clamp(grown * 2.4 - li * 0.5 - k * 0.06)
-                    if t <= 0:
-                        continue
-                    c.line((px, ys[li]), (lerp(px, kx, ease_out(t)),
-                                          lerp(ys[li], ys[li + 1], ease_out(t))),
-                           FAINT, t * 0.7, 2)
-        for li in (1, 2, 3):
-            for x in levels[li]:
-                t = clamp(grown * 2.4 - li * 0.5)
-                c.dot(x, ys[li], 8 if li < 3 else 6, FAINT, t * 0.8)
-
-    # 3 · two runs of the same request, taking different branches
-    def route(picks, col, a, w=6):
-        node = W // 2
-        for li, idx in enumerate(picks):
-            nxt = levels[li + 1][idx]
-            c.line((node, ys[li]), (nxt, ys[li + 1]), col, a, w)
-            c.dot(nxt, ys[li + 1], 10, col, a)
-            node = nxt
-
-    r1 = smooth(clamp(sub(p, n_beats, 1) * 1.6 - 0.55))
-    r2 = smooth(clamp(sub(p, n_beats, 2) * 1.9))
-    if r1 > 0:
-        route([0, 1, 2], BLUE, r1 * (1 - r2 * 0.55))
-    if r2 > 0:
-        route([1, 3, 6], YELLOW, r2)
-        c.plate(bot + 74, "THE SAME REQUEST, TWICE", "serif", 44, YELLOW, r2)
-    elif grown > 0.5 and beat == 1:
-        c.plate(bot + 74, "CHOOSES AT RUNTIME", "mono", 28, DIM,
-                smooth(clamp(grown * 2 - 1)))
-
-    # 4 · the enterprise shape: it is never one hop
-    # Gated on the beat, not on the fade. `sub(...) == 1` for every beat *after* this
-    # one too, so an early return keyed to the fade held the hop chain on screen
-    # through the closing beat and the two questions never drew at all.
-    hops = smooth(clamp(sub(p, n_beats, 3) * 2.0))
-    if beat == 3 and hops > 0:
-        # Cover the tree rather than fading each element: this beat is a different
-        # picture, not a state of the previous one.
-        c.rect((STAGE_X0 - 6, STAGE_Y0 - 14, STAGE_X1 + 6, STAGE_Y1 + 14), None,
-               hops * 0.95, 0, BG, r=0)
-        CHAIN = [
-            ("person", "somebody asks", "human:priya@org", GREEN, ""),
-            ("agent", "orchestrator", "svc:orchestrator", BLUE, "hop 1"),
-            ("agent", "research agent", "svc:research", BLUE, "hop 2"),
-            ("service", "payments mcp", "svc:research", DIM, "hop 3"),
-            ("agent", "summary agent", "svc:summary", DIM, "hop 4"),
-        ]
-        x = STAGE_X0 + 96
-        y0, step = STAGE_Y0 + 56, 158
-        c.text((STAGE_X1, y0 - 46), "ACTING AS", "mono", 21, FAINT, hops,
-               anchor="ra")
-        for i, (kind, name, ident, col, hop) in enumerate(CHAIN):
-            a = clamp(hops * 3.0 - i * 0.42)
+        bw, gap = 290, 23
+        for i, (name, sub_) in enumerate([("IDENTITY", "who is calling"),
+                                          ("POLICY", "may this call"),
+                                          ("AUDIT", "what happened")]):
+            a = clamp(t * 2.4 - i * 0.22)
             if a <= 0:
                 continue
-            y = y0 + i * step
-            if i:
-                c.arrow((x, y - step + 40), (x, y - 34), FAINT, a * 0.8, 3)
-                c.text((x + 26, y - step + 66), hop, "mono", 21, FAINT, a * 0.9)
-            if kind == "person":
-                c.person(x, y, 1.5, col, a)
-            elif kind == "agent":
-                c.agent(x, y, 1.05, col, a)
-            else:
-                c.service(x, y, 0.62, col, a)
-            c.text((x + 92, y - 22), name, "serif", 40, INK, a)
-            # The column that carries the argument: by hop 3 the person the request
-            # was made for is not in the identity any more.
-            c.text((STAGE_X1, y - 18), ident, "mono", 24,
-                   col if i < 2 else FAINT, a, anchor="ra")
-        # One fork, so it reads as a graph rather than a queue.
-        f = clamp(hops * 3.0 - 1.4)
-        if f > 0:
-            fx, fy = STAGE_X1 - 300, y0 + 2 * step + 76
-            c.line((x, y0 + step + 40), (fx, fy - 26), FAINT, f * 0.5, 2,
-                   dash=(9, 11))
-            c.agent(fx, fy, 0.8, BLUE, f * 0.75)
-            c.text((fx, fy + 46), "and three more", "mono", 20, FAINT, f * 0.8,
+            x = STAGE_X0 + i * (bw + gap)
+            c.rect((x, y0, x + bw, y0 + 150), BLUE, a * 0.8, 3, BG2, r=8)
+            c.text((x + bw / 2, y0 + 34), name, "mono", 30, BLUE, a, anchor="ma")
+            # `centred` centres on the frame, not on the box — three boxes
+            # using it overprint each other in the middle one.
+            c.text((x + bw / 2, y0 + 74), sub_, "mono", 21, DIM, a * 0.9,
                    anchor="ma")
-        g = clamp(hops * 2.4 - 1.5)
-        c.plate(STAGE_Y1 - 40, "FOUR HOPS FROM THE PERSON WHO ASKED", "serif", 40,
-                RED, g)
+            c.tick(x + bw / 2, y0 + 124, 13, GREEN, a, 5)
+        # the slot nothing occupies
+        g = clamp(t * 2.2 - 0.75)
+        if g > 0:
+            gy = y0 + 250
+            c.rect((STAGE_X0, gy, STAGE_X1, gy + 300), RED, g * 0.55, 3, None, r=10)
+            for k in range(4):
+                c.line((STAGE_X0 + 30 + k * 240, gy), (STAGE_X0 + 30 + k * 240, gy),
+                       RED, 0, 1)
+            c.text((W // 2, gy + 96), "?", "serif", 150, RED, g, anchor="ma")
+            c.plate(gy + 246, "NOTHING OWNS THIS ONE", "mono", 26, RED, g)
         return
 
-    # 5 · the two questions, drawn as the answers that are missing
-    q = smooth(clamp(sub(p, n_beats, 4) * 2.2))
-    if q > 0:
-        # The tree recedes; two empty brackets take the frame. They sit where the
-        # next chapter's two planes will, so the shape is already familiar when the
-        # answer arrives.
-        c.rect((STAGE_X0 - 4, STAGE_Y0 - 10, STAGE_X1 + 4, STAGE_Y1 + 10), None,
-               q * 0.92, 0, BG, r=0)
-        for i, (label, col) in enumerate([
-                ("may these two things be connected at all?", YELLOW),
-                ("may this action proceed, and who is answerable?", BLUE)]):
-            a = clamp(q * 2.2 - i * 0.7)
+    # --- the mesh, shared by the first and last question ----------------------
+    AX, SX = STAGE_X0 + 96, STAGE_X1 - 96
+    AY = [y0 + 40 + i * 150 for i in range(5)]
+    SY = [y0 + 115 + i * 195 for i in range(4)]
+    EDGES = [(0, 0), (0, 2), (1, 0), (1, 1), (1, 3), (2, 1), (2, 2),
+             (3, 0), (3, 2), (3, 3), (4, 1), (4, 3)]
+    PICK = 4          # the edge the question is about: agent 1 → service 3
+
+    def mesh(lit=-1, hot=-1, a=1.0):
+        for n, (ai, si) in enumerate(EDGES):
+            ap = clamp(a * 3 - n * 0.12)
+            if ap <= 0:
+                continue
+            if n == lit:
+                col, wt, al = YELLOW, 5, ap
+            elif hot >= 0 and EDGES[n][0] == hot:
+                col, wt, al = RED, 4, ap * 0.9
+            else:
+                col, wt, al = FAINT, 2, ap * 0.5
+            c.line((AX + 34, AY[ai]), (SX - 34, SY[si]), col, al, wt)
+        for i, yy in enumerate(AY):
+            c.agent(AX, yy, 0.9, RED if i == hot else BLUE, clamp(a * 2.4 - i * 0.08))
+        for i, yy in enumerate(SY):
+            c.service(SX, yy, 0.52, DIM, clamp(a * 2.4 - i * 0.08))
+
+    # --- 1 · may these two be connected at all? -------------------------------
+    if beat == 1:
+        mesh(lit=PICK, a=t)
+        q = clamp(t * 2.2 - 0.7)
+        if q > 0:
+            mx = (AX + SX) / 2
+            my = (AY[EDGES[PICK][0]] + SY[EDGES[PICK][1]]) / 2
+            c.dot(mx, my, 30, BG, q)
+            c.ring(mx, my, 30, YELLOW, q, 3)
+            c.text((mx, my - 26), "?", "serif", 52, YELLOW, q, anchor="ma")
+            c.plate(STAGE_Y1 - 30, "TWELVE EDGES. NO LIST OF WHICH ARE PERMITTED.",
+                    "mono", 26, RED, q)
+        return
+
+    # --- 2 · who approved it, when, and why? ----------------------------------
+    if beat == 2:
+        card = (STAGE_X0 + 20, y0 + 40, STAGE_X1 - 20, y0 + 400)
+        c.rect(card, RULE, t, 3, BG2, r=10)
+        c.text((card[0] + 34, card[1] + 26), "APPROVAL RECORD", "mono", 24, DIM, t)
+        c.line((card[0] + 34, card[1] + 74), (card[2] - 34, card[1] + 74), RULE,
+               t * 0.8, 2)
+        for i, label in enumerate(["WHO", "WHEN", "WHY"]):
+            a = clamp(t * 2.6 - 0.5 - i * 0.3)
             if a <= 0:
                 continue
-            y = STAGE_Y0 + 170 + i * 300
-            # `centred` returns the y after the last line, and the second question
-            # wraps to two. A fixed offset put the bracket through the text.
-            end = c.centred(y, label, STAGE_W - 40, "serif", 42, col, a)
-            by = end + 34
-            c.line((STAGE_X0 + 120, by), (STAGE_X1 - 120, by), col, a * 0.35, 2,
-                   dash=(12, 14))
-            for sgn in (-1, 1):
-                x = W // 2 + sgn * (STAGE_W / 2 - 120)
-                c.line((x, by - 22), (x, by + 22), col, a * 0.5, 3)
-            c.text((W // 2, by + 34), "NOBODY OWNS THIS ONE", "mono", 24, FAINT, a,
-                   anchor="ma")
+            ry = card[1] + 132 + i * 82
+            c.text((card[0] + 44, ry - 18), label, "mono", 26, FAINT, a)
+            # the value is the point: an empty rule where a fact should be
+            c.line((card[0] + 220, ry + 18), (card[2] - 44, ry + 18), RED, a * 0.6,
+                   2, dash=(10, 12))
+            c.text((card[0] + 240, ry - 20), "—", "mono", 30, RED, a)
+        g = clamp(t * 2.2 - 1.2)
+        if g > 0:
+            c.centred(card[3] + 62,
+                      "The ticket was closed. The approver changed teams. Nothing "
+                      "in the running system remembers what was agreed.",
+                      STAGE_W - 60, "serif", 38, DIM, g)
+        return
+
+    # --- 3 · the ceiling, under three simultaneous failures -------------------
+    if beat == 3:
+        rows = [("THE POLICY ENGINE", "misconfigured"),
+                ("THE TOKEN", "over-scoped"),
+                ("THE AGENT", "compromised")]
+        for i, (name, state) in enumerate(rows):
+            a = clamp(t * 2.6 - i * 0.28)
+            if a <= 0:
+                continue
+            ry = y0 + 30 + i * 118
+            c.rect((STAGE_X0, ry, STAGE_X1, ry + 92), RED, a * 0.45, 2, None, r=8)
+            c.cross(STAGE_X0 + 52, ry + 46, 20, RED, a, 6)
+            c.text((STAGE_X0 + 110, ry + 24), name, "serif", 40, INK, a)
+            c.text((STAGE_X1 - 26, ry + 30), state, "mono", 26, RED, a, anchor="ra")
+        g = clamp(t * 2.4 - 1.0)
+        if g > 0:
+            gy = y0 + 424
+            c.text((STAGE_X0, gy), "THEN THE CEILING IS", "mono", 26, DIM, g)
+            c.rect((STAGE_X0, gy + 46, STAGE_X0 + STAGE_W * ease_out(g),
+                    gy + 132), RED, g, 4, blend(RED, 0.14), r=8)
+            c.centred(gy + 68, "everything the callee exposes", STAGE_W - 40,
+                      "serif", 44, RED, g)
+            c.plate(gy + 206, "NO LAYER BOUNDS THE RELATIONSHIP ITSELF", "mono", 26,
+                    FAINT, clamp(g * 2 - 1))
+        return
+
+    # --- 4 · and afterwards, what else did it reach? --------------------------
+    mesh(hot=1, a=t)
+    q = clamp(t * 2.2 - 0.8)
+    if q > 0:
+        for si in (0, 1, 3):
+            c.text((SX + 58, SY[si] - 30), "?", "serif", 46, RED, q, anchor="ma")
+        c.plate(STAGE_Y1 - 96, "REACHED:  ?", "mono", 34, RED, q)
+        c.plate(STAGE_Y1 - 26, "ASK THREE TEAMS. GREP THE DEPLOYMENT REPOS.",
+                "mono", 24, FAINT, clamp(q * 2 - 0.8))
 
 
 def scene_planes(c, p, beat, n_beats):
@@ -1181,7 +1174,7 @@ def scene_path(c, p, beat, n_beats):
                        anchor="ra")
 
 
-SCENES = {0: scene_changed, 1: scene_planes, 2: scene_threads, 3: scene_wall,
+SCENES = {0: scene_questions, 1: scene_planes, 2: scene_threads, 3: scene_wall,
           4: scene_document, 5: scene_path}
 
 
@@ -1418,21 +1411,26 @@ def build():
     # *is* the problem, the chain that loses the human, and then the consequence. The
     # viewer is addressed directly, because "every control you own" is a claim people
     # want to argue with, and arguing is a form of paying attention.
-    CH0 = [("Every control you own assumes software cannot surprise you.", None,
-            {"cannot surprise you.": BLUE}),
-           ("That assumption died quietly, and fairly recently.",
-            "An agent chooses its own tools, at runtime, on somebody's behalf — "
-            "thousands of times an hour.", {"died quietly": YELLOW}),
-           ("Ask it the same thing twice and it may not do the same thing twice.",
-            "Which is why you bought it. It is also why reviewing the build tells "
-            "you nothing about what it will run.",
-            {"Which is why you bought it.": YELLOW}),
-           ("And it is never one agent.",
-            "A person asks one. It delegates to another. That one calls a tool. The "
-            "answer starts a fourth. By hop four the person who asked is not in the "
-            "request any more.", {"never one agent.": YELLOW}),
-           ("Then something goes wrong, and two questions have no owner.", None,
-            {"two questions have no owner.": RED})]
+    # Written for people who already operate this. No explanation of what an agent
+    # is, no case that non-determinism is real — four questions about their own
+    # estate, and the empty slot where each answer should be.
+    CH0 = [("You already run identity, policy and audit.",
+            "Here are four questions about your own estate that none of them "
+            "answers.", {"none of them": YELLOW}),
+           ("Which of these parties are allowed to talk to each other at all?",
+            "Not which ones can. Which ones are permitted. Today the topology is a "
+            "deployment accident nobody wrote down.",
+            {"are permitted": YELLOW}),
+           ("Who approved that, when, and against what justification?",
+            "The ticket was closed. The approver changed teams. Nothing in the "
+            "running system enforces what was agreed.",
+            {"Who approved that": YELLOW}),
+           ("What is the most this connection could ever do?",
+            "Even with the policy engine misconfigured, the token over-scoped and "
+            "the agent compromised. Today the answer is everything the callee "
+            "exposes.", {"could ever do?": YELLOW}),
+           ("When something goes wrong, what else did that party reach?", None,
+            {"what else did that party reach?": RED})]
 
     chapter_caps = [CH0, CAPS["two_layers"] + CAPS["caps"] + [CAPS["caps_end"]],
                     None, None, None, None]
