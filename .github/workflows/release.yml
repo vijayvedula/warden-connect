@@ -1,0 +1,202 @@
+# Build, attest and publish a release.
+#
+# `docs/releasing.md` stated the gap plainly: this repository verifies **other people's**
+# provenance and produces none of its own, so an operator's trust in a downloaded binary
+# rested on the transport — the residual §7.8 A8 describes for a control plane.
+#
+# This closes it in the format this component already accepts, which is the point. The
+# attestation a release carries is a DSSE / in-toto SLSA envelope, and
+# `scripts/verify-release.sh` verifies it with `connect attest verify` — no Sigstore client,
+# no network, no cosign on the verifying side. A downloader needs a `connect` binary they
+# already trust and the public key, and nothing else.
+#
+# UNVERIFIED. This workflow has never run. Everything below is written from the actions' and
+# cosign's documentation, which is exactly the position `docs/limitations.md` describes for
+# anything not backed by an executed script — the class the four wrong SPIRE commands came
+# from. What *has* been verified locally is the half that matters most and is testable:
+# `connect attest verify` and `scripts/verify-release.sh` against **real cosign v3.1.3
+# output** in `fixtures/cosign/`, including every refusal. Run this once with
+# `workflow_dispatch` and verify the artefacts by hand before tagging anything.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The full suite before anything is built. A released binary that fails the gates is worse
+  # than no release, because the tag is the thing people will trust.
+  gate:
+    name: Gates before anything is built
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: warden-connect
+      - name: Warden core, beside it
+        uses: actions/checkout@v4
+        with:
+          repository: vijayvedula/warden
+          path: warden
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Tests, lints and the conformance kits
+        working-directory: warden-connect
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+          cargo build --release -p wc-cli
+          ./scripts/conformance.sh
+          ./scripts/canon-conformance.sh
+
+  build:
+    name: Build and attest
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      # Keyless signing: cosign exchanges this for a short-lived Fulcio certificate, so
+      # there is no signing key in repository secrets to leak or rotate.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: warden-connect
+      - uses: actions/checkout@v4
+        with:
+          repository: vijayvedula/warden
+          path: warden
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        working-directory: warden-connect
+        run: cargo build --release -p wc-cli -p wc-mediator
+
+      - name: Digests
+        id: digests
+        working-directory: warden-connect
+        run: |
+          mkdir -p release
+          cp target/release/connect target/release/connect-mediate release/
+          cd release
+          # The manifest a human reads and `verify-release.sh` does not: the script computes
+          # the digest from the bytes itself, because a digest copied off a release page is a
+          # digest whoever controls the page chose.
+          sha256sum connect connect-mediate > SHA256SUMS
+          cat SHA256SUMS
+          echo "connect=sha256:$(sha256sum connect | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Attest each binary with SLSA provenance
+        working-directory: warden-connect/release
+        env:
+          BUILDER: https://github.com/${{ github.repository }}/.github/workflows/release.yml
+        run: |
+          set -euo pipefail
+          for bin in connect connect-mediate; do
+            digest=$(sha256sum "$bin" | cut -d' ' -f1)
+            # An in-toto Statement with a SLSA v1 predicate — the shape
+            # `DsseProvenanceVerifier` accepts, so our own verifier can check it. The subject
+            # digest is what binds the statement to the file; without it the envelope vouches
+            # for nothing in particular.
+            cat > "$bin.statement.json" <<STATEMENT
+          {
+            "_type": "https://in-toto.io/Statement/v1",
+            "subject": [{"name": "$bin", "digest": {"sha256": "$digest"}}],
+            "predicateType": "https://slsa.dev/provenance/v1",
+            "predicate": {
+              "buildDefinition": {
+                "buildType": "https://slsa.dev/github-actions-workflow/v1",
+                "externalParameters": {
+                  "source": "git+https://github.com/${{ github.repository }}@${{ github.ref }}",
+                  "commit": "${{ github.sha }}"
+                }
+              },
+              "runDetails": {
+                "builder": {"id": "$BUILDER"},
+                "metadata": {"invocationId": "${{ github.run_id }}"}
+              }
+            }
+          }
+          STATEMENT
+            cosign attest-blob --yes \
+              --predicate "$bin.statement.json" \
+              --type slsaprovenance1 \
+              --bundle "$bin.provenance.bundle" \
+              --new-bundle-format \
+              "$bin"
+          done
+          ls -la
+
+      # Our own verifier, on our own artefacts, in the same run that produced them. If this
+      # step fails the release does not ship — which is the only way the claim in
+      # `releasing.md` stays true rather than becoming another line of prose.
+      - name: Verify what we just attested, with our own verifier
+        working-directory: warden-connect
+        env:
+          BUILDER: https://github.com/${{ github.repository }}/.github/workflows/release.yml
+        run: |
+          set -euo pipefail
+          # Extracting the DSSE envelope from the Sigstore bundle: `attest verify` takes the
+          # envelope, deliberately — it is offline and Sigstore-free by design.
+          for bin in connect connect-mediate; do
+            python3 - "release/$bin.provenance.bundle" > "release/$bin.dsse.json" <<'PY'
+          import json, sys
+          bundle = json.load(open(sys.argv[1]))
+          env = bundle.get("dsseEnvelope") or bundle.get("dsse_envelope")
+          if env is None:
+              sys.exit("no DSSE envelope in the bundle; cosign's bundle shape has changed")
+          json.dump(env, sys.stdout)
+          PY
+            # Keyless signing means the verifying key is in the certificate, not a PEM, so
+            # this step proves the envelope and bindings are what we expect and leaves
+            # certificate-chain verification to cosign below. Both halves are needed and
+            # neither substitutes for the other — see releasing.md.
+            cosign verify-blob-attestation \
+              --bundle "release/$bin.provenance.bundle" \
+              --new-bundle-format \
+              --certificate-identity "$BUILDER" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "release/$bin"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: warden-connect/release/
+
+  publish:
+    name: Attach to the release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release/
+      - name: Attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --notes "Verify before you run it:
+
+          scripts/verify-release.sh connect connect.dsse.json <builder-pub.pem> \\
+            https://github.com/${{ github.repository }}/.github/workflows/release.yml
+
+          Signing is keyless, so verify the certificate chain with cosign as well —
+          see docs/releasing.md. SHA256SUMS is for humans; the script computes the
+          digest from the bytes itself." \
+            release/*

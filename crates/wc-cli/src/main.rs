@@ -163,6 +163,7 @@ const TWO_WORD: &[&str] = &[
     "bundle export",
     "bundle verify",
     "caep ingest",
+    "attest verify",
 ];
 
 /// Every dispatchable command.
@@ -174,6 +175,7 @@ const COMMANDS: &[&str] = &[
     "show",
     "posture",
     "discover",
+    "attest verify",
     "blast-radius",
     "quarantine",
     "unquarantine",
@@ -292,6 +294,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "oidc-label",
             "oidc-subject-claim",
         ],
+        "attest verify" => &["file", "prov-key", "builder", "artifact-digest", "artifact"],
         "activate" => &["id", "why"],
         "unquarantine" => &["id", "approver", "why"],
         "quarantine" => &[
@@ -578,6 +581,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "bundle verify" => bundle_verify(args)?,
         "bench" => bench_cmd(args)?,
         "caep ingest" => caep_ingest(args)?,
+        "attest verify" => attest_verify_cmd(args)?,
         "audit verify" => audit_verify(args)?,
         "backup" => backup_cmd(args)?,
         "restore" => restore_cmd(args)?,
@@ -2220,6 +2224,147 @@ fn blast_radius_cmd(args: &Args) -> Result<()> {
 /// gets to see what a stream asked for before anything acts on it — and a
 /// verified signature is only half the check: the transmitter's declared
 /// authority is the other half.
+/// Verify a DSSE / in-toto SLSA provenance envelope on its own.
+///
+/// `DsseProvenanceVerifier` existed only inside `register --attest`, which means the one
+/// thing this repository could do that nobody else's tooling does — check a SLSA envelope
+/// against a **named builder and a bound subject digest**, offline, with no network and no
+/// Sigstore client — was reachable only as a side effect of registering a party.
+///
+/// It is the piece `docs/releasing.md` needs to close its own loop: this repository verifies
+/// other people's provenance and produces none of its own, and the shortest honest path is to
+/// attest releases in the format this component already accepts and then verify our own
+/// artifacts with our own code. `scripts/verify-release.sh` is that, and this is what it
+/// calls.
+///
+/// Three bindings, all required, because a signature alone vouches for nothing in
+/// particular: signed by a trusted key, `subject[].digest.sha256` equal to the artifact in
+/// front of you, and `builder.id` in an allowlist you wrote. A verifier that reported the
+/// first as success would tell you a stranger's valid attestation about a different file was
+/// your build.
+fn attest_verify_cmd(args: &Args) -> Result<()> {
+    let path = positional_or_flag(args, "file")?;
+    let envelope = read_json(path)?;
+    let keys = key_set(args, "prov-key")?;
+    if keys.is_empty() {
+        return Err(WcError::with_detail(
+            Code::CONFIG_INVALID,
+            "--prov-key KID=PEM is required: with no trusted key there is nothing to verify              the signature against, and an unverified envelope is a text file",
+        ));
+    }
+
+    // The digest, either given or computed from the artifact in front of you. Computing it
+    // is the safer default to offer: a digest retyped from a release page is a digest that
+    // can be retyped from the attacker's release page.
+    let digest = match (args.get("artifact-digest"), args.get("artifact")) {
+        (Some(_), Some(_)) => {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "--artifact-digest and --artifact both name the subject; pass one",
+            ))
+        }
+        (Some(d), None) => Some(normalise_digest(d)),
+        (None, Some(file)) => {
+            let bytes = std::fs::read(file).map_err(|e| {
+                WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {file}"))
+                    .with_source(e)
+            })?;
+            Some(wc_core::util::sha256_prefixed(&bytes))
+        }
+        (None, None) => None,
+    };
+
+    let builders: std::collections::BTreeSet<String> = args.list("builder").into_iter().collect();
+
+    let verifier = attest::DsseProvenanceVerifier {
+        keys: &keys,
+        envelopes: vec![envelope.clone()],
+        artifact_digest: digest.clone(),
+        allowed_builders: builders.clone(),
+    };
+    let (bindings, refs, method) = verifier.verify_envelope(&envelope)?;
+
+    // Every binding is reported, and a missing one is a refusal rather than a footnote.
+    // `verify_envelope` returns the bindings even when one did not hold, so this command
+    // owes the decision — silently printing "verified" beside `subject_matched: false` is
+    // exactly the shape of defect this codebase keeps producing.
+    let mut missing: Vec<&str> = Vec::new();
+    if digest.is_none() {
+        missing.push("no artifact digest supplied, so the statement is bound to nothing");
+    } else if !bindings.subject_matched {
+        missing.push("the statement's subject digest is not this artifact");
+    }
+    if builders.is_empty() {
+        missing.push("no --builder allowlist, so any builder would have been accepted");
+    } else if !bindings.builder_allowed {
+        missing.push("the statement's builder is not in the allowlist");
+    }
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "verdict": if missing.is_empty() { "verified" } else { "unbound" },
+                "method": method,
+                "subject_digest": bindings.subject_digest,
+                "builder": bindings.builder,
+                "subject_matched": bindings.subject_matched,
+                "builder_allowed": bindings.builder_allowed,
+                "rekor_inclusion_checked": bindings.log_checked,
+                "missing": missing,
+                "refs": refs.len(),
+            }))?
+        );
+    } else {
+        println!("signature  {method}");
+        println!(
+            "  subject    {}",
+            bindings.subject_digest.as_deref().unwrap_or("none stated")
+        );
+        println!(
+            "  builder    {}",
+            bindings.builder.as_deref().unwrap_or("none stated")
+        );
+        println!(
+            "  bound      subject {} · builder {}",
+            bindings.subject_matched, bindings.builder_allowed
+        );
+        println!(
+            "  rekor      {}",
+            if bindings.log_checked {
+                "inclusion checked"
+            } else {
+                "inclusion NOT checked"
+            }
+        );
+        for m in &missing {
+            println!("  UNBOUND    {m}");
+        }
+    }
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(WcError::with_detail(
+            Code::PROVENANCE_UNVERIFIABLE,
+            format!(
+                "the signature verified and the attestation is not bound: {}",
+                missing.join("; ")
+            ),
+        ))
+    }
+}
+
+/// Accept a digest with or without the `sha256:` prefix, since release pages print both.
+fn normalise_digest(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with("sha256:") {
+        trimmed.to_string()
+    } else {
+        format!("sha256:{trimmed}")
+    }
+}
+
 fn caep_ingest(args: &Args) -> Result<()> {
     let path = positional_or_flag(args, "file")?;
     let token = std::fs::read_to_string(path)
@@ -5850,6 +5995,16 @@ POLICY
   policy dry-run [--policy FILE] [--json]      what a change does to live contracts
 
 TOOLS
+  attest verify <provenance.dsse.json> --prov-key KID=PEM
+                (--artifact FILE | --artifact-digest sha256:...) --builder ID
+                verify a DSSE / in-toto SLSA envelope on its own — offline, no
+                Sigstore client, no network. Three bindings, ALL required: signed
+                by a key you trust, the statement's subject digest equal to the
+                artifact, and builder.id in your allowlist. A signature alone
+                vouches for nothing in particular. Prefer --artifact: it computes
+                the digest from the bytes, where a digest retyped from a release
+                page is one the page's owner chose. Reports rekor inclusion as NOT
+                checked, because it does not check it. exit 4 if unverified/unbound
   canon <surface.json> [--kind mcp|a2a] [--entity ID] [--document] [--json]
   screen <surface.json> [--kind mcp|a2a] [--mode observe|flag|enforce] [--tier N]
                         [--rules screen-rules.toml] [--acceptances FILE]
