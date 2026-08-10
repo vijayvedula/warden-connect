@@ -54,6 +54,19 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
   because there is no reference implementation of a signed A2A card to disagree with. That is
   the same position stage 4 was in before cosign, and stage 4 turned out to be **rejecting
   every real attestation**. *(Environmental)*
+* **Stage 1 no longer requires SPIRE, but the mediator's authenticated peer modes still do.**
+  `--oidc-token` admits a Kubernetes projected service-account token, IRSA, Azure workload
+  identity, a GCP service account or a Vault identity token, deriving the party's id as
+  `urn:wc:oidc:<label>:<subject>` — see
+  [identity-without-spire.md](identity-without-spire.md). Verified end to end, including a
+  mediated call. What still resolves through a `spiffe://` URI and refuses anything else is
+  `--peer-mode mtls|mesh|jwt-svid`; only `configured` accepts a derived id. That costs nothing
+  for the stdio sidecar, where `configured` is the honest mode anyway, and it means the
+  shared-gateway topology remains SPIFFE-only. *(Unbuilt, for the gateway topology)*
+* **An OIDC identity is worth what the issuer's own authorisation is worth.** Stage 1 proves a
+  token was signed by a key in the JWKS you configured. A cluster where any pod can mint a
+  token for any service account yields an identity worth exactly that cluster's RBAC — the
+  same limit as a SPIRE trust domain, one layer out. *(By design)*
 * **A SPIRE trust bundle is only as good as its trust domain.** `fixtures/spire/` uses a
   throwaway CA and `insecure_bootstrap = true`, which is right for a fixture and wrong for
   anything else. What stage 1 verifies is that an SVID was signed by a key in the bundle you
@@ -85,6 +98,15 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
 
 ## 3 · Key custody
 
+* **The custody seams take existing corporate infrastructure; nobody has pointed them at
+  any.** `--signer`, `--anchor-signer`, `--revocation-signer`, `--approver-signer` and
+  `--envelope-signer` each run a command you supply, so Vault's transit engine, AWS/GCP/Azure
+  KMS, or a PKCS#11 token all work through a wrapper — `examples/signers/` has a PKCS#11 one
+  and a KMS one, and the KMS example exists because **every KMS returns DER while JWS ECDSA
+  needs raw `R‖S`**, which is the trap that would otherwise be found in production. What has
+  not happened is anyone running one against a real KMS key or a real token. That is
+  configuration for an adopter with existing infrastructure, and unproven here.
+  *(Environmental)*
 * **Every seam is built; no custody arrangement is.** `--signer`, `--anchor-signer`,
   `--revocation-signer`, `--approver-signer`, `--envelope-signer`, two revocation `kid`s, and
   structural approver separation all exist and are verified against **SoftHSM**. That is a

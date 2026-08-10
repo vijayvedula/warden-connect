@@ -50,6 +50,7 @@ Written after the build, and downstream of what the code turned out to need:
 
 | Document | What it gives you |
 |---|---|
+| [identity-without-spire.md](identity-without-spire.md) | Stage 1 for an estate with no SPIFFE: Kubernetes service-account tokens, IRSA, Azure and GCP workload identity, Vault — and the one place SPIFFE is still required |
 | [limitations.md](limitations.md) | Every limitation in one place, each labelled by design / unbuilt / unproven / environmental — the page to read before relying on any of this |
 | [prerequisites.md](prerequisites.md) | Every external dependency for executing flows end to end, what each unlocks, the two verified delegated-signer wrappers, and what no installation fixes |
 | [threat-model.md](threat-model.md) | The defect class this codebase produces and a six-question review checklist, the trust boundaries, the eleven §7.8 threats as operator checks, the fail-closed matrix, and what is deliberately out of scope |

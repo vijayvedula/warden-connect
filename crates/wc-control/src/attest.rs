@@ -279,6 +279,276 @@ impl IdentityVerifier for JwtSvidIdentity<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 1, without SPIRE · a plain OIDC workload identity
+// ---------------------------------------------------------------------------
+
+/// The claims this verifier reads itself. Everything else is `Validation`'s.
+///
+/// `sub` is not required here — the subject claim is configurable, because the claim
+/// carrying a workload's identity is not `sub` everywhere.
+#[derive(Debug, Deserialize)]
+struct OidcClaims {
+    exp: u64,
+    #[serde(default)]
+    nbf: Option<u64>,
+    #[serde(flatten)]
+    rest: Map<String, Value>,
+}
+
+/// Stage 1 for estates that do **not** run SPIRE.
+///
+/// [`JwtSvidIdentity`] requires a `spiffe://` subject, and most enterprises have no
+/// SPIFFE identity at all: they have Kubernetes projected service-account tokens, IRSA,
+/// Azure workload identity, GCP service accounts, or Vault identity tokens. Every one of
+/// those is an OIDC-ish JWT with a JWKS behind it and a subject that is **not** a SPIFFE
+/// URI — so stage 1 could not pass, the party stayed `Unattested`, and the mediator's
+/// check 9 refused every call. The practical outcome was `--observe` forever.
+///
+/// This admits those tokens on the same terms: a signature under a key from the issuer's
+/// published JWKS, an audience bound to this control plane, an expiry judged against an
+/// injected clock, and — the part that matters — **a subject that maps to exactly one
+/// entity id and cannot be claimed by anything else.**
+///
+/// # The entity id is derived, not asserted
+///
+/// The token's subject namespace is not ours, so the id is derived:
+///
+/// ```text
+/// urn:wc:oidc:<label>:<subject>
+/// ```
+///
+/// `label` is an operator-chosen short name for the issuer. Deriving rather than looking
+/// up a mapping table means there is no administered file whose editor can silently
+/// re-point an identity, and it gives the property that matters for free: a token for
+/// subject *A* can only ever authenticate as the one id derived from *A*.
+///
+/// # Why the label exists, and why it may not contain a colon
+///
+/// Two issuers routinely mint the same subject — `system:serviceaccount:default:default`
+/// exists in every Kubernetes cluster. Without the issuer folded into the id, a token
+/// from *any* configured issuer would authenticate as the same party, which is the same
+/// species of confusion as trusting a key across algorithms. The label is that fold.
+///
+/// A label containing `:` would make the fold ambiguous — `label="a:b"` with subject `c`
+/// and `label="a"` with subject `b:c` derive the same id — so it is refused. That
+/// ambiguity is not theoretical: Kubernetes subjects are colon-separated, so the
+/// collision is one careless label away.
+pub struct OidcIdentity<'a> {
+    /// The issuer's signing keys — its published JWKS, ingested by
+    /// [`IssuerKeys::add_jwks`].
+    pub keys: &'a IssuerKeys,
+    /// The exact `iss` this verifier accepts. **Not optional**: without it, any key in
+    /// the bundle would authenticate a token from any issuer that key belongs to.
+    pub issuer: String,
+    /// A short operator-chosen name for the issuer, folded into the derived id so two
+    /// clusters minting the same subject are two parties. May not contain `:`.
+    pub label: String,
+    /// The audience this control plane answers to.
+    pub audience: String,
+    /// Which claim carries the workload's identity. `sub` for Kubernetes, IRSA and
+    /// Vault; some issuers put the useful name in `email` or a custom claim.
+    pub subject_claim: String,
+    /// The presented token.
+    pub token: String,
+    /// Clock leeway, seconds. Skew, not grace.
+    pub leeway: u64,
+    /// Injected, like every other clock here.
+    pub now: u64,
+}
+
+impl std::fmt::Debug for OidcIdentity<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The token is a live credential; it is not printed.
+        f.debug_struct("OidcIdentity")
+            .field("issuer", &self.issuer)
+            .field("label", &self.label)
+            .field("audience", &self.audience)
+            .field("subject_claim", &self.subject_claim)
+            .field("now", &self.now)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OidcIdentity<'_> {
+    /// The id a subject from this issuer maps to.
+    ///
+    /// Public because an operator has to be able to compute it before registering the
+    /// party — a derivation nobody can predict is a derivation nobody can use.
+    pub fn entity_id_for(label: &str, subject: &str) -> Result<EntityId> {
+        EntityId::new(format!("urn:wc:oidc:{label}:{subject}"))
+    }
+
+    fn check_config(&self) -> Result<()> {
+        if self.audience.trim().is_empty() {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "identity audience must be set; an unbound audience accepts tokens minted \
+                 for anyone",
+            ));
+        }
+        if self.issuer.trim().is_empty() {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "oidc issuer must be set; without it any token signed by a key in the \
+                 bundle authenticates, whichever issuer minted it",
+            ));
+        }
+        if self.label.trim().is_empty() {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "oidc label must be set; it is what keeps two issuers minting the same \
+                 subject from becoming one party",
+            ));
+        }
+        if self.label.contains(':') {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!(
+                    "oidc label {:?} contains ':', which makes the derived entity id \
+                     ambiguous — label \"a:b\" with subject \"c\" and label \"a\" with \
+                     subject \"b:c\" would name the same party",
+                    self.label
+                ),
+            ));
+        }
+        if self.subject_claim.trim().is_empty() {
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "oidc subject claim must be named; there is no safe default across issuers",
+            ));
+        }
+        if self.keys.is_empty() {
+            return Err(WcError::with_detail(
+                Code::IDENTITY_UNVERIFIABLE,
+                "no issuer keys configured",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Verify the token and return the derived id and the `kid` that verified it.
+    fn authenticate(&self) -> Result<(EntityId, String)> {
+        self.check_config()?;
+
+        let mut parts = self.token.split('.');
+        let header_seg = parts.next().unwrap_or_default();
+        let header: Map<String, Value> =
+            serde_json::from_slice(&b64url(header_seg)?).map_err(|e| {
+                WcError::with_detail(Code::IDENTITY_UNVERIFIABLE, "token header is not JSON")
+                    .with_source(e)
+            })?;
+        let kid = header
+            .get("kid")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                WcError::with_detail(
+                    Code::IDENTITY_UNVERIFIABLE,
+                    "token has no `kid`; there is no way to choose a trusted key",
+                )
+            })?
+            .to_string();
+
+        let (alg, key) = self.keys.get(&kid).ok_or_else(|| {
+            WcError::with_detail(
+                Code::IDENTITY_UNVERIFIABLE,
+                format!("token `kid` {kid:?} is not in the issuer's key set"),
+            )
+        })?;
+        checked_alg(&header, *alg, Code::IDENTITY_UNVERIFIABLE)?;
+
+        let mut validation = Validation::new(*alg);
+        validation.leeway = self.leeway;
+        // The window is judged below against the injected clock, for the same reason as
+        // in `JwtSvidIdentity`: `jsonwebtoken` has no clock to inject and would read the
+        // system one, ignoring `self.now`.
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
+        validation.set_audience(&[self.audience.as_str()]);
+        validation.set_issuer(&[self.issuer.as_str()]);
+        validation.set_required_spec_claims(&["exp", "aud", "iss"]);
+
+        let data =
+            jsonwebtoken::decode::<OidcClaims>(&self.token, key, &validation).map_err(|e| {
+                WcError::with_detail(
+                    Code::IDENTITY_UNVERIFIABLE,
+                    "token verification failed (signature, audience or issuer)",
+                )
+                .with_source(e)
+            })?;
+
+        if self.now >= data.claims.exp.saturating_add(self.leeway) {
+            return Err(WcError::with_detail(
+                Code::IDENTITY_UNVERIFIABLE,
+                format!(
+                    "token expired at {} and it is now {} (leeway {}s)",
+                    data.claims.exp, self.now, self.leeway
+                ),
+            ));
+        }
+        if let Some(nbf) = data.claims.nbf {
+            if self.now.saturating_add(self.leeway) < nbf {
+                return Err(WcError::with_detail(
+                    Code::IDENTITY_UNVERIFIABLE,
+                    format!(
+                        "token is not valid before {nbf} and it is now {} (leeway {}s)",
+                        self.now, self.leeway
+                    ),
+                ));
+            }
+        }
+
+        let subject = data
+            .claims
+            .rest
+            .get(&self.subject_claim)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                WcError::with_detail(
+                    Code::IDENTITY_UNVERIFIABLE,
+                    format!(
+                        "token carries no non-empty string claim {:?}; this issuer puts the \
+                         workload identity somewhere else",
+                        self.subject_claim
+                    ),
+                )
+            })?;
+
+        Ok((Self::entity_id_for(&self.label, subject)?, kid))
+    }
+}
+
+impl IdentityVerifier for OidcIdentity<'_> {
+    fn verify_identity(&self, req: &AdmissionRequest) -> Result<IdentityProof> {
+        let (authenticated, kid) = self.authenticate()?;
+
+        // The binding, same as the SVID path: everything above proves a valid token was
+        // presented, and only this proves it is the party being registered.
+        if let Some(claimed) = &req.id {
+            if claimed != &authenticated {
+                return Err(WcError::with_detail(
+                    Code::IDENTITY_UNVERIFIABLE,
+                    format!(
+                        "token authenticates {authenticated} but registration claims \
+                         {claimed} — register the party under the derived id"
+                    ),
+                ));
+            }
+        }
+
+        Ok(IdentityProof {
+            id: authenticated,
+            method: format!(
+                "oidc iss={} kid={kid} claim={} aud={}",
+                self.issuer, self.subject_claim, self.audience
+            ),
+            verified: true,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Stage 3 · agent-card signature
 // ---------------------------------------------------------------------------
 
@@ -1638,5 +1908,343 @@ mod tests {
         let changed = json!({ "tools": [{ "name": "get_balance", "description": "Balance!" }] });
         let d2 = surface_artifact_digest(canon::SurfaceKind::McpTools, &e, &changed).unwrap();
         assert_ne!(d1, d2, "the digest must move when the surface does");
+    }
+
+    // -----------------------------------------------------------------------
+    // Stage 1 without SPIRE — the token shapes enterprises actually have
+    // -----------------------------------------------------------------------
+
+    /// Mint a token in the shape a given issuer produces.
+    fn oidc_token(claims: serde_json::Value) -> String {
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some(KID.to_string());
+        jsonwebtoken::encode(&header, &claims, &signing_key()).unwrap()
+    }
+
+    fn oidc<'a>(
+        keys: &'a IssuerKeys,
+        issuer: &str,
+        label: &str,
+        claim: &str,
+        token: String,
+    ) -> OidcIdentity<'a> {
+        OidcIdentity {
+            keys,
+            issuer: issuer.to_string(),
+            label: label.to_string(),
+            audience: "warden-connect".to_string(),
+            subject_claim: claim.to_string(),
+            token,
+            leeway: 60,
+            now: now(),
+        }
+    }
+
+    /// A Kubernetes projected service-account token, which is the common case.
+    fn k8s_token(sub: &str) -> String {
+        oidc_token(json!({
+            "iss": "https://kubernetes.default.svc",
+            "sub": sub,
+            "aud": ["warden-connect"],
+            "exp": now() + 3600,
+            "iat": now() - 60,
+            "kubernetes.io": {"namespace": "payments",
+                              "serviceaccount": {"name": "recon", "uid": "abc"}},
+        }))
+    }
+
+    #[test]
+    fn a_kubernetes_service_account_token_authenticates() {
+        // The estate this exists for: no SPIRE, a projected SA token, and a subject that
+        // is not a SPIFFE URI. Before this verifier that party could not reach `Attested`
+        // and every mediated call failed WC-3109.
+        let keys = trust();
+        let sub = "system:serviceaccount:payments:recon";
+        let id = OidcIdentity::entity_id_for("prod", sub).unwrap();
+        assert_eq!(
+            id.as_str(),
+            "urn:wc:oidc:prod:system:serviceaccount:payments:recon"
+        );
+
+        let v = oidc(
+            &keys,
+            "https://kubernetes.default.svc",
+            "prod",
+            "sub",
+            k8s_token(sub),
+        );
+        let proof = v.verify_identity(&request(Some(id.as_str()))).unwrap();
+        assert!(proof.verified);
+        assert_eq!(proof.id, id);
+        assert!(proof
+            .method
+            .starts_with("oidc iss=https://kubernetes.default.svc"));
+    }
+
+    #[test]
+    fn the_same_subject_from_two_clusters_is_two_parties() {
+        // `system:serviceaccount:default:default` exists in every cluster. Without the
+        // issuer folded into the id, a token from either would authenticate as the same
+        // party — the same species of confusion as trusting a key across algorithms.
+        let keys = trust();
+        let sub = "system:serviceaccount:default:default";
+        let prod = OidcIdentity::entity_id_for("prod", sub).unwrap();
+        let dev = OidcIdentity::entity_id_for("dev", sub).unwrap();
+        assert_ne!(prod, dev);
+
+        // A prod token cannot authenticate the dev party even with both configured.
+        let v = oidc(
+            &keys,
+            "https://kubernetes.default.svc",
+            "prod",
+            "sub",
+            k8s_token(sub),
+        );
+        let err = v.verify_identity(&request(Some(dev.as_str()))).unwrap_err();
+        assert_eq!(err.code(), Code::IDENTITY_UNVERIFIABLE);
+        assert!(
+            err.detail().contains("registration claims"),
+            "{}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn a_label_containing_a_colon_is_refused() {
+        // The ambiguity that would let two different identities derive one id:
+        // label "a:b" + subject "c" and label "a" + subject "b:c". Kubernetes subjects
+        // are colon-separated, so this is one careless label away rather than exotic.
+        assert_eq!(
+            OidcIdentity::entity_id_for("a:b", "c").unwrap().as_str(),
+            OidcIdentity::entity_id_for("a", "b:c").unwrap().as_str(),
+            "the collision this refusal exists to prevent"
+        );
+        let keys = trust();
+        let v = oidc(
+            &keys,
+            "https://kubernetes.default.svc",
+            "a:b",
+            "sub",
+            k8s_token("system:serviceaccount:x:y"),
+        );
+        let err = v.verify_identity(&request(None)).unwrap_err();
+        assert_eq!(err.code(), Code::CONFIG_INVALID);
+        assert!(err.detail().contains("ambiguous"), "{}", err.detail());
+    }
+
+    #[test]
+    fn a_token_from_another_issuer_is_refused_even_with_the_right_key() {
+        // The reason `issuer` is required rather than optional. The signature verifies —
+        // it is the same key — and the token must still be refused.
+        let keys = trust();
+        let wrong_issuer = oidc_token(json!({
+            "iss": "https://login.microsoftonline.com/tenant/v2.0",
+            "sub": "system:serviceaccount:payments:recon",
+            "aud": ["warden-connect"],
+            "exp": now() + 3600,
+        }));
+        let v = oidc(
+            &keys,
+            "https://kubernetes.default.svc",
+            "prod",
+            "sub",
+            wrong_issuer,
+        );
+        let err = v.verify_identity(&request(None)).unwrap_err();
+        assert_eq!(err.code(), Code::IDENTITY_UNVERIFIABLE);
+    }
+
+    #[test]
+    fn an_empty_issuer_or_label_is_refused_rather_than_defaulted() {
+        // Both would be vacuous, and a vacuous check that reads as configured is this
+        // codebase's characteristic defect.
+        let keys = trust();
+        let token = k8s_token("system:serviceaccount:x:y");
+        for (issuer, label, audience) in [
+            ("", "prod", "warden-connect"),
+            ("https://kubernetes.default.svc", "", "warden-connect"),
+            ("https://kubernetes.default.svc", "prod", ""),
+        ] {
+            let v = OidcIdentity {
+                keys: &keys,
+                issuer: issuer.to_string(),
+                label: label.to_string(),
+                audience: audience.to_string(),
+                subject_claim: "sub".to_string(),
+                token: token.clone(),
+                leeway: 60,
+                now: now(),
+            };
+            assert_eq!(
+                v.verify_identity(&request(None)).unwrap_err().code(),
+                Code::CONFIG_INVALID,
+                "issuer={issuer:?} label={label:?} audience={audience:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_subject_claim_is_configurable_because_issuers_disagree() {
+        // Vault puts the entity in `sub`; some issuers put the useful name in `email` and
+        // an opaque number in `sub`. Naming the claim is the difference between working
+        // and not, so it is configuration rather than a guess.
+        let keys = trust();
+        let token = oidc_token(json!({
+            "iss": "https://vault.corp.example/v1/identity/oidc",
+            "sub": "8f2c-entity-id",
+            "email": "recon@corp.example",
+            "aud": ["warden-connect"],
+            "exp": now() + 3600,
+        }));
+        let by_sub = oidc(
+            &keys,
+            "https://vault.corp.example/v1/identity/oidc",
+            "vault",
+            "sub",
+            token.clone(),
+        );
+        assert_eq!(
+            by_sub.verify_identity(&request(None)).unwrap().id.as_str(),
+            "urn:wc:oidc:vault:8f2c-entity-id"
+        );
+        let by_email = oidc(
+            &keys,
+            "https://vault.corp.example/v1/identity/oidc",
+            "vault",
+            "email",
+            token,
+        );
+        assert_eq!(
+            by_email
+                .verify_identity(&request(None))
+                .unwrap()
+                .id
+                .as_str(),
+            "urn:wc:oidc:vault:recon@corp.example"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_empty_subject_claim_is_refused_not_treated_as_anonymous() {
+        let keys = trust();
+        for claims in [
+            json!({"iss": "https://i.example", "aud": ["warden-connect"], "exp": now() + 60}),
+            json!({"iss": "https://i.example", "sub": "   ", "aud": ["warden-connect"],
+                   "exp": now() + 60}),
+            json!({"iss": "https://i.example", "sub": 12345, "aud": ["warden-connect"],
+                   "exp": now() + 60}),
+        ] {
+            let v = oidc(&keys, "https://i.example", "l", "sub", oidc_token(claims));
+            let err = v.verify_identity(&request(None)).unwrap_err();
+            assert_eq!(err.code(), Code::IDENTITY_UNVERIFIABLE);
+            assert!(
+                err.detail().contains("workload identity"),
+                "{}",
+                err.detail()
+            );
+        }
+    }
+
+    #[test]
+    fn expiry_and_audience_are_enforced_against_the_injected_clock() {
+        let keys = trust();
+        let sub = "system:serviceaccount:payments:recon";
+
+        // Expired, judged at a chosen instant rather than the wall clock.
+        let mut v = oidc(
+            &keys,
+            "https://kubernetes.default.svc",
+            "prod",
+            "sub",
+            k8s_token(sub),
+        );
+        v.now = now() + 7_200;
+        let err = v.verify_identity(&request(None)).unwrap_err();
+        assert!(err.detail().contains("expired at"), "{}", err.detail());
+
+        // Minted for somebody else's audience.
+        let other = oidc_token(json!({
+            "iss": "https://kubernetes.default.svc",
+            "sub": sub,
+            "aud": ["some-other-service"],
+            "exp": now() + 3600,
+        }));
+        let v = oidc(
+            &keys,
+            "https://kubernetes.default.svc",
+            "prod",
+            "sub",
+            other,
+        );
+        assert_eq!(
+            v.verify_identity(&request(None)).unwrap_err().code(),
+            Code::IDENTITY_UNVERIFIABLE
+        );
+    }
+
+    #[test]
+    fn an_unsigned_or_untrusted_token_is_refused() {
+        let keys = trust();
+        let sub = "system:serviceaccount:payments:recon";
+
+        // alg=none, the first thing anybody tries.
+        let header = b64u(br#"{"alg":"none","kid":"test-es256"}"#);
+        let payload = b64u(
+            serde_json::to_vec(&json!({
+                "iss": "https://kubernetes.default.svc", "sub": sub,
+                "aud": ["warden-connect"], "exp": now() + 60
+            }))
+            .unwrap()
+            .as_slice(),
+        );
+        let v = oidc(
+            &keys,
+            "https://kubernetes.default.svc",
+            "prod",
+            "sub",
+            format!("{header}.{payload}."),
+        );
+        assert!(v.verify_identity(&request(None)).is_err());
+
+        // A kid nobody published.
+        let unknown = {
+            let mut h = Header::new(Algorithm::ES256);
+            h.kid = Some("not-published".to_string());
+            jsonwebtoken::encode(
+                &h,
+                &json!({"iss": "https://kubernetes.default.svc", "sub": sub,
+                        "aud": ["warden-connect"], "exp": now() + 60}),
+                &signing_key(),
+            )
+            .unwrap()
+        };
+        let v = oidc(
+            &keys,
+            "https://kubernetes.default.svc",
+            "prod",
+            "sub",
+            unknown,
+        );
+        let err = v.verify_identity(&request(None)).unwrap_err();
+        assert!(
+            err.detail().contains("not in the issuer"),
+            "{}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn the_token_never_appears_in_debug_output() {
+        // It is a live credential, and `Debug` reaches logs and panic messages.
+        let keys = trust();
+        let token = k8s_token("system:serviceaccount:payments:recon");
+        let v = oidc(
+            &keys,
+            "https://kubernetes.default.svc",
+            "prod",
+            "sub",
+            token.clone(),
+        );
+        assert!(!format!("{v:?}").contains(&token));
     }
 }
