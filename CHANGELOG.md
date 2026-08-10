@@ -158,6 +158,46 @@ mode this component exists to prevent, occurring inside it:
 - **Screening refused every localised tool server** — the S1 rule read localisation
   controls in complex scripts as concealment.
 - **A latency gate pointed at a benchmark that did not exist**, so it silently never ran.
+Found by the **adversarial hardening pass** over the six paths in
+`docs/production-readiness.md`, by running the binaries:
+
+- **The pinned surface ignored two model-visible fields, so screening and drift detection
+  were blind together.** MCP's tool-level `title` — added in revision **2025-06-18**, which
+  is the revision `admission` negotiates — and A2A's `skills[].examples`, which the spec
+  defines as example *prompts*. The `wcs1` allowlist covered `annotations.title` and `tags`
+  but not these, and `screen::text_fields` walks that same projection, so the identical
+  injection string scored a **block** in `description` and **zero** in `title` while the
+  report still read "ran S1 S2 S3 S4 S5 S6 S7 S8". Neither field moved the pin, so no drift
+  event fired either. One omission, both halves of A4.
+- **`surface = { write = true }` matched every surface.** The only branch was
+  `if !write_allowed && has_write`, so `write = true` was a no-op — and the shipped
+  `connect-policy.toml` used it on its money-movement rule meaning the opposite.
+- **The shipped policy's money-movement rule was shadowed.** It sat below
+  `callee_tier < 3`, which matches every tier 1 and 2 payments callee — all of them — so the
+  spend cap, the oversight threshold and `evidence_delivery = "blocking"` were never applied
+  to a write-capable payments contract. `policy lint` did not flag it, correctly: the rule is
+  reachable, just not for the callees it exists for.
+- **Dual control at tier 1 was inexpressible for issuance.** It was enforced properly for
+  `quarantine` (`WC-6001`) and could only be *asked for* by a zone bar, while `callee_tier`
+  and `surface.write` are matchable only in a rule. A tier-1 write-capable money-movement
+  contract minted on **one** signature. `[[rules]]` now takes `approval`, raise-only.
+- **`audit verify` reported "chain is intact" on a truncated chain.** Dropping the tail of a
+  hash chain leaves rows that link perfectly, and it is the one edit worth making: it removes
+  the newest evidence. Checkpoint sequences are now compared on every run — without needing
+  the anchor key, since an unverified checkpoint may raise an alarm even though it may not
+  clear one — and the verdict never says "intact" without saying what bounds completeness.
+  `backup` inherits this and now refuses to snapshot a truncated chain.
+- **A mediator that nothing can contain reported `wc_revocation_trusted 1`.** With
+  `--contract FILE` and no control plane, no pull ever happens, so nothing ever distrusts the
+  empty set — and the `wc_revocation_trusted == 0` alert could never fire for the one
+  topology where quarantine fan-out cannot arrive at all. There is now a separate
+  `wc_revocation_source_configured` gauge, a startup warning, and two alerts instead of one.
+- **`--tools ""` reached the approval queue.** An empty surface cannot mint (`WC-3012`), and
+  it failed only when a human tried to approve it. Refused at request time now: approval
+  fatigue is a listed threat and the queue is what it wears down.
+- **`connect contracts <cid>` named neither approver**, so a two-controller contract printed
+  identically to a one-controller one on the durable view an auditor reads.
+
 - **The documented SPIRE procedure was wrong in four ways**, and running one turned all four
   up at once: `brew install spire` (SPIRE publishes no darwin build at all), `spire-agent api
   fetch jwtbundles` and `spire-server bundle show -format jwks` (neither exists), and a `sed`

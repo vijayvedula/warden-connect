@@ -293,6 +293,39 @@ pub fn newest_checkpoint(path: impl AsRef<Path>) -> Option<Checkpoint> {
     serde_json::from_slice(&raw).ok()
 }
 
+/// The highest sequence any checkpoint in `anchor_path` claims, **unverified**.
+///
+/// Zero when the file is absent or holds nothing parseable, which the caller must
+/// read as "truncation could not be checked" rather than "no truncation".
+///
+/// The JWS payload is decoded without checking the signature on purpose: the value is
+/// used only to *raise* an alarm about missing rows, never to clear one. An attacker
+/// who rewrites this file can add false alarms and cannot remove a real one that
+/// `--anchor-pub` would find, because that path verifies properly.
+fn highest_checkpoint_seq(anchor_path: &Path) -> Result<u64> {
+    use base64::Engine as _;
+
+    let text = match std::fs::read_to_string(anchor_path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(io_err(anchor_path, e)),
+    };
+
+    let mut highest = 0u64;
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Some(payload) = line.split('.').nth(1) else {
+            continue;
+        };
+        let Ok(raw) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
+            continue;
+        };
+        if let Ok(cp) = serde_json::from_slice::<Checkpoint>(&raw) {
+            highest = highest.max(cp.seq);
+        }
+    }
+    Ok(highest)
+}
+
 /// Verify every checkpoint in an anchor file against a chain's entries.
 ///
 /// Returns the number verified, and the sequences where a checkpoint disagreed with
@@ -525,6 +558,30 @@ impl Chain {
             report.head_hash = entry.row_hash.clone();
         }
 
+        // --- truncation ---
+        //
+        // A hash chain cannot detect its own truncation: drop the last N rows and what
+        // remains links perfectly, which is why `audit verify` reported **"chain is
+        // intact"** on a chain whose most recent evidence had been deleted. That is the
+        // one edit an attacker who has just used break-glass actually wants.
+        //
+        // The checkpoint sequences are read here **without** the anchor key, and
+        // deliberately so: a checkpoint claiming seq 100 beside a chain whose head is 40
+        // is evidence of truncation whoever signed it, and an unverified claim is
+        // allowed to *raise* an alarm even though it may never clear one. Verifying the
+        // signatures is still what `--anchor-pub` is for, and a forged anchor file only
+        // ever adds alarms.
+        report.highest_checkpoint_seq = highest_checkpoint_seq(&dir.join(ANCHOR_FILE))?;
+        if report.highest_checkpoint_seq > report.head_seq {
+            report.broken_at.get_or_insert(report.head_seq + 1);
+            report.problems.push(format!(
+                "chain head is seq {} but a checkpoint records seq {}: {} row(s) have been removed",
+                report.head_seq,
+                report.highest_checkpoint_seq,
+                report.highest_checkpoint_seq - report.head_seq
+            ));
+        }
+
         if let Some(pem) = anchor_pub_pem {
             let (verified, mismatches) = verify_anchors(&dir.join(ANCHOR_FILE), pem, &entries)?;
             report.anchors_verified = verified;
@@ -567,6 +624,13 @@ pub struct ChainReport {
     pub anchors_verified: u64,
     /// Checkpoint sequences that disagreed with the chain.
     pub anchor_mismatches: Vec<u64>,
+    /// Highest sequence any checkpoint claims, read without verifying signatures.
+    ///
+    /// This is the only thing bounding truncation, so it is reported rather than
+    /// merely used: **zero means truncation was not checked at all**, and a caller
+    /// that prints a verdict without saying so is telling an operator the chain is
+    /// whole when nothing looked.
+    pub highest_checkpoint_seq: u64,
     /// Human-readable problems, in order found.
     pub problems: Vec<String>,
 }
@@ -576,6 +640,41 @@ impl ChainReport {
     #[must_use]
     pub fn is_intact(&self) -> bool {
         self.broken_at.is_none() && self.anchor_mismatches.is_empty()
+    }
+
+    /// Whether anything at all bounded truncation on this run.
+    ///
+    /// Linking every row proves no row was *altered* and says nothing about rows that
+    /// are no longer there. Only a checkpoint recording a higher sequence can, so a
+    /// verdict that does not distinguish the two is the misleading part.
+    #[must_use]
+    pub fn truncation_was_checked(&self) -> bool {
+        self.highest_checkpoint_seq > 0
+    }
+
+    /// One line naming what was and was not established, for the operator-facing
+    /// verdict. Never the word "intact" on its own.
+    #[must_use]
+    pub fn completeness(&self) -> String {
+        if self.highest_checkpoint_seq > self.head_seq {
+            format!(
+                "INCOMPLETE — a checkpoint records seq {} and the head is seq {}, so {} \
+                 row(s) are missing",
+                self.highest_checkpoint_seq,
+                self.head_seq,
+                self.highest_checkpoint_seq - self.head_seq
+            )
+        } else if self.truncation_was_checked() {
+            format!(
+                "complete to seq {} (the newest checkpoint); anything appended after it \
+                 could still be removed undetectably",
+                self.highest_checkpoint_seq
+            )
+        } else {
+            "TRUNCATION NOT CHECKED — no checkpoint exists yet, so removal of recent rows \
+             would leave a chain that links perfectly"
+                .to_string()
+        }
     }
 }
 
@@ -880,6 +979,98 @@ mod tests {
         assert!(!report.is_intact());
         assert_eq!(report.broken_at, Some(3));
         assert!(report.problems.iter().any(|p| p.contains("numbering")));
+    }
+
+    #[test]
+    fn a_truncated_tail_is_detected_against_a_checkpoint_without_the_key() {
+        // `audit verify` reported **"chain is intact", exit 0** on a chain whose last
+        // rows had been deleted, because dropping the tail of a hash chain leaves
+        // something that links perfectly. It is also the one edit worth making: it
+        // removes the newest evidence, which is the break-glass you just used.
+        //
+        // Nothing here is a cryptographic fix — truncation is not detectable from the
+        // chain alone, ever. What is detectable is disagreement with a checkpoint, and
+        // that comparison needs no key, so it now happens on every run.
+        let tmp = TmpDir::new("truncated");
+        let anchor_path = tmp.path().join(ANCHOR_FILE);
+        {
+            let mut chain = Chain::open(tmp.path())
+                .unwrap()
+                .with_anchor(PRIV, &anchor_path, 2)
+                .unwrap();
+            for i in 0..6 {
+                chain.append(draft("e"), 1_000 + i).unwrap();
+            }
+        }
+        let path = tmp.path().join(CHAIN_FILE);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 6);
+        // Keep a prefix. Every remaining row links to its predecessor, so the
+        // link-only check has nothing to say.
+        std::fs::write(&path, lines[..3].join("\n") + "\n").unwrap();
+
+        // No anchor key at all — the case an operator gets when they forget the flag.
+        let report = Chain::verify(tmp.path(), None).unwrap();
+        assert!(
+            report.truncation_was_checked(),
+            "a checkpoint file exists, so truncation is checkable without the key"
+        );
+        assert!(
+            !report.is_intact(),
+            "a truncated chain is not intact: {report:?}"
+        );
+        assert_eq!(report.head_seq, 3);
+        assert_eq!(report.highest_checkpoint_seq, 6);
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.contains("row(s) have been removed")),
+            "{:?}",
+            report.problems
+        );
+
+        // And with the key, the same conclusion by the stronger route.
+        let verified = Chain::verify(tmp.path(), Some(PUB)).unwrap();
+        assert!(!verified.is_intact());
+        assert!(verified.anchor_mismatches.contains(&6));
+    }
+
+    #[test]
+    fn with_no_checkpoint_at_all_completeness_is_reported_as_unverified() {
+        // The honest half. Before any checkpoint is written there is nothing to compare
+        // against, so truncation genuinely cannot be detected — and the verdict has to
+        // say that rather than print one word that reads as "all good". Asserted on the
+        // report so the CLI cannot quietly go back to a bare "intact".
+        let tmp = TmpDir::new("unproven-completeness");
+        {
+            let mut chain = Chain::open(tmp.path()).unwrap();
+            for i in 0..3 {
+                chain.append(draft("e"), 1_000 + i).unwrap();
+            }
+        }
+        let full = Chain::verify(tmp.path(), None).unwrap();
+        assert!(full.is_intact(), "links are fine");
+        assert!(
+            !full.truncation_was_checked(),
+            "with no checkpoint, nothing bounds truncation"
+        );
+        assert!(
+            full.completeness().contains("TRUNCATION NOT CHECKED"),
+            "{}",
+            full.completeness()
+        );
+
+        // Truncating it really is undetectable here, which is the limitation being
+        // stated rather than a bug being asserted as fixed.
+        let path = tmp.path().join(CHAIN_FILE);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        std::fs::write(&path, lines[..2].join("\n") + "\n").unwrap();
+        let cut = Chain::verify(tmp.path(), None).unwrap();
+        assert!(cut.is_intact(), "links still verify — this is the residual");
+        assert!(!cut.truncation_was_checked());
     }
 
     #[test]

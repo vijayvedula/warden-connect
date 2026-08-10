@@ -3533,6 +3533,11 @@ fn audit_verify(args: &Args) -> Result<()> {
                 "broken_at": report.broken_at,
                 "anchors_verified": report.anchors_verified,
                 "anchor_mismatches": report.anchor_mismatches,
+                // Linking proves nothing about rows that are gone. A consumer that
+                // reads only `intact` would treat a truncated chain as healthy, so
+                // both facts are emitted and named differently.
+                "truncation_checked": report.truncation_was_checked(),
+                "complete_to_seq": report.highest_checkpoint_seq,
                 "problems": report.problems,
             }))?
         );
@@ -3552,15 +3557,26 @@ fn audit_verify(args: &Args) -> Result<()> {
             // saying so is more useful than a bare "ok".
             println!("anchors          not checked (pass --anchor-pub to verify signatures)");
         }
+        println!("completeness     {}", report.completeness());
         for problem in &report.problems {
             println!("  problem: {problem}");
         }
+        // Never a bare "intact". Linking every row and *having* every row are two
+        // claims, and this command used to print one word for both — so a chain with
+        // its most recent evidence deleted verified green, which is the single edit
+        // somebody who just used break-glass would make.
         println!(
             "\n{}",
-            if report.is_intact() {
-                "chain is intact"
-            } else {
-                "CHAIN IS BROKEN"
+            match (report.is_intact(), report.truncation_was_checked()) {
+                (false, _) => "CHAIN IS BROKEN".to_string(),
+                (true, true) => format!(
+                    "chain is intact and complete to seq {}",
+                    report.highest_checkpoint_seq
+                ),
+                (true, false) =>
+                    "chain links are intact · COMPLETENESS UNVERIFIED (no checkpoint to \
+                     compare against — see `completeness` above)"
+                        .to_string(),
             }
         );
     }
@@ -4691,6 +4707,20 @@ fn contracts_cmd(args: &Args) -> Result<()> {
             println!("  aud        {}", record.aud.join(", "));
             println!("  expires    {}", record.exp);
             println!("  approval   {:?}", record.approval.mode);
+            // Who signed, on the durable view an auditor reads — not only on the
+            // transient `approve` output. Dual control's whole product is
+            // attributability, and a two-controller contract printed identically to a
+            // one-controller contract is that product missing from the place it is
+            // looked for.
+            if let Some(by) = &record.approval.by {
+                println!("  approved   {by}");
+            }
+            if let Some(second) = &record.approval.second {
+                println!("  second     {second}");
+            }
+            if let Some(ticket) = &record.approval.ticket {
+                println!("  ticket     {ticket}");
+            }
             println!("  policy     {}", record.policy_version);
         }
         return Ok(());
@@ -5257,10 +5287,15 @@ USAGE
   {exe} <command> [flags]
 
 REGISTER
-  register server --endpoint URL --owner human:x --zone internal.y
+  register server --endpoint URL --owner human:x --zone internal.y [--id ID]
                   [--surface FILE] [--tier N] [--service S]
                   [--data-classes a,b] [--jurisdictions SG,AU] [--enforce]
   register agent  --card FILE --owner human:x --zone internal.y [--id ID]
+
+  --id matters more than it looks. Omit it and the id is derived (`urn:wc:...`),
+  which no JWT-SVID can ever name — a SPIFFE `sub` must be a spiffe:// URI, so
+  stage 1 can never pass and the party stays Unattested forever. Pass the
+  workload's real SPIFFE id and stage 1 works.
 
   ATTESTATION (any subset; each stage stays skipped without its material)
     --svid FILE --trust-key KID=PEM[:ALG] --aud NAME [--leeway N]   stage 1
@@ -5268,6 +5303,14 @@ REGISTER
     --attest FILE --prov-key KID=PEM[:ALG] --builder ID             stage 4
       and one of --artifact-digest sha256:... | --bind-surface
     --screen-rules FILE --screen-mode observe|flag|enforce          stage 5
+
+  REACHING `Attested` (what the mediator's check 9 demands in enforce mode)
+    Stages 1, 3 and 4 must all pass. Stage 3 signs a *document*, and for an MCP
+    server that document is its tool list, not an agent card: sign the --surface
+    file and give it a `signatures` array of {{protected, signature}} over the
+    wcs1-canonical document with `signatures` removed. Without this an MCP server
+    stays Unattested, every mediated call fails WC-3109, and the estate looks
+    broken rather than unconfigured. `connect show <id>` names what is missing.
 
 CONNECT  (the core loop)
   request --from ID --to ID --tools a,b --justify TEXT [--ttl 30d]

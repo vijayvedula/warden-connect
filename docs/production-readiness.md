@@ -1042,7 +1042,31 @@ by what unblocks the others.
 
 ---
 
-## Hardening review — planned, not started
+## Hardening review — first pass run
+
+> **Run.** All six paths, by executing the binaries against scratch estates rather than by
+> reading. It found **six defects of the characteristic shape, plus two reporting gaps**, all
+> now fixed with regression tests; they are listed in [CHANGELOG.md](../CHANGELOG.md) and
+> tabulated in [threat-model.md](threat-model.md) Part 1. The headline three:
+>
+> * **the pin ignored MCP's `title` and A2A's `examples`** — model-visible text where an
+>   injection moved no digest and scored zero, so screening and drift detection were blind
+>   from the same one-line omission;
+> * **`audit verify` said "chain is intact" on a truncated chain** — the one edit that erases
+>   the newest evidence;
+> * **a tier-1 money-movement contract minted on one signature**, because dual control could
+>   only be asked for by a zone bar while the conditions that identify money movement are
+>   matchable only in a rule.
+>
+> Two had passing unit tests beside them. `SurfaceMatch` was tested only for `write = false`;
+> the chain had tests for edited, deleted and reordered rows and none for a truncated one.
+> **A one-sided test is how a one-sided control survives review** — worth carrying into the
+> second pass, which has not been run.
+>
+> What this pass did *not* cover: `screen` beyond the allowlist question, the ceilings, the
+> drain path, federation, and residency. Those remain for a second pass.
+
+### The original plan
 
 Warden core ran an adversarial pass over its security-critical paths before going
 open source and it found a dozen real defects, each of which now has a regression

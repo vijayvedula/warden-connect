@@ -34,8 +34,14 @@ groups:
       #
       # Expect this to arrive as "all the agents are down". It is fail-closed working as
       # designed and is indistinguishable from an outage from the outside.
+      # `wc_revocation_source_configured == 1` is in the expression so this alert keeps
+      # meaning "the feed broke". A mediator started with `--contract FILE` and no control
+      # plane has no feed to break, and reported `wc_revocation_trusted 1` until the gauge
+      # was made honest — so this rule could never fire for the one topology that has no
+      # containment at all. That case is its own alert below, because the fix is different:
+      # there is nothing to repair, the mediator needs a control plane.
       - alert: WardenConnectRevocationDistrusted
-        expr: wc_revocation_trusted == 0
+        expr: wc_revocation_trusted == 0 and wc_revocation_source_configured == 1
         for: 30s
         labels:
           severity: page
@@ -44,6 +50,24 @@ groups:
           description: >-
             Fix the feed's signature or its transport — never by disabling the check. A feed
             you cannot verify is a feed an attacker may have written.
+          runbook: docs/runbook.md#all-the-agents-are-down
+
+      # A mediator nothing can contain. Not fail-closed and not an outage: it serves its
+      # contracts happily until they expire, and a quarantine ordered on the control plane
+      # never reaches it. Deliberate for a genuinely air-gapped deployment, which is why
+      # this warns rather than pages — but it must be a decision somebody made, not a flag
+      # combination nobody noticed.
+      - alert: WardenConnectMediatorHasNoRevocationSource
+        expr: wc_revocation_source_configured == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "a mediator has no revocation source, so quarantine cannot reach it"
+          description: >-
+            Started with --contract FILE and no --contracts URL. Containment for this
+            process is contract expiry only. Give it a control plane, or shorten the TTLs
+            it is issued and accept expiry as the containment bound.
           runbook: docs/runbook.md#all-the-agents-are-down
 
       # The quieter, worse variant: the control plane serves no feed at all, so nothing it

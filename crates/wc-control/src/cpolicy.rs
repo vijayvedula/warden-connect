@@ -537,7 +537,8 @@ impl TierMatch {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct SurfaceMatch {
-    /// When `Some(false)`, matches only surfaces with no write-capable item.
+    /// Matches only surfaces whose write-capability equals this. `false` means no
+    /// write-capable item; `true` means at least one.
     pub write: Option<bool>,
     /// Ceiling on how many items may be requested.
     pub max_tools: Option<usize>,
@@ -552,9 +553,18 @@ impl SurfaceMatch {
                 return false;
             }
         }
-        if let Some(write_allowed) = self.write {
-            let has_write = surface_is_write_capable(surface);
-            if !write_allowed && has_write {
+        if let Some(want_write) = self.write {
+            // Both directions, which is the fix: `write = false` had always excluded
+            // write-capable surfaces, and `write = true` had matched *everything* —
+            // the branch only ever fired on `!write_allowed`. The shipped
+            // `connect-policy.toml` used `surface = { write = true }` on its
+            // money-movement rule meaning "only when write-capable", so that rule was
+            // silently matching read-only payments traffic as well, and first-match-wins
+            // sent balance checks to a payments controller. A matcher that reads as a
+            // restriction and restricts nothing is the defect class this codebase
+            // produces; here it pushed toward approval fatigue (A7) rather than toward
+            // permission, which is why nobody noticed.
+            if surface_is_write_capable(surface) != want_write {
                 return false;
             }
         }
@@ -658,6 +668,19 @@ pub struct ConnRule {
     /// Role an approver must hold.
     #[serde(default)]
     pub approver_role: Option<String>,
+    /// Approval floor this rule imposes, which may only be **stricter** than the
+    /// zone bar's — never looser.
+    ///
+    /// Without this a rule could name *which* role must sign and never *how many*,
+    /// so dual control was reachable only from a zone bar. A bar is per-zone, and
+    /// `callee_tier` and `surface.write` are matchable only here — which meant
+    /// "any tier 1 callee needs two approvers" was inexpressible unless every
+    /// tier-1 callee got a zone of its own. The shipped policy's own money-movement
+    /// rule minted on one signature while `quarantine` demanded two for the same
+    /// party, and `docs/threat-model.md` called dual control at tier 1 the
+    /// preventive half of A10.
+    #[serde(default)]
+    pub approval: Option<ApprovalRequirement>,
     /// TTL ceiling this rule imposes.
     #[serde(default)]
     pub ttl_max: Option<String>,
@@ -1140,6 +1163,7 @@ impl ConnectPolicy {
         let mut decision = self.default;
         let mut reason = format!("default {}", self.default.as_str());
         let mut approver_role = None;
+        let mut rule_approval = None;
 
         for (index, rule) in self.rules.iter().enumerate() {
             if !rule.matches(req, caller, callee, &facts) {
@@ -1152,6 +1176,7 @@ impl ConnectPolicy {
                 .clone()
                 .unwrap_or_else(|| format!("rule[{index}] {}", rule.decision.as_str()));
             approver_role = rule.approver_role.clone();
+            rule_approval = rule.approval;
 
             if let Some(rule_ttl) = rule.ttl_max.as_deref().and_then(parse_duration) {
                 ttl = ttl.min(rule_ttl);
@@ -1167,22 +1192,43 @@ impl ConnectPolicy {
             trace.push("default".to_string());
         }
 
-        // --- 4 · the bar's approval floor ---
-        let mut dual_control = bar.approval == ApprovalRequirement::DualControl;
-        if decision == ConnDecision::Allow && bar.approval != ApprovalRequirement::Standing {
+        // --- 4 · the approval floor ---
+        //
+        // The bar's floor and the matched rule's, combined by `max` — the same
+        // one-directional discipline `terms.intersect` uses. A rule may demand more
+        // than its zone does and can never accept less, so reading the pair in either
+        // order gives the same answer.
+        let approval = match rule_approval {
+            Some(from_rule) => bar.approval.max(from_rule),
+            None => bar.approval,
+        };
+        // Which side is binding, so a denial and the trace name the same source.
+        let rule_binds = rule_approval.is_some_and(|r| r > bar.approval);
+        let mut dual_control = approval == ApprovalRequirement::DualControl;
+        if decision == ConnDecision::Allow && approval != ApprovalRequirement::Standing {
             decision = ConnDecision::RequireApproval;
+            let source = if rule_binds {
+                "the matched rule".to_string()
+            } else {
+                format!("zone bar for {}", callee.zone.as_str())
+            };
             reason = format!(
-                "zone bar for {} requires {}",
-                callee.zone.as_str(),
-                match bar.approval {
+                "{source} requires {}",
+                match approval {
                     ApprovalRequirement::DualControl => "two approvers",
                     _ => "a human approver",
                 }
             );
-            trace.push("zone-bar-approval".to_string());
+            trace.push(
+                if rule_binds {
+                    "rule-approval"
+                } else {
+                    "zone-bar-approval"
+                }
+                .to_string(),
+            );
         }
-        if decision == ConnDecision::RequireApproval
-            && bar.approval == ApprovalRequirement::DualControl
+        if decision == ConnDecision::RequireApproval && approval == ApprovalRequirement::DualControl
         {
             dual_control = true;
         }
@@ -2280,6 +2326,125 @@ review_every = "36500d"
             "partner cannot sub-delegate"
         );
         assert!(eval.terms.human_oversight.is_some());
+    }
+
+    #[test]
+    fn surface_write_matches_in_both_directions() {
+        // `write = true` used to match every surface, because the only branch was
+        // `if !write_allowed && has_write`. So a rule scoped to write-capable traffic
+        // captured read-only traffic too, and with first-match-wins that is where a
+        // balance check went. Both directions asserted, because a one-sided test is how
+        // the original passed.
+        let read_only = Surface {
+            tools: vec!["get_balance".to_string(), "list_transactions".to_string()],
+            ..Surface::default()
+        };
+        let writing = Surface {
+            tools: vec!["get_balance".to_string(), "wire_funds".to_string()],
+            ..Surface::default()
+        };
+        assert!(surface_is_write_capable(&writing));
+        assert!(!surface_is_write_capable(&read_only));
+
+        let wants_write = SurfaceMatch {
+            write: Some(true),
+            max_tools: None,
+        };
+        assert!(wants_write.matches(&writing));
+        assert!(
+            !wants_write.matches(&read_only),
+            "`write = true` must not match a read-only surface"
+        );
+
+        let wants_read_only = SurfaceMatch {
+            write: Some(false),
+            max_tools: None,
+        };
+        assert!(wants_read_only.matches(&read_only));
+        assert!(!wants_read_only.matches(&writing));
+
+        // Unset still means "do not care", which several rules rely on.
+        let dont_care = SurfaceMatch::default();
+        assert!(dont_care.matches(&read_only) && dont_care.matches(&writing));
+    }
+
+    #[test]
+    fn a_rule_can_demand_two_approvers_and_can_never_accept_fewer() {
+        // Found by running the shipped policy: a request for `transfer_funds` on a
+        // tier-1, write-capable callee in `internal.payments` — the highest-consequence
+        // connection that policy describes — minted on **one** signature, while
+        // `connect quarantine` on the same party refused with `WC-6001 tier1 requires
+        // two distinct approvers`. Dual control existed and was enforced, but nothing
+        // could ask for it here: a zone bar is per-zone, and `callee_tier` and
+        // `surface.write` are matchable only in a rule.
+        let text = format!(
+            r#"
+default = "require_approval"
+version = "v1"
+
+[[zone]]
+id = "internal.payments"
+trust = "internal"
+
+[[zone]]
+id = "partner.acme"
+trust = "partner"
+assurance = {{ approval = "human" }}
+
+[standing]
+reviewed_at = {REVIEWED}
+
+# The case that was inexpressible: two approvers for a write-capable tier-1 callee,
+# wherever it lives.
+[[rules]]
+callee_tier = {{ op = "lt", value = 2 }}
+surface = {{ write = true }}
+decision = "require_approval"
+approval = "dual_control"
+approver_role = "payments.controller"
+reason = "money movement needs two"
+
+# A rule that tries to accept LESS than the partner bar. It must not win.
+[[rules]]
+callee_zone = "partner.*"
+decision = "allow"
+approval = "standing"
+reason = "attempted downgrade"
+"#
+        );
+        let p = ConnectPolicy::parse(&text).expect("parses");
+
+        let pay = callee(Tier::ONE);
+        let eval = p
+            .evaluate(&request(&["wire_funds"]), &caller(), &pay, &state(), NOW)
+            .unwrap();
+        assert_eq!(eval.decision, ConnDecision::RequireApproval);
+        assert!(
+            eval.dual_control,
+            "a rule asking for dual_control must produce it: {:?}",
+            eval.trace
+        );
+
+        // The other direction, which is the one that matters: a rule saying `standing`
+        // under a bar that demands a human must not lower it. Terms already work this
+        // way; approval now does too.
+        let mut partner = callee(Tier::THREE);
+        partner.zone = ZoneId::new("partner.acme").unwrap();
+        let eval = p
+            .evaluate(
+                &request(&["get_balance"]),
+                &caller(),
+                &partner,
+                &state(),
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(
+            eval.decision,
+            ConnDecision::RequireApproval,
+            "a rule cannot downgrade a bar that requires a human: {:?}",
+            eval.trace
+        );
     }
 
     #[test]
