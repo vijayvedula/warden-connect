@@ -123,6 +123,26 @@ decision = "allow"
 ttl_max = "30d"
 terms = { max_calls_per_hour = 500, max_concurrent = 8, evidence_sink = "ocsf://siem", evidence_delivery = "fail-safe" }
 
+# Money movement: TWO humans, a shorter life, an oversight threshold, and evidence
+# that must be durable before the contract exists at all.
+#
+# This stanza is above the generic tier rule on purpose, and that ordering is the
+# whole point of it. It used to sit below, where the `callee_tier < 3` rule matched
+# first for every tier 1 and 2 payments callee — which is all of them — so the spend
+# cap, the oversight threshold and `evidence_delivery = "blocking"` were never
+# applied to a single write-capable payments contract. `policy lint` did not flag it:
+# the rule is genuinely reachable, just not for the callees it exists for. First
+# match wins, so specific stanzas go above general ones.
+[[rules]]
+callee_zone = "internal.payments"
+surface = { write = true }
+decision = "require_approval"
+approval = "dual_control"
+approver_role = "payments.controller"
+ttl_max = "7d"
+terms = { max_spend_usd_per_day = 250000.0, human_oversight = "required_above:10000_usd", max_calls_per_hour = 100, evidence_sink = "ocsf://siem", evidence_delivery = "blocking" }
+reason = "money movement is a two-controller decision"
+
 # A sensitive callee is a human decision, whatever else is true.
 [[rules]]
 callee_tier = { op = "lt", value = 3 }
@@ -130,17 +150,6 @@ decision = "require_approval"
 approver_role = "security.architect"
 ttl_max = "14d"
 reason = "a tier 1 or 2 callee needs a security architect to sign for it"
-
-# Money movement: a human, a shorter life, an oversight threshold, and evidence
-# that must be durable before the contract exists at all.
-[[rules]]
-callee_zone = "internal.payments"
-surface = { write = true }
-decision = "require_approval"
-approver_role = "payments.controller"
-ttl_max = "7d"
-terms = { max_spend_usd_per_day = 250000.0, human_oversight = "required_above:10000_usd", max_calls_per_hour = 100, evidence_sink = "ocsf://siem", evidence_delivery = "blocking" }
-reason = "write access to the payments zone is a controller decision"
 
 # Cross-border: the partner zone's bar already forces a human and a 7-day TTL;
 # this narrows the terms further and pins delegation to one hop.

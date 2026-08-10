@@ -58,6 +58,19 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
   throwaway CA and `insecure_bootstrap = true`, which is right for a fixture and wrong for
   anything else. What stage 1 verifies is that an SVID was signed by a key in the bundle you
   configured; who is entitled to be in that bundle is SPIRE's problem, not ours. *(By design)*
+* **Attesting an MCP server takes two steps nothing tells you about.** `Posture::Attested`
+  requires the card-signature stage, and an MCP server has no agent card — so the obvious
+  reading is that an MCP server can never be attested, and since the mediator's check 9
+  refuses any counterparty short of `Attested`, that enforce mode is unusable for the primary
+  topology. It is usable; the two steps are **`register server --id spiffe://…`** (the flag
+  works and is missing from `--help`, so an endpoint-registered server otherwise gets a
+  `urn:wc:` id that no SVID can ever name) and **signing the tools document** — the verifier
+  falls back to the fetched surface, so a `signatures` array on the `--surface` file verifies
+  under `--card-key`. Neither is documented, the stage is called "agent-card signature", and
+  its finding reads *"card signature verification not configured"*. An operator who follows
+  the messages concludes enforce mode is broken and reaches for `--observe`, which is the
+  A4 failure mode — a control that gets disabled — arriving through documentation.
+  *(By design, badly signposted; verified reachable by running it)*
 * **Provenance proves a signature, not a builder.** `fixtures/cosign/` is a real cosign
   envelope with a real DER signature, so stage 4's *verification* path is genuine — but the
   key is local, which makes `builder.id` a string the fixture asserts about itself.
@@ -123,6 +136,14 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
 * **Propagation has never been timed.** §7.10 promises under 60 s estate-wide;
   `wc_mediator_ack_lag_seconds` has a bucket at 60 so the claim is measurable, and nobody has
   measured it on a real estate. *(Unproven)*
+* **A `--contract FILE` mediator cannot be contained at all.** Revocation reaches a mediator
+  only through the control-plane pull, so a mediator handed contract artifacts on disk serves
+  them until they expire and no quarantine can arrive. It reported
+  `wc_revocation_trusted 1` while in that state, which is now 0 alongside a
+  `wc_revocation_source_configured 0` gauge, a startup warning and its own alert. The
+  behaviour is unchanged and correct for a genuinely air-gapped deployment — **containment
+  there is contract TTL, so the TTL is the containment decision.** *(By design, and now
+  visible)*
 
 ## 6 · Evidence and retention
 
@@ -133,6 +154,15 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
 * **`connect serve` requires durable storage.** An evidence chain that restarts on reschedule
   has no history, which for the regulatory purpose it serves is the same as none. No
   `emptyDir`. *(By design)*
+* **Truncation is bounded by the anchor interval, not prevented.** A hash chain cannot detect
+  its own truncation — drop the last rows and what remains links perfectly. `audit verify`
+  used to report *"chain is intact"* on exactly that, and now compares the chain head against
+  the highest checkpoint sequence (no anchor key needed) and refuses to print an unqualified
+  verdict. What remains open is **everything appended since the newest checkpoint**: with the
+  default `--anchor-interval 100`, up to 99 rows can be removed undetectably, and before the
+  first checkpoint is written the whole chain can. Shorten the interval to shorten the window;
+  an off-host copy of the anchor file is what closes it, because an attacker holding the
+  control plane can truncate both files together. *(By design, and now stated in the output)*
 * **`wc_anchor_age_seconds` is liveness, not integrity.** Read without verifying signatures,
   because a scrape has no public key. It is exactly the number an attacker who could rewrite
   the chain would want looking healthy. Integrity is `connect audit verify --anchor-pub`, on a
@@ -240,9 +270,14 @@ Status: pre-1.0, no independent audit, no hardening pass yet.
 
 ## 13 · Testing depth
 
-* **No hardening pass has been run.** The single largest gap. Warden core ran an adversarial
-  pass before open-sourcing and found a dozen defects; this has not had one, and the case is
-  already made — see the defect table in [threat-model.md](threat-model.md). *(Unbuilt)*
+* **One hardening pass has been run; it is not enough.** The first adversarial pass covered
+  the six paths in [production-readiness.md](production-readiness.md) and found **six defects
+  of the usual shape plus two reporting gaps** — all fixed, all tabulated in
+  [threat-model.md](threat-model.md) Part 1. The reason this stays on the list is the hit
+  rate: a single pass over six paths still found six, so the next pass should be expected to
+  find more rather than to confirm the code is clean. Not yet exercised adversarially:
+  `screen` beyond the field allowlist, the ceilings, the drain path, federation, residency.
+  *(Unproven)*
 * **Fuzzing is smoke depth.** One minute per target. The nightly workflow turns that into hours
   per week and has not run yet. *(Unproven)*
 * **No 10⁵-contract estate has been operated**, only benchmarked. The scale gates measure

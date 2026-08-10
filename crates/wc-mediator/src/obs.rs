@@ -52,6 +52,13 @@ pub const DECISIONS: &str = "wc_decisions_total";
 /// mediator that cannot verify the feed refuses everything, and from the control plane's
 /// side that is indistinguishable from a healthy estate with no traffic.
 pub const REVOCATION_TRUSTED: &str = "wc_revocation_trusted";
+/// Whether this mediator has a revocation source at all.
+///
+/// Zero means `--contract FILE` with no `--contracts URL`: contracts were loaded once
+/// from disk, no feed will ever arrive, and **quarantine fan-out cannot reach this
+/// process**. Separate from [`REVOCATION_TRUSTED`] so an operator can tell "the feed
+/// broke" from "there was never a feed" — two different pages at three in the morning.
+pub const REVOCATION_SOURCE: &str = "wc_revocation_source_configured";
 /// Contracts held in the local cache.
 pub const CONTRACTS_HELD: &str = "wc_contracts_held";
 
@@ -249,9 +256,26 @@ impl Telemetry {
     }
 
     /// Note whether the revocation set is trusted, and how many contracts are held.
-    pub fn cache_state(&self, revocation_trusted: bool, contracts: u64) {
+    ///
+    /// `source_configured` is not decoration. A mediator started with `--contract FILE`
+    /// and no `--contracts URL` has no revocation feed and never will: no pull happens,
+    /// so nothing ever distrusts the empty set, so `distrusted()` stays `None` and this
+    /// gauge read **1 — "the revocation set verifies"** on a mediator that cannot be
+    /// contained at all. The `wc_revocation_trusted == 0` alert could therefore never
+    /// fire for the one topology where containment is entirely absent.
+    ///
+    /// An empty set nobody can update is not a trusted set. It is the same
+    /// unknown-is-not-allowed rule [`crate::cache::Revocations::distrust`] states, one
+    /// level up: here it costs a gauge rather than a denial, because denying every call
+    /// would take the documented air-gapped path away rather than make it honest.
+    pub fn cache_state(&self, revocation_trusted: bool, source_configured: bool, contracts: u64) {
+        self.registry.set(
+            REVOCATION_TRUSTED,
+            &[],
+            u64::from(revocation_trusted && source_configured),
+        );
         self.registry
-            .set(REVOCATION_TRUSTED, &[], u64::from(revocation_trusted));
+            .set(REVOCATION_SOURCE, &[], u64::from(source_configured));
         self.registry.set(CONTRACTS_HELD, &[], contracts);
     }
 
@@ -327,8 +351,14 @@ fn register(registry: &Registry) {
     registry.register(
         REVOCATION_TRUSTED,
         Kind::Gauge,
-        "1 when the revocation set verifies; 0 when it is distrusted and every \
-         connection fails closed.",
+        "1 when a revocation feed is configured and verifies; 0 when it is distrusted \
+         (every connection fails closed) or when there is no feed at all.",
+    );
+    registry.register(
+        REVOCATION_SOURCE,
+        Kind::Gauge,
+        "1 when a revocation feed is configured; 0 for --contract FILE with no control \
+         plane, where quarantine fan-out cannot reach this mediator.",
     );
     registry.register(CONTRACTS_HELD, Kind::Gauge, "Contracts in the local cache.");
     registry.register_histogram(
@@ -462,7 +492,7 @@ mod tests {
         t.filtered(3, 17, true);
         t.ceiling_breach("rate");
         t.verified(true, 0.000_3);
-        t.cache_state(false, 42);
+        t.cache_state(false, true, 42);
 
         let text = t.registry().to_prometheus();
         assert!(
@@ -514,7 +544,7 @@ mod tests {
         let path = dir.join("mediator.prom");
 
         let t = Telemetry::captured(LogLevel::Off).with_metrics_file(&path);
-        t.cache_state(true, 7);
+        t.cache_state(true, true, 7);
         t.flush();
 
         let body = std::fs::read_to_string(&path).unwrap();

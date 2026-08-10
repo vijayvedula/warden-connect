@@ -399,6 +399,9 @@ fn run() -> Result<(), String> {
 
                 loop_telemetry.cache_state(
                     loop_cache.revocations().distrusted().is_none(),
+                    // This loop only runs when there is a control plane, so a feed
+                    // exists by construction.
+                    true,
                     loop_cache.snapshot().len() as u64,
                 );
                 match client::refresh(&loop_client, &loop_cache, keys, &loop_mediator, seq, at) {
@@ -423,8 +426,21 @@ fn run() -> Result<(), String> {
     // file exists from second zero. Without that flush a mediator living less than the
     // interval writes **no file at all** — a per-task agent invocation is exactly that — and
     // the staleness alert cannot tell "never started" from "started recently".
+    let has_revocation_source = client.is_some();
+    if !has_revocation_source {
+        // Said out loud for the same reason `--peer-mode configured` is: this process
+        // will serve its contracts until they expire and **no containment order can
+        // reach it**. It used to report `wc_revocation_trusted 1` while in this state,
+        // so neither the banner nor the metrics said anything at all.
+        eprintln!(
+            "connect-mediate: WARNING no revocation source — contracts came from disk and \
+             quarantine fan-out cannot reach this mediator. Containment here is contract \
+             expiry only; wc_revocation_source_configured is 0"
+        );
+    }
     telemetry.cache_state(
         cache.revocations().distrusted().is_none(),
+        has_revocation_source,
         cache.snapshot().len() as u64,
     );
     telemetry.flush();

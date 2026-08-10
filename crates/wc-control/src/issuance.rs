@@ -518,6 +518,19 @@ impl<'a> Issuer<'a> {
                 "a contract must name at least one mediator; there is nowhere to enforce it",
             ));
         }
+        // Refused here rather than at mint. `Claims::validate` already rejects an empty
+        // surface, but only after a human has been asked to sign for it: `--tools ""`
+        // produced a pending request, sat in the approver queue, and failed with
+        // `WC-3012` on approval. Approval fatigue (A7) is a listed threat, and the queue
+        // is the thing it wears down, so a request that provably cannot mint must never
+        // enter it.
+        if input.surface.is_empty() {
+            return Err(WcError::with_detail(
+                Code::MINT_PRECONDITION_FAILED,
+                "a request must name at least one tool, skill or resource; a contract \
+                 granting nothing cannot be minted, so it must not reach an approver",
+            ));
+        }
 
         let caller = self.entity(&input.caller)?;
         let callee = self.entity(&input.callee)?;
@@ -1928,6 +1941,27 @@ reason = "a sensitive callee needs a security architect"
         });
         assert_eq!(err.code(), Code::MINT_PRECONDITION_FAILED);
         assert!(err.detail().contains("nowhere to enforce"));
+    }
+
+    #[test]
+    fn a_request_for_nothing_never_reaches_an_approver() {
+        // `connect request --tools ""` used to return `awaiting approval req_…` and only
+        // fail on approval, with `WC-3012`. So the queue an approver reads accumulated
+        // items that provably could not mint — and approval fatigue (A7) is what makes
+        // the whole standing-policy design necessary in the first place.
+        let tmp = TmpDir::new("nosurface");
+        let pol = policy();
+        let mut req = input(&["get_balance"]);
+        req.surface = Surface::default();
+        let err = with_issuer(&tmp, Tier::THREE, &pol, NOW, |issuer| {
+            issuer.request(&req).unwrap_err()
+        });
+        assert_eq!(err.code(), Code::MINT_PRECONDITION_FAILED);
+        assert!(
+            err.detail().contains("must not reach an approver"),
+            "{}",
+            err.detail()
+        );
     }
 
     // --- the approval path ---

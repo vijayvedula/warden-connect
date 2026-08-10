@@ -42,6 +42,9 @@ tests:
     input_series:
       - series: 'wc_revocation_trusted'
         values: "1 1 0 0 0"
+      # A feed exists and broke, which is what this alert is for.
+      - series: 'wc_revocation_source_configured'
+        values: "1 1 1 1 1"
     alert_rule_test:
       - eval_time: 1m
         alertname: WardenConnectRevocationDistrusted
@@ -54,6 +57,33 @@ tests:
             exp_annotations:
               summary: "a mediator cannot verify the revocation feed and is refusing everything"
               description: "Fix the feed's signature or its transport — never by disabling the check. A feed you cannot verify is a feed an attacker may have written."
+              runbook: docs/runbook.md#all-the-agents-are-down
+
+  # --- 2b · a mediator with no feed at all ---------------------------------
+  #
+  # The state `--contract FILE` leaves a mediator in, and the one that used to report
+  # `wc_revocation_trusted 1`. Two assertions, because the value here is that the two
+  # causes route to different alerts: the distrust page must stay silent, and the
+  # no-source warning must fire.
+  - interval: 1m
+    name: a mediator with no revocation source warns and does not page
+    input_series:
+      - series: 'wc_revocation_trusted'
+        values: "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+      - series: 'wc_revocation_source_configured'
+        values: "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: WardenConnectRevocationDistrusted
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: WardenConnectMediatorHasNoRevocationSource
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "a mediator has no revocation source, so quarantine cannot reach it"
+              description: "Started with --contract FILE and no --contracts URL. Containment for this process is contract expiry only. Give it a control plane, or shorten the TTLs it is issued and accept expiry as the containment bound."
               runbook: docs/runbook.md#all-the-agents-are-down
 
   # --- 3 · ACK lag breaching the 60-second claim ---------------------------

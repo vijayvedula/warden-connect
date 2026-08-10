@@ -19,6 +19,13 @@ They were a control that read as configured and did nothing.** Not one was found
 the code, and several survived a test suite that asserted the configuration rather than the
 effect.
 
+The adversarial pass below was run against the six paths in
+[production-readiness.md](production-readiness.md), by executing the binaries, and it found
+**six more of exactly this shape** — the last six rows. Two of them had passing unit tests
+sitting beside them: `SurfaceMatch::matches` was covered only for `write = false`, and the
+chain had tests for edited, deleted and reordered rows but none for a **truncated** one.
+A one-sided test is how a one-sided control survives review.
+
 The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 
 | What it read as | What it did |
@@ -37,6 +44,12 @@ The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 | a latency gate | pointed at a benchmark that did not exist |
 | a fuzz target's invariant | was stale, and the target had never been run |
 | an SDK's `Outcome` | reported all three states false on a retried request |
+| a pinned surface | ignored MCP's `title` and A2A's `examples`, so an injection there moved **no** digest and scored **zero** |
+| `surface = { write = true }` | matched every surface; only `write = false` ever filtered |
+| the money-movement rule | sat below the generic tier rule, so its spend cap and blocking evidence never applied to a payments contract |
+| dual control at tier 1 | was enforced for `quarantine` and inexpressible for issuance |
+| `audit verify` | said **"chain is intact"** on a chain whose most recent rows had been deleted |
+| `wc_revocation_trusted 1` | on a mediator with no feed at all, so the containment alert could never fire for the topology with no containment |
 
 ### The review checklist
 
