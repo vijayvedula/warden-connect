@@ -33,7 +33,12 @@ policy by intersection — so no contract can widen anything.
 | **T3.8** Standing-policy auto-approval | Ambiguity → escalate to a human, never auto-allow |
 | **T7.1** Connection-lifecycle audit | Chain break detected on verify → alert |
 
-```mermaid
+<img alt="B3.1 Connection request & approval workflow — sequence diagram" src="img/B3.1.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Dev as Developer
@@ -69,6 +74,8 @@ sequenceDiagram
     Ct-->>-Dev: conn_1a9b, exp +30d
 ```
 
+</details>
+
 **What the diagram argues.** The approval is a **detached signature carried inside
 the contract**, not a row in a workflow table. An operator with database access can
 alter a ticketing system. They cannot forge a signature over a request they do not
@@ -88,7 +95,12 @@ than a record of an intention to enforce.
 | **T3.2** Contract verification | Any failure → connection refused, **fail-closed** |
 | **T3.6** Terms enforcement | Condition false → deny or hold |
 
-```mermaid
+<img alt="B3.2 Connection contracts (terms of use) — sequence diagram" src="img/B3.2.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Agent as agent
@@ -118,6 +130,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 **What the diagram argues.** Verification is local. Signature, expiry, hash
 comparison and set membership — no network call to a policy server on the hot path,
 which is why the target is p99 under 5 ms and why a control-plane outage does not
@@ -136,7 +150,12 @@ stop traffic that already holds a valid contract.
 | **T3.4** `tools/list` surface filtering | Filter failure → return an **empty list**, fail-closed |
 | **T3.5** Narrowing algebra | Attempted widening is **structurally impossible**, not merely denied |
 
-```mermaid
+<img alt="B3.3 Surface scoping (least connectivity) — sequence diagram" src="img/B3.3.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Agent as agent
@@ -164,6 +183,8 @@ sequenceDiagram
     Note over Med: effective = contract.surface ∩ token.scope ∩ policy<br/>Removing any term narrows the set. No term can widen it.
 ```
 
+</details>
+
 **What the diagram argues.** Two different mechanisms, deliberately. Filtering
 `tools/list` means the wrong tool is never *offered*. The allowlist means it is never
 *executed* even if the agent asks anyway. The first is what actually prevents
@@ -180,7 +201,12 @@ accidents — the second is what survives an agent that has been told to try.
 |---|---|
 | **T3.7** Time-boxing & renewal | Expired → refused. **No grace period by default** |
 
-```mermaid
+<img alt="B3.4 Time-boxing & renewal — sequence diagram" src="img/B3.4.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Asr as assurance
@@ -210,6 +236,8 @@ sequenceDiagram
     Med--)Med: subsequent connections refused, no grace period
 ```
 
+</details>
+
 **What the diagram argues.** Expiry is the enforcement, and it is passive. Nothing
 watches the clock and cuts a connection — the contract simply stops verifying. That
 makes the control impossible to fail open: a control plane that is down cannot renew,
@@ -226,7 +254,12 @@ and not renewing is the safe direction.
 |---|---|
 | **T3.6** Terms enforcement | Condition false → **deny or hold** |
 
-```mermaid
+<img alt="B3.5 Human-oversight terms — sequence diagram" src="img/B3.5.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Agent as agent
@@ -255,6 +288,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 **What the diagram argues.** The oversight term lives in the contract but is
 evaluated by Warden core per call, against the actual argument values. That is the
 division the whole system rests on: **warden-connect bounds the relationship, Warden
@@ -272,7 +307,12 @@ core decides the action** — and a hold is an action decision, so it belongs to
 | **T6.1** Contract revocation | Revocation feed unreadable → strict mode denies all, fail-closed |
 | **T3.7** Time-boxing | Expired → refused, no grace period |
 
-```mermaid
+<img alt="B3.6 Exit & offboarding — sequence diagram" src="img/B3.6.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor TPR as Third-Party Risk
@@ -303,6 +343,8 @@ sequenceDiagram
     deactivate Ct
     Ct-->>TPR: terminated in 38s, 2 of 2 mediators confirmed
 ```
+
+</details>
 
 **What the diagram argues.** The exit path is the quarantine verb pointed at a
 partner rather than an incident, which is why it can be *rehearsed*. DORA asks for a

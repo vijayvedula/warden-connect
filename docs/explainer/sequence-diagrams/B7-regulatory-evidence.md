@@ -29,7 +29,12 @@ queries and shapes over an existing chain. Which is why its KPIs are measured in
 |---|---|
 | **T7.4** Regulatory register export | — |
 
-```mermaid
+<img alt="B7.1 Interconnect register export — sequence diagram" src="img/B7.1.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Reg8 as Regulator
@@ -52,6 +57,8 @@ sequenceDiagram
     Note over RC,Reg8: The head makes the export checkable.<br/>A regulator can ask for the same query<br/>again in a year and get a byte-identical<br/>answer, which a spreadsheet cannot offer.
 ```
 
+</details>
+
 **What the diagram argues.** `as_of` is the whole capability. Exporting *current*
 state is easy and answers the wrong question — the register is always retrospective,
 and reconstructing June's estate from July's database is exactly the manual work the
@@ -69,7 +76,12 @@ control exists to remove.
 | **T7.2** SIEM export | Blocking sink unavailable → connection not issued |
 | **T7.4** Register export | — |
 
-```mermaid
+<img alt="B7.2 Control-evidence export (OSCAL / OCSF) — sequence diagram" src="img/B7.2.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Audit as Internal Audit
@@ -93,6 +105,8 @@ sequenceDiagram
     Note over Audit,GRC: Each observation cites an offset, so a<br/>reviewer can verify one row without<br/>trusting the export as a whole. That is<br/>the difference between evidence and a report.
 ```
 
+</details>
+
 **What the diagram argues.** Two channels with different tempos and the same source.
 The SIEM stream is continuous and lossy-tolerant; the OSCAL export is on demand and
 must be exact. Both read the same chain, so a SIEM alert and an audit observation
@@ -110,7 +124,12 @@ about the same event cite the same offset.
 | **T2.6** Surface BOM | — |
 | **T7.7** Correlation root for `warden-trace` | Missing `cid` → action recorded as uncorrelated and **flagged** |
 
-```mermaid
+<img alt="B7.3 AI value-chain traceability — sequence diagram" src="img/B7.3.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor MR as Model Risk
@@ -132,6 +151,8 @@ sequenceDiagram
     Note over Trace,MR: T7.7 · the cid stamped at mint time is the<br/>join key. Without it, "which relationship<br/>allowed this action" is a reconstruction —<br/>which is why an uncorrelated action is<br/>flagged rather than merely logged.
 ```
 
+</details>
+
 **What the diagram argues.** The dependency map and the behaviour record are joined
 by one identifier issued at contract-mint time. The EU AI Act asks a deployer to
 document its value chain; a graph of *declared* dependencies is a document, while a
@@ -149,7 +170,12 @@ graph joined to what actually executed is evidence.
 | **T3.1** Contract minting | Any policy miss → no contract issued |
 | **T7.1** Connection-lifecycle audit | Chain break detected on verify → alert |
 
-```mermaid
+<img alt="B7.4 Attestation of oversight — sequence diagram" src="img/B7.4.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor OR as Operational Risk
@@ -173,6 +199,8 @@ sequenceDiagram
 
     Note over OR: The claim is not "an approval was recorded".<br/>It is "a specific key signed this specific<br/>request", which survives an operator with<br/>database access.
 ```
+
+</details>
 
 **What the diagram argues.** Historical key resolution is the subtle requirement. An
 approval signed in April by a key rotated in May is still a valid approval — verifying

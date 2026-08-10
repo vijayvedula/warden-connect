@@ -29,7 +29,12 @@ two that matter most — fan-out and delegation depth — are properties of the 
 | **T4.3** Fan-out & recursion limits | Limit hit → **deny and alert**, which is what protects against call storms |
 | **T4.4** Rate & spend ceilings | Ceiling breach → deny, owner notified |
 
-```mermaid
+<img alt="B8.1 Connection-level rate & fan-out ceilings — sequence diagram" src="img/B8.1.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant A1 as orchestrator
@@ -60,6 +65,8 @@ sequenceDiagram
     deactivate A3
 ```
 
+</details>
+
 **What the diagram argues.** The ceiling is on the contract, so it is inherited by
 the *path* rather than owned by a node. That is the only place the arithmetic works:
 no participant in a 1 → 6 → 36 expansion is individually misbehaving, so no
@@ -76,7 +83,12 @@ per-agent limit would ever fire.
 |---|---|
 | **T4.4** Rate & spend ceilings | Ceiling breach → deny, **owner notified**, durable across restarts |
 
-```mermaid
+<img alt="B8.2 Spend ceilings per relationship — sequence diagram" src="img/B8.2.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Agent as agent
@@ -108,6 +120,8 @@ sequenceDiagram
     Note over Budget: Durable across restarts. A ceiling that<br/>resets when a pod cycles is a ceiling an<br/>incident will find its way through.
 ```
 
+</details>
+
 **What the diagram argues.** Durability is the requirement everyone forgets. An
 in-memory counter makes the control disappear exactly when a runaway workload is
 causing the restarts — so the budget store outlives the mediator by design.
@@ -124,7 +138,12 @@ causing the restarts — so the budget store outlives the mediator by design.
 | **T7.3** Telemetry & tracing | — |
 | **T7.7** Correlation root | Missing `cid` → action recorded as **uncorrelated and flagged** |
 
-```mermaid
+<img alt="B8.3 Chargeback & showback — sequence diagram" src="img/B8.3.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Med as mediator
@@ -144,6 +163,8 @@ sequenceDiagram
     Note over Ev,FinOps: The 6% is the interesting number.<br/>Uncorrelated spend means calls that ran<br/>without a cid — which is a governance gap<br/>surfacing as a finance report.
 ```
 
+</details>
+
 **What the diagram argues.** Cost attribution and connection governance are the same
 query. The `cid` minted for control reasons turns out to be the only join key that
 maps consumption to an owner — and the unattributable remainder is not a rounding
@@ -161,7 +182,12 @@ error, it is a list of calls nobody governed.
 | **T5.6** Blast-radius analysis (graph query) | — |
 | **T7.3** Telemetry & tracing | — |
 
-```mermaid
+<img alt="B8.4 Capacity & dependency planning — sequence diagram" src="img/B8.4.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Plat as Head of AI Platform
@@ -183,6 +209,8 @@ sequenceDiagram
 
     Note over Plat,Asr: Concentration is the planning signal,<br/>not the total. One callee behind a third of<br/>the estate is a capacity question and a<br/>resilience question at the same time —<br/>CPS 230 asks the second one.
 ```
+
+</details>
 
 **What the diagram argues.** The useful output is concentration, not growth. A
 forecast of total connections informs capacity; knowing that one tool server sits

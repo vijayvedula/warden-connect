@@ -34,7 +34,12 @@ before anyone has agreed to enforcement.
 | **T1.5** Agent-card signature verification | Unsigned or mis-signed card → **not admitted** |
 | **T2.1** Agent & server registry | Registry unavailable → strict mode denies new connections |
 
-```mermaid
+<img alt="B1.1 Agent registry — sequence diagram" src="img/B1.1.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Dev as Developer
@@ -69,6 +74,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 **What the diagram argues.** The owner is captured at the same moment as the
 identity, not bolted on afterwards. That is what makes the KPI *"registered with a
 named owner"* rather than merely *"registered"* — a record cannot exist without one.
@@ -86,7 +93,12 @@ named owner"* rather than merely *"registered"* — a record cannot exist withou
 | **T2.2** Surface pinning | Presented hash ≠ pinned hash → refused, drift event raised |
 | **T2.6** Surface BOM | — |
 
-```mermaid
+<img alt="B1.2 Tool-server / MCP registry — sequence diagram" src="img/B1.2.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Plat as Platform Engineer
@@ -111,6 +123,8 @@ sequenceDiagram
     CLI-->>-Plat: surface_digest sha256:230c1f4a…
 ```
 
+</details>
+
 **What the diagram argues.** The pin is taken from the server's own `tools/list`
 response, not from its documentation — so the record is what the server *actually
 serves*. Every later drift check in **B5.1** is a comparison against this one
@@ -128,7 +142,12 @@ message.
 | **T2.5** Shadow-endpoint detection | Observe mode logs only. Enforce mode refuses |
 | **T7.2** SIEM export | Blocking sink unavailable → connection not issued |
 
-```mermaid
+<img alt="B1.3 Shadow-agent & shadow-MCP discovery — sequence diagram" src="img/B1.3.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Agent as unregistered agent
@@ -160,6 +179,8 @@ sequenceDiagram
     Asr-->>-SecOps: 3 endpoints · first seen · calling agents · call volume
 ```
 
+</details>
+
 **What the diagram argues.** The survey is replaced by the traffic. Note that the
 finding carries the *calling agent*, because the KPI is mean time to registration or
 removal — and that needs a person to chase, which the caller's owner supplies.
@@ -176,7 +197,12 @@ removal — and that needs a person to chase, which the caller's owner supplies.
 | **T2.3** Mediated discovery | Unknown asker → **empty result set**, never an error that confirms existence |
 | **T2.4** Anti-enumeration | Enumeration attempt → throttled and logged as reconnaissance |
 
-```mermaid
+<img alt="B1.4 Capability & surface catalogue — sequence diagram" src="img/B1.4.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Dev as Developer
@@ -205,6 +231,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 **What the diagram argues.** There is no list endpoint. The answer to a capability
 question is bounded by what the asker could be *connected to*, so discovery can never
 return more than governance would allow — and repeated near-miss queries become a
@@ -222,7 +250,12 @@ reconnaissance signal rather than just a throttle.
 | **T1.6** Identity lifecycle sync | Owner leaves → connections flagged, then expired |
 | **T2.1** Registry lifecycle field | — |
 
-```mermaid
+<img alt="B1.5 Ownership & lifecycle state — sequence diagram" src="img/B1.5.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant IdP as IdP / HR system
@@ -250,6 +283,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 **What the diagram argues.** The leaver event does not cut anything. It starts a
 clock, and the *absence of renewal* does the work — so an HR feed can never cause an
 outage, which is what makes it safe to wire an HR feed to a production control at
@@ -267,7 +302,12 @@ all.
 | **T2.1** Registry record fields | — |
 | **T7.4** Regulatory register export | — |
 
-```mermaid
+<img alt="B1.6 Business-service mapping — sequence diagram" src="img/B1.6.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Risk as Operational Risk
@@ -290,6 +330,8 @@ sequenceDiagram
     Ev-->>-Risk: register, with the evidence chain head
     deactivate Risk
 ```
+
+</details>
 
 **What the diagram argues.** Criticality is recorded once on the entity and inherited
 by every relationship it later forms. That is what turns **B7.1**'s register from a

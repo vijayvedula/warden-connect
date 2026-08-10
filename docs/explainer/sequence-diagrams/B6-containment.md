@@ -30,7 +30,12 @@ manufactured false confidence at the exact moment confidence is most expensive.
 | **T6.2** Estate-wide quarantine | **Partial propagation → parties not yet confirmed are treated as denied** |
 | **T6.1** Contract revocation | Revocation feed unreadable → strict mode denies all, fail-closed |
 
-```mermaid
+<img alt="B6.1 Estate-wide quarantine — sequence diagram" src="img/B6.1.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor SOC as SecOps analyst
@@ -62,6 +67,8 @@ sequenceDiagram
     Note over M13,SOC: T6.2 · the thirteenth fails closed locally<br/>and is reported as unconfirmed. Reporting<br/>13 of 13 here would be the only real<br/>failure in this diagram.
 ```
 
+</details>
+
 **What the diagram argues.** Two things a containment tool is usually wrong about.
 Inbound contracts are revoked as well as outbound, because a compromised agent that
 *receives* calls is still a path. And the unreachable node is named in the result
@@ -79,7 +86,12 @@ tick.
 |---|---|
 | **T6.3** Shared-signal ingestion | Unsigned or unverifiable event → **ignored and alerted, never trusted** |
 
-```mermaid
+<img alt="B6.2 Signal-driven revocation (CAEP/SSF) — sequence diagram" src="img/B6.2.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant IdP as IdP / risk engine
@@ -104,6 +116,8 @@ sequenceDiagram
     deactivate Ct
 ```
 
+</details>
+
 **What the diagram argues.** The verification branch is the whole capability. Wiring
 an external system to a control that severs production connectivity is only safe if
 an unverifiable message is inert — and the KPI is measured from the *event's* clock,
@@ -120,7 +134,12 @@ so latency introduced by our own queue cannot be reported away.
 |---|---|
 | **T5.6** Blast-radius analysis | — |
 
-```mermaid
+<img alt="B6.3 Blast-radius analysis — sequence diagram" src="img/B6.3.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     actor Arch as Security Architecture
@@ -144,6 +163,8 @@ sequenceDiagram
     Note over Arch,Asr: Computed from contracts, so it is current<br/>by construction. A reachability analysis<br/>assembled by hand is stale the day after.
 ```
 
+</details>
+
 **What the diagram argues.** Reachability is computed over surfaces, not nodes.
 Knowing that agent A can reach service B is nearly useless if the contract to B grants
 only `get_balance` — what a responder needs is the union of *what could be invoked*,
@@ -160,7 +181,12 @@ which is why the answer names three write tools rather than eleven services.
 |---|---|
 | **T6.5** Drain semantics | **Ambiguous config → abort**, the safe default |
 
-```mermaid
+<img alt="B6.4 Graceful degradation & drain — sequence diagram" src="img/B6.4.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Ct as contract
@@ -188,6 +214,8 @@ sequenceDiagram
     deactivate Med
 ```
 
+</details>
+
 **What the diagram argues.** Drain and abort are both correct, for different threats,
 and the choice belongs to the deployment rather than the incident. Deciding it at
 03:00 is how a containment action becomes an outage — so it is configured per
@@ -205,7 +233,12 @@ mediator in advance, and an unset value resolves to abort.
 | **T7.1** Connection-lifecycle audit | Chain break detected on verify → alert |
 | **T6.4** Shared-signal emission | — |
 
-```mermaid
+<img alt="B6.5 Containment evidence — sequence diagram" src="img/B6.5.svg">
+
+<details>
+<summary>Mermaid source</summary>
+
+```text
 sequenceDiagram
     autonumber
     participant Ct as contract
@@ -230,6 +263,8 @@ sequenceDiagram
 
     Note over Audit,Ev: The unconfirmed node is *in* the evidence.<br/>An incident record that omitted it would be<br/>tamper-evident and wrong at the same time.
 ```
+
+</details>
 
 **What the diagram argues.** The record includes the failure. A tamper-evident chain
 only helps if what was appended was true at the time — so the thirteenth mediator's

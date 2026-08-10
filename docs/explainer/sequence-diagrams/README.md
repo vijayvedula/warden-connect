@@ -39,10 +39,35 @@ describing a flow that works in a **control-plane-only** deployment.
 from the "Failure mode" column of the technical matrix, because that column is the
 part a reviewer is actually checking.
 
-**Rendering.** Mermaid, so the diagrams render on GitHub and stay diffable.
+**Rendering.** The diagrams are authored in Mermaid and **committed as SVG**, with
+the source kept beside each one in a collapsed block. [`render.py`](render.py) does
+both halves — it reads the source out of the markdown, renders it, and writes the
+image back into the same file:
 
-Two syntax traps, both of which produce a *parse failure* rather than a wrong
-picture, so validate before committing:
+```sh
+python3 render.py            # re-render everything after editing a diagram
+python3 render.py --check    # render only; non-zero exit if any diagram is broken
+```
+
+Run it whenever a diagram changes; the markdown is the source of truth and the
+`img/` directory is generated. The rewrite is idempotent, so running it twice is a
+no-op rather than a second layer of markup.
+
+Committing images rather than letting GitHub render the Mermaid is deliberate, for
+two reasons that are documented at length in `render.py` and summarised here:
+
+- GitHub overlays a **pan/zoom/copy toolbar** on every Mermaid block it renders, and
+  there is no way to suppress it from the source.
+- Each SVG carries **both themes in one file** — the dark palette lives behind a
+  `prefers-color-scheme: dark` media query inside the SVG. The obvious alternative,
+  a `<picture>` with a light and a dark source, is broken on GitHub: it rewrites a
+  relative `<img src>` to `raw.githubusercontent.com` but leaves a relative
+  `<source srcset>` alone, and `<picture>` does not fall back when a matching source
+  fails to load. The light rendering is given a white ground so that a viewer which
+  ignores the media query gets a legible card rather than dark text on a dark page.
+
+Three syntax traps, all of which produce a *parse failure* rather than a wrong
+picture, so run the renderer before committing:
 
 - **`;` is a statement separator.** A semicolon inside note or message text
   truncates the line and fails the parse. Use an em dash.
@@ -51,12 +76,6 @@ picture, so validate before committing:
   participant in two arms of an `alt` double-deactivates and fails. Activate before
   the block and deactivate once after it.
 
-Validate every block in a file:
-
-```sh
-npx -y @mermaid-js/mermaid-cli -i B1-estate-management.md -o /tmp/out.svg
-```
-
-**41 diagrams, one per L2 capability.** Every block in this directory is rendered
-before commit — see the traps above, all of which fail the parse rather than
-producing a wrong picture.
+**41 diagrams, one per L2 capability.** Every one is rendered before commit, which
+is what makes the traps above cheap: they fail the render rather than producing a
+wrong picture.
