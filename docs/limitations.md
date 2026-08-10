@@ -324,11 +324,18 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
   signature, no reproducible-build claim. Trust in a downloaded binary rests on the transport.
   *(Unbuilt)*
 * **The SDK is not released.** `sdk/python` is installable from a checkout and has no packaged
-  release. It now has a test suite that needs no control plane — 20 tests over what a status
-  means, whether a retry is safe, and whether a refusal keeps its `WC-*` code, run in CI and
-  mutation-checked against a reintroduced replay bug. What is still missing is the *packaging*:
-  a version on PyPI, and the examples running against a live plane in CI rather than by hand.
-  *(Unbuilt)*
+  release **yet**. It has a test suite that needs no control plane — 20 tests over what a
+  status means, whether a retry is safe, and whether a refusal keeps its `WC-*` code, run in
+  CI and mutation-checked against a reintroduced replay bug. The wheel and sdist build, the
+  wheel installs into a clean Python 3.9 venv and works when imported from outside the
+  checkout, and the sdist's tests pass from the unpacked sdist. `sdk-release.yml` publishes it
+  by OIDC with no stored token.
+
+  What remains needs you: claiming the PyPI name, adding the trusted publisher, and creating
+  a `pypi` environment with reviewers. **And the workflow has never run** — it is written from
+  documentation, so the first run should target TestPyPI via `workflow_dispatch`. The examples
+  still need a live control plane and so still run by hand. *(Environmental, plus one
+  unproven workflow)*
 * **The image is verified in CI only** for the arm64/amd64 pair CI builds; no multi-arch
   manifest is published.
 

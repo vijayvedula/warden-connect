@@ -1,0 +1,8 @@
+# Build output. Never committed: a wheel in git is a wheel nobody can prove came from the
+# source beside it, which is the whole reason `sdk-release.yml` builds in CI and publishes
+# from that build.
+dist/
+build/
+*.egg-info/
+__pycache__/
+.pytest_cache/
