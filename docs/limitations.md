@@ -208,6 +208,17 @@ subsystem.
   runs in CI and rehearses the *wrapper*. What fails on the day — a flat battery, a forgotten
   PIN, a share-holder who left in March — is precisely what a laptop cannot rehearse.
   *(Unproven)*
+* **No §8.10.3 latency figure is gated at p99.** The gate asserts **p50** against the 100 µs
+  ceiling and reports p99 without failing on it. Two consecutive CI runs of unchanged code
+  measured p50 58.7 µs / p99 84.6 µs, then p50 59.9 µs / p99 **104.1 µs** — p50 moved 2%, p99
+  swung 23%. The tail on a multi-tenant runner is scheduling jitter, so a p99 gate there flakes
+  near 50/50 while a quiet machine measures 46 µs.
+
+  The ceiling is unchanged and p50 is held against it strictly with ~40% margin, so the
+  constant-factor regression this gate exists for — a stray clone, measured at 4.7× — still
+  trips it. What is not covered is **tail behaviour**, and §7.10's p99 claim is therefore
+  currently asserted nowhere. It needs hardware we choose;
+  [proving-ground.md](proving-ground.md) is where that is scheduled. *(Unproven: the p99 half)*
 * **Propagation has never been timed.** §7.10 promises under 60 s estate-wide;
   `wc_mediator_ack_lag_seconds` has a bucket at 60 so the claim is measurable, and nobody has
   measured it on a real estate. *(Unproven)*
