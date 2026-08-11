@@ -51,7 +51,7 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace
-          cargo build --release -p wc-cli
+          cargo build --release -p warden-connect-cli
           ./scripts/conformance.sh
           ./scripts/canon-conformance.sh
 
@@ -76,7 +76,7 @@ jobs:
 
       - name: Build
         working-directory: warden-connect
-        run: cargo build --release -p wc-cli -p wc-mediator
+        run: cargo build --release -p warden-connect-cli -p warden-connect-mediator
 
       - name: Digests
         id: digests

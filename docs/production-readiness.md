@@ -158,7 +158,7 @@ by what unblocks the others.
   Remaining, for CI (#1): the latency gates only mean anything in a release build.
   `cargo test` defaults to debug, so `gate_filter` asserts a 12× tripwire there and
   says loudly that it is **not** the §8.10.3 gate. **CI must run
-  `cargo test -p wc-mediator --release gate_filter` and `connect bench` explicitly**,
+  `cargo test -p warden-connect-mediator --release gate_filter` and `connect bench` explicitly**,
   or those two gates read as covered by a debug test run.
 
 - [~] **3. Real attestation material, end to end.**

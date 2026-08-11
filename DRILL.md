@@ -213,7 +213,7 @@ Fill the last two columns in yourself; they're the honest record.
 cargo fmt                            # before every review
 cargo clippy --all-targets -- -D warnings
 cargo test                           # whole workspace
-cargo test -p wc-core error::        # one module
+cargo test -p warden-connect-core error::        # one module
 cargo test -- --nocapture            # see your dbg!/println!
 cargo doc --open                     # read your own docs as docs
 ```

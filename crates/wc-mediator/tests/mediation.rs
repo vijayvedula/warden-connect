@@ -960,94 +960,115 @@ fn gate_filter_tools_list_256_tools() {
     use wc_mediator::filter::{self, Catalog};
 
     const N: usize = 256;
-    let permitted: BTreeSet<String> = (0..N)
-        .filter(|i| i % 2 == 0)
-        .map(|i| format!("tool_{i:03}"))
-        .collect();
-    let response = json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "result": {
-            "tools": (0..N).map(|i| json!({
-                "name": format!("tool_{i:03}"),
-                "description": format!("Operation {i} on the ledger, returning a record."),
-                "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}}
-            })).collect::<Vec<_>>()
+
+    /// Measure `filter_catalog` over an `n`-tool catalogue, returning (p50, p99).
+    ///
+    /// Parameterised by `n` so the debug build can assert a *scaling* property. An absolute
+    /// latency ceiling is meaningless in an unoptimised build on unknown hardware, and this
+    /// test proved it: a 12× tripwire failed on a shared CI runner whose debug p99 was 2.58 ms
+    /// against a 1.2 ms tripwire, on code with no regression at all. It had been failing every
+    /// `cargo test --workspace` in the MSRV job for days.
+    fn measure(n: usize) -> (std::time::Duration, std::time::Duration) {
+        let permitted: BTreeSet<String> = (0..n)
+            .filter(|i| i % 2 == 0)
+            .map(|i| format!("tool_{i:03}"))
+            .collect();
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "tools": (0..n).map(|i| json!({
+                    "name": format!("tool_{i:03}"),
+                    "description": format!("Operation {i} on the ledger, returning a record."),
+                    "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}}
+                })).collect::<Vec<_>>()
+            }
+        });
+
+        // 200 warm-up iterations, not 20. The first draft used 20 and reported a p99 of
+        // 88 µs against a 50 µs ceiling; the same code in steady state measures ~40 µs.
+        // The difference is a cold allocator, and the mediator is a long-lived process,
+        // so steady state is the honest thing to gate on. Measuring the cold path would
+        // be measuring process startup.
+        let iterations = 400;
+        let mut timings = Vec::with_capacity(iterations);
+        for _ in 0..200 {
+            let mut resp = response.clone();
+            let _ = filter::filter_catalog(Catalog::Tools, &permitted, &mut resp);
         }
-    });
-
-    // 200 warm-up iterations, not 20. The first draft used 20 and reported a p99 of
-    // 88 µs against a 50 µs ceiling; the same code in steady state measures ~40 µs.
-    // The difference is a cold allocator, and the mediator is a long-lived process,
-    // so steady state is the honest thing to gate on. Measuring the cold path would
-    // be measuring process startup.
-    let iterations = 400;
-    let mut timings = Vec::with_capacity(iterations);
-    for _ in 0..200 {
-        let mut resp = response.clone();
-        let _ = filter::filter_catalog(Catalog::Tools, &permitted, &mut resp);
-    }
-    for _ in 0..iterations {
-        // The clone is outside the measurement: the gate is the filter's cost, not
-        // serde's, and a figure that included rebuilding the input would flatter or
-        // punish the filter for something it does not do.
-        let mut resp = response.clone();
-        let start = Instant::now();
-        let stat = filter::filter_catalog(Catalog::Tools, &permitted, &mut resp);
-        timings.push(start.elapsed());
-        assert_eq!(
-            stat.hidden,
-            N / 2,
-            "the gate must measure real filtering work"
-        );
-        assert!(!stat.failed_closed);
-    }
-    timings.sort_unstable();
-    let p50 = timings[timings.len() / 2];
-    let p99 = timings[(timings.len() * 99) / 100];
-
-    // A latency ceiling means nothing in an unoptimised build, and `cargo test`
-    // defaults to one. Two ceilings rather than skipping: the §8.10.3 number in
-    // release, and a loose tripwire in debug that still catches an algorithmic
-    // regression — the clone this test found on its first run was 4.7× the fixed
-    // cost, which a 12× ceiling catches in either build. A gate that silently does
-    // not run in the mode most people invoke is the failure this file is full of
-    // warnings about.
-    let (ceiling, label) = if cfg!(debug_assertions) {
+        for _ in 0..iterations {
+            // The clone is outside the measurement: the gate is the filter's cost, not
+            // serde's, and a figure that included rebuilding the input would flatter or
+            // punish the filter for something it does not do.
+            let mut resp = response.clone();
+            let start = Instant::now();
+            let stat = filter::filter_catalog(Catalog::Tools, &permitted, &mut resp);
+            timings.push(start.elapsed());
+            assert_eq!(
+                stat.hidden,
+                n / 2,
+                "the gate must measure real filtering work"
+            );
+            assert!(!stat.failed_closed);
+        }
+        timings.sort_unstable();
         (
-            thresholds::FILTER_256 * 12,
-            "debug tripwire, NOT the §8.10.3 gate",
+            timings[timings.len() / 2],
+            timings[(timings.len() * 99) / 100],
         )
-    } else {
-        (thresholds::FILTER_256, "§8.10.3")
-    };
+    }
+
+    let (p50, p99) = measure(N);
 
     // Printed either way: a gate that only speaks when it fails gives nobody the
     // trend that predicts the failure. The margin matters as much as the pass —
     // `bench::Gate::margin` exists for the same reason.
-    let margin = 1.0 - p99.as_secs_f64() / ceiling.as_secs_f64();
+    let margin = 1.0 - p99.as_secs_f64() / thresholds::FILTER_256.as_secs_f64();
     println!(
-        "filter_tools_list ({N} tools)  p50 {p50:?} · p99 {p99:?} / {ceiling:?} ({label})  \
+        "filter_tools_list ({N} tools)  p50 {p50:?} · p99 {p99:?} / {:?} (§8.10.3)  \
          margin {:.0}%",
+        thresholds::FILTER_256,
         margin * 100.0
     );
-    if cfg!(debug_assertions) {
-        println!(
-            "  the §8.10.3 ceiling of {:?} is NOT asserted here — run `{}`",
-            thresholds::FILTER_256,
-            thresholds::FILTER_GATE_COMMAND
-        );
-    }
 
     // What the residual is, so a future failure is diagnosable rather than a
     // mystery: roughly 9 µs is the permitted-set lookup and the rest is dropping the
     // removed entries. That deallocation is not extra work — those objects are freed
     // when the response is dropped either way — so this gate is conservative about
     // its own subject.
-    assert!(
-        p99 <= ceiling,
-        "p99 {p99:?} exceeds the {label} ceiling of {ceiling:?}"
-    );
+    if cfg!(debug_assertions) {
+        // Debug asserts a SCALING property, which is hardware-independent, instead of a
+        // wall-clock one, which is not. Filtering is linear, so per-item cost at 256 should
+        // be no worse than at 64 — better, in fact, since fixed overhead amortises. A
+        // quadratic regression would put the ratio near 4 (256/64), so 3.0 catches it with
+        // room for a noisy runner.
+        //
+        // Stated plainly because it is a real reduction in coverage: this does NOT catch a
+        // constant-factor regression, which is what the original clone bug was (4.7× fixed
+        // cost). That is caught by the absolute §8.10.3 ceiling below, in release — and CI
+        // runs it as its own job, so the coverage exists, just not in this build.
+        let (_, p99_small) = measure(64);
+        let per_item_large = p99.as_secs_f64() / N as f64;
+        let per_item_small = p99_small.as_secs_f64() / 64.0;
+        let ratio = per_item_large / per_item_small;
+        println!(
+            "  debug build: asserting SCALING, not wall clock. per-item 256/64 = {ratio:.2} \
+             (quadratic would be ~4). The §8.10.3 ceiling of {:?} is asserted by `{}`",
+            thresholds::FILTER_256,
+            thresholds::FILTER_GATE_COMMAND
+        );
+        assert!(
+            ratio <= 3.0,
+            "per-item cost grew {ratio:.2}× from 64 to 256 tools — filtering is supposed to \
+             be linear, so this is an algorithmic regression, not slow hardware"
+        );
+    } else {
+        assert!(
+            p99 <= thresholds::FILTER_256,
+            "p99 {p99:?} exceeds the §8.10.3 ceiling of {:?}",
+            thresholds::FILTER_256
+        );
+    }
 
     // The pointer `connect bench` prints must name this test, or the skip sends an
     // operator somewhere empty. Tied to the shared constant so removing either end
@@ -1283,7 +1304,10 @@ fn revoking_the_connection_stops_the_very_next_call_on_a_live_session() {
     // No restart, no new connection, no cache rebuild — the same session that just worked.
     let after = f.mediated.request(&call("get_balance"));
     let detail = tool_error(&after).expect("a revoked connection must refuse the next call");
-    assert!(detail.contains("WC-3105"), "want CONTRACT_REVOKED, got {detail}");
+    assert!(
+        detail.contains("WC-3105"),
+        "want CONTRACT_REVOKED, got {detail}"
+    );
 }
 
 #[test]
@@ -1300,7 +1324,10 @@ fn revoking_the_callee_party_stops_a_live_session() {
 
     let after = f.mediated.request(&call("get_balance"));
     let detail = tool_error(&after).expect("quarantining the callee must stop the session");
-    assert!(detail.contains("WC-3105"), "want CONTRACT_REVOKED, got {detail}");
+    assert!(
+        detail.contains("WC-3105"),
+        "want CONTRACT_REVOKED, got {detail}"
+    );
 }
 
 #[test]
@@ -1348,7 +1375,10 @@ fn replacing_the_contract_under_the_same_cid_stops_the_session() {
 
     let after = f.mediated.request(&call("get_balance"));
     let detail = tool_error(&after).expect("a replaced artifact must end the old session");
-    assert!(detail.contains("WC-3105"), "want CONTRACT_REVOKED, got {detail}");
+    assert!(
+        detail.contains("WC-3105"),
+        "want CONTRACT_REVOKED, got {detail}"
+    );
 }
 
 #[test]
@@ -1397,7 +1427,10 @@ fn containment_is_terminal_and_does_not_lift_when_the_revocation_does() {
 
     let after = f.mediated.request(&call("get_balance"));
     let detail = tool_error(&after).expect("containment must not lift on retry");
-    assert!(detail.contains("WC-3105"), "want CONTRACT_REVOKED, got {detail}");
+    assert!(
+        detail.contains("WC-3105"),
+        "want CONTRACT_REVOKED, got {detail}"
+    );
 }
 
 #[test]
@@ -1429,8 +1462,7 @@ fn observe_mode_closes_on_a_withdrawn_contract_too() {
         .install(Snapshot::build(&[], &IssuerKeys::new(), MEDIATOR, NOW));
 
     let after = f.mediated.request(&call("get_balance"));
-    let detail =
-        tool_error(&after).expect("a withdrawn contract closes in observe mode as well");
+    let detail = tool_error(&after).expect("a withdrawn contract closes in observe mode as well");
     assert!(detail.contains("WC-4001"), "want NO_CONTRACT, got {detail}");
 }
 
@@ -1456,5 +1488,8 @@ fn observe_mode_closes_on_a_revocation_mid_session() {
 
     let contained = f.mediated.request(&call("get_balance"));
     let detail = tool_error(&contained).expect("a revocation closes even in observe mode");
-    assert!(detail.contains("WC-3105"), "want CONTRACT_REVOKED, got {detail}");
+    assert!(
+        detail.contains("WC-3105"),
+        "want CONTRACT_REVOKED, got {detail}"
+    );
 }
