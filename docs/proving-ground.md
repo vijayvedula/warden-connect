@@ -116,10 +116,11 @@ bucket at 60, so the claim is *measurable* and has never been measured.
 
 **Minimum:** 50 mediator pods across 3 nodes, one revocation, and the histogram.
 **Pass:** p99 `wc_mediator_ack_lag_seconds` < 60 with the refresh interval at its default.
-**Watch for:** the metric measuring ACK receipt rather than enforcement. Given the rotation
-drill's finding — a mediator that ACKs a revocation and keeps serving — an ACK lag under 60 s is
-now known **not** to imply containment within 60 s. Time the two separately, or the number is
-reassuring and wrong.
+**Watch for:** the metric measuring ACK receipt rather than enforcement. These were briefly
+different things — a mediator ACKed a revocation and kept serving — and the containment seam
+that closed that gap is now enforced per call, so an ACK genuinely does precede enforcement.
+Time both anyway: the claim to measure is *when the last call was refused*, not when the last
+mediator answered, and only one of those is what an incident review asks for.
 
 ### 2.2 · Alerts battle-tested
 
@@ -250,8 +251,13 @@ list are the three that money cannot buy.
 
 ### Before provisioning anything
 
-Fix the containment gap the rotation drill found. Item 2.1's number is meaningless until a
-revocation actually stops a live session — right now the mediator logs `1 rejected` and keeps
-serving, so any propagation figure measures how fast an ineffective order travels. Measuring
-first would produce a green dashboard for a control that does not work, which is this
-codebase's signature failure and would be a self-inflicted one.
+The containment gap that made item 2.1 unmeasurable is **closed** — a revocation now stops a
+live session on the next call, proven by the drill and by seven tests, both mutation-checked.
+That was the prerequisite: measuring propagation while the mediator logged `1 rejected` and
+kept serving would have produced a green dashboard for a control that did not work.
+
+The remaining pre-flight is the cheap-checks-first principle that produced this page. Before
+provisioning anything, re-run the coverage-style questions against the areas the cluster is
+meant to test — which rules have no test, which module has no caller, which counter resets
+with the process. Two of the last four defects here were found that way in minutes, and a
+provisioned week measuring the wrong thing costs more than the cluster does.

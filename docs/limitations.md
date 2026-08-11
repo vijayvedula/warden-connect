@@ -153,11 +153,13 @@ subsystem.
   and every later call uses the cached `Admitted`, checking expiry, item membership and
   ceilings — never the contract or the key again.
 
-  Re-verifying per call would put a signature check inside §7.10's sub-millisecond per-call
-  budget, so the caching is deliberate. The consequence is not: **you cannot retire a
-  compromised issuer key and expect running sessions to stop.** A *new* mediator refuses those
-  contracts immediately; existing ones continue to contract expiry. Plan a rotation with that
-  in mind — short TTLs, or restart the mediators. *(By design, and now measured)*
+  **Both are now fixed by the same change.** `revalidate` re-checks the contract before every
+  method, so retiring an issuer key does stop running sessions: the refresh rebuilds the
+  snapshot against the published keys, the contract no longer verifies, `Snapshot::build` omits
+  it, `install` replaces the set wholesale, and the next call finds nothing. Phase 3 of the
+  drill asserts exactly that, and asserts the **code** as well as the refusal — an earlier run
+  of this drill reported three clean containment phases while every call was in fact being
+  denied on posture. *(Fixed)*
 
 ## 4 · Ceilings
 
@@ -216,27 +218,39 @@ subsystem.
   What clearing does **not** do is restore contracts: they stay revoked, and the party has to
   be issued new ones. That is intended, and it is stated in the command's output and in the
   evidence record because "cleared" reads like "back to normal". *(By design)*
-* **Containment does not reach an already-initialised session, and this is the sharpest thing
-  on this page.** Measured by `scripts/rotation-drill.sh` phase 5: quarantining the callee on
-  the control plane returns 202, the contract is revoked, and the mediator's own log says
-  **"refresh not clean — 0 missing, 1 rejected"** — and the live session keeps executing calls.
-  The mediator *knows* the contract is gone and serves anyway, because the per-call path reads
-  the `Admitted` cached at `initialize`.
+* **Containment reaches a live session, and for a while it did not.** This was the sharpest
+  item on this page and is now the best-tested one, so the history is worth keeping: the
+  mediator resolved the contract once at `initialize` and every later call used the `Admitted`
+  it produced. Quarantining the callee returned 202, the contract was withdrawn, the mediator's
+  own log said **"refresh not clean — 0 missing, 1 rejected"** — and the session kept executing
+  calls. It *knew*, and served anyway, because knowing lived in the cache and the hot path
+  never asked.
 
-  For the stdio sidecar one process is one session, so "the next call is refused" is true of
-  the next *process*, not the next call. What closes this is the drain/abort decision below,
-  which has no caller. Until then, **containment for a running sidecar is process termination
-  or contract expiry** — `connect quarantine` stops new connections and does not cut live ones.
-  The `connect mediators` ACK tells you the order was distributed, not that traffic stopped.
-  *(Unbuilt — and the most consequential gap here)*
-* **The drain/abort choice does not exist yet.** `wc_mediator::drain` defines `drain` and
-  `abort` for work in flight when a revocation lands, and **nothing calls it** — there is no
-  `--on-revoke` flag. New calls are refused the moment a revocation is installed, which is the
-  containment half and works; the in-flight call finishes, bounded by `--upstream-timeout`
-  (30 s) rather than by a drain window. So the module's stated default — `abort`, because
-  `drain` is the permissive reading — is not in force. For the stdio sidecar that is one
-  already-authorised call; the distinction belongs to the shared-gateway topology, which is not
-  deployable either. *(Unbuilt, and stated in the module)*
+  `MediatedUpstream::revalidate` now runs before **every** method on a live connection and
+  re-checks the contract against the current cache. Nothing verifies a signature there: the
+  snapshot is verified once at install, so this is an index lookup and a few set-membership
+  tests. The per-call cost was the stated reason for caching the admission, and it turned out
+  only the *verification* was ever expensive, never the *lookup* — which means the tradeoff
+  everyone had accepted did not exist.
+
+  Proven by `scripts/rotation-drill.sh` phases 3, 4a and 5 against a mediator nobody restarts,
+  and by seven tests in `crates/wc-mediator/tests/mediation.rs`. Both were mutation-checked by
+  deleting the seam and confirming they go red. Containment is **terminal**: reinstating a
+  contract admits a new connection and does not resurrect one already cut, or anyone who can
+  cause a brief key flap gets their session back. *(Fixed, and measured end to end)*
+* **The drain/abort choice still does not exist, and now it is only about the in-flight
+  call.** `wc_mediator::drain` defines `drain` and `abort` for work in flight when a revocation
+  lands, and **nothing calls it** — there is no `--on-revoke` flag.
+
+  Its module doc used to claim that "new calls are refused — this half is real, and it is the
+  containment half". That claim was false when written and is true now: the half it described
+  is what `revalidate` does. What remains is genuinely only the in-flight call, which finishes
+  bounded by `--upstream-timeout` (30 s) rather than by a drain window, so the module's stated
+  default of `abort` is still not in force. For the stdio sidecar that is one already-authorised
+  call already dispatched to the upstream; interrupting it means interrupting a blocking read,
+  and a flag that could not do so would be worse than no flag. The distinction belongs to the
+  shared-gateway topology, which is not deployable either. *(Unbuilt, and now correctly
+  described in the module)*
 * **A `--contract FILE` mediator cannot be contained at all.** Revocation reaches a mediator
   only through the control-plane pull, so a mediator handed contract artifacts on disk serves
   them until they expire and no quarantine can arrive. It reported

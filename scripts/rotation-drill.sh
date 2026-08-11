@@ -45,12 +45,44 @@ for b in "$CONNECT" "$MEDIATE"; do
     [ -x "$b" ] || { echo "no $b; run cargo build --release --workspace" >&2; exit 2; }
 done
 command -v python3 >/dev/null || { echo "need python3" >&2; exit 2; }
+
+# Refuse to drill a binary older than the code. The drill reads `target/`, it does not build,
+# so a source change followed by `cargo test` (which builds only the test profile) leaves these
+# stale — and the drill then reports on a mediator that no longer exists. That happened while
+# fixing the very bug this drill found: three phases reported the OLD behaviour after the fix
+# was written, tested and committed to the working tree.
+newest_src=$(find "$REPO/crates" -name '*.rs' -newer "$MEDIATE" -print -quit 2>/dev/null)
+if [ -n "$newest_src" ]; then
+    echo "$(basename "$MEDIATE") is older than $newest_src" >&2
+    echo "  cargo build --release --workspace" >&2
+    exit 2
+fi
 command -v openssl >/dev/null || { echo "need openssl" >&2; exit 2; }
 
 WORK="$(mktemp -d)"
 API_PORT=${API_PORT:-8841}
 JWKS_PORT=${JWKS_PORT:-8842}
 TTL=${TTL:-3}
+# Enforce by default. The drill ran in `--observe` when it only measured key rotation, on the
+# grounds that posture was not under test — but observe mode deliberately SOFTENS an absent
+# contract (§8.16: zero behaviour change on the proxy path), and a withdrawn contract reads as
+# absent. So containment simply cannot be observed in observe mode, and a drill that ran there
+# would report the fix as a failure and the bug as a pass. Both were briefly true here.
+# Observe, because the drill's parties are registered but not ATTESTED, and posture
+# (`WC-3109`, ClosedUnlessObserve) denies every call in enforce mode. Discovered by defaulting
+# this to enforce and watching the containment phases "pass" — they expect a refusal, and
+# posture was refusing everything. That is why `check` below asserts the CODE and not merely
+# that something was refused: a refusal for the wrong reason is the most convincing false pass
+# available, and this drill produced one on its first enforce-mode run.
+#
+# Containment is still fully under test here: `WC-4001` and `WC-3105` are both registered
+# `Closed` in the taxonomy, so they deny in observe mode too.
+MODE=${MODE:-observe}
+case "$MODE" in
+    enforce) MODE_FLAG="" ;;
+    observe) MODE_FLAG="--observe" ;;
+    *) echo "MODE must be enforce|observe, got $MODE" >&2; exit 2 ;;
+esac
 MEDIATOR_ID="warden:mediator:drill"
 TOKEN="tok_rotation_drill_0123456789"
 AGENT="spiffe://drill.example/ns/agents/sa/caller"
@@ -70,6 +102,7 @@ step() { printf '  %s\n' "$1"; }
 bold "key rotation drill"
 step "work dir  $WORK"
 step "ttl       ${TTL}s"
+step "mode      $MODE"
 
 cd "$WORK"
 export WARDEN_CONNECT_ROOT="$WORK/root"
@@ -222,7 +255,7 @@ env API="http://127.0.0.1:$API_PORT" TOKEN="$TOKEN" CALLEE="$SERVER" \
     --jwks-url "http://127.0.0.1:$JWKS_PORT/jwks-live.json" \
     --jwks-ttl "$TTL" --refresh "$TTL" \
     --policy "$WORK/warden.policy.toml" \
-    --observe
+    $MODE_FLAG
 
 STATUS=$?
 # Not `exec`: the EXIT trap has to run, or both servers outlive the drill on fixed ports and

@@ -19,13 +19,21 @@ They were a control that read as configured and did nothing.** Not one was found
 the code, and several survived a test suite that asserted the configuration rather than the
 effect.
 
-Two adversarial passes have now been run against the paths in
+Two adversarial passes and two drills have now been run against the paths in
 [production-readiness.md](production-readiness.md), by executing the binaries, and together
-they found **nine more of exactly this shape** — the last nine rows. Several had passing unit
-tests sitting beside them: `SurfaceMatch::matches` was covered only for `write = false`; the
-chain had tests for edited, deleted and reordered rows but none for a **truncated** one; and
-`drain` had nine tests and no caller. A one-sided test is how a one-sided control survives
-review, and a well-tested module is not a reachable one.
+they found **thirteen more of exactly this shape** — the last thirteen rows. Several had
+passing unit tests sitting beside them: `SurfaceMatch::matches` was covered only for
+`write = false`; the chain had tests for edited, deleted and reordered rows but none for a
+**truncated** one; and `drain` had nine tests and no caller. A one-sided test is how a
+one-sided control survives review, and a well-tested module is not a reachable one.
+
+The last four are the most instructive, because in each case the control **was** reachable and
+**was** correct — and the thing that needed it called something else. `Cache::resolve` applies
+revocation properly and has many callers; the mediator's per-call path was simply not one of
+them, so quarantine reached the cache and never the session. Three alert rules were loaded and
+syntax-checked by a CI step that passes them to `promtool`, which never asks which rules it was
+*not* given. Coverage of a control is not the same as coverage **by** the thing that depends on
+it, and neither is visible from the control's own file.
 
 The second pass was built around three questions, each of which found something:
 
@@ -66,8 +74,9 @@ The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 | `drain`/`abort` on revocation | has no caller and no flag: the stated `Abort` default is not in force |
 | `max_calls_per_hour` | counts per **process**, so a 3-per-hour contract served 9 calls in one hour across three short-lived mediators |
 | a quarantine | could never be lifted — no command, no route — so a false positive bricked a party permanently |
-| `connect quarantine` | returns 202, revokes the contract, and **does not stop a running session** — the mediator logs "1 rejected" and keeps serving |
-| retiring an issuer key | does not stop sessions already admitted under it |
+| `connect quarantine` | returned 202, revoked the contract, and **did not stop a running session** — the mediator logged "1 rejected" and kept serving |
+| retiring an issuer key | did not stop sessions already admitted under it — the per-call path never re-consulted the cache that already knew |
+| `drain.rs`'s own doc | asserted "new calls are refused — **this half is real**", which was true of `Cache::resolve` and false of the mediator, because the hot path never called it |
 | ten unit-tested alert rules | three were asserted **nowhere**, and one of those could not fire at all — `promtool` checks the tests it is given and never asks what was left out |
 
 ### The review checklist

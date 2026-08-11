@@ -172,6 +172,10 @@ const DECLARED: &[(&str, &str)] = &[
 
 struct Fixture {
     cache: Arc<Cache>,
+    /// The minted contract, so a test can install it into *another* fixture's cache —
+    /// which is what a refresh does, and the only faithful way to stage a contract being
+    /// replaced under a live session.
+    jws: String,
     recorder: Recorder,
     mediated: MediatedUpstream,
     /// The decision log and data-plane metrics (P1 #11), captured rather than written to
@@ -239,7 +243,12 @@ fn build(
 
     let jws = contract::mint(&payload, &signer()).unwrap();
     let cache = Arc::new(Cache::new());
-    cache.install(Snapshot::build(&[jws], &keys(), MEDIATOR, NOW));
+    cache.install(Snapshot::build(
+        std::slice::from_ref(&jws),
+        &keys(),
+        MEDIATOR,
+        NOW,
+    ));
 
     let recorder = Recorder::default();
     let upstream = RecordingServer {
@@ -273,6 +282,7 @@ fn build(
 
     Fixture {
         cache,
+        jws,
         recorder,
         mediated,
         telemetry,
@@ -826,6 +836,8 @@ fn uncontracted(mode: Mode) -> Fixture {
 
     Fixture {
         cache: Arc::clone(&cache),
+        // There is no contract in this fixture; that is its whole point.
+        jws: String::new(),
         recorder,
         mediated: MediatedUpstream::new(Box::new(upstream), cache, cfg)
             .with_ceilings(Ceilings::new()),
@@ -1228,4 +1240,221 @@ fn the_verify_histogram_is_populated_on_a_real_connection() {
         text.contains("le=\"0.005\"} 1"),
         "a resolve from an installed snapshot should be far inside 5 ms:\n{text}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Containment reaching a LIVE session
+//
+// `scripts/rotation-drill.sh` found that it did not. `initialize` resolved the contract
+// once and every later call used the `Admitted` it produced, so revoking a contract,
+// retiring the issuer key that signed it, or replacing it outright all left the session
+// running to expiry. The mediator's own refresh log said `1 rejected` while it served the
+// next call.
+//
+// These are the regression tests for that, and they are written the way the drill runs:
+// establish a working session first, then change the world underneath it, then call again.
+// Asserting only on a *fresh* connection is exactly how the gap survived —
+// `vector_revoked_contract_denies_on_the_next_connection` above passed throughout.
+// ---------------------------------------------------------------------------
+
+/// Drive a session to the point where a call has actually succeeded.
+///
+/// Every test below depends on the session being genuinely live first: if the handshake or
+/// the pin check had failed, a later refusal would prove nothing about containment.
+fn live_session(f: &mut Fixture) {
+    let _ = f.mediated.request(&initialize());
+    let _ = f.mediated.request(&tools_list());
+    let first = f.mediated.request(&call("get_balance"));
+    assert!(
+        tool_error(&first).is_none(),
+        "the session must be serving before the test changes anything: {first:?}"
+    );
+}
+
+#[test]
+fn revoking_the_connection_stops_the_very_next_call_on_a_live_session() {
+    let mut f = fixture(&["get_balance"]);
+    live_session(&mut f);
+
+    let mut revoked = Revocations::new();
+    revoked.revoke_cid("conn_7f3a91c4");
+    f.cache.set_revocations(revoked);
+
+    // No restart, no new connection, no cache rebuild — the same session that just worked.
+    let after = f.mediated.request(&call("get_balance"));
+    let detail = tool_error(&after).expect("a revoked connection must refuse the next call");
+    assert!(detail.contains("WC-3105"), "want CONTRACT_REVOKED, got {detail}");
+}
+
+#[test]
+fn revoking_the_callee_party_stops_a_live_session() {
+    // The drill's phase 5: `connect quarantine` revokes by party, not by cid. That is a
+    // different branch of `resolve` and worth its own test — quarantine is the operator
+    // action that has to work on the day.
+    let mut f = fixture(&["get_balance"]);
+    live_session(&mut f);
+
+    let mut revoked = Revocations::new();
+    revoked.revoke_party(server().as_str());
+    f.cache.set_revocations(revoked);
+
+    let after = f.mediated.request(&call("get_balance"));
+    let detail = tool_error(&after).expect("quarantining the callee must stop the session");
+    assert!(detail.contains("WC-3105"), "want CONTRACT_REVOKED, got {detail}");
+}
+
+#[test]
+fn withdrawing_the_issuer_key_stops_a_live_session() {
+    // The drill's phase 3, reproduced through the mechanism it actually runs through:
+    // a refresh rebuilds the snapshot against the published key set, the contract no longer
+    // verifies, `Snapshot::build` omits it, and `install` replaces the live set wholesale.
+    // So the observable effect of retiring a key is a snapshot without that contract.
+    let mut f = fixture(&["get_balance"]);
+    live_session(&mut f);
+
+    f.cache
+        .install(Snapshot::build(&[], &IssuerKeys::new(), MEDIATOR, NOW));
+
+    let after = f.mediated.request(&call("get_balance"));
+    let detail = tool_error(&after).expect("a withdrawn contract must stop the session");
+    assert!(detail.contains("WC-4001"), "want NO_CONTRACT, got {detail}");
+}
+
+#[test]
+fn replacing_the_contract_under_the_same_cid_stops_the_session() {
+    // The quiet one. Re-issuing a connection with a NARROWER surface under the same `cid`
+    // would otherwise leave the live session running on the previous artifact's allowlist —
+    // a widening relative to what anybody currently grants, and invisible because the
+    // connection id never changed.
+    let mut f = fixture(&["get_balance"]);
+    live_session(&mut f);
+
+    let replacement = build(
+        &["get_balance"],
+        DECLARED,
+        |mut p| {
+            p.jti = Jti::new("cx_replacement").unwrap();
+            p
+        },
+        Mode::Enforce,
+        Terms::default(),
+    );
+    f.cache.install(Snapshot::build(
+        std::slice::from_ref(&replacement.jws),
+        &keys(),
+        MEDIATOR,
+        NOW,
+    ));
+
+    let after = f.mediated.request(&call("get_balance"));
+    let detail = tool_error(&after).expect("a replaced artifact must end the old session");
+    assert!(detail.contains("WC-3105"), "want CONTRACT_REVOKED, got {detail}");
+}
+
+#[test]
+fn containment_also_stops_catalogues_and_pass_through_methods() {
+    // Containment that only covered `tools/call` would leave the agent able to enumerate
+    // the surface and to reach the upstream through any method the mediator does not
+    // recognise. `revalidate` runs from `request` for exactly this reason.
+    let mut f = fixture(&["get_balance"]);
+    live_session(&mut f);
+
+    let mut revoked = Revocations::new();
+    revoked.revoke_cid("conn_7f3a91c4");
+    f.cache.set_revocations(revoked);
+
+    let listed = f.mediated.request(&tools_list());
+    assert_eq!(
+        blocked_with(&listed).as_deref(),
+        Some("WC-3105"),
+        "a contained connection must not get a catalogue"
+    );
+
+    let passthrough = f
+        .mediated
+        .request(&Request::new(9, "completion/complete", json!({})));
+    assert_eq!(
+        blocked_with(&passthrough).as_deref(),
+        Some("WC-3105"),
+        "a contained connection must not reach the upstream by another method"
+    );
+}
+
+#[test]
+fn containment_is_terminal_and_does_not_lift_when_the_revocation_does() {
+    // A revocation that is withdrawn must not resurrect the session that was cut. The
+    // operator's containment order was carried out; reinstating the contract permits a NEW
+    // connection, and this one has already been told it is over.
+    let mut f = fixture(&["get_balance"]);
+    live_session(&mut f);
+
+    let mut revoked = Revocations::new();
+    revoked.revoke_cid("conn_7f3a91c4");
+    f.cache.set_revocations(revoked);
+    assert!(tool_error(&f.mediated.request(&call("get_balance"))).is_some());
+
+    f.cache.set_revocations(Revocations::new());
+
+    let after = f.mediated.request(&call("get_balance"));
+    let detail = tool_error(&after).expect("containment must not lift on retry");
+    assert!(detail.contains("WC-3105"), "want CONTRACT_REVOKED, got {detail}");
+}
+
+#[test]
+fn observe_mode_closes_on_a_withdrawn_contract_too() {
+    // The first version of `revalidate` softened this, on the reasoning that `on_initialize`
+    // softens an absent contract and observe mode promises zero behaviour change. Both halves
+    // were misapplied, and the error taxonomy is what settles it: `WC-4001` is registered
+    // `Closed`, which means it denies in **both** modes.
+    //
+    // `on_initialize` overrides that for one narrow case — UC-08 shadow detection, an
+    // *uncontracted pair* the mediator exists only to discover — and §8.16's "zero behaviour
+    // change" exit criterion is measured on precisely that case
+    // (`observe_mode_does_not_change_behaviour_on_an_uncontracted_pair`). A connection that
+    // was admitted under a contract and then lost it is not an uncontracted pair.
+    //
+    // The consequence of getting this wrong is the whole point: an operator who quarantines a
+    // party across an observe-mode estate would get nothing, while the metrics said the order
+    // had been distributed.
+    let mut f = build(
+        &["get_balance"],
+        DECLARED,
+        |p| p,
+        Mode::Observe,
+        Terms::default(),
+    );
+    live_session(&mut f);
+
+    f.cache
+        .install(Snapshot::build(&[], &IssuerKeys::new(), MEDIATOR, NOW));
+
+    let after = f.mediated.request(&call("get_balance"));
+    let detail =
+        tool_error(&after).expect("a withdrawn contract closes in observe mode as well");
+    assert!(detail.contains("WC-4001"), "want NO_CONTRACT, got {detail}");
+}
+
+#[test]
+fn observe_mode_closes_on_a_revocation_mid_session() {
+    // Separate from the withdrawal test above, and the first attempt to combine them was
+    // wrong in a way worth keeping a note of: it withdrew the contract and *then* revoked
+    // it, expecting the revocation to bite. `resolve` looks the contract up before it
+    // consults the revocation set, so an absent contract can only ever be NO_CONTRACT —
+    // "revoked" was unreachable and the test was asserting on a state the code cannot be in.
+    let mut f = build(
+        &["get_balance"],
+        DECLARED,
+        |p| p,
+        Mode::Observe,
+        Terms::default(),
+    );
+    live_session(&mut f);
+
+    let mut revoked = Revocations::new();
+    revoked.revoke_cid("conn_7f3a91c4");
+    f.cache.set_revocations(revoked);
+
+    let contained = f.mediated.request(&call("get_balance"));
+    let detail = tool_error(&contained).expect("a revocation closes even in observe mode");
+    assert!(detail.contains("WC-3105"), "want CONTRACT_REVOKED, got {detail}");
 }
