@@ -31,9 +31,8 @@
 //! `connect-mediate`, the binary does not reference this module, and no mediation path
 //! consults it. So the table describes a design, and the shipped behaviour is:
 //!
-//! * **new calls are refused** — this half is real, and it is the containment half.
-//!   [`crate::cache::Cache`] applies revocation at *lookup* time, so the next call after a
-//!   pull installs a revocation is refused with no cache rebuild;
+//! * **new calls are refused** — the containment half, and it is real *now*. See the
+//!   correction below, because this line was wrong for as long as it has existed;
 //! * **the in-flight call finishes**, bounded only by `--upstream-timeout` (30s by
 //!   default) rather than by `drain_timeout`.
 //!
@@ -41,15 +40,33 @@
 //! rule is that `abort` is the default *because* `drain` is the permissive reading. The
 //! stated default is not in force.
 //!
-//! For the stdio sidecar the exposure is one already-authorised call, bounded by the
+//! ## The correction, kept because it is more instructive than the design above
+//!
+//! This section used to say of the first bullet: *"this half is real, and it is the
+//! containment half. [`crate::cache::Cache`] applies revocation at lookup time, so the next
+//! call after a pull installs a revocation is refused with no cache rebuild."*
+//!
+//! Every clause of that was true about [`crate::cache::Cache::resolve`] and false about the
+//! mediator, **because the per-call path did not call `resolve`.** It resolved once at
+//! `initialize` and every later call used the cached `Admitted`. So a revoked contract was
+//! served until it expired, and this file confidently described the containment as working
+//! while sitting two modules away from the code that did not do it.
+//!
+//! `scripts/rotation-drill.sh` found it by running a rotation against a live process instead
+//! of reading about one. [`crate::gate::MediatedUpstream`] now re-checks before every method
+//! and the bullet is finally accurate.
+//!
+//! Two lessons, both already in `docs/threat-model.md` Part 1 and both re-earned here: a doc
+//! comment is not a control, and *"which caller reaches this?"* is the question. The second
+//! hardening pass asked it of `OnRevoke` and found no callers. Nobody thought to ask it of
+//! `resolve`, which has plenty of callers — just not the one that mattered.
+//!
+//! For the stdio sidecar the remaining exposure is one already-authorised call, bounded by the
 //! upstream timeout, which is why this is documented rather than urgently fixed. The
 //! distinction this module exists for belongs to the shared-gateway topology, and that
 //! topology is not deployable either (`docs/limitations.md`). Wiring a flag that could
 //! not interrupt a blocking upstream read would be worse than having none: a control that
 //! reads as configured and does nothing is the defect class this codebase keeps producing.
-//!
-//! Found by the second hardening pass, by grepping for callers of a module that had tests
-//! and asking which flag turns it on. The answer was none.
 
 use std::time::Duration;
 

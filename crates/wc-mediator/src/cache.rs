@@ -168,6 +168,19 @@ impl Snapshot {
         self.by_cid.get(cid)
     }
 
+    /// Whether this snapshot holds the exact artifact a connection was admitted under.
+    ///
+    /// `jti` and not just `cid`, because the control plane may re-issue a connection with
+    /// a narrower surface or tighter terms under the same `cid`. A live session holding
+    /// the *previous* artifact's allowlist would then be running on terms nobody
+    /// currently grants, which is a widening dressed as continuity.
+    #[must_use]
+    pub fn holds_artifact(&self, cid: &str, jti: &str) -> bool {
+        self.by_cid
+            .get(cid)
+            .is_some_and(|c| c.payload.jti.as_str() == jti)
+    }
+
     /// Look up by the authenticated party pair.
     #[must_use]
     pub fn by_pair(&self, caller: &EntityId, callee: &EntityId) -> Option<&Arc<VerifiedContract>> {
@@ -321,6 +334,48 @@ impl Cache {
             }
         }
         Ok(contract)
+    }
+
+    /// Re-check a connection admitted earlier: is the artifact it runs on still in force?
+    ///
+    /// This is the containment seam, and it exists because the mediator did not have one.
+    /// [`Self::resolve`] runs once per connection at `initialize`; every later call used the
+    /// `Admitted` cached from it, so a contract that had been revoked, withdrawn or replaced
+    /// went on being served until it expired. `scripts/rotation-drill.sh` measured both
+    /// halves of that: withdrawing the issuer key changed nothing, and quarantining the
+    /// callee changed nothing while the mediator's own log said `1 rejected`.
+    ///
+    /// Nothing here verifies a signature. The snapshot is built and verified once at install
+    /// time, so this is an index lookup and a handful of set-membership tests — which is why
+    /// it can sit on the per-call path inside §7.10's sub-millisecond budget. That cost was
+    /// the stated reason for caching the admission, and it turns out only the *verification*
+    /// was ever expensive, not the *lookup*.
+    ///
+    /// Deliberately narrower than re-admission: zones, the token binding and the pin were
+    /// settled against evidence this call does not have (the presented catalogue). The
+    /// per-call question is only whether the contract still stands.
+    pub fn still_in_force(
+        &self,
+        cid: &str,
+        jti: &str,
+        caller: &EntityId,
+        callee: &EntityId,
+    ) -> Result<()> {
+        // By `cid` and never by pair: a session admitted under one contract must not
+        // silently continue on whatever contract now happens to cover the same two
+        // parties. A replacement is a new connection, not a continuation of this one.
+        let contract = self.resolve(Some(cid), caller, callee)?;
+        if contract.payload.jti.as_str() != jti {
+            return Err(WcError::with_detail(
+                Code::CONTRACT_REVOKED,
+                format!(
+                    "connection {cid} is now served by artifact {} and this session was \
+                     admitted under {jti}; reconnect to pick up the current terms",
+                    contract.payload.jti.as_str()
+                ),
+            ));
+        }
+        Ok(())
     }
 }
 

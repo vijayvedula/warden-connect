@@ -1255,6 +1255,19 @@ differ only in whether that call returns. The distinction earns its keep in the
 shared-gateway topology, where aborting cuts work belonging to parties nobody
 revoked.
 
+**What of this is built.** The "new calls are refused" column is, and it lives in
+`gate::MediatedUpstream::revalidate` rather than in `drain` — it re-checks the
+contract against the cache before every method on a live connection, so a revoked,
+withdrawn or replaced contract stops the session on its next call without a
+restart. `scripts/rotation-drill.sh` proves it against a running process.
+
+The rest is not: there is no `--on-revoke` flag, no `--drain-timeout`, and the ACK
+carries neither `in_flight_aborted` nor a signature, so "contained" is still an
+HTTP 200 and not an attested claim. The in-flight call is bounded by
+`--upstream-timeout` (30 s) rather than by a drain window, which means the table's
+`abort` default is not in force. Recorded in `docs/limitations.md`; the honest
+summary is that the containment half is real and the *gracefulness* half is design.
+
 ---
 
 ## 8.7 Algorithms

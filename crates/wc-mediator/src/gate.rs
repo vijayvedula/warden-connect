@@ -115,6 +115,15 @@ enum State {
     /// Refused. Terminal for this connection — a denied connection does not get
     /// to retry its way in.
     Denied(Code, String),
+    /// Admitted, and then the contract stopped being in force: revoked, withdrawn
+    /// from the published set, or replaced by a different artifact.
+    ///
+    /// Distinct from [`State::Denied`] because this connection *was* legitimate and the
+    /// operator needs the two apart — "never admitted" and "contained mid-session" are
+    /// different incidents. Terminal for the same reason `Denied` is: containment does not
+    /// un-happen because the agent asked again. If a contract is reinstated, the session
+    /// that was cut reconnects.
+    Contained(Code, String),
     /// There is no contract for this pair and this mediator is observing, so the
     /// traffic passes and the absence is the finding (§8.5 UC-08).
     ///
@@ -448,6 +457,10 @@ impl MediatedUpstream {
         let items = match &self.state {
             State::Live { admitted, .. } => permitted_for(admitted, catalog),
             State::Denied(code, detail) => return self.blocked(req, *code, detail),
+            // Not an empty catalogue: a contained connection is over, and answering
+            // `tools/list` with `[]` would read to the agent as a server that has nothing
+            // rather than a connection somebody cut.
+            State::Contained(code, detail) => return self.blocked(req, *code, detail),
             State::Observed(code, detail) => {
                 let (code, detail) = (*code, detail.clone());
                 // Unfiltered on purpose: with no contract there is no allowlist to
@@ -539,6 +552,70 @@ impl MediatedUpstream {
         }
     }
 
+    /// Re-check a live connection against the current cache, before every method.
+    ///
+    /// The containment seam. Until this existed, `initialize` resolved the contract once and
+    /// every later call used the `Admitted` it produced — so a revoked, withdrawn or replaced
+    /// contract went on being served to expiry. `scripts/rotation-drill.sh` measured it from
+    /// both directions: retiring the issuer key changed nothing, and quarantining the callee
+    /// changed nothing while the mediator's own refresh log read `1 rejected`. It *knew*, and
+    /// served anyway, because knowing lived in the cache and the hot path never asked.
+    ///
+    /// Called from [`Upstream::request`] rather than from each handler on purpose. Three call
+    /// sites would be three chances to forget one, and the method somebody forgot would be
+    /// the uncontained one — this codebase's recurring defect is a control that is configured
+    /// and unreached (`docs/threat-model.md` Part 1).
+    ///
+    /// Cheap enough to belong here: no signature is verified, because the snapshot was
+    /// verified once at install. See [`Cache::still_in_force`].
+    fn revalidate(&mut self) {
+        let State::Live { admitted, .. } = &self.state else {
+            return;
+        };
+        let (cid, jti) = (
+            admitted.cid.as_str().to_string(),
+            admitted.jti.as_str().to_string(),
+        );
+        let Err(e) = self.cache.still_in_force(
+            &cid,
+            &jti,
+            &self.cfg.peer.caller,
+            &self.cfg.peer.callee,
+        ) else {
+            return;
+        };
+
+        // Mode is decided by the taxonomy, not by a list of codes kept here. `WC-4001` and
+        // `WC-3105` are both `Closed`, so containment lands in observe mode too — and if a
+        // future code out of `resolve` is `ClosedUnlessObserve`, this softens it without
+        // anybody having to remember to come back and edit a condition.
+        //
+        // Observe mode closing here is deliberate and worth defending, because the first
+        // version of this softened an absent contract to match `on_initialize`. That was
+        // wrong. `on_initialize` overrides the taxonomy for one narrow reason — UC-08 shadow
+        // detection, an *uncontracted pair* the mediator is only there to discover — and
+        // §8.16's "zero behaviour change" criterion is measured on exactly that case. A
+        // connection that was admitted under a contract and then lost it is not an
+        // uncontracted pair; it is a withdrawal. Softening it would mean an operator who
+        // quarantines a party in an observe-mode estate gets nothing at all, which is the
+        // defect class this whole exercise is about.
+        if !e.denies_in(self.cfg.mode) {
+            // Once per connection. `revalidate` runs on every method, and a finding pushed
+            // each time would turn one fact into a log flood that buries the rest.
+            if !self.log.findings.iter().any(|f| f.code == e.code()) {
+                self.log.findings.push(Finding {
+                    code: e.code(),
+                    detail: e.detail().to_string(),
+                    tool: None,
+                    allowed: true,
+                });
+            }
+            return;
+        }
+
+        self.state = State::Contained(e.code(), e.detail().to_string());
+    }
+
     /// `tools/call`: verify the pin if it has not been, then apply the allowlist
     /// and the ceilings.
     fn on_tool_call(&mut self, req: &Request) -> Response {
@@ -548,6 +625,13 @@ impl MediatedUpstream {
                 pin_verified,
             } => (admitted.cid.as_str().to_string(), !*pin_verified),
             State::Denied(code, detail) => return self.blocked(req, *code, detail),
+            // `tool_denial` and not `blocked`, matching how an expired contract comes out:
+            // the contract stopped being valid under a call that was otherwise well formed,
+            // so the agent should see a failed call rather than a broken transport.
+            State::Contained(code, detail) => {
+                let (code, detail) = (*code, detail.clone());
+                return self.tool_denial(req, code, &detail);
+            }
             State::Observed(code, detail) => {
                 let (code, detail) = (*code, detail.clone());
                 let tool = parse_tool_call(&req.params).map(|(n, _)| n);
@@ -600,6 +684,10 @@ impl MediatedUpstream {
         let admitted = match &self.state {
             State::Live { admitted, .. } => admitted.clone(),
             State::Denied(code, detail) => return self.blocked(req, *code, detail),
+            State::Contained(code, detail) => {
+                let (code, detail) = (*code, detail.clone());
+                return self.tool_denial(req, code, &detail);
+            }
             State::Observed(code, detail) => {
                 let (code, detail) = (*code, detail.clone());
                 return self.observe(req, code, &detail, Some(tool));
@@ -709,6 +797,10 @@ fn permitted_for(admitted: &Admitted, catalog: Catalog) -> BTreeSet<String> {
 
 impl Upstream for MediatedUpstream {
     fn request(&mut self, req: &Request) -> Response {
+        // Before anything else, and for every method: is the contract still in force?
+        // One seam, so no handler can be the one that forgot to ask.
+        self.revalidate();
+
         match req.method.as_str() {
             "initialize" => self.on_initialize(req),
             "tools/call" => self.on_tool_call(req),
@@ -719,7 +811,9 @@ impl Upstream for MediatedUpstream {
                 // agent has no contract for.
                 None => match &self.state {
                     State::Live { .. } | State::Observed(_, _) => self.inner.request(req),
-                    State::Denied(code, detail) => self.blocked(req, *code, detail),
+                    State::Denied(code, detail) | State::Contained(code, detail) => {
+                        self.blocked(req, *code, detail)
+                    }
                     State::New => self.inner.request(req),
                 },
             },
@@ -728,8 +822,11 @@ impl Upstream for MediatedUpstream {
 
     fn notify(&mut self, req: &Request) {
         // Notifications carry no id and expect no response, so there is nothing to
-        // filter — but a denied connection must not be able to send them.
-        if matches!(self.state, State::Denied(_, _)) {
+        // filter — but a denied connection must not be able to send them, and neither
+        // must a contained one. A notification still reaches the upstream, so leaving this
+        // open would mean containment stopped the calls and not the traffic.
+        self.revalidate();
+        if matches!(self.state, State::Denied(_, _) | State::Contained(_, _)) {
             return;
         }
         self.inner.notify(req);

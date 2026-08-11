@@ -73,6 +73,18 @@ wc_mediator_unconfirmed > 0
 **Unconfirmed is not contained.** The registry transition is the control plane's own state;
 the party keeps working until every mediator holding one of its contracts stops honouring it.
 
+**A confirmed mediator, though, is now genuinely contained** — and that is a recent change
+worth knowing if you have operated this before. A mediator used to resolve the contract once at
+`initialize` and serve every later call from the cached admission, so a *confirmed* mediator
+would ACK the quarantine and keep serving the live session to contract expiry. Sessions
+established before the quarantine now stop on their next call, in the same process, without a
+restart. So the question this page asks has narrowed usefully: if a party is still working
+after a quarantine, look for a mediator that has not confirmed, not for one that has.
+
+What still does not stop is the single call already dispatched upstream, bounded by
+`--upstream-timeout` (30 s default). One already-authorised call may complete after the
+quarantine lands.
+
 ```sh
 connect mediators                     # names the ones that have not confirmed
 ```
