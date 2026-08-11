@@ -963,11 +963,9 @@ fn gate_filter_tools_list_256_tools() {
 
     /// Measure `filter_catalog` over an `n`-tool catalogue, returning (p50, p99).
     ///
-    /// Parameterised by `n` so the debug build can assert a *scaling* property. An absolute
-    /// latency ceiling is meaningless in an unoptimised build on unknown hardware, and this
-    /// test proved it: a 12× tripwire failed on a shared CI runner whose debug p99 was 2.58 ms
-    /// against a 1.2 ms tripwire, on code with no regression at all. It had been failing every
-    /// `cargo test --workspace` in the MSRV job for days.
+    /// Still parameterised by `n` although only 256 is measured now: the parameter is what
+    /// made it possible to *test* the scaling hypothesis below and find that it did not hold
+    /// on CI, and a future attempt deserves the same cheap experiment rather than a rewrite.
     fn measure(n: usize) -> (std::time::Duration, std::time::Duration) {
         let permitted: BTreeSet<String> = (0..n)
             .filter(|i| i % 2 == 0)
@@ -1037,30 +1035,31 @@ fn gate_filter_tools_list_256_tools() {
     // when the response is dropped either way — so this gate is conservative about
     // its own subject.
     if cfg!(debug_assertions) {
-        // Debug asserts a SCALING property, which is hardware-independent, instead of a
-        // wall-clock one, which is not. Filtering is linear, so per-item cost at 256 should
-        // be no worse than at 64 — better, in fact, since fixed overhead amortises. A
-        // quadratic regression would put the ratio near 4 (256/64), so 3.0 catches it with
-        // room for a noisy runner.
+        // NOTHING about timing is asserted in a debug build. Two attempts to do so both
+        // failed on CI hardware, and the second is the more interesting failure:
         //
-        // Stated plainly because it is a real reduction in coverage: this does NOT catch a
-        // constant-factor regression, which is what the original clone bug was (4.7× fixed
-        // cost). That is caught by the absolute §8.10.3 ceiling below, in release — and CI
-        // runs it as its own job, so the coverage exists, just not in this build.
-        let (_, p99_small) = measure(64);
-        let per_item_large = p99.as_secs_f64() / N as f64;
-        let per_item_small = p99_small.as_secs_f64() / 64.0;
-        let ratio = per_item_large / per_item_small;
+        //   1. An absolute tripwire at 12× the release ceiling (1.2 ms). A GitHub runner's
+        //      debug p99 is 2.58 ms on code with no regression.
+        //   2. A per-item SCALING ratio between 64 and 256 tools, on the reasoning that a
+        //      ratio is hardware-independent where a wall clock is not. It measures 1.07
+        //      locally and **5.32 on CI** — so the ratio is not hardware-independent either.
+        //      A p99 is a tail statistic, and on a contended runner the tail is scheduling
+        //      jitter, which does not scale with the work.
+        //
+        // The conclusion is that there is no reliable timing-derived assertion available in
+        // an unoptimised build on hardware we do not choose, and continuing to invent one
+        // just moves the flake around. Two red CI runs is enough evidence.
+        //
+        // So this is a deliberate skip, and per this repository's own standard a skip must be
+        // LOUD — `connect bench` counts a silent one as a failure. The measurement is printed,
+        // the fact that it is not asserted is printed, and the command that does assert it is
+        // printed. The §8.10.3 ceiling is enforced in release by the `latency gates` job on
+        // every push, which is where the real coverage lives.
         println!(
-            "  debug build: asserting SCALING, not wall clock. per-item 256/64 = {ratio:.2} \
-             (quadratic would be ~4). The §8.10.3 ceiling of {:?} is asserted by `{}`",
+            "  NOT ASSERTED in a debug build — no timing assertion is reliable here. \
+             The §8.10.3 ceiling of {:?} is enforced by `{}`, which CI runs on every push.",
             thresholds::FILTER_256,
             thresholds::FILTER_GATE_COMMAND
-        );
-        assert!(
-            ratio <= 3.0,
-            "per-item cost grew {ratio:.2}× from 64 to 256 tools — filtering is supposed to \
-             be linear, so this is an algorithmic regression, not slow hardware"
         );
     } else {
         assert!(
