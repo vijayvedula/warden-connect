@@ -111,14 +111,42 @@ becomes true.
 
 ## Publishing to crates.io
 
-**Not possible, and the reason is structural.** Every crate is `publish = false`, because
-`warden` is a path dependency that cannot resolve from a registry (§8.3). A `cargo publish`
-of `wc-mediator` would fail; one of `wc-core`, which has no core dependency, would succeed
-and publish half a product.
+**Structurally possible now.** `warden` was a path dependency, which meant `wc-mediator`
+could not resolve from a registry at all: `cargo add wc-mediator` was impossible, and a
+consumer had to check out two repositories at commits nothing recorded — no version
+constraint, no semver contract, and a binary whose core revision was unanswerable from its own
+manifest.
 
-Making this publishable means giving Warden core a registry version and depending on it by
-version — which changes the family's coupling model, not just its packaging. That is a
-design decision, not a release chore, and it is why P1 #13 stays partial.
+It is a **version** requirement now, `warden = "0.1"`, with a `[patch.crates-io]` at the
+workspace root pointing at the sibling checkout. That patch applies when building *this*
+workspace and is not part of published crate metadata, so a registry consumer resolves
+`warden` from crates.io and never sees a path.
+
+The coupling model is unchanged — one dependency, still only from `wc-mediator`, still the
+deployment model rather than a dependency choice. What changed is that it is now expressible.
+
+### The order matters
+
+1. **Publish Warden core first.** `wc-mediator` depends on a published `warden`, so its own
+   publish fails until that exists. Core is already publish-ready: full metadata, keywords,
+   categories, an `exclude` list, and no `publish = false`.
+2. Then, dependency order: `wc-core`, `wc-control`, `wc-mediator`, `wc-cli`.
+3. `wc-e2e` stays `publish = false`. It exists so the top of the test pyramid can reach both
+   planes at once and ships nothing.
+4. **Delete the `[patch.crates-io]` stanza and rebuild** before believing any of it. While the
+   patch is present the build never touches the registry, so a broken version requirement
+   would not show up here — the patch is a development convenience and also a blindfold.
+
+`cargo package -p wc-core` succeeds today (13 files, 92 KiB compressed), which is as far as
+verification can go before core is on the registry.
+
+### What making this publishable already found
+
+`cargo deny check bans` failed the moment the crates stopped being `publish = false`: the
+**intra-workspace** dependencies were bare path deps, and crates.io does not accept those.
+They now carry `path` *and* `version`, which is the standard pattern — Cargo prefers the path
+in-workspace and rewrites it to the version on publish. Nothing would have surfaced that while
+everything was unpublishable.
 
 ## Publishing the Python SDK
 

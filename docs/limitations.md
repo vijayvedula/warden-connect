@@ -323,11 +323,18 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
 
 ## 12 · Packaging and supply chain
 
-* **Nothing is published to crates.io, and cannot be.** Every crate is `publish = false`
-  because `warden` is a path dependency that cannot resolve from a registry. `cargo publish`
-  of `wc-mediator` would fail; of `wc-core` would succeed and publish half a product. Making
-  this publishable means giving core a registry version — a change to the family's coupling
-  model, not a packaging chore. *(By design, until that decision changes)*
+* **Nothing is published to crates.io yet, but it can be.** `warden` is a **version**
+  requirement now rather than a path, patched to the sibling checkout for local development
+  only, so `cargo add wc-mediator` becomes possible and a consumer no longer needs two
+  repositories at commits nothing recorded. `cargo package -p wc-core` succeeds and
+  `cargo deny check bans` passes.
+
+  What is left is sequencing and a decision: **Warden core must go to crates.io first**, since
+  `wc-mediator` depends on a published `warden`; then wc-core, wc-control, wc-mediator, wc-cli
+  in dependency order. And **the `[patch.crates-io]` must be deleted and the build repeated**
+  before believing any of it — while the patch is present the build never touches the registry,
+  so it is a development convenience and also a blindfold. Nothing is tagged. *(Environmental:
+  a registry account and a decision to tag)*
 * **Release provenance is built and the workflow has never run.** `release.yml` attests each
   binary with a DSSE/in-toto SLSA v1 envelope, signed keyless, and verifies what it just
   attested with our own verifier in the same run. A downloader runs
