@@ -1222,6 +1222,13 @@ mod tests {
             let n = COUNTER.fetch_add(1, Ordering::SeqCst);
             let path =
                 std::env::temp_dir().join(format!("wc-store-{}-{tag}-{n}", std::process::id()));
+            // Clear first: `create_dir_all` on an EXISTING directory succeeds and leaves its
+            // contents, and these paths repeat across runs because a pid gets reused and the
+            // counter restarts at 0. `Drop` does not run when a test aborts or a run is killed,
+            // so leftovers accumulate — 2,956 of them were sitting in /tmp when this was found.
+            // A stale log underneath a durability test can fail it, and can also make it PASS
+            // for the wrong reason, which is the worse half.
+            let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).unwrap();
             TmpDir(path)
         }
