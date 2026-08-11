@@ -68,6 +68,7 @@ The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 | a quarantine | could never be lifted — no command, no route — so a false positive bricked a party permanently |
 | `connect quarantine` | returns 202, revokes the contract, and **does not stop a running session** — the mediator logs "1 rejected" and keeps serving |
 | retiring an issuer key | does not stop sessions already admitted under it |
+| ten unit-tested alert rules | three were asserted **nowhere**, and one of those could not fire at all — `promtool` checks the tests it is given and never asks what was left out |
 
 ### The review checklist
 
