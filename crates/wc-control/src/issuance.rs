@@ -1463,6 +1463,7 @@ id = "internal.payments"
 trust = "internal"
 
 [standing]
+enabled = true
 reviewed_at = {}
 review_every = "90d"
 
@@ -2188,7 +2189,7 @@ reason = "a sensitive callee needs a security architect"
         let tmp = TmpDir::new("dual");
         // A public callee forces dual control via the trust-level bar.
         let pol = ConnectPolicy::parse(&format!(
-            "default = \"require_approval\"\nversion = \"v1\"\n[standing]\nreviewed_at = {}\nreview_every = \"90d\"\n",
+            "default = \"require_approval\"\nversion = \"v1\"\n[standing]\nenabled = true\nreviewed_at = {}\nreview_every = \"90d\"\n",
             NOW - 86_400
         ))
         .unwrap();
@@ -2479,7 +2480,7 @@ reason = "a sensitive callee needs a security architect"
         // An estate that only records what it granted cannot show what it refused.
         let tmp = TmpDir::new("denyrecord");
         let pol = ConnectPolicy::parse(&format!(
-            "default = \"deny\"\nversion = \"v1\"\n[standing]\nreviewed_at = {}\nreview_every = \"90d\"\n",
+            "default = \"deny\"\nversion = \"v1\"\n[standing]\nenabled = true\nreviewed_at = {}\nreview_every = \"90d\"\n",
             NOW - 86_400
         ))
         .unwrap();

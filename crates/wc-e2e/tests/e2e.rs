@@ -1454,6 +1454,10 @@ fn uc04_alt_an_unreviewed_standing_policy_escalates_everything() {
     // A baseline that satisfies every substantive limit: the callee's own tier, a
     // read-only two-tool surface, a fresh review.
     let permitted = StandingLimits {
+        // Standing issuance is off in v1. This test is about the review gate *inside* it, so
+        // it enables the feature to reach that gate — and the next assertion covers the
+        // outer gate, which is the one an operator meets first.
+        enabled: true,
         min_callee_tier: callee.tier.as_u8(),
         reviewed_at: e.now,
         ..StandingLimits::default()
@@ -1477,6 +1481,23 @@ fn uc04_alt_an_unreviewed_standing_policy_escalates_everything() {
         StandingLimits::default().reviewed_at,
         0,
         "and that is the default, so a policy nobody has looked at escalates"
+    );
+
+    // The outer gate, which is v1's actual posture: the feature is off, so an otherwise
+    // perfectly-permitted request still reaches a human. Asserted here because a reader of
+    // this test should not conclude that a fresh `reviewed_at` is all that stands between an
+    // estate and auto-approval.
+    let off = StandingLimits {
+        enabled: false,
+        ..permitted.clone()
+    };
+    let why_off = off
+        .blocks(&request, &callee, &state, e.now)
+        .expect("standing issuance is off in v1");
+    assert!(why_off.contains("standing issuance is off"), "{why_off}");
+    assert!(
+        !StandingLimits::default().enabled,
+        "off is the default, so a policy that omits the field cannot auto-approve"
     );
 
     // Nor does one whose review has gone stale.

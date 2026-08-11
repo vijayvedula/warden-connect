@@ -176,6 +176,7 @@ id = "internal.payments"
 trust = "internal"
 
 [standing]
+enabled = true
 reviewed_at = {}
 review_every = "90d"
 

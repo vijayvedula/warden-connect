@@ -667,6 +667,7 @@ trust = "internal"
 # everything — which is the correct default and would make every
 # `likely_decision` in these tests read "needs approval".
 [standing]
+enabled = true
 reviewed_at = 1799000000
 review_every = "90d"
 

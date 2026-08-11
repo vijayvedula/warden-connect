@@ -757,6 +757,23 @@ pub struct StandingLimits {
     pub max_share: f64,
     /// Active contracts below which the share cap does not apply.
     ///
+    /// Whether standing issuance may happen at all.
+    ///
+    /// **False in v1, and that is a decision rather than a default.** Every connection is
+    /// approved by a human. The caps below are built, tested and inert: they bound a feature
+    /// that is switched off, and they exist so that turning it on later is a configuration
+    /// change rather than a new subsystem.
+    ///
+    /// The reasoning is that auto-approval is simultaneously the thing that makes a register
+    /// adoptable and the widest policy surface in the system — and this codebase's own history
+    /// is that standing policy once auto-issued to parties whose attestation had just failed.
+    /// A control that broad should earn its place after the estate is stable and the evidence
+    /// chain has been read in anger, not before.
+    ///
+    /// Not the same gate as `reviewed_at`. That one asks "has anybody signed off these
+    /// limits"; this one asks "is this feature in play". A single number in a TOML file should
+    /// not be the whole distance between every-request-approved and none.
+    pub enabled: bool,
     /// A percentage of a tiny denominator is noise: with one active contract, one
     /// standing issuance is 100% and the cap would escalate every request forever,
     /// so an estate could never get past its first contract. Below this many, the
@@ -782,6 +799,7 @@ pub struct StandingLimits {
 impl Default for StandingLimits {
     fn default() -> Self {
         StandingLimits {
+            enabled: false,
             max_share: 0.6,
             share_min_sample: 20,
             max_per_window: 50,
@@ -818,6 +836,14 @@ impl StandingLimits {
         state: &StandingState,
         now: u64,
     ) -> Option<String> {
+        // First, because it is the most fundamental reason and the one an operator should be
+        // told. Every check below bounds a feature; this one asks whether the feature is on.
+        if !self.enabled {
+            return Some(
+                "standing issuance is off: every connection needs a human in v1. Set                  `[standing] enabled = true` once the estate is stable and these limits have                  been reviewed — auto-approval is the widest policy surface here, and it has                  already once issued to a party whose attestation had just failed"
+                    .to_string(),
+            );
+        }
         if callee.tier.as_u8() < self.min_callee_tier {
             return Some(format!(
                 "callee is {} and standing policy stops at tier {}",
@@ -1550,10 +1576,25 @@ impl ConnectPolicy {
                 self.standing.review_every
             ));
         }
-        if self.standing.reviewed_at == 0 {
+        // `enabled` first, because it is the outer gate. An operator who set `reviewed_at`
+        // and still saw every request escalate would otherwise be told about the clock and
+        // left to discover the switch — the same "which limit did I trip" confusion the two
+        // separate gates exist to avoid.
+        if !self.standing.enabled {
+            let allows = self
+                .rules
+                .iter()
+                .filter(|r| r.decision == ConnDecision::Allow)
+                .count();
+            report.warnings.push(format!(
+                "standing.enabled is false, so every request goes to a human — the v1 posture. \
+                 {allows} rule(s) say `allow` and will escalate instead. Set it true only once \
+                 these limits have been reviewed"
+            ));
+        } else if self.standing.reviewed_at == 0 {
             report.warnings.push(
-                "standing.reviewed_at is unset, so standing policy is treated as overdue and every \
-                 request escalates to a human"
+                "standing.enabled is true but standing.reviewed_at is unset, so standing policy \
+                 is treated as overdue and every request still escalates to a human"
                     .into(),
             );
         }
@@ -1780,6 +1821,7 @@ trust = "partner"
 assurance = {{ identity = "required", provenance = "required", ttl_max = "7d", approval = "human", oversight = "required" }}
 
 [standing]
+enabled = true
 reviewed_at = {REVIEWED}
 
 # the low-risk majority never reaches a human
@@ -1970,7 +2012,10 @@ decision = "allow"
         // The auto-approved majority is the whole point of standing policy, and the
         // whole risk in it. This is the case that must not slip through: a callee
         // whose re-attestation just failed, on a request that otherwise qualifies.
-        let p = policy();
+        let mut p = policy();
+        // Standing issuance is off in v1; this test is about a gate *inside* it, so it
+        // switches the feature on to reach that gate at all.
+        p.standing.enabled = true;
         let base = p
             .evaluate(
                 &request(&["get_balance", "list_transactions"]),
@@ -2067,7 +2112,10 @@ decision = "allow"
 
     #[test]
     fn the_low_risk_majority_is_auto_approved() {
-        let p = policy();
+        // Standing issuance is off in v1; this is about what it does once an estate turns it
+        // on, so it opts in.
+        let mut p = policy();
+        p.standing.enabled = true;
         let eval = p
             .evaluate(
                 &request(&["get_balance", "list_transactions"]),
@@ -2198,7 +2246,10 @@ decision = "allow"
         // The bug this exists to prevent: with one active contract, one standing
         // issuance is 100% and the cap escalates every request forever, so an
         // estate can never get past its first contract.
-        let p = policy();
+        let mut p = policy();
+        // Standing issuance is off in v1; this test is about a gate *inside* it, so it
+        // switches the feature on to reach that gate at all.
+        p.standing.enabled = true;
         for (active, standing) in [(0, 0), (1, 1), (5, 5), (19, 19)] {
             let eval = p
                 .evaluate(
@@ -2242,6 +2293,9 @@ decision = "allow"
     fn an_unreviewed_standing_policy_escalates_everything() {
         // A standing rule nobody has reviewed is a rule nobody is accountable for.
         let mut p = policy();
+        // Standing issuance is off in v1; this test is about a gate *inside* it, so it
+        // switches the feature on to reach that gate at all.
+        p.standing.enabled = true;
         p.standing.reviewed_at = 0;
         let eval = p
             .evaluate(
@@ -2715,6 +2769,8 @@ ttl_max = "3d"
 default = "deny"
 version = "v1"
 [standing]
+# Off in v1, so a test expecting an `allow` to reach a decision says so here.
+enabled = true
 reviewed_at = 1
 review_every = "36500d"
 
@@ -2871,10 +2927,21 @@ ttl_max = "365d"
             .warnings
             .iter()
             .any(|w| w.contains("default is `allow`")));
+        // The outer standing gate. `reviewed_at is unset` is the *inner* one and is only
+        // reported once the feature is enabled — two gates, two warnings, and never both at
+        // once, so an operator is told the one thing to change next rather than a list.
         assert!(report
             .warnings
             .iter()
-            .any(|w| w.contains("reviewed_at is unset")));
+            .any(|w| w.contains("standing.enabled is false")));
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|w| w.contains("reviewed_at is unset")),
+            "the review warning is for an enabled policy: {:?}",
+            report.warnings
+        );
     }
 
     #[test]
@@ -2973,7 +3040,18 @@ mod shipped {
         // until someone signs off on the standing limits.
         let report = ConnectPolicy::parse(SHIPPED).unwrap().lint();
         assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
-        assert!(report.warnings[0].contains("reviewed_at is unset"));
+        // The v1 posture, and it names the count of `allow` rules that will escalate — an
+        // operator should be able to see from lint alone that their low-risk rule is inert.
+        assert!(
+            report.warnings[0].contains("standing.enabled is false"),
+            "{:?}",
+            report.warnings
+        );
+        assert!(
+            report.warnings[0].contains("1 rule(s) say `allow`"),
+            "{:?}",
+            report.warnings
+        );
     }
 
     #[test]
@@ -2989,13 +3067,93 @@ mod shipped {
             )
             .unwrap();
         assert_eq!(eval.decision, ConnDecision::RequireApproval);
-        assert!(eval.reason.contains("overdue for review"));
+        // Two independent gates, and this asserts the outer one. `enabled = false` is the v1
+        // posture and fires before the review clock, so the reason names it — an operator who
+        // sets `reviewed_at` and still sees escalation should be told the feature is off
+        // rather than left guessing which limit they tripped.
+        assert!(
+            eval.reason.contains("standing issuance is off"),
+            "{}",
+            eval.reason
+        );
+    }
+
+    #[test]
+    fn nothing_in_a_policy_file_can_auto_approve_while_standing_is_off() {
+        // The v1 posture, asserted against a policy written specifically to auto-approve:
+        // every cap satisfied, the review clock fresh, an explicit `decision = "allow"`. It
+        // still escalates, because `enabled` defaults to false and no other field substitutes
+        // for it. That is the difference between a default and a decision.
+        let text = format!(
+            r#"
+default = "deny"
+version = "v1"
+
+[[zone]]
+id = "internal.apac-ops"
+trust = "internal"
+
+[[zone]]
+id = "internal.payments"
+trust = "internal"
+
+[standing]
+reviewed_at = {}
+min_callee_tier = 4
+max_tools = 64
+max_per_window = 10000
+
+[[rules]]
+caller_zone = "internal.*"
+callee_zone = "internal.*"
+decision = "allow"
+ttl_max = "30d"
+"#,
+            fixtures::NOW - 60
+        );
+        let p = ConnectPolicy::parse(&text).unwrap();
+        assert!(!p.standing.enabled, "off unless a policy says otherwise");
+
+        let eval = p
+            .evaluate(
+                &fixtures::request(&["get_balance"]),
+                &fixtures::caller(),
+                &fixtures::callee(Tier::FOUR),
+                &fixtures::state(),
+                fixtures::NOW,
+            )
+            .unwrap();
+        assert_eq!(
+            eval.decision,
+            ConnDecision::RequireApproval,
+            "an allow rule must not mint without a human in v1: {}",
+            eval.reason
+        );
+        assert!(eval.trace.contains("standing-cap"), "{}", eval.trace);
+
+        // And the switch works, so turning it on later is configuration rather than a new
+        // subsystem — the caps below it are built and tested, they simply bound nothing yet.
+        let mut on = ConnectPolicy::parse(&text).unwrap();
+        on.standing.enabled = true;
+        let eval = on
+            .evaluate(
+                &fixtures::request(&["get_balance"]),
+                &fixtures::caller(),
+                &fixtures::callee(Tier::FOUR),
+                &fixtures::state(),
+                fixtures::NOW,
+            )
+            .unwrap();
+        assert_eq!(eval.decision, ConnDecision::Allow, "{}", eval.reason);
     }
 
     #[test]
     fn the_shipped_policy_auto_approves_the_low_risk_case_once_reviewed() {
         let mut p = ConnectPolicy::parse(SHIPPED).unwrap();
         p.standing.reviewed_at = fixtures::NOW - 86_400;
+        // v1 ships with standing issuance off; these tests are about the caps it applies
+        // once an estate turns it on, so they opt in explicitly.
+        p.standing.enabled = true;
 
         let eval = p
             .evaluate(
@@ -3016,6 +3174,9 @@ mod shipped {
     fn the_shipped_policy_sends_money_movement_to_a_controller() {
         let mut p = ConnectPolicy::parse(SHIPPED).unwrap();
         p.standing.reviewed_at = fixtures::NOW - 86_400;
+        // v1 ships with standing issuance off; these tests are about the caps it applies
+        // once an estate turns it on, so they opt in explicitly.
+        p.standing.enabled = true;
 
         let eval = p
             .evaluate(
@@ -3037,6 +3198,9 @@ mod shipped {
     fn the_shipped_policy_denies_public_egress() {
         let mut p = ConnectPolicy::parse(SHIPPED).unwrap();
         p.standing.reviewed_at = fixtures::NOW - 86_400;
+        // v1 ships with standing issuance off; these tests are about the caps it applies
+        // once an estate turns it on, so they opt in explicitly.
+        p.standing.enabled = true;
 
         let mut public = fixtures::callee(Tier::THREE);
         public.zone = ZoneId::new("public").unwrap();
@@ -3176,6 +3340,9 @@ mod dry_run_tests {
 
         let mut p = ConnectPolicy::parse(include_str!("../../../connect-policy.toml")).unwrap();
         p.standing.reviewed_at = fixtures::NOW - 86_400;
+        // v1 ships with standing issuance off; these tests are about the caps it applies
+        // once an estate turns it on, so they opt in explicitly.
+        p.standing.enabled = true;
 
         let report = p.dry_run(&store.projection, &fixtures::state(), fixtures::NOW);
         assert_eq!(report.rows.len(), 2);
@@ -3264,6 +3431,9 @@ mod dry_run_tests {
 
         let mut p = ConnectPolicy::parse(include_str!("../../../connect-policy.toml")).unwrap();
         p.standing.reviewed_at = fixtures::NOW - 86_400;
+        // v1 ships with standing issuance off; these tests are about the caps it applies
+        // once an estate turns it on, so they opt in explicitly.
+        p.standing.enabled = true;
 
         let report = p.dry_run(&store.projection, &fixtures::state(), fixtures::NOW);
         assert_eq!(

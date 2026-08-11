@@ -20,6 +20,15 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
 
 ---
 
+## 0 · The v1 posture, in one line
+
+**Every connection is approved by a human.** Standing issuance — auto-approval — is built,
+capped, tested and **switched off** (`[standing] enabled = false`). It is the widest policy
+surface in the system, and the history here is that it once auto-issued to a party whose
+attestation had just failed. It earns its place after an estate is stable and somebody has read
+the evidence chain in anger. Turning it on later is a configuration change, not a new
+subsystem.
+
 ## 1 · What warden-connect does not protect against at all
 
 **By design**, and stated first because everything else is secondary to getting this right.
@@ -293,10 +302,14 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
 
 ## 10 · Observability
 
-* **`wc_standing_share` is not emitted.** §8.17-Q4 cap utilisation. The cap is enforced;
-  expressing utilisation as one ratio across zone pairs needs a definition nobody has written
-  down, and inventing one would put a number on a dashboard that means whatever the
-  implementation decided. *(Unbuilt)*
+* **`wc_standing_share` is not emitted, and in v1 there is nothing for it to measure.**
+  Standing issuance — auto-approval — is **off** (`[standing] enabled = false`), so the share
+  is definitionally zero and the panel would teach an operator to ignore it. Even once the
+  feature is enabled the metric stays unbuilt on purpose: the caps apply per zone pair, tier
+  and surface shape, so one ratio across an estate averages incomparable populations, and a
+  number on a dashboard invites somebody to manage the ratio rather than the risk. The cap is
+  *enforced* and a breach escalates to a human by itself, so the metric would inform no
+  decision anybody is not already being asked to make. *(By design)*
 * **A mediator has no `/metrics` endpoint.** By design — it speaks stdio to one agent, and a
   listener would add a port, a bind address and an auth decision to a sidecar whose argument
   is that it adds no surface. Metrics go to a file for a textfile collector. *(By design)*
@@ -372,8 +385,30 @@ Status: pre-1.0, no independent audit, two internal hardening passes run.
   `require_provenance`, and others. Refused *with a reason*, so an operator who sets
   `hot_reload = true` is told SIGHUP reloads nothing rather than finding out during a policy
   change. *(Unbuilt, and named at the point of refusal)*
-* **No policy hot reload.** A policy change needs a restart. *(Unbuilt)*
-* **No AuthZEN PDP passthrough.** *(Unbuilt)*
+* **No policy hot reload, by decision for v1.** A policy change takes effect on restart of the
+  enforcement point — restart `connect serve`, and restart each `connect-mediate` whose
+  `--policy` changed. On active/standby that restart *is* a failover: the standby is already
+  waiting on the writer lock, takes it when the active releases, and binds its listener then,
+  so the sequence is "restart the active, the standby takes over" rather than a coordinated
+  swap. Contracts already minted are unaffected — a policy governs *issuance*, and a live
+  contract carries its own terms and `policy_version`.
+
+  Deliberately not built for v1: a hot reload is a second code path that changes the decision
+  engine underneath in-flight requests, and it would want its own answer to "which
+  `policy_version` did this mint use". A restart has one answer. *(By design for v1)*
+* **No AuthZEN PDP passthrough, and it is out of scope here.** AuthZEN is the OpenID
+  Foundation's Authorization API — a standard shape for asking a PDP *"may subject S do action A
+  on resource R"*. **Warden core already implements it** (`warden/src/authzen.rs`, serving
+  `POST /access/v1/evaluation`), which is the right layer: AuthZEN answers *per-request*
+  questions and core is the per-action plane.
+
+  warden-connect answers a different question — may these two parties have a standing
+  relationship, and on what terms — decided by a human against a versioned policy and recorded
+  in a signed artifact. Deferring that to an external PDP would mean the contract's terms came
+  from somewhere the evidence chain cannot reconstruct, which breaks the property that every
+  mint is answerable years later. It is not a `warden-delegate` candidate either: delegate is
+  about authority *attenuating* across hops, and AuthZEN has no notion of a delegation chain.
+  *(By design)*
 
 ## 14 · Testing depth
 
