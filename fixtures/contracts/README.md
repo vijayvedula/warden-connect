@@ -105,7 +105,7 @@ all.
 Only after an **intentional** format change:
 
 ```sh
-cargo test -p wc-core conformance::generate_vectors -- --ignored
+cargo test -p warden-connect-core conformance::generate_vectors -- --ignored
 ```
 
 `the_fixtures_on_disk_match_the_generator` fails the build if the code and these

@@ -44,7 +44,7 @@ def binary() -> pathlib.Path:
         path = REPO / candidate
         if path.is_file():
             return path
-    sys.exit("no connect binary; run `cargo build --release -p wc-cli` first")
+    sys.exit("no connect binary; run `cargo build --release -p warden-connect-cli` first")
 
 
 # --- the vectors -------------------------------------------------------------

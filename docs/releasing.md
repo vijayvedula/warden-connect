@@ -41,7 +41,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace                       # 993 tests
 cargo +1.89 test --workspace                 # the MSRV, which CI pins
-cargo test -p wc-mediator --release gate_filter
+cargo test -p warden-connect-mediator --release gate_filter
 connect bench --iterations 400 \
   --signing-key fixtures/keys/test_issuer_es256_priv.pem \
   --verify-pub  fixtures/keys/test_issuer_es256_pub.pem --kid wc-test-es256

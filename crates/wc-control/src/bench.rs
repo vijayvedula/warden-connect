@@ -400,6 +400,16 @@ mod tests {
             "the advertised command must select the test that runs the gate"
         );
         assert!(thresholds::FILTER_GATE_COMMAND.contains("--release"));
-        assert!(thresholds::FILTER_GATE_COMMAND.contains("wc-mediator"));
+        // The PACKAGE name, which is `warden-connect-mediator` and not the directory name
+        // `wc-mediator`. This assertion is the closest thing the repository had to a guard on
+        // the crate rename, and it still only fires when the constant is edited — the rename
+        // itself left this string stale, along with the fuzz manifest and five `-p` flags in
+        // CI, and none of it was noticed because CI was already red for a different reason.
+        // A red build is a build nobody reads.
+        assert!(
+            thresholds::FILTER_GATE_COMMAND.contains("warden-connect-mediator"),
+            "the advertised command must name the mediator PACKAGE, not its directory: {}",
+            thresholds::FILTER_GATE_COMMAND
+        );
     }
 }

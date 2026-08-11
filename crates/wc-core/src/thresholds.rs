@@ -169,4 +169,4 @@ pub const SCREEN_256: Duration = Duration::from_millis(50);
 /// constant is what stops the pointer drifting from the test — the previous version
 /// of this told operators to run `gate_filter`, and no such test existed, which is a
 /// skipped gate reporting green with extra steps.
-pub const FILTER_GATE_COMMAND: &str = "cargo test -p wc-mediator --release gate_filter";
+pub const FILTER_GATE_COMMAND: &str = "cargo test -p warden-connect-mediator --release gate_filter";

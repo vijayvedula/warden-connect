@@ -576,12 +576,10 @@ impl MediatedUpstream {
             admitted.cid.as_str().to_string(),
             admitted.jti.as_str().to_string(),
         );
-        let Err(e) = self.cache.still_in_force(
-            &cid,
-            &jti,
-            &self.cfg.peer.caller,
-            &self.cfg.peer.callee,
-        ) else {
+        let Err(e) =
+            self.cache
+                .still_in_force(&cid, &jti, &self.cfg.peer.caller, &self.cfg.peer.callee)
+        else {
             return;
         };
 

@@ -10,9 +10,14 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1"
-wc-core = { path = "../crates/wc-core" }
-wc-control = { path = "../crates/wc-control" }
-wc-mediator = { path = "../crates/wc-mediator" }
+# Package names, not the old `wc-*` ones. The fuzz crate is a SEPARATE workspace, so
+# `cargo build` at the root never resolves it and the crate rename left it broken — a nightly
+# job nobody watches, red for as long as the rename had existed. The `use wc_core::` in each
+# target still works: every crate sets `[lib] name`, which decouples the extern name from the
+# package name.
+warden-connect-core = { path = "../crates/wc-core" }
+warden-connect-control = { path = "../crates/wc-control" }
+warden-connect-mediator = { path = "../crates/wc-mediator" }
 
 # Keep the fuzz crate out of the parent's build graph, exactly as `warden/fuzz`
 # does. It needs nightly and `libfuzzer-sys`, and neither belongs in the graph a

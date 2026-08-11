@@ -2008,7 +2008,7 @@ a different costume. The two are separate fields on the report.
 `wc-mediator`, and the CLI deliberately does not link it (§8.3) so a
 control-plane-only deployment never pulls in Warden core. It is **listed as
 skipped with that reason** rather than omitted, and runs as
-`cargo test -p wc-mediator --release gate_filter`.
+`cargo test -p warden-connect-mediator --release gate_filter`.
 
 #### What the gates found on first run
 

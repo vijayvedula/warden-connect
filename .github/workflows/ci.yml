@@ -94,12 +94,12 @@ jobs:
       - name: Conformance kit, through the harness
         working-directory: warden-connect
         run: |
-          cargo build -p wc-cli
+          cargo build -p warden-connect-cli
           ./scripts/conformance.sh
 
       - name: Conformance vectors (§8.15.3)
         working-directory: warden-connect
-        run: cargo test -p wc-core --lib conformance -- --nocapture
+        run: cargo test -p warden-connect-core --lib conformance -- --nocapture
 
       # The `wcs1` vector set, through its harness, for the same reason the contract kit
       # runs through its own: `every_published_vector_still_holds` checks the digests, and
@@ -115,7 +115,7 @@ jobs:
       # positive is loud, a false negative ships.
       - name: Screening calibration (§8.16 P2 exit criterion)
         working-directory: warden-connect
-        run: cargo test -p wc-control --lib calibration -- --nocapture
+        run: cargo test -p warden-connect-control --lib calibration -- --nocapture
 
       # The SDK's only verification used to be "the examples run against a live control
       # plane" — an integration test needing an estate, keys and an approver registry, so
@@ -171,7 +171,7 @@ jobs:
       # the real gate, so this line is the only place the real one is checked.
       - name: filter_tools_list, 256 tools
         working-directory: warden-connect
-        run: cargo test -p wc-mediator --release --test mediation gate_filter -- --nocapture
+        run: cargo test -p warden-connect-mediator --release --test mediation gate_filter -- --nocapture
 
       # Every gate, and a non-zero exit on regression or on a gate that could not run.
       # The thresholds are the design's, not the runner's — a slow runner reports an
@@ -185,7 +185,7 @@ jobs:
       - name: connect bench
         working-directory: warden-connect
         run: |
-          cargo build --release -p wc-cli
+          cargo build --release -p warden-connect-cli
           ./target/release/connect bench \
             --iterations 400 \
             --scale 100000 \

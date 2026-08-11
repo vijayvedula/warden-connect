@@ -2878,7 +2878,7 @@ mod conformance {
         if !dir.join("expected.json").exists() {
             panic!(
                 "conformance fixtures are missing; run\n  \
-                 cargo test -p wc-core conformance::generate_vectors -- --ignored"
+                 cargo test -p warden-connect-core conformance::generate_vectors -- --ignored"
             );
         }
         let manifest: serde_json::Value =
