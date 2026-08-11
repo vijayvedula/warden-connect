@@ -176,16 +176,54 @@ jobs:
               sys.exit("no DSSE envelope in the bundle; cosign's bundle shape has changed")
           json.dump(env, sys.stdout)
           PY
-            # Keyless signing means the verifying key is in the certificate, not a PEM, so
-            # this step proves the envelope and bindings are what we expect and leaves
-            # certificate-chain verification to cosign below. Both halves are needed and
-            # neither substitutes for the other — see releasing.md.
+            # HALF ONE — cosign: the certificate chains to Fulcio and its SAN is this
+            # workflow. Without this, the key extracted below is just a key from a file.
             cosign verify-blob-attestation \
               --bundle "release/$bin.provenance.bundle" \
               --new-bundle-format \
               --certificate-identity "$BUILDER" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               "release/$bin"
+
+            # HALF TWO — OUR verifier, which is what this step is named after and what
+            # `releasing.md` tells a downloader to rely on.
+            #
+            # For three runs this step was called "with our own verifier" and ran only cosign.
+            # It even extracted the DSSE envelope above and then never opened it — dead
+            # evidence, written and unread. The comment claimed "both halves are needed and
+            # neither substitutes for the other" while implementing one. A green release
+            # therefore proved that cosign can verify cosign's output.
+            #
+            # The reason it was never wired is real rather than an oversight: `attest verify`
+            # wants `--prov-key` as a PEM, and keyless signing puts the key in an X.509
+            # certificate. It comes out of the bundle with two commands, which is the bit
+            # nobody had worked out — verified by hand against this workflow's own artifacts
+            # before being written here.
+            python3 - "release/$bin.provenance.bundle" > "release/$bin.cert.der" <<'CERT'
+          import base64, json, sys
+          bundle = json.load(open(sys.argv[1]))
+          material = bundle["verificationMaterial"]
+          cert = material.get("certificate")
+          if cert is None:
+              chain = material.get("x509CertificateChain", {}).get("certificates") or []
+              cert = chain[0] if chain else None
+          if cert is None:
+              sys.exit("no signing certificate in the bundle; cosign's bundle shape changed")
+          sys.stdout.buffer.write(base64.b64decode(cert["rawBytes"]))
+          CERT
+            openssl x509 -inform DER -in "release/$bin.cert.der" \
+              -pubkey -noout > "release/$bin.pub.pem"
+
+            # Ordering matters: cosign has already established that this certificate is
+            # Fulcio-issued for this workflow, so verifying the DSSE signature against the
+            # key inside it is not circular. Our verifier then adds what cosign does not
+            # check — that the subject digest equals the file in front of us, and that
+            # `builder.id` inside the statement is this workflow and not somebody else's.
+            scripts/verify-release.sh \
+              "release/$bin" \
+              "release/$bin.dsse.json" \
+              "release/$bin.pub.pem" \
+              "$BUILDER"
           done
 
       - uses: actions/upload-artifact@v4
