@@ -101,33 +101,42 @@ jobs:
         run: |
           set -euo pipefail
           for bin in connect connect-mediate; do
-            digest=$(sha256sum "$bin" | cut -d' ' -f1)
-            # An in-toto Statement with a SLSA v1 predicate — the shape
-            # `DsseProvenanceVerifier` accepts, so our own verifier can check it. The subject
-            # digest is what binds the statement to the file; without it the envelope vouches
-            # for nothing in particular.
-            cat > "$bin.statement.json" <<STATEMENT
+            # ONLY the predicate. Not a full in-toto Statement.
+            #
+            # The first run of this workflow failed here, and it is the exact gap the header
+            # warns about — this step was written from cosign's documentation and never
+            # executed. It wrote a complete Statement (`_type`, `subject`, `predicateType`,
+            # `predicate`) and got:
+            #
+            #     Error: provenance predicate: required field buildDefinition missing
+            #
+            # `cosign attest-blob --type slsaprovenance1 --predicate FILE` reads FILE as the
+            # **predicate body** and builds the Statement around it: `subject` from the blob's
+            # own name and digest, `predicateType` from `--type`. Handing it a Statement means
+            # it looks for `buildDefinition` at the top level and finds `_type` instead.
+            #
+            # Which is a better arrangement than what was written, because the subject digest
+            # is then computed by cosign from the bytes it signed rather than by us from a
+            # variable — the binding cannot disagree with the file. The Statement cosign
+            # produces is the same shape `DsseProvenanceVerifier` accepts, so our own verifier
+            # still checks it in the next step.
+            cat > "$bin.predicate.json" <<PREDICATE
           {
-            "_type": "https://in-toto.io/Statement/v1",
-            "subject": [{"name": "$bin", "digest": {"sha256": "$digest"}}],
-            "predicateType": "https://slsa.dev/provenance/v1",
-            "predicate": {
-              "buildDefinition": {
-                "buildType": "https://slsa.dev/github-actions-workflow/v1",
-                "externalParameters": {
-                  "source": "git+https://github.com/${{ github.repository }}@${{ github.ref }}",
-                  "commit": "${{ github.sha }}"
-                }
-              },
-              "runDetails": {
-                "builder": {"id": "$BUILDER"},
-                "metadata": {"invocationId": "${{ github.run_id }}"}
+            "buildDefinition": {
+              "buildType": "https://slsa.dev/github-actions-workflow/v1",
+              "externalParameters": {
+                "source": "git+https://github.com/${{ github.repository }}@${{ github.ref }}",
+                "commit": "${{ github.sha }}"
               }
+            },
+            "runDetails": {
+              "builder": {"id": "$BUILDER"},
+              "metadata": {"invocationId": "${{ github.run_id }}"}
             }
           }
-          STATEMENT
+          PREDICATE
             cosign attest-blob --yes \
-              --predicate "$bin.statement.json" \
+              --predicate "$bin.predicate.json" \
               --type slsaprovenance1 \
               --bundle "$bin.provenance.bundle" \
               --new-bundle-format \
