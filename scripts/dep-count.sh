@@ -27,9 +27,12 @@ check() {
 }
 
 # Runtime edges only — dev-dependencies are not what ships.
-check wc-core     85
-check wc-control 115
-check wc-mediator 116
+# Package names, not directory names. `cargo tree -p` takes the published name, and the crate
+# rename left these three pointing at packages that no longer exist — so this gate reported
+# `did not match any packages` and failed the job rather than measuring anything.
+check warden-connect-core      85
+check warden-connect-control  115
+check warden-connect-mediator 116
 
 # The categories §8.3 rules out are enforced by deny.toml's ban list; this is the
 # belt-and-braces version for anything that arrives transitively under a new name.
