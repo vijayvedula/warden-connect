@@ -244,9 +244,15 @@ jobs:
       # The alert rules, unit-tested. `check` proves the file parses; `test` proves each
       # alert fires and — as importantly — stays quiet on an idle estate. Writing these
       # found two rules referencing series that did not exist on a healthy control plane.
+      #
+      # `alert-coverage.sh` runs FIRST and without promtool, because it is the step that
+      # notices what promtool cannot: a rule nobody asserted. promtool checks the tests it is
+      # given and never asks what was left out, so three rules sat uncovered through every
+      # green run of this job — and one of them could not fire at all.
       - name: alert rules
         working-directory: warden-connect
         run: |
+          ./scripts/alert-coverage.sh
           if command -v promtool >/dev/null 2>&1; then
             promtool check rules deploy/prometheus/alerts.yml
             promtool test rules  deploy/prometheus/alerts_test.yml

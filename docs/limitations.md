@@ -13,6 +13,11 @@ Four kinds of entry, labelled, because they have different answers:
 | **By design** | It will not change. The reason is architectural, and building it would break something more important. |
 | **Unbuilt** | It should exist and does not. Someone has to write it. |
 | **Unproven** | The mechanism is built and tested; the *procedure* or the *scale* has not been exercised. |
+
+[proving-ground.md](proving-ground.md) is the other half of this page: for every item marked
+*Unproven* below, the minimum infrastructure needed to close it on Azure or GCP. The short
+version is one KMS key, one Kubernetes cluster and a weekend of spot CPU — and three items that
+no amount of provisioning closes, because they are claims about **independence**.
 | **Environmental** | Blocked on hardware, a cloud account, or a second environment — not on code. |
 
 Status: pre-1.0, no independent audit, two internal hardening passes run.
@@ -336,7 +341,14 @@ subsystem.
 * **A mediator has no `/metrics` endpoint.** By design — it speaks stdio to one agent, and a
   listener would add a port, a bind address and an auth decision to a sidecar whose argument
   is that it adds no surface. Metrics go to a file for a textfile collector. *(By design)*
-* **The alerts are unit-tested, not battle-tested.** Nine rules with `promtool test rules`
+* **The alerts are unit-tested, not battle-tested.** Ten rules with `promtool test rules`
+  — and three of them had no test at all until a coverage diff went looking, one of which
+  (`WardenConnectExpirySweepStalled`) **could not fire**: a bare `and` between
+  `{window="1h"}` and a metric labelled by approval mode, so the intersection was always
+  empty. `scripts/alert-coverage.sh` now fails CI on an unasserted rule, in both
+  directions. What remains unproven is the part a unit test cannot reach: real
+  cardinality, and whether a rule is quiet enough to survive a week without being
+  silenced. Nine rules with
   proving each fires and stays quiet, plus a live scrape. None has fired in anger.
   *(Unproven)*
 * **Cardinality is capped at 256 series per family.** Past that, series fold into

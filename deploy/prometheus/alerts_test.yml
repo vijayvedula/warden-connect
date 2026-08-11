@@ -193,3 +193,124 @@ tests:
       - eval_time: 70m
         alertname: WardenConnectAnchorsStalled
         exp_alerts: []
+
+  # --- 4 · the three rules that had no test at all ---------------------------
+  # Added after a coverage diff found that 3 of 10 rules were asserted nowhere, while this
+  # file's own header claimed "each rule is proven against the shape of data the exposition
+  # actually produces". `scripts/alert-coverage.sh` now enforces that claim.
+
+  - interval: 1m
+    name: a control plane serving no revocation feed raises a ticket
+    input_series:
+      - series: 'wc_revocation_feed_serving'
+        values: "0+0x10"
+    alert_rule_test:
+      # Inside `for: 5m` — pending, not firing.
+      - eval_time: 3m
+        alertname: WardenConnectNoRevocationFeed
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: WardenConnectNoRevocationFeed
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: "this control plane serves no revocation feed"
+              description: "Quarantine will record a transition and reach nothing. Supported as the control-plane-only topology; not containment."
+
+  - interval: 1m
+    name: a control plane that does serve a feed stays quiet
+    input_series:
+      - series: 'wc_revocation_feed_serving'
+        values: "1+0x10"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: WardenConnectNoRevocationFeed
+        exp_alerts: []
+
+  - interval: 1m
+    name: contracts expiring while nothing is being minted raises a ticket
+    input_series:
+      - series: 'wc_contracts_expiring{window="1h"}'
+        values: "4+0x90"
+      # Labelled by approval mode, which is why the original expression could not fire:
+      # `and` matches on the WHOLE label set, and {window="1h"} never equals {mode="..."}.
+      - series: 'wc_contracts_minted_total{mode="require_approval"}'
+        values: "12+0x90"
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: WardenConnectExpirySweepStalled
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              window: "1h"
+            exp_annotations:
+              summary: "contracts expiring within the hour and nothing is being issued"
+
+  - interval: 1m
+    name: a busy estate with contracts expiring is not an alert
+    input_series:
+      - series: 'wc_contracts_expiring{window="1h"}'
+        values: "4+0x90"
+      - series: 'wc_contracts_minted_total{mode="require_approval"}'
+        values: "12+1x90"
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: WardenConnectExpirySweepStalled
+        exp_alerts: []
+
+  - interval: 1m
+    name: nothing expiring is not an alert, however idle the issuer
+    input_series:
+      - series: 'wc_contracts_expiring{window="1h"}'
+        values: "0+0x90"
+      - series: 'wc_contracts_minted_total{mode="require_approval"}'
+        values: "12+0x90"
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: WardenConnectExpirySweepStalled
+        exp_alerts: []
+
+  - interval: 1m
+    name: label sets folding into overflow is info, and names the metric
+    input_series:
+      - series: 'wc_obs_series_dropped_total{metric="wc_calls_total"}'
+        values: "0+3x90"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: WardenConnectCardinalityFolding
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              metric: "wc_calls_total"
+            exp_annotations:
+              summary: "wc_calls_total is folding label sets into overflow"
+              description: "Past the 256-series cap. Detail is being lost, not data — the fold is deliberate so a dashboard does not read a missing series as zero. Raise the cap deliberately if this is a large estate."
+
+  - interval: 1m
+    name: a stable label set does not fold
+    input_series:
+      - series: 'wc_obs_series_dropped_total{metric="wc_calls_total"}'
+        values: "7+0x90"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: WardenConnectCardinalityFolding
+        exp_alerts: []
+
+  - interval: 1m
+    name: an estate that has never minted anything still alerts on a stalled sweep
+    input_series:
+      # No `wc_contracts_minted_total` series AT ALL. This is what `or vector(0)` is for:
+      # `rate()` over a series that does not exist is empty, and an `and` against empty is
+      # empty — so without it the most stalled estate possible would be the quietest one.
+      - series: 'wc_contracts_expiring{window="1h"}'
+        values: "4+0x90"
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: WardenConnectExpirySweepStalled
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              window: "1h"
+            exp_annotations:
+              summary: "contracts expiring within the hour and nothing is being issued"

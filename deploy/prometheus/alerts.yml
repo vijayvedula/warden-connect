@@ -137,8 +137,24 @@ groups:
 
       # The expiry sweep has stopped, as distinct from a busy estate: contracts inside the
       # 1-hour window while nothing is being minted.
+      #
+      # `and on()` and the `or vector(0)`, both load-bearing. This rule spent its whole life
+      # unable to fire: it was written as a bare `and`, which matches on the ENTIRE label set,
+      # and the left side carries `window="1h"` while `wc_contracts_minted_total` is labelled
+      # by approval mode. `{window="1h"}` never equals `{mode="require_approval"}`, so the
+      # intersection was always empty and a stalled sweep was silent. `on()` with no labels is
+      # what says "correlate these two on nothing at all", and `sum()` collapses the modes so
+      # there is one right-hand element rather than one per mode.
+      #
+      # `or vector(0)` covers the worse case: if nothing has EVER been minted the counter has
+      # no series, `rate` is empty, and an `and` against empty is empty again — so the most
+      # stalled estate possible would be the quietest. It was found by a coverage diff, not by
+      # reading, and the three tests below are why it cannot come back.
       - alert: WardenConnectExpirySweepStalled
-        expr: wc_contracts_expiring{window="1h"} > 0 and rate(wc_contracts_minted_total[1h]) == 0
+        expr: >-
+          wc_contracts_expiring{window="1h"} > 0
+            and on()
+          (sum(rate(wc_contracts_minted_total[1h])) or vector(0)) == 0
         for: 15m
         labels:
           severity: ticket
