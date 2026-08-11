@@ -48,6 +48,10 @@ impl TmpDir {
     fn new(tag: &str) -> TmpDir {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let p = std::env::temp_dir().join(format!("wc-api-{}-{tag}-{n}", std::process::id()));
+        // Clear first: `create_dir_all` on an existing directory succeeds and keeps its
+        // contents, and this path repeats across runs because pids get reused and the counter
+        // restarts at 0.
+        let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         TmpDir(p)
     }

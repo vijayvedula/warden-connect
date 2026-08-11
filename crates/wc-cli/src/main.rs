@@ -6767,6 +6767,13 @@ mod tests {
         // End to end through `dispatch`'s own layering rather than through `config::apply`
         // alone, because the wiring is what was missing — the rule was never in doubt.
         let dir = std::env::temp_dir().join(format!("wc-cfg-{}", std::process::id()));
+        // Clear first: `create_dir_all` on an EXISTING directory succeeds and leaves its
+        // contents, and these paths repeat across runs because a pid gets reused and the
+        // counter restarts at 0. `Drop` does not run when a test aborts or a run is killed,
+        // so leftovers accumulate — 2,956 of them were sitting in /tmp when this was found.
+        // A stale log underneath a durability test can fail it, and can also make it PASS
+        // for the wrong reason, which is the worse half.
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("connect.toml");
         std::fs::write(&path, "[server]\ntenant = \"from-file\"\n").unwrap();
