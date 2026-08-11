@@ -1,5 +1,5 @@
 [package]
-name = "wc-control"
+name = "warden-connect-control"
 description = "warden-connect control plane: registry, admission, broker, contract issuance, assurance, evidence."
 version.workspace = true
 edition.workspace = true
@@ -16,6 +16,13 @@ repository.workspace = true
 # `docs/releasing.md` has the order — Warden core to crates.io first, since this depends on
 # a published `warden`.
 
+# The published name is long and self-describing; the LIBRARY keeps the short one, so every
+# `use wc_control::…` in this workspace is untouched. rustc takes the extern crate name from the lib
+# target rather than the package, which is what makes a registry rename cost nothing in source.
+[lib]
+name = "wc_control"
+path = "src/lib.rs"
+
 [dependencies]
 # For DSSE envelopes and JOSE segments in `attest`. DSSE uses standard base64
 # while JOSE uses base64url, and conflating them silently verifies the wrong
@@ -24,7 +31,7 @@ base64 = { workspace = true }
 # `path` for this workspace, `version` for the registry: Cargo prefers the path when
 # building here and rewrites it to the version on publish. Without the version,
 # crates.io refuses the crate — a wildcard path dependency is not resolvable there.
-wc-core = { path = "../wc-core", version = "0.1" }
+wc-core = { package = "warden-connect-core", path = "../wc-core", version = "0.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ureq = { workspace = true }

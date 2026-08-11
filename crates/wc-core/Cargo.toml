@@ -1,18 +1,23 @@
 [package]
-name = "wc-core"
+name = "warden-connect-core"
 description = "warden-connect shared types: errors, domain model, canonical surface serialisation, and the connection contract."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# Not published. `warden` is a path dependency by design (§8.3) — it is vendored
-# beside this repo rather than fetched — so this crate could not resolve from
-# crates.io anyway, and P1 #13 (packaging and a release process) is not built. Marking
-# it explicitly also stops an accidental `cargo publish` of an unfinished component,
-# and lets `deny.toml` keep `wildcards = "deny"` meaningful for registry crates while
-# exempting path dependencies.
-publish = false
+# Publishable, and the first of the four: nothing here depends on Warden core or on any
+# sibling, so this is the crate that has to reach crates.io before the others can.
+#
+# Publishing is still a decision somebody makes rather than a side effect — nothing is
+# tagged. `docs/releasing.md` has the order.
+
+# The published name is long and self-describing; the LIBRARY keeps the short one, so every
+# `use wc_core::…` in this workspace is untouched. rustc takes the extern crate name from the lib
+# target rather than the package, which is what makes a registry rename cost nothing in source.
+[lib]
+name = "wc_core"
+path = "src/lib.rs"
 
 [dependencies]
 serde = { workspace = true }

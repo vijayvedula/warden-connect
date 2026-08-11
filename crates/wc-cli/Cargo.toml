@@ -1,5 +1,5 @@
 [package]
-name = "wc-cli"
+name = "warden-connect-cli"
 description = "The `connect` command: registry, admission, posture and evidence for warden-connect."
 version.workspace = true
 edition.workspace = true
@@ -24,8 +24,8 @@ path = "src/main.rs"
 # `path` for this workspace, `version` for the registry: Cargo prefers the path when
 # building here and rewrites it to the version on publish. Without the version,
 # crates.io refuses the crate — a wildcard path dependency is not resolvable there.
-wc-core = { path = "../wc-core", version = "0.1" }
-wc-control = { path = "../wc-control", version = "0.1" }
+wc-core = { package = "warden-connect-core", path = "../wc-core", version = "0.1" }
+wc-control = { package = "warden-connect-control", path = "../wc-control", version = "0.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

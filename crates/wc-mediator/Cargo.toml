@@ -1,5 +1,5 @@
 [package]
-name = "wc-mediator"
+name = "warden-connect-mediator"
 description = "The warden-connect data plane: an Upstream decorator that verifies contracts and filters the tool catalogue, over unmodified Warden core."
 version.workspace = true
 edition.workspace = true
@@ -20,6 +20,13 @@ repository.workspace = true
 name = "connect-mediate"
 path = "src/bin/connect-mediate.rs"
 
+# The published name is long and self-describing; the LIBRARY keeps the short one, so every
+# `use wc_mediator::…` in this workspace is untouched. rustc takes the extern crate name from the lib
+# target rather than the package, which is what makes a registry rename cost nothing in source.
+[lib]
+name = "wc_mediator"
+path = "src/lib.rs"
+
 [dependencies]
 # For JWT-SVID verification and XFCC header decoding in `peer`.
 base64 = { workspace = true }
@@ -27,7 +34,7 @@ jsonwebtoken = { workspace = true }
 # `path` for this workspace, `version` for the registry: Cargo prefers the path when
 # building here and rewrites it to the version on publish. Without the version,
 # crates.io refuses the crate — a wildcard path dependency is not resolvable there.
-wc-core = { path = "../wc-core", version = "0.1" }
+wc-core = { package = "warden-connect-core", path = "../wc-core", version = "0.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # The one crate in this workspace that links Warden core. Not a dependency

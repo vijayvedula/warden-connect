@@ -336,18 +336,21 @@ subsystem.
 
 ## 12 · Packaging and supply chain
 
-* **Nothing is published to crates.io yet, but it can be.** `warden` is a **version**
-  requirement now rather than a path, patched to the sibling checkout for local development
-  only, so `cargo add wc-mediator` becomes possible and a consumer no longer needs two
-  repositories at commits nothing recorded. `cargo package -p wc-core` succeeds and
-  `cargo deny check bans` passes.
+* **Nothing is published to crates.io yet; everything needed to publish is in place.** The
+  dependency on Warden core is a **version** requirement rather than a path, the crates carry
+  registry-legal names, `cargo deny check bans` passes, and
+  `cargo publish --dry-run -p warden-connect-core` packages and compiles from its own tarball.
 
-  What is left is sequencing and a decision: **Warden core must go to crates.io first**, since
-  `wc-mediator` depends on a published `warden`; then wc-core, wc-control, wc-mediator, wc-cli
-  in dependency order. And **the `[patch.crates-io]` must be deleted and the build repeated**
-  before believing any of it — while the patch is present the build never touches the registry,
-  so it is a development convenience and also a blindfold. Nothing is tagged. *(Environmental:
-  a registry account and a decision to tag)*
+  Two things remain, and neither is code. **A registry token**, which only you have — and
+  publishing is irreversible: a version cannot be replaced, only yanked, and the name is taken
+  for good. **And the `[patch.crates-io]` must be deleted and the build repeated** before any
+  of this is believed: while the patch is present the build never touches the registry, so it
+  is a development convenience and also a blindfold.
+
+  One structural limit worth knowing rather than discovering: `cargo publish --dry-run` for a
+  crate whose dependencies are not yet on the registry **cannot resolve them and refuses**. So
+  only the leaf can be verified in advance; each publish is the verification for the next.
+  `docs/releasing.md` has the order. Nothing is tagged. *(Environmental)*
 * **Release provenance is built and the workflow has never run.** `release.yml` attests each
   binary with a DSSE/in-toto SLSA v1 envelope, signed keyless, and verifies what it just
   attested with our own verifier in the same run. A downloader runs
