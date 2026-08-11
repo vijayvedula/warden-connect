@@ -30,9 +30,22 @@ unicode-normalization = "0.1"
 # warden proxy by design (§8.3), so the coupling is the deployment model rather
 # than a dependency choice. Every other crate stays independently adoptable —
 # the family's interface is two signed artifacts and one identifier (§7.7).
-warden = { path = "../warden" }
+#
+# A **version**, not a path. As a path dependency this crate could not resolve from
+# crates.io, so `cargo add wc-mediator` was impossible and a consumer had to check out two
+# repositories at commits nothing recorded — no version constraint, no semver contract, and
+# a binary whose core revision was unanswerable from its own manifest. The coupling model is
+# unchanged: still one dependency, still only from `wc-mediator`. What changed is that it is
+# now *expressible*.
+warden = "0.1"
 
 # House rules from DRILL.md §2, enforced by the compiler rather than by memory.
 [workspace.lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
+
+[patch.crates-io]
+# Development and CI only. A `[patch]` in a workspace root applies when building THIS
+# workspace and is not part of published crate metadata, so a consumer resolving
+# `wc-mediator` from the registry gets `warden = "0.1"` from crates.io and never sees this.
+warden = { path = "../warden" }

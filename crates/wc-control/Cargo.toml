@@ -6,20 +6,25 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# Not published. `warden` is a path dependency by design (§8.3) — it is vendored
-# beside this repo rather than fetched — so this crate could not resolve from
-# crates.io anyway, and P1 #13 (packaging and a release process) is not built. Marking
-# it explicitly also stops an accidental `cargo publish` of an unfinished component,
-# and lets `deny.toml` keep `wildcards = "deny"` meaningful for registry crates while
-# exempting path dependencies.
-publish = false
+# Publishable. `warden` was a path dependency, which meant this crate could not resolve
+# from crates.io at all — so `cargo add wc-mediator` was impossible and every consumer had
+# to check out two repositories at commits nothing recorded. It is now a **version**
+# requirement, patched to the sibling checkout for local development only (see the
+# workspace root), so a registry consumer never sees the path.
+#
+# Publishing is still a decision somebody makes, not a side effect: nothing is tagged, and
+# `docs/releasing.md` has the order — Warden core to crates.io first, since this depends on
+# a published `warden`.
 
 [dependencies]
 # For DSSE envelopes and JOSE segments in `attest`. DSSE uses standard base64
 # while JOSE uses base64url, and conflating them silently verifies the wrong
 # bytes, so both engines are used explicitly.
 base64 = { workspace = true }
-wc-core = { path = "../wc-core" }
+# `path` for this workspace, `version` for the registry: Cargo prefers the path when
+# building here and rewrites it to the version on publish. Without the version,
+# crates.io refuses the crate — a wildcard path dependency is not resolvable there.
+wc-core = { path = "../wc-core", version = "0.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ureq = { workspace = true }
