@@ -97,7 +97,18 @@ jobs:
       - name: Attest each binary with SLSA provenance
         working-directory: warden-connect/release
         env:
-          BUILDER: https://github.com/${{ github.repository }}/.github/workflows/release.yml
+          # The `@<ref>` suffix is load-bearing and was missing. Fulcio issues a GitHub Actions
+          # identity as `<workflow-file-url>@<ref>`, so a `--certificate-identity` without it
+          # cannot match:
+          #
+          #     expected SAN value ".../release.yml"
+          #     got               ".../release.yml@refs/heads/main"
+          #
+          # Found by the second dispatch of this workflow, one step after the first failure.
+          # The same string is SLSA's convention for `runDetails.builder.id` on GitHub Actions,
+          # so one variable now feeds both the predicate and the verification — they cannot
+          # drift apart, which was the real defect rather than the missing suffix.
+          BUILDER: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
         run: |
           set -euo pipefail
           for bin in connect connect-mediate; do
@@ -150,7 +161,8 @@ jobs:
       - name: Verify what we just attested, with our own verifier
         working-directory: warden-connect
         env:
-          BUILDER: https://github.com/${{ github.repository }}/.github/workflows/release.yml
+          # Must be byte-identical to the value the attest step used. See the note there.
+          BUILDER: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
         run: |
           set -euo pipefail
           # Extracting the DSSE envelope from the Sigstore bundle: `attest verify` takes the
