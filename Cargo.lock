@@ -1128,7 +1128,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "warden"
+name = "warden-agent"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
@@ -1140,6 +1140,57 @@ dependencies = [
  "sha2",
  "toml",
  "ureq",
+]
+
+[[package]]
+name = "warden-connect-cli"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml",
+ "warden-connect-control",
+ "warden-connect-core",
+]
+
+[[package]]
+name = "warden-connect-control"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "jsonwebtoken",
+ "libc",
+ "serde",
+ "serde_json",
+ "toml",
+ "ureq",
+ "warden-connect-core",
+]
+
+[[package]]
+name = "warden-connect-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "jsonwebtoken",
+ "serde",
+ "serde_json",
+ "sha2",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "warden-connect-mediator"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "jsonwebtoken",
+ "serde",
+ "serde_json",
+ "ureq",
+ "warden-agent",
+ "warden-connect-core",
 ]
 
 [[package]]
@@ -1194,44 +1245,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wc-cli"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "toml",
- "wc-control",
- "wc-core",
-]
-
-[[package]]
-name = "wc-control"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "jsonwebtoken",
- "libc",
- "serde",
- "serde_json",
- "toml",
- "ureq",
- "wc-core",
-]
-
-[[package]]
-name = "wc-core"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "hex",
- "jsonwebtoken",
- "serde",
- "serde_json",
- "sha2",
- "unicode-normalization",
-]
-
-[[package]]
 name = "wc-e2e"
 version = "0.1.0"
 dependencies = [
@@ -1239,23 +1252,10 @@ dependencies = [
  "jsonwebtoken",
  "serde",
  "serde_json",
- "warden",
- "wc-control",
- "wc-core",
- "wc-mediator",
-]
-
-[[package]]
-name = "wc-mediator"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "jsonwebtoken",
- "serde",
- "serde_json",
- "ureq",
- "warden",
- "wc-core",
+ "warden-agent",
+ "warden-connect-control",
+ "warden-connect-core",
+ "warden-connect-mediator",
 ]
 
 [[package]]

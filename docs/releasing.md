@@ -125,20 +125,54 @@ workspace and is not part of published crate metadata, so a registry consumer re
 The coupling model is unchanged — one dependency, still only from `wc-mediator`, still the
 deployment model rather than a dependency choice. What changed is that it is now expressible.
 
+### The published names are not the directory names
+
+`warden` and `warden-core` on crates.io are an unrelated database-migration tool, and `wc-cli`
+is somebody's `wc` implementation. So:
+
+| Directory | Published as | Library / binary |
+|---|---|---|
+| `../warden` | **`warden-agent`** | lib `warden`, bin `warden` |
+| `crates/wc-core` | **`warden-connect-core`** | lib `wc_core` |
+| `crates/wc-control` | **`warden-connect-control`** | lib `wc_control` |
+| `crates/wc-mediator` | **`warden-connect-mediator`** | lib `wc_mediator`, bin `connect-mediate` |
+| `crates/wc-cli` | **`warden-connect-cli`** | bin `connect` |
+
+**No source file changed for any of this.** rustc takes the extern crate name from the lib
+*target*, not the package, so `[lib] name = …` keeps every `use warden::` and `use wc_core::`
+exactly as it was, and the dependency keys stay short via Cargo's `package = "…"` rename. A
+registry rename should cost nothing in code, and this one did not.
+
+The family names itself by layer — `warden-agent` gates actions, `warden-connect` gates
+connections — and `warden-delegate` and `warden-trace` are reserved for the same reason.
+
 ### The order matters
 
-1. **Publish Warden core first.** `wc-mediator` depends on a published `warden`, so its own
-   publish fails until that exists. Core is already publish-ready: full metadata, keywords,
-   categories, an `exclude` list, and no `publish = false`.
-2. Then, dependency order: `wc-core`, `wc-control`, `wc-mediator`, `wc-cli`.
+1. **`warden-agent` first.** `warden-connect-mediator` depends on a published `warden-agent`,
+   so its own publish cannot even be dry-run until that exists.
+2. Then dependency order: `warden-connect-core`, `warden-connect-control`,
+   `warden-connect-mediator`, `warden-connect-cli`.
 3. `wc-e2e` stays `publish = false`. It exists so the top of the test pyramid can reach both
    planes at once and ships nothing.
 4. **Delete the `[patch.crates-io]` stanza and rebuild** before believing any of it. While the
    patch is present the build never touches the registry, so a broken version requirement
    would not show up here — the patch is a development convenience and also a blindfold.
 
-`cargo package -p wc-core` succeeds today (13 files, 92 KiB compressed), which is as far as
-verification can go before core is on the registry.
+```sh
+cd ../warden      && cargo publish                       # warden-agent
+cd ../warden-connect
+cargo publish -p warden-connect-core
+cargo publish -p warden-connect-control                  # waits on core being indexed
+cargo publish -p warden-connect-mediator
+cargo publish -p warden-connect-cli
+```
+
+Each step gates the next, which is a feature: **`cargo publish --dry-run` for a crate whose
+dependencies are not yet on the registry cannot resolve them and refuses.** So the only crate
+that can be fully verified before any of this runs is the leaf — and it is:
+`cargo publish --dry-run -p warden-connect-core` packages and compiles from its own tarball.
+For the other three, `cargo package --no-verify` confirms the file list and nothing more, and
+the real verification is the publish above it succeeding.
 
 ### What making this publishable already found
 
