@@ -45,7 +45,9 @@ import sys
 SPEC_VERSION = "1.5"
 
 # Only the crates that end up in something we ship. A dev-dependency is not in the artifact.
-SHIPPED_ROOTS = ["wc-cli", "wc-mediator"]
+# Package names, not directory names — the crate rename left these as `wc-*` and the root
+# lookup below would then raise `StopIteration` rather than say what was wrong.
+SHIPPED_ROOTS = ["warden-connect-cli", "warden-connect-mediator"]
 
 
 def run(args: list) -> str:
@@ -183,9 +185,17 @@ def build(meta: dict) -> dict:
         ]
         dependencies.append({"ref": ref(by_id[pid]), "dependsOn": sorted(deps)})
 
+    # `StopIteration` from a bare `next` says nothing about which name was missing, which is
+    # how the rename turned this into an unexplained traceback.
     root = next(
-        by_id[pid] for pid in ids if by_id[pid]["name"] == "wc-cli"
+        (by_id[pid] for pid in ids if by_id[pid]["name"] == SHIPPED_ROOTS[0]),
+        None,
     )
+    if root is None:
+        raise SystemExit(
+            f"no package named {SHIPPED_ROOTS[0]!r} in the resolved graph; "
+            "SHIPPED_ROOTS is stale (package names, not directory names)"
+        )
     return {
         "bomFormat": "CycloneDX",
         "specVersion": SPEC_VERSION,
