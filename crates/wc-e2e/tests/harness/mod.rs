@@ -215,6 +215,7 @@ trust = "partner"
 assurance = {{ identity = "required", provenance = "required", ttl_max = "7d", approval = "human", oversight = "required", max_delegation_depth = 1 }}
 
 [standing]
+enabled = true
 reviewed_at = {reviewed}
 review_every = "90d"
 max_share = 0.9

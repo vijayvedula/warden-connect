@@ -84,17 +84,29 @@ to = "partner.acme"
 # hold whatever the rules below say — a rule can narrow a crossing, never open one.
 
 
-# --- standing policy ---------------------------------------------------------
+# --- standing policy — OFF in version 1 --------------------------------------
 #
-# Auto-approval is what makes the register adoptable, and simultaneously the
-# widest policy surface in the system. So it is bounded here, in the engine, and
-# every breach escalates to a human — never the reverse.
-#
-# `reviewed_at` is load-bearing: leave it unset and every request escalates,
-# which is the correct default for a control nobody has signed off yet. Set it to
-# the unix time of the review that approved these limits.
+# Auto-approval is bounded here, in the engine, and every breach escalates to a human —
+# never the reverse. In v1 the outermost bound is that the feature is switched off, so the
+# `decision = "allow"` rule below escalates like every other. `connect policy lint` says so
+# rather than leaving you to discover it from traffic.
 
 [standing]
+# OFF for version 1, and this is a decision rather than a default.
+#
+# Every connection gets a human. Auto-approval is what makes a register adoptable and it is
+# simultaneously the widest policy surface in the system — and the history here is that
+# standing policy once auto-issued to a party whose attestation had just failed. A control
+# that broad earns its place after the estate is stable and somebody has read the evidence
+# chain in anger, not before.
+#
+# Every limit below is built and tested and currently bounds nothing. Turning this on later is
+# therefore a configuration change, not a new subsystem. Two gates, deliberately: `enabled`
+# asks whether the feature is in play, `reviewed_at` asks whether anybody has signed off these
+# numbers. One field in a TOML file should not be the whole distance between every request
+# approved and none of them.
+enabled = false
+
 max_share = 0.6           # at most 60% of active contracts may be standing-issued
 share_min_sample = 20     # ...but only once there are this many; a percentage of a
                           # tiny denominator is noise, and would otherwise escalate
