@@ -140,9 +140,19 @@ subsystem.
 * **Nothing prevents a valid-but-wrong revocation.** Someone with legitimate access can revoke
   the estate. That is a recoverable outage, which is exactly why the revocation key can afford
   less ceremonial custody than the issuer key. *(By design)*
-* **The rotation drill has never been run.** Publishing a new `kid` and confirming a running
-  mediator picks it up without a restart. The mechanism is tested; the procedure is not.
-  *(Unproven)*
+* **The rotation drill runs, and it found that withdrawing a key does not stop a live
+  session.** `scripts/rotation-drill.sh` puts one mediator process through four key-set changes
+  without restarting it. Adding a key is safe (the overlap every rotation runs through), and
+  the refresh loop survives serving a refusal. But **removing a key from the published set has
+  no effect on an already-admitted connection**: `State::Live` is established at `initialize`
+  and every later call uses the cached `Admitted`, checking expiry, item membership and
+  ceilings — never the contract or the key again.
+
+  Re-verifying per call would put a signature check inside §7.10's sub-millisecond per-call
+  budget, so the caching is deliberate. The consequence is not: **you cannot retire a
+  compromised issuer key and expect running sessions to stop.** A *new* mediator refuses those
+  contracts immediately; existing ones continue to contract expiry. Plan a rotation with that
+  in mind — short TTLs, or restart the mediators. *(By design, and now measured)*
 
 ## 4 · Ceilings
 
@@ -201,6 +211,19 @@ subsystem.
   What clearing does **not** do is restore contracts: they stay revoked, and the party has to
   be issued new ones. That is intended, and it is stated in the command's output and in the
   evidence record because "cleared" reads like "back to normal". *(By design)*
+* **Containment does not reach an already-initialised session, and this is the sharpest thing
+  on this page.** Measured by `scripts/rotation-drill.sh` phase 5: quarantining the callee on
+  the control plane returns 202, the contract is revoked, and the mediator's own log says
+  **"refresh not clean — 0 missing, 1 rejected"** — and the live session keeps executing calls.
+  The mediator *knows* the contract is gone and serves anyway, because the per-call path reads
+  the `Admitted` cached at `initialize`.
+
+  For the stdio sidecar one process is one session, so "the next call is refused" is true of
+  the next *process*, not the next call. What closes this is the drain/abort decision below,
+  which has no caller. Until then, **containment for a running sidecar is process termination
+  or contract expiry** — `connect quarantine` stops new connections and does not cut live ones.
+  The `connect mediators` ACK tells you the order was distributed, not that traffic stopped.
+  *(Unbuilt — and the most consequential gap here)*
 * **The drain/abort choice does not exist yet.** `wc_mediator::drain` defines `drain` and
   `abort` for work in flight when a revocation lands, and **nothing calls it** — there is no
   `--on-revoke` flag. New calls are refused the moment a revocation is installed, which is the

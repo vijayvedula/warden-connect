@@ -66,6 +66,8 @@ The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 | `drain`/`abort` on revocation | has no caller and no flag: the stated `Abort` default is not in force |
 | `max_calls_per_hour` | counts per **process**, so a 3-per-hour contract served 9 calls in one hour across three short-lived mediators |
 | a quarantine | could never be lifted — no command, no route — so a false positive bricked a party permanently |
+| `connect quarantine` | returns 202, revokes the contract, and **does not stop a running session** — the mediator logs "1 rejected" and keeps serving |
+| retiring an issuer key | does not stop sessions already admitted under it |
 
 ### The review checklist
 
