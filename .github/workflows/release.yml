@@ -10,13 +10,22 @@
 # no network, no cosign on the verifying side. A downloader needs a `connect` binary they
 # already trust and the public key, and nothing else.
 #
-# UNVERIFIED. This workflow has never run. Everything below is written from the actions' and
-# cosign's documentation, which is exactly the position `docs/limitations.md` describes for
-# anything not backed by an executed script — the class the four wrong SPIRE commands came
-# from. What *has* been verified locally is the half that matters most and is testable:
-# `connect attest verify` and `scripts/verify-release.sh` against **real cosign v3.1.3
-# output** in `fixtures/cosign/`, including every refusal. Run this once with
-# `workflow_dispatch` and verify the artefacts by hand before tagging anything.
+# RUN, and it took four dispatches. It was written from the actions' and cosign's
+# documentation and every one of the three defects below was invisible until it executed —
+# which is what `docs/limitations.md` says about anything not backed by an executed script,
+# and the class the four wrong SPIRE commands came from.
+#
+#   1. `--predicate` was handed a full in-toto Statement; cosign wants only the predicate
+#      body and reported `required field buildDefinition missing`.
+#   2. `--certificate-identity` omitted the `@<ref>` suffix Fulcio puts in the SAN.
+#   3. The step named "with our own verifier" ran only cosign, and extracted a DSSE envelope
+#      it never opened. The one thing this file exists to prove was the one thing unproven.
+#
+# None of the three is a typo; each is a wrong belief about an interface. Green now means both
+# halves run on every dispatch: cosign establishes the certificate is Fulcio-issued for this
+# workflow, and `scripts/verify-release.sh` then binds the statement to the bytes and to
+# `builder.id`. Still verify the artefacts by hand before tagging — `gh run download`, then
+# `verify-release.sh` with a `connect` you already trust.
 
 name: Release
 
