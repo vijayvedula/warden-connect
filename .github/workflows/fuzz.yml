@@ -55,7 +55,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: warden-connect/fuzz, key: fuzz-campaign }
-      - uses: taiki-e/install-action@cargo-fuzz
+      # `with: tool:` is required. This was `uses: taiki-e/install-action@cargo-fuzz`, which
+      # pins the ACTION to a tag named `cargo-fuzz` and passes it no tool to install — so it
+      # ran with `checksum: true` and nothing else, installed nothing, and **exited
+      # successfully**. Every campaign then died on `no such command: fuzz`, and the nightly
+      # has never once fuzzed anything.
+      #
+      # A green setup step that does nothing, on the one job whose whole output is whether it
+      # ran. Same class as the rest of Part 1 of the threat model, in the CI tier.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
 
       # The corpus from previous runs, so each night starts where the last one stopped.
       # Without this every campaign spends its first minutes rediscovering that JSON has
