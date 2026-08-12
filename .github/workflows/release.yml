@@ -255,16 +255,60 @@ jobs:
       - name: Attach
         env:
           GH_TOKEN: ${{ github.token }}
+          BUILDER: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
         run: |
+          set -euo pipefail
+
+          # The derived files are NOT attached. `verify-release.sh` needs a public key, and
+          # the honest place to get one is the signing certificate inside the bundle — not a
+          # `.pem` downloaded from the same page as the binary, which is a key whoever
+          # controls the page chose. Publishing one would invite exactly the shortcut this
+          # whole verification exists to prevent.
+          rm -f release/*.cert.der release/*.pub.pem release/*.predicate.json
+
+          # `--notes-file`, not `--notes`. The notes are a shell string inside a YAML string
+          # containing a shell snippet with its own quoting, and the previous version got two
+          # things wrong in there that only a reader would catch.
+          cat > notes.md <<NOTES
+          Verify before you run it. Both steps, in this order.
+
+          **1 · The certificate is Fulcio-issued for this workflow.** Without this, step 2 is
+          checking a signature against a key of unknown provenance.
+
+          \`\`\`sh
+          cosign verify-blob-attestation \
+            --bundle connect.provenance.bundle --new-bundle-format \
+            --certificate-identity '$BUILDER' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            connect
+          \`\`\`
+
+          **2 · warden-connect's own verifier binds the statement to these bytes.** No Sigstore
+          client, no network. The key comes out of the bundle, because keyless signing puts it
+          in the certificate rather than in a published PEM:
+
+          \`\`\`sh
+          python3 -c 'import base64,json,sys; b=json.load(open("connect.provenance.bundle")); \
+            sys.stdout.buffer.write(base64.b64decode(b["verificationMaterial"]["certificate"]["rawBytes"]))' \
+            > connect.cert.der
+          openssl x509 -inform DER -in connect.cert.der -pubkey -noout > connect.pub.pem
+
+          scripts/verify-release.sh connect connect.dsse.json connect.pub.pem '$BUILDER'
+          \`\`\`
+
+          Use a \`connect\` binary you already trust, or build from source — the thing you are
+          verifying may be the first one you have ever downloaded.
+
+          The builder id above includes the \`@refs/tags/...\` suffix. That is not decoration:
+          it is what Fulcio puts in the certificate SAN and what \`builder.id\` says inside the
+          statement, so verification fails without it.
+
+          \`SHA256SUMS\` is for humans. The script computes the digest from the bytes itself,
+          because a digest retyped from a page an attacker controls is a digest they chose.
+          NOTES
+
           gh release create "${{ github.ref_name }}" \
             --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
-            --notes "Verify before you run it:
-
-          scripts/verify-release.sh connect connect.dsse.json <builder-pub.pem> \\
-            https://github.com/${{ github.repository }}/.github/workflows/release.yml
-
-          Signing is keyless, so verify the certificate chain with cosign as well —
-          see docs/releasing.md. SHA256SUMS is for humans; the script computes the
-          digest from the bytes itself." \
+            --notes-file notes.md \
             release/*
