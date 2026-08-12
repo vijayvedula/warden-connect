@@ -40,15 +40,28 @@ MSG
     exit 2
 fi
 
-if ! cargo +nightly fuzz --version >/dev/null 2>&1; then
+# Captured rather than discarded. This check used to send its output to /dev/null and print
+# "This needs cargo-fuzz", which is a confident diagnosis of one cause — and on the nightly
+# runner it was wrong: `taiki-e/install-action@cargo-fuzz` had installed cargo-fuzz
+# successfully and the probe still failed, so every campaign exited 2 with a message telling
+# an operator to install something already present. A setup check that names the wrong cause
+# is worse than one that says "here is what happened".
+if ! probe=$(cargo +nightly fuzz --version 2>&1); then
+    echo "cannot run \`cargo +nightly fuzz\`. It said:" >&2
+    printf '%s\n' "$probe" | sed 's/^/    /' >&2
     cat >&2 <<'MSG'
-This needs cargo-fuzz:
+
+If it is missing:
 
     cargo install cargo-fuzz
 
 Deliberately not vendored. §8.3's dependency argument is about what a *build* of this
 component pulls in, and a fuzzing tool is not that — but it does mean a campaign is
 something somebody has to choose to run, which is what this script is for.
+
+If it is installed and this still fails, the toolchain is the more likely half — cargo-fuzz
+is a PATH binary but `+nightly` has to resolve, and `rustup which --toolchain nightly cargo`
+is the quickest way to tell those apart.
 MSG
     exit 2
 fi
