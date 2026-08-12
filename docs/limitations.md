@@ -411,20 +411,25 @@ subsystem.
   crate whose dependencies are not yet on the registry **cannot resolve them and refuses**. So
   only the leaf can be verified in advance; each publish is the verification for the next.
   `docs/releasing.md` has the order. Nothing is tagged. *(Environmental)*
-* **Release provenance is built and the workflow has never run.** `release.yml` attests each
-  binary with a DSSE/in-toto SLSA v1 envelope, signed keyless, and verifies what it just
-  attested with our own verifier in the same run. A downloader runs
-  `scripts/verify-release.sh`, which needs no Sigstore client, no network and no cosign.
-  `connect attest verify` — the standalone command that makes it possible — is verified against
-  **real cosign v3.1.3 output**, including a substituted artifact, an unlisted builder, an
-  untrusted key and a missing allowlist. The workflow itself is written from documentation, so
-  run it with `workflow_dispatch` before tagging.
+* **Release provenance is built and the workflow now runs — it took four dispatches and three
+  defects.** `release.yml` attests each binary with a DSSE / in-toto SLSA envelope via keyless
+  cosign, and `scripts/verify-release.sh` checks it with `connect attest verify` — no Sigstore
+  client on the verifying side.
 
-  Still not done: **no signed git tags** (a key-custody decision like the rest), **no
-  reproducible-build claim** (unmeasured), **the image is not attested** (only the binaries),
-  and `connect attest verify` does **not** walk the Fulcio certificate chain — it is offline by
-  design, so `cosign verify-blob-attestation` is the other required half and neither
-  substitutes for the other. *(Unproven workflow; the rest Unbuilt)*
+  What running it found: `--predicate` was handed a whole in-toto Statement where cosign wants
+  only the predicate body; `--certificate-identity` omitted the `@<ref>` suffix Fulcio puts in
+  the SAN; and the step named *"with our own verifier"* ran only cosign, extracting a DSSE
+  envelope it never opened. That last one meant a green release proved that cosign can verify
+  cosign's output, while the verifier a downloader is told to rely on was never exercised on a
+  real artifact. It was unwired for a real reason — `attest verify` wants a PEM and keyless
+  signing puts the key in an X.509 certificate — and both halves now run in order, so cosign
+  establishes the certificate is Fulcio-issued for this workflow before the key inside it is
+  used.
+
+  Still not exercised: the `publish` job, which is gated on a `v*` tag and has never fired, and
+  `--rekor-proof` — the bundle carries a full inclusion proof, but in Sigstore protobuf-JSON
+  with base64 hashes where our flag takes the Rekor API shape. *(The attest path is proven; the
+  tag-triggered publish job is Unproven)*
 * **The SDK is not released.** `sdk/python` is installable from a checkout and has no packaged
   release **yet**. It has a test suite that needs no control plane — 20 tests over what a
   status means, whether a retry is safe, and whether a refusal keeps its `WC-*` code, run in
@@ -484,8 +489,23 @@ subsystem.
   The reason this stays on the list is that both passes were run by the same author as the
   code, and the hit rate has not fallen off: pass two still found three in five areas. An
   independent reviewer is a different instrument, and there has not been one. *(Unproven)*
-* **Fuzzing is smoke depth.** One minute per target. The nightly workflow turns that into hours
-  per week and has not run yet. *(Unproven)*
+* **Fuzzing is smoke depth, and the nightly that was supposed to fix that had never fuzzed
+  anything.** It ran every night and failed in 30 seconds, through three stacked defects, each
+  hidden by the one before it: `uses: taiki-e/install-action@cargo-fuzz` pins the *action* to a
+  tag of that name and passes it no tool, so it installed nothing and **exited successfully**;
+  the setup probe then reported "This needs cargo-fuzz" — a confident diagnosis of the wrong
+  cause, on a runner where a green step claimed to have installed it; and once installed,
+  cargo-fuzz defaulted `--target` to the musl triple *it* was built for rather than the host,
+  so the build failed on missing musl std — and the harness reported that build failure as
+  **"A crash was found"**, pointing at an empty artifact directory.
+
+  All three fixed. The nightly now runs five campaigns, and one 30-second run of `screen_text`
+  did 5,027 executions and found **329 inputs reaching coverage the seeds did not** — so the
+  corpus was shallower than anyone thought, which is the finding underneath the plumbing.
+
+  Still *Unproven* at depth: one green run at 30 seconds is not hours per week, and the corpus
+  cache has only just started accumulating. But it now fuzzes, which it did not before.
+  *(Unproven at depth; the plumbing is fixed and measured)*
 * **No 10⁵-contract estate has been operated**, only benchmarked. The scale gates measure
   `rebuild`, `blast_radius` and a DORA export at that size; nobody has run a control plane
   holding it. *(Unproven)*
