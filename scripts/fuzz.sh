@@ -66,6 +66,16 @@ MSG
     exit 2
 fi
 
+# The host triple, passed explicitly to every `cargo fuzz` invocation.
+#
+# cargo-fuzz defaults `--target` to the triple **it was itself built for**, not the host. A
+# cargo-installed copy is built locally so the two agree and nobody notices; the prebuilt
+# binary `taiki-e/install-action` fetches is musl-linked, so on a gnu runner it silently tried
+# to build for `x86_64-unknown-linux-musl` and failed with `E0463: can't find crate` on
+# `cfg-if` — no musl std installed. Nothing in this repository asked for musl.
+HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+[ -n "$HOST_TRIPLE" ] || { echo "cannot determine the host triple from rustc -vV" >&2; exit 2; }
+
 cd "$FUZZ_DIR"
 
 # ---------------------------------------------------------------------------
@@ -99,7 +109,19 @@ for target in "${TARGETS[@]}"; do
     # `-max_total_time` bounds the run. `-timeout=10` catches a hang, which for a *parser* is
     # as much a bug as a panic — a mediator that blocks forever on a malformed frame is a
     # denial of service delivered through a tool description.
-    if cargo +nightly fuzz run "$target" "$GROWTH/$target" "corpus/$target" -- \
+    # Build as its OWN step, because `cargo fuzz run` exits non-zero for a failed build and
+    # for a found crash alike, and this loop used to call every non-zero exit a CRASH. A
+    # build failure was therefore reported as "A crash was found. Turn it into a permanent
+    # regression test", pointing at an artifact directory that was empty — and a real crash
+    # and a broken toolchain were indistinguishable in the output. Exit 2 for setup, 1 for a
+    # finding, which is what the header of this script already promised.
+    if ! cargo +nightly fuzz build --target "$HOST_TRIPLE" "$target"; then
+        printf '\033[31m   BUILD FAILED\033[0m — not a crash; nothing was fuzzed\n' >&2
+        exit 2
+    fi
+
+    if cargo +nightly fuzz run --target "$HOST_TRIPLE" \
+        "$target" "$GROWTH/$target" "corpus/$target" -- \
         -max_total_time="$SECS" -timeout=10 -rss_limit_mb=4096
     then
         grown=$(find "$GROWTH/$target" -type f 2>/dev/null | wc -l | tr -d ' ')
