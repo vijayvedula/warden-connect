@@ -43,10 +43,3 @@ warden = { package = "warden-agent", version = "0.1" }
 [workspace.lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
-
-[patch.crates-io]
-# Keyed by package name, so `warden-agent` — not the `warden` the dependency is renamed to.
-# Development and CI only. A `[patch]` in a workspace root applies when building THIS
-# workspace and is not part of published crate metadata, so a consumer resolving
-# `wc-mediator` from the registry gets `warden = "0.1"` from crates.io and never sees this.
-warden-agent = { path = "../warden" }
