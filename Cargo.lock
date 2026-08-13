@@ -1146,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "warden-connect-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1157,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "warden-connect-control"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
@@ -1171,7 +1171,7 @@ dependencies = [
 
 [[package]]
 name = "warden-connect-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "warden-connect-mediator"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "wc-e2e"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
