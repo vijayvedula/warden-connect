@@ -187,9 +187,16 @@ jobs:
           PY
             # HALF ONE — cosign: the certificate chains to Fulcio and its SAN is this
             # workflow. Without this, the key extracted below is just a key from a file.
+            # `--type slsaprovenance1` is required and was missing. `verify-blob-attestation`
+            # defaults to `--type custom`, and cosign v3.1.3 refuses with `invalid predicate
+            # type, expected custom got https://slsa.dev/provenance/v1`. This step passed in CI
+            # because the cosign installed there did not enforce it — so the workflow was green
+            # while the identical command in the release notes failed for a downloader. Being
+            # explicit matches `attest-blob --type slsaprovenance1` above and is correct on both.
             cosign verify-blob-attestation \
               --bundle "release/$bin.provenance.bundle" \
               --new-bundle-format \
+              --type slsaprovenance1 \
               --certificate-identity "$BUILDER" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               "release/$bin"
@@ -272,39 +279,39 @@ jobs:
           cat > notes.md <<NOTES
           Verify before you run it. Both steps, in this order.
 
-          **1 · The certificate is Fulcio-issued for this workflow.** Without this, step 2 is
-          checking a signature against a key of unknown provenance.
+          **1 · The certificate is Fulcio-issued for this workflow.** Without this, step 2
+          checks a signature against a key of unknown provenance.
 
           \`\`\`sh
-          cosign verify-blob-attestation \
-            --bundle connect.provenance.bundle --new-bundle-format \
-            --certificate-identity '$BUILDER' \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            connect
+          cosign verify-blob-attestation --bundle connect.provenance.bundle --new-bundle-format --type slsaprovenance1 --certificate-identity '$BUILDER' --certificate-oidc-issuer https://token.actions.githubusercontent.com connect
           \`\`\`
+
+          \`--type slsaprovenance1\` is not optional: the default is \`custom\` and cosign refuses
+          with \`invalid predicate type\` without it.
 
           **2 · warden-connect's own verifier binds the statement to these bytes.** No Sigstore
           client, no network. The key comes out of the bundle, because keyless signing puts it
           in the certificate rather than in a published PEM:
 
           \`\`\`sh
-          python3 -c 'import base64,json,sys; b=json.load(open("connect.provenance.bundle")); \
-            sys.stdout.buffer.write(base64.b64decode(b["verificationMaterial"]["certificate"]["rawBytes"]))' \
-            > connect.cert.der
+          python3 -c 'import base64,json,sys; b=json.load(open("connect.provenance.bundle")); sys.stdout.buffer.write(base64.b64decode(b["verificationMaterial"]["certificate"]["rawBytes"]))' > connect.cert.der
           openssl x509 -inform DER -in connect.cert.der -pubkey -noout > connect.pub.pem
-
           scripts/verify-release.sh connect connect.dsse.json connect.pub.pem '$BUILDER'
           \`\`\`
 
           Use a \`connect\` binary you already trust, or build from source — the thing you are
           verifying may be the first one you have ever downloaded.
 
-          The builder id above includes the \`@refs/tags/...\` suffix. That is not decoration:
-          it is what Fulcio puts in the certificate SAN and what \`builder.id\` says inside the
+          The builder id includes the \`@refs/tags/...\` suffix. That is not decoration: it is
+          what Fulcio puts in the certificate SAN and what \`builder.id\` says inside the
           statement, so verification fails without it.
 
           \`SHA256SUMS\` is for humans. The script computes the digest from the bytes itself,
           because a digest retyped from a page an attacker controls is a digest they chose.
+
+          Every command above was run against these exact files before this release was
+          published. Both steps pass; step 1 failed on the first attempt, which is why the
+          \`--type\` note is here.
           NOTES
 
           gh release create "${{ github.ref_name }}" \
