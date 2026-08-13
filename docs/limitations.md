@@ -426,10 +426,19 @@ subsystem.
   establishes the certificate is Fulcio-issued for this workflow before the key inside it is
   used.
 
-  Still not exercised: the `publish` job, which is gated on a `v*` tag and has never fired, and
-  `--rekor-proof` — the bundle carries a full inclusion proof, but in Sigstore protobuf-JSON
-  with base64 hashes where our flag takes the Rekor API shape. *(The attest path is proven; the
-  tag-triggered publish job is Unproven)*
+  `v0.1.0` then exercised the tag-gated `publish` job, and verifying that release by hand — the
+  step the workflow header tells you not to skip — found a fifth defect, this one facing
+  downloaders rather than us. `cosign verify-blob-attestation` defaults to `--type custom` and
+  refuses a SLSA predicate with `invalid predicate type`; the flag was missing from both the
+  release notes and the workflow's own verify step. CI was green because the cosign installed
+  there did not enforce it, so **the identical command passed in the workflow and failed for a
+  downloader**. Fixed in the workflow and on the live release, and both steps were then re-run
+  from the published text rather than from what I meant to publish.
+
+  Still not exercised: `--rekor-proof`. The bundle carries a full inclusion proof, but in
+  Sigstore protobuf-JSON with base64 hashes where our flag takes the Rekor API shape. And the
+  checkpoint signature remains unverified — see the transparency-log entry above. *(The attest
+  and publish paths are proven end to end; Rekor inclusion on our own releases is Unbuilt)*
 * **The SDK is not released.** `sdk/python` is installable from a checkout and has no packaged
   release **yet**. It has a test suite that needs no control plane — 20 tests over what a
   status means, whether a retry is safe, and whether a refusal keeps its `WC-*` code, run in
