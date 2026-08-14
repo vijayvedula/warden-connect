@@ -204,6 +204,17 @@ subsystem.
 * **A revocation feed that cannot be verified denies everything.** Fail-closed, and
   indistinguishable from an outage from outside. Expect it to arrive as "all the agents are
   down". *(By design)*
+* **The `pypi` environment has no approval gate, and its name suggests otherwise.** The SDK
+  release job runs in a named GitHub environment so PyPI's trusted publisher can be scoped to
+  it, which works. The second reason the workflow gave — "a human approval sits in front of an
+  irreversible action" — needs the *required reviewers* protection rule, and GitHub refuses it
+  on a **private** repository without a paid plan (`422 … ensure the billing plan supports the
+  required reviewers protection rule`).
+
+  What actually guards PyPI is that someone must dispatch the workflow and pick `target: pypi`
+  by hand. That is deliberate, and it is one pair of eyes rather than two. A published version
+  cannot be replaced, only yanked. Closing it means making the repository public — the rule is
+  free there — or paying for a plan that includes it. *(Environmental: the plan, not the code)*
 * **The containment drill uses a file where the hardware token belongs.** `containment-drill.sh`
   runs in CI and rehearses the *wrapper*. What fails on the day — a flat battery, a forgotten
   PIN, a share-holder who left in March — is precisely what a laptop cannot rehearse.
