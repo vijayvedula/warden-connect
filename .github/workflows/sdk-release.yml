@@ -100,8 +100,25 @@ jobs:
     name: Publish
     needs: build
     runs-on: ubuntu-latest
-    # Named so PyPI's trusted publisher can be scoped to it, and so a human approval sits
-    # in front of an irreversible action.
+    # Named so PyPI's trusted publisher can be scoped to it — that half works, and is why
+    # both environments exist.
+    #
+    # The other half of what this comment used to claim does NOT work here. "A human approval
+    # sits in front of an irreversible action" needs the environment's *required reviewers*
+    # rule, and on a **private** repository that rule needs a paid plan:
+    #
+    #     422 Failed to create the environment protection rule. Please ensure the billing
+    #         plan supports the required reviewers protection rule.
+    #
+    # So `pypi` is an environment with no gate on it, and an environment name is not an
+    # approval. What actually stands between a commit and PyPI is that publishing requires
+    # someone to dispatch this workflow and choose `target: pypi` by hand — a deliberate act,
+    # but one pair of eyes, not two. Stated here rather than implied by the word
+    # `environment`, because a control that reads as configured and does nothing is this
+    # repository's signature defect (`docs/threat-model.md` Part 1).
+    #
+    # To close it: make the repository public (the rule is free for public repos) or move to a
+    # plan that includes it, then add yourself as a required reviewer on `pypi`.
     environment: ${{ github.event_name == 'push' && 'pypi' || inputs.target }}
     permissions:
       # The only privilege this job has. No `contents: write`, no secrets.
