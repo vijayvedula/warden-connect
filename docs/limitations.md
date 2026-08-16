@@ -233,6 +233,36 @@ subsystem.
   Naming `--policy`, `--audit`, `--approvals` or `--agent` on a standalone build is **refused
   at startup** rather than ignored, because a flag that reads as configured and does nothing is
   this codebase's recurring defect. *(Fixed)*
+* **`Attested` is unreachable for a party without a *signed* surface, which is every real MCP
+  server today — so enforce mode refuses them all.** This is the concrete reason
+  `scripts/rotation-drill.sh` runs in `--observe`, and it is sharper than the earlier note that
+  "attestation is a multi-stage pipeline the drill never gets through."
+
+  Posture is a conjunction of three stages:
+
+  ```rust
+  let posture = if identity.verified && card.verified && provenance.verified {
+      Posture::Attested
+  } else { Posture::Unattested };
+  ```
+
+  and `JwksCardVerifier` returns `verified: false` — not an error — when the document carries no
+  `signatures` field. So a server registered with `--surface surface.json`, or an agent with an
+  unsigned `--card`, is `Unattested`, and `WC-3109` is `ClosedUnlessObserve`: **enforce mode
+  denies every call.**
+
+  The design is right in principle. The surface is what a contract pins, so an *unsigned* surface
+  is one anyone could have supplied, and treating it as attested would make the pin vouch for
+  nothing. The problem is that it is unreachable in practice: MCP has no convention for signing a
+  `tools/list` result, and nobody hands out card-signing keys to tool teams.
+
+  **Not a defect to patch by lowering the bar.** The resolution is that the offer flow supplies
+  the missing attestation: a provider's pipeline authenticates with its own OIDC identity, the
+  merge is verified against the SCM, and the control plane then signs the surface it accepted —
+  so the signature attests "this surface arrived from the provider's reviewed commit," which is a
+  stronger claim than a hand-managed card key and requires no key in CI. Until that exists,
+  production deployments are observe-mode only.
+  *(Blocker for enforce mode; the fix is W1's surface attestation, not a posture change)*
 * **The containment drill uses a file where the hardware token belongs.** `containment-drill.sh`
   runs in CI and rehearses the *wrapper*. What fails on the day — a flat battery, a forgotten
   PIN, a share-holder who left in March — is precisely what a laptop cannot rehearse.
