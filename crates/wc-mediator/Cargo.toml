@@ -40,10 +40,17 @@ serde_json = { workspace = true }
 # The one crate in this workspace that links Warden core. Not a dependency
 # choice: the mediator composes core's shipped gateway so the data plane adds no
 # second hop (LLD §8.6.1). Everything else stays independently adoptable.
-warden = { workspace = true }
+warden = { workspace = true, optional = true }
 # For the control-plane pull loop. TLS to the control plane is not optional in
 # production, so a hand-rolled client is out of the question.
 ureq = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+# Standalone by default: connection enforcement with no Warden core, which is what makes
+# warden-connect deployable on its own. `warden-proxy` adds the decorator topology back,
+# where the mediator compiles into Warden's proxy and per-action policy also applies.
+default = []
+warden-proxy = ["warden"]

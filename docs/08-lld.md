@@ -97,13 +97,23 @@ warden-connect/
 |---|---|---|
 | `wc-core` | `serde`, `serde_json`, `sha2`, `hex`, `jsonwebtoken`, `base64` | **`unicode-normalization`** (NFC for `wcs1`) — the only new primitive that cannot be hand-rolled safely |
 | `wc-control` | `wc-core`, `toml`, `ureq`, `libc` | none |
-| `wc-mediator` | `wc-core`, **`warden`** | none |
+| `wc-mediator` | `wc-core`; **`warden` only under the `warden-proxy` feature** | none |
 | `wc-cli` | all of the above | none |
 
 ### No dependency on Warden core, except where the deployment model demands it
 
-**Only `wc-mediator` links `warden`**, and there the coupling is not a choice: it
-compiles *into* the shipped proxy so the data plane adds no second hop (§8.10). If
+**Only `wc-mediator` may link `warden`, and it no longer does by default.** The
+coupling was described here as "not a choice" because the mediator compiles *into*
+the shipped proxy so the data plane adds no second hop (§8.10). That reasoning holds
+for the decorator topology and does not hold for the deployment that wants connection
+enforcement *without* Warden core — which the goal of an independent enforcement point
+requires and which this text made impossible.
+
+The dependency is now inverted rather than removed. `wc-mediator` owns its JSON-RPC
+types, its `Upstream` trait and its stdio upstream (`rpc.rs`, `mcp.rs`, `upstream.rs`),
+and the `warden-proxy` feature supplies an adapter so Warden's proxy can still wrap it.
+A default build of the whole workspace resolves **zero** Warden crates; the mediator's
+own tree fell from 111 to 101. If
 you run the mediator you run Warden core, by construction.
 
 Everywhere else, warden-connect is standalone. Three reasons, in order of weight:

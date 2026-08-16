@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use warden::upstream::Upstream;
+use wc_mediator::upstream::Upstream;
 
 use harness::*;
 use wc_control::evidence::{Evidence, LifecycleEvent};

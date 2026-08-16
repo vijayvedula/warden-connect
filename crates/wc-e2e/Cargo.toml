@@ -25,7 +25,6 @@ base64.workspace = true
 wc-core = { package = "warden-connect-core", path = "../wc-core", version = "0.1" }
 wc-control = { package = "warden-connect-control", path = "../wc-control", version = "0.1" }
 wc-mediator = { package = "warden-connect-mediator", path = "../wc-mediator", version = "0.1" }
-warden = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 jsonwebtoken = { workspace = true }

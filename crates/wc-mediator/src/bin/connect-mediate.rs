@@ -24,15 +24,19 @@
 //! than no mediator, because the estate believes it is protected.
 
 use std::io::{BufRead, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(feature = "warden-proxy")]
+use std::sync::Mutex;
 use std::time::Duration;
 
-use warden::approvals::Approvals;
-use warden::audit::AuditLog;
-use warden::gateway::Gateway;
-use warden::jsonrpc::Request;
-use warden::policy::PolicyConfig;
-use warden::upstream::StdioUpstream;
+use wc_mediator::rpc::Request;
+use wc_mediator::upstream::{StdioUpstream, Upstream};
+
+// Warden core is an ADAPTER now, not a dependency. Standalone is the default build: a
+// deployment that wants connection enforcement without Warden core's per-action policy gets
+// exactly that, which `docs/limitations.md` previously recorded as impossible.
+#[cfg(feature = "warden-proxy")]
+use warden::{approvals::Approvals, audit::AuditLog, gateway::Gateway, policy::PolicyConfig};
 
 use wc_core::contract::{Algorithm, IssuerKeys};
 use wc_core::error::Mode;
@@ -186,13 +190,19 @@ USAGE
                   (--issuer-pub PEM --kid KID | --jwks-url URL | --jwks-file F) \\
                   [--contracts URL --token TOKEN] | [--contract FILE ...]
 
-WARDEN CORE
+UPSTREAM
   --upstream CMD          the real MCP server to spawn
-  --policy FILE           warden policy (default: warden.policy.toml)
+  --upstream-timeout N    seconds (default: 30)
+
+WARDEN CORE (optional; requires the `warden-proxy` build feature)
+  Omit all of these and connect-mediate runs STANDALONE: contract, surface pin,
+  ceilings and revocation only, with no Warden core and no warden.policy.toml.
+  Standalone is the default — passing these without the feature is an error
+  rather than a silently ignored flag.
+  --policy FILE           warden policy; giving it selects Warden-core mode
   --audit FILE            audit chain (default: .warden/audit.jsonl)
   --approvals FILE        held-call state (default: .warden/approvals.json)
   --agent NAME            agent label for audit rows (default: the caller id)
-  --upstream-timeout N    seconds (default: 30)
 
 CONNECT
   --mediator-id ID        this mediator's id; must equal each contract's aud
@@ -237,12 +247,45 @@ handshake. mTLS, mesh and JWT-SVID modes live in `wc_mediator::peer` for the
 shared-gateway topology, where a flag is not an identity.
 ";
 
+/// Which half of the family is in force, decided from the flags alone.
+///
+/// Standalone unless a Warden policy is named. Naming one — or naming any flag only Warden
+/// core reads — is **refused rather than ignored**: a flag that reads as configured and does
+/// nothing is this codebase's recurring defect (`docs/threat-model.md` Part 1), and here it
+/// would mean an operator believing per-action policy or an audit chain was in force when
+/// neither was.
+fn which_mode(args: &[String]) -> Result<bool, String> {
+    let warden_mode = flag(args, "policy").is_some();
+    for f in ["audit", "approvals", "agent"] {
+        if flag(args, f).is_some() && !warden_mode {
+            return Err(format!(
+                "--{f} configures Warden core, which is only in force when --policy is given; \
+                 without it this mediator runs standalone and --{f} would do nothing"
+            ));
+        }
+    }
+    #[cfg(not(feature = "warden-proxy"))]
+    if warden_mode {
+        return Err(
+            "--policy selects Warden-core mode, which this binary was not built with; \
+                    rebuild with --features warden-proxy, or omit --policy to run standalone"
+                .to_string(),
+        );
+    }
+    Ok(warden_mode)
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
         return Ok(());
     }
+
+    // Configuration is validated BEFORE any work. Deciding the mode after keys were parsed
+    // and contracts loaded meant an operator who typo'd `--policy` on a standalone build was
+    // told so only after half a startup — and, if an earlier step failed first, never told.
+    let warden_mode = which_mode(&args)?;
 
     // --- connect configuration ---
     let mediator_id = required(&args, "mediator-id")?;
@@ -556,36 +599,61 @@ fn run() -> Result<(), String> {
     let mediated = MediatedUpstream::new(Box::new(real), Arc::clone(&cache), cfg)
         .with_ceilings(Ceilings::new());
 
-    // --- Warden core, unmodified ---
-    let policy_path = flag(&args, "policy").unwrap_or_else(|| "warden.policy.toml".to_string());
-    let policy = PolicyConfig::from_file(&policy_path).map_err(|e| e.to_string())?;
-    let audit = AuditLog::new(flag(&args, "audit").unwrap_or_else(|| ".warden/audit.jsonl".into()));
-    let approvals =
-        Approvals::new(flag(&args, "approvals").unwrap_or_else(|| ".warden/approvals.json".into()));
-    let agent_label = flag(&args, "agent").unwrap_or_else(|| caller.as_str().to_string());
-
-    let gateway = Arc::new(Gateway::new(
-        policy,
-        audit,
-        approvals,
-        &agent_label,
-        Box::new(mediated),
-        Duration::from_secs(300),
-    ));
-
     eprintln!(
-        "connect-mediate: mediating {caller} → {callee} as {mediator_id} ({:?})",
+        "connect-mediate: mediating {caller} → {callee} as {mediator_id} ({:?}, {})",
         if present(&args, "observe") {
             Mode::Observe
         } else {
             Mode::Enforce
+        },
+        if warden_mode {
+            "with Warden core"
+        } else {
+            "standalone — connection enforcement only, no per-action policy"
         }
     );
 
-    // --- the stdio loop, the same shape as `warden proxy` ---
-    let stdout = Arc::new(Mutex::new(std::io::stdout()));
+    #[cfg(feature = "warden-proxy")]
+    if let Some(policy_path) = flag(&args, "policy") {
+        // The binding *is* the mode check, so there is no `expect` restating an invariant a
+        // few lines above — the compiler carries it instead of a comment.
+        let policy = PolicyConfig::from_file(&policy_path).map_err(|e| e.to_string())?;
+        let audit =
+            AuditLog::new(flag(&args, "audit").unwrap_or_else(|| ".warden/audit.jsonl".into()));
+        let approvals = Approvals::new(
+            flag(&args, "approvals").unwrap_or_else(|| ".warden/approvals.json".into()),
+        );
+        let agent_label = flag(&args, "agent").unwrap_or_else(|| caller.as_str().to_string());
+        let gateway = Arc::new(Gateway::new(
+            policy,
+            audit,
+            approvals,
+            &agent_label,
+            Box::new(WardenBridge(mediated)),
+            Duration::from_secs(300),
+        ));
+        let status = warden_loop(&gateway);
+        gateway.checkpoint_audit();
+        telemetry.flush();
+        return status;
+    }
+
+    let status = standalone_loop(mediated);
+    telemetry.flush();
+    status
+}
+
+/// The stdio loop when there is no Warden core.
+///
+/// **Sequential, unlike the Warden-core loop**, and deliberately. That loop runs a thread per
+/// request because a Warden approval can block for minutes waiting on a human, so other calls
+/// must proceed past it. Nothing on this path blocks on a human: the gate's decisions are
+/// local and its state machine is per-connection, so concurrency would buy nothing and cost
+/// response ordering. One agent, one call at a time, answers in the order asked.
+fn standalone_loop(mediated: MediatedUpstream) -> Result<(), String> {
+    let mut mediated = mediated;
+    let mut out = std::io::stdout();
     let stdin = std::io::stdin();
-    let mut workers = Vec::new();
 
     for line in stdin.lock().lines() {
         let line = line.map_err(|e| e.to_string())?;
@@ -593,6 +661,82 @@ fn run() -> Result<(), String> {
             continue;
         }
         let req: Request = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                // Skipped, not fatal: one malformed frame from an agent must not take down
+                // a session that is otherwise healthy.
+                eprintln!("connect-mediate: skipping unparseable line: {e}");
+                continue;
+            }
+        };
+        if req.is_notification() {
+            mediated.notify(&req);
+            continue;
+        }
+        let response = mediated.request(&req);
+        if let Ok(line) = serde_json::to_string(&response) {
+            let _ = writeln!(out, "{line}");
+            let _ = out.flush();
+        }
+    }
+    Ok(())
+}
+
+/// Bridges the mediator's `Upstream` to Warden core's, so Warden's proxy can still wrap it.
+///
+/// The two traits are the same two methods over wire-compatible types, which is what made
+/// inverting the dependency cheap. This is the entire adapter.
+#[cfg(feature = "warden-proxy")]
+struct WardenBridge(MediatedUpstream);
+
+#[cfg(feature = "warden-proxy")]
+impl warden::upstream::Upstream for WardenBridge {
+    fn request(&mut self, req: &warden::jsonrpc::Request) -> warden::jsonrpc::Response {
+        let ours = Request {
+            jsonrpc: req.jsonrpc.clone(),
+            id: req.id.clone(),
+            method: req.method.clone(),
+            params: req.params.clone(),
+        };
+        let r = Upstream::request(&mut self.0, &ours);
+        warden::jsonrpc::Response {
+            jsonrpc: r.jsonrpc,
+            id: r.id,
+            result: r.result,
+            error: r.error.map(|e| warden::jsonrpc::RpcError {
+                code: e.code,
+                message: e.message,
+                data: e.data,
+            }),
+        }
+    }
+
+    fn notify(&mut self, req: &warden::jsonrpc::Request) {
+        let ours = Request {
+            jsonrpc: req.jsonrpc.clone(),
+            id: req.id.clone(),
+            method: req.method.clone(),
+            params: req.params.clone(),
+        };
+        Upstream::notify(&mut self.0, &ours);
+    }
+}
+
+/// The Warden-core stdio loop, unchanged in shape from before the inversion.
+#[cfg(feature = "warden-proxy")]
+fn warden_loop(gateway: &Arc<Gateway>) -> Result<(), String> {
+    // A thread per request, unlike the standalone loop: a Warden approval can block for
+    // minutes on a human, so other calls must be able to pass it.
+    let stdout = Arc::new(Mutex::new(std::io::stdout()));
+    let stdin = std::io::stdin();
+    let mut workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
+
+    for line in stdin.lock().lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let req: warden::jsonrpc::Request = match serde_json::from_str(&line) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("connect-mediate: skipping unparseable line: {e}");
@@ -603,7 +747,7 @@ fn run() -> Result<(), String> {
             gateway.notify(&req);
             continue;
         }
-        let gateway = Arc::clone(&gateway);
+        let gateway = Arc::clone(gateway);
         let stdout = Arc::clone(&stdout);
         workers.push(std::thread::spawn(move || {
             let response = gateway.handle_request(&req, None);
@@ -619,12 +763,9 @@ fn run() -> Result<(), String> {
     for worker in workers {
         let _ = worker.join();
     }
-    gateway.checkpoint_audit();
-
-    // Beside `checkpoint_audit`, which had the same job for Warden core's audit and was
-    // already here. Telemetry missing from this line was the asymmetry that hid the bug:
+    // `checkpoint_audit` and `telemetry.flush()` are the caller's, so both loops share one
+    // shutdown path. Telemetry missing from that path was the asymmetry that once hid a bug:
     // the audit was durable on exit and the counters were not, so a mediator that exited
     // lost up to a full interval — and one that exited quickly lost everything.
-    telemetry.flush();
     Ok(())
 }

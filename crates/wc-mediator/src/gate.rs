@@ -25,9 +25,9 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use warden::jsonrpc::{Request, Response};
-use warden::mcp::{parse_tool_call, tool_error_result};
-use warden::upstream::Upstream;
+use crate::mcp::{parse_tool_call, tool_error_result};
+use crate::rpc::{Request, Response};
+use crate::upstream::Upstream;
 
 use wc_core::canon::{self, Limits, SurfaceKind};
 use wc_core::contract::{AdmitCtx, Admitted, PeerIdentity, SameTrustLevel, ZoneRule};
@@ -253,20 +253,16 @@ impl MediatedUpstream {
             Some(code),
             parse_tool_call(&req.params).map(|(n, _)| n).as_deref(),
         );
-        Response {
-            jsonrpc: "2.0".to_string(),
-            id: req.id.clone(),
-            result: None,
-            error: Some(warden::jsonrpc::RpcError {
-                code: RPC_BLOCKED,
-                message: format!("BLOCKED by warden-connect: {code} {detail}"),
-                data: Some(json!({
-                    "code": code.to_string(),
-                    "summary": code.summary(),
-                    "cid": self.log.cid,
-                })),
+        Response::error_with_data(
+            req.id.clone(),
+            RPC_BLOCKED,
+            format!("BLOCKED by warden-connect: {code} {detail}"),
+            json!({
+                "code": code.to_string(),
+                "summary": code.summary(),
+                "cid": self.log.cid,
             }),
-        }
+        )
     }
 
     /// Refuse the connection, and record why.

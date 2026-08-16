@@ -161,14 +161,10 @@ reason = "the drill approves by hand"
 POLICY
 cp policy.toml connect-policy.toml
 
-# Warden core's policy, which `connect-mediate` also loads. Distinct from the connection
-# policy above and easy to conflate: one governs whether two parties may be connected, the
-# other whether a single call may proceed. Permissive here on purpose — the drill is about
-# key rotation, so core must not be the thing that refuses.
-cat > warden.policy.toml <<'CORE'
-version = "rotation-drill-core@v1"
-default = "allow"
-CORE
+# No warden.policy.toml. `connect-mediate` runs STANDALONE by default now — connection
+# enforcement with no Warden core — so the two-policy confusion this drill used to have to
+# explain is gone. That the drill still passes without it is the proof that standalone works
+# end to end, which is why this comment replaces the file rather than the file being moved.
 
 cat > approvers.toml <<'APPROVERS'
 [[approver]]
@@ -254,7 +250,6 @@ env API="http://127.0.0.1:$API_PORT" TOKEN="$TOKEN" CALLEE="$SERVER" \
     --contracts "http://127.0.0.1:$API_PORT" --token "$TOKEN" \
     --jwks-url "http://127.0.0.1:$JWKS_PORT/jwks-live.json" \
     --jwks-ttl "$TTL" --refresh "$TTL" \
-    --policy "$WORK/warden.policy.toml" \
     $MODE_FLAG
 
 STATUS=$?

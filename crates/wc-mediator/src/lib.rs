@@ -27,5 +27,8 @@ pub mod drain;
 pub mod filter;
 pub mod gate;
 pub mod jwks;
+pub mod mcp;
 pub mod obs;
 pub mod peer;
+pub mod rpc;
+pub mod upstream;

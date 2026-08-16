@@ -60,7 +60,10 @@ manufacture one.
 
 Warden core, warden-connect, warden-delegate and warden-trace are coupled by **two
 signed artifacts and one identifier (`cid`)** — never by a shared library. Only
-`wc-mediator` links Warden core, because it compiles *into* the proxy. Every other
+`wc-mediator` runs **standalone by default** — connection enforcement with no Warden core
+and no `warden.policy.toml`. The `warden-proxy` build feature adds the decorator topology
+back, where the mediator compiles *into* Warden's proxy and per-action policy applies as
+well. Every other
 crate is independently adoptable: you can run this in front of someone else's policy
 engine.
 

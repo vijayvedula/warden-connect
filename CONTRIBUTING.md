@@ -38,8 +38,9 @@ The most valuable contributions here, roughly in order:
 
 ## Development setup
 
-Warden core must be checked out **beside** this repository. It is a path dependency at
-`../warden` by design (§8.3): `wc-mediator` compiles *into* the proxy, so the coupling is
+Warden core is **optional**. A default build needs nothing beside this repository; only
+`--features warden-proxy` does, and then it must be checked out at `../warden`. Under that
+feature the coupling is
 the deployment model rather than a dependency choice.
 
 ```sh

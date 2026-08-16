@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use warden::jsonrpc::{Request, Response};
-use warden::upstream::Upstream;
+use wc_mediator::rpc::{Request, Response};
+use wc_mediator::upstream::Upstream;
 
 use wc_control::admission::{self, AdmissionRequest, Declared, InlineSurface};
 use wc_control::cpolicy::{ConnectPolicy, StandingState};
