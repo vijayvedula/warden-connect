@@ -1254,7 +1254,6 @@ dependencies = [
  "jsonwebtoken",
  "serde",
  "serde_json",
- "warden-agent",
  "warden-connect-control",
  "warden-connect-core",
  "warden-connect-mediator",

@@ -215,6 +215,24 @@ subsystem.
   by hand. That is deliberate, and it is one pair of eyes rather than two. A published version
   cannot be replaced, only yanked. Closing it means making the repository public — the rule is
   free there — or paying for a plan that includes it. *(Environmental: the plan, not the code)*
+* **The enforcement point no longer requires Warden core, and until now it did.** §8.3
+  described the coupling as "not a choice" — the mediator compiles *into* the shipped proxy,
+  so the data plane adds no second hop. That reasoning holds for the decorator topology and
+  never held for the deployment that wants connection enforcement *without* Warden core, which
+  `connect-mediate` made impossible: it required a `warden.policy.toml`, constructed a
+  `warden::Gateway`, and every type on the mediation path was Warden's.
+
+  The dependency is inverted rather than removed. `wc-mediator` owns its JSON-RPC types, its
+  `Upstream` trait and its stdio upstream, and `--features warden-proxy` supplies an adapter so
+  Warden's proxy can still wrap it. A default build of the workspace resolves **zero** Warden
+  crates and the mediator's tree fell from 111 to 101. `scripts/rotation-drill.sh` now runs
+  with no Warden policy file at all, which is the end-to-end proof.
+
+  What standalone does **not** give you is Warden core's per-action policy, its audit chain or
+  its held-call approvals — a contract is a ceiling, and the ceiling is all that is enforced.
+  Naming `--policy`, `--audit`, `--approvals` or `--agent` on a standalone build is **refused
+  at startup** rather than ignored, because a flag that reads as configured and does nothing is
+  this codebase's recurring defect. *(Fixed)*
 * **The containment drill uses a file where the hardware token belongs.** `containment-drill.sh`
   runs in CI and rehearses the *wrapper*. What fails on the day — a flat battery, a forgotten
   PIN, a share-holder who left in March — is precisely what a laptop cannot rehearse.

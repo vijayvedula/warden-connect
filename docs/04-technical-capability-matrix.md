@@ -142,7 +142,8 @@ plus `warden-trace` and substitute something else for the connection layer, or t
 through **two signed artifacts and one identifier** — the session token, the
 connection contract, and `cid` — and not through a shared library.
 
-Concretely: only the inline mediator links Warden core, because it compiles *into*
+Concretely: only the inline mediator may link Warden core, and only under the
+`warden-proxy` feature, because in that topology it compiles *into*
 the shipped proxy so the data plane adds no second hop. Everything else stands
 alone. In particular the contract verifier must: `connect verify` is the
 conformance ground truth for a candidate standard, and a reference verifier that

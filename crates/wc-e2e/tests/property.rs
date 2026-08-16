@@ -31,7 +31,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 
-use warden::upstream::Upstream;
+use wc_mediator::upstream::Upstream;
 
 use harness::*;
 use wc_control::assurance::{self, AssuranceCfg, Contracted, DriftClass, DriftInputs, Signals};

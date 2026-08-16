@@ -40,7 +40,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup toolchain install 1.89
 
 # Warden core, beside this repo. A path dependency by design (§8.3): wc-mediator
-# compiles *into* the proxy, so cargo cannot fetch it.
+# compiles *into* the proxy. Needed ONLY for `--features warden-proxy`; a default
+# build of warden-connect requires nothing beside this repository.
 git clone https://github.com/vijayvedula/warden.git   # as a sibling directory
 
 # python3 and openssl are used by the SBOM, the conformance plan and the drills.

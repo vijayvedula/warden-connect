@@ -36,10 +36,10 @@ jobs:
       - uses: actions/checkout@v4
         with: { path: warden-connect }
 
-      # `warden` is a path dependency at ../warden by design (§8.3): the mediator
-      # compiles into the proxy, so the coupling is the deployment model rather than a
-      # dependency choice. CI has to lay the tree out the same way.
-      - name: Check out Warden core beside it
+      # Needed only for the `warden-proxy` feature step below — a default build resolves
+      # zero Warden crates. Still checked out here because that step exists to stop the
+      # adapter rotting, and a step that cannot run is a step that silently passes.
+      - name: Check out Warden core beside it (for the warden-proxy feature only)
         uses: actions/checkout@v4
         with:
           repository: vijayvedula/warden
@@ -77,6 +77,15 @@ jobs:
       - name: cargo test
         working-directory: warden-connect
         run: cargo test --workspace
+
+      # The Warden-core decorator topology is behind a feature now, so nothing in the default
+      # build exercises the adapter. Without this step it rots silently — which is the whole
+      # reason `drain` sat unwired for months.
+      - name: the warden-proxy adapter still compiles and passes
+        working-directory: warden-connect
+        run: |
+          cargo clippy -p warden-connect-mediator --all-targets --features warden-proxy -- -D warnings
+          cargo test -p warden-connect-mediator --features warden-proxy
 
       # §8.7.1 stages 1-5 through the real verifiers, to Attested. Named because it is
       # the only thing that proves a party can become attested using the code that
