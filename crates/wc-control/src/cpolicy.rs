@@ -489,7 +489,7 @@ pub fn parse_duration(text: &str) -> Option<u64> {
 /// `internal` — not by a special case, but because `internal` does not begin with
 /// `internal.`. Whereas `public*` does match bare `public`, which is what an
 /// operator writing it means.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct Glob(pub String);
 
@@ -506,7 +506,7 @@ impl Glob {
 }
 
 /// A numeric comparison on a tier.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TierMatch {
     /// Operator.
     pub op: Op,
