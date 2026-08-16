@@ -34,6 +34,7 @@ pub mod issuance;
 pub mod keys;
 pub mod lock;
 pub mod obs;
+pub mod offer;
 pub mod registry;
 pub mod rekor;
 pub mod screen;

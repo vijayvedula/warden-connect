@@ -34,7 +34,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use wc_core::contract::{Delegation, EvidenceTerms, Surface, Terms};
 use wc_core::error::{Code, Mode, Result, WcError};
@@ -82,7 +82,7 @@ impl ConnDecision {
 // ---------------------------------------------------------------------------
 
 /// Comparison operators. The same four Warden core supports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Op {
     /// Greater than, numeric.
@@ -489,7 +489,7 @@ pub fn parse_duration(text: &str) -> Option<u64> {
 /// `internal` — not by a special case, but because `internal` does not begin with
 /// `internal.`. Whereas `public*` does match bare `public`, which is what an
 /// operator writing it means.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct Glob(pub String);
 
@@ -506,7 +506,7 @@ impl Glob {
 }
 
 /// A numeric comparison on a tier.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TierMatch {
     /// Operator.
     pub op: Op,
