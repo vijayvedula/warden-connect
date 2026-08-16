@@ -590,6 +590,14 @@ pub enum Event {
         #[serde(default)]
         dual_control: Vec<HumanRef>,
     },
+    /// A provider published its terms of availability (W1).
+    #[serde(rename = "offer.published")]
+    OfferPublished {
+        /// The offer, boxed so this variant does not inflate every other one.
+        offer: Box<crate::offer::Offer>,
+        /// Who published it — a pipeline, so normally `Actor::Service`.
+        actor: Actor,
+    },
     /// An event kind this binary does not know. Counted, never silently dropped.
     #[serde(other)]
     Unknown,
@@ -617,6 +625,13 @@ pub struct Projection {
     pub requests: HashMap<String, crate::issuance::PendingRequest>,
     /// Expiry queue, soonest first.
     pub expiring: BinaryHeap<Reverse<(u64, Cid)>>,
+    /// The current offer per providing party.
+    ///
+    /// Highest version wins rather than last-write-wins. An append-only log is ordered, so the
+    /// two normally agree — but taking the maximum makes the fold independent of order, which
+    /// means a replay cannot land on a different answer and a stale republish cannot roll an
+    /// offer backwards to terms the provider has already withdrawn.
+    pub offers: HashMap<EntityId, crate::offer::Offer>,
     /// Highest sequence applied.
     pub seq: u64,
 }
@@ -653,6 +668,23 @@ impl Projection {
             Event::EntityPut { entity, .. } => {
                 self.entities.insert(entity.id.clone(), (**entity).clone());
                 report.applied += 1;
+            }
+            Event::OfferPublished { offer, .. } => {
+                match self.offers.get(&offer.asset) {
+                    // A version we already hold or have passed. Not an inconsistency — a
+                    // pipeline may retry — but not applied either, and counted so a replay
+                    // that quietly discarded half the log would not look clean.
+                    Some(held) if held.version >= offer.version => {
+                        report.inconsistent.push(format!(
+                            "seq {}: offer for {} is version {} but {} is already held",
+                            framed.seq, offer.asset, offer.version, held.version
+                        ));
+                    }
+                    _ => {
+                        self.offers.insert(offer.asset.clone(), (**offer).clone());
+                        report.applied += 1;
+                    }
+                }
             }
             Event::EntityTransition { id, to, .. } => match self.entities.get_mut(id) {
                 Some(entity) => {
@@ -1334,6 +1366,123 @@ mod tests {
     }
 
     // --- Log mechanics ---
+
+    // --- offers (W1) --------------------------------------------------------
+
+    fn an_offer(asset: &EntityId, version: u64) -> crate::offer::Offer {
+        crate::offer::Offer {
+            asset: asset.clone(),
+            version,
+            surface_kind: wc_core::canon::SurfaceKind::McpTools,
+            surface_digest: format!("sha256:v{version}"),
+            terms: vec![crate::offer::Term {
+                items: vec!["get_balance".to_string()],
+                to: crate::offer::Audience::default(),
+                approval: crate::offer::TermApproval::PreGranted,
+                ttl_max: 3_600,
+                deprecates: Vec::new(),
+            }],
+            source: crate::offer::OfferSource {
+                repo: "bank/payments-mcp".to_string(),
+                sha: format!("sha-{version}"),
+                manifest_digest: format!("sha256:m{version}"),
+            },
+        }
+    }
+
+    #[test]
+    fn an_offer_survives_a_replay_so_provider_consent_is_not_held_in_memory() {
+        // The provider's half of a bilateral contract arrives days before the consumer's. If it
+        // lived only in memory, restarting the plane would silently discard consent that a
+        // reviewed commit established — and the next `need apply` would refuse for want of an
+        // offer that had in fact been published.
+        let tmp = TmpDir::new("offer-replay");
+        let asset = agent_id();
+        {
+            let mut log = StateLog::open(tmp.path(), STATE_LOG_NAME).unwrap();
+            log.append(
+                &Event::OfferPublished {
+                    offer: Box::new(an_offer(&asset, 7)),
+                    actor: Actor::Service {
+                        id: "urn:wc:oidc:gh:repo:bank/payments-mcp:ref:refs/heads/main".into(),
+                    },
+                },
+                1_000,
+                Durability::Durable,
+            )
+            .unwrap();
+        }
+        let (projection, report) = Projection::rebuild(tmp.path(), STATE_LOG_NAME).unwrap();
+        assert!(report.is_clean(), "{report:?}");
+        let held = projection
+            .offers
+            .get(&asset)
+            .expect("the offer must persist");
+        assert_eq!(held.version, 7);
+        assert_eq!(held.source.sha, "sha-7");
+    }
+
+    #[test]
+    fn a_stale_republish_cannot_roll_an_offer_back_to_withdrawn_terms() {
+        // Highest version wins, not last write. A pipeline retrying an older commit — or a log
+        // replayed in an unexpected order — must not reinstate terms the provider has already
+        // superseded, because that would silently re-grant something they withdrew.
+        let tmp = TmpDir::new("offer-stale");
+        let asset = agent_id();
+        {
+            let mut log = StateLog::open(tmp.path(), STATE_LOG_NAME).unwrap();
+            for v in [7, 5] {
+                log.append(
+                    &Event::OfferPublished {
+                        offer: Box::new(an_offer(&asset, v)),
+                        actor: actor(),
+                    },
+                    1_000 + v,
+                    Durability::Durable,
+                )
+                .unwrap();
+            }
+        }
+        let (projection, report) = Projection::rebuild(tmp.path(), STATE_LOG_NAME).unwrap();
+        assert_eq!(
+            projection.offers.get(&asset).unwrap().version,
+            7,
+            "version 5 arrived last and must not win"
+        );
+        assert!(
+            !report.is_clean(),
+            "the superseded row must be reported, not silently dropped — a replay that discarded \
+             half a log would otherwise look clean"
+        );
+    }
+
+    #[test]
+    fn a_newer_offer_replaces_the_terms_that_came_before_it() {
+        let tmp = TmpDir::new("offer-newer");
+        let asset = agent_id();
+        {
+            let mut log = StateLog::open(tmp.path(), STATE_LOG_NAME).unwrap();
+            for v in [5, 7] {
+                log.append(
+                    &Event::OfferPublished {
+                        offer: Box::new(an_offer(&asset, v)),
+                        actor: actor(),
+                    },
+                    1_000 + v,
+                    Durability::Durable,
+                )
+                .unwrap();
+            }
+        }
+        let (projection, report) = Projection::rebuild(tmp.path(), STATE_LOG_NAME).unwrap();
+        assert!(report.is_clean(), "{report:?}");
+        let held = projection.offers.get(&asset).unwrap();
+        assert_eq!(held.version, 7);
+        assert_eq!(
+            held.surface_digest, "sha256:v7",
+            "a new offer version carries the new surface digest with it"
+        );
+    }
 
     #[test]
     fn append_then_replay_round_trips() {

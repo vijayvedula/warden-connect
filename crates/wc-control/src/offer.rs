@@ -71,7 +71,7 @@ pub enum TermApproval {
 /// Both fields absent means "any consumer", which is a real thing to write for a read-only
 /// tool — and is why the fields are `Option` rather than defaulted to something restrictive
 /// that would silently narrow an offer the provider believed was open.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Audience {
     /// Consumer zone glob.
@@ -94,7 +94,7 @@ impl Audience {
 }
 
 /// An item being withdrawn, with the date after which it is gone.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Deprecation {
     /// The item.
     pub item: String,
@@ -103,7 +103,7 @@ pub struct Deprecation {
 }
 
 /// One grant of availability.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Term {
     /// Items this term covers — tool names, skill ids, resource patterns.
     pub items: Vec<String>,
@@ -130,7 +130,7 @@ impl Term {
 }
 
 /// Where an offer came from, so a contract is auditable back to a reviewed commit.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct OfferSource {
     /// Opaque repository identifier.
     ///
@@ -145,7 +145,7 @@ pub struct OfferSource {
 }
 
 /// A provider's published terms of availability.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Offer {
     /// The providing party.
     pub asset: EntityId,
