@@ -72,11 +72,17 @@ impl Default for Limits {
 // ---------------------------------------------------------------------------
 
 /// Which declared-surface shape is being canonicalised.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serialisable because an offer records the kind its digest covers, and an offer is persisted.
+/// The wire form is the same string `as_str` embeds in the canonical document, so one name
+/// serves both rather than two that could drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub enum SurfaceKind {
     /// An MCP `tools/list` result. Items are tools.
+    #[serde(rename = "mcp_tools")]
     McpTools,
     /// An A2A agent card. Items are skills; card-level fields become `meta`.
+    #[serde(rename = "a2a_card")]
     A2aCard,
 }
 

@@ -834,6 +834,20 @@ impl IssuerKey {
         })
     }
 
+    /// Sign arbitrary bytes with this key.
+    ///
+    /// The counterpart to `attest.rs`'s `verify_raw`, and the primitive an attestation over a
+    /// document needs: a JWS signing input is `protected.payload`, which is neither a set of
+    /// claims (so [`sign_detached`] does not fit) nor something the caller can assemble
+    /// without reaching the signer.
+    ///
+    /// Raw, meaning the caller owns the header and the framing. That is deliberate — the
+    /// signature's meaning comes from what the header says it covers, and burying header
+    /// construction here would let two call sites disagree about it.
+    pub fn sign_raw(&self, signing_input: &[u8]) -> Result<Vec<u8>> {
+        self.signer.sign(signing_input)
+    }
+
     /// The key id this signer stamps into the JWS header.
     #[must_use]
     pub fn kid(&self) -> &str {
