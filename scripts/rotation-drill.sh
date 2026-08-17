@@ -46,15 +46,19 @@ for b in "$CONNECT" "$MEDIATE"; do
 done
 command -v python3 >/dev/null || { echo "need python3" >&2; exit 2; }
 
-# Refuse to drill a binary older than the code. The drill reads `target/`, it does not build,
-# so a source change followed by `cargo test` (which builds only the test profile) leaves these
-# stale — and the drill then reports on a mediator that no longer exists. That happened while
-# fixing the very bug this drill found: three phases reported the OLD behaviour after the fix
-# was written, tested and committed to the working tree.
-newest_src=$(find "$REPO/crates" -name '*.rs' -newer "$MEDIATE" -print -quit 2>/dev/null)
-if [ -n "$newest_src" ]; then
-    echo "$(basename "$MEDIATE") is older than $newest_src" >&2
-    echo "  cargo build --release --workspace" >&2
+# Build rather than compare timestamps.
+#
+# This started as an mtime check — refuse if any source is newer than the binary — because a
+# stale binary once made a drill report the OLD behaviour after the fix was already written and
+# tested. The check was right about the danger and wrong about the mechanism: `cargo fmt`
+# rewrites files and bumps their mtime without changing content, so cargo correctly declines to
+# rebuild and the guard can never clear. It went from catching a real problem to blocking every
+# run.
+#
+# Asking cargo is both simpler and stricter: it knows what is actually stale, and a no-op build
+# costs nothing. The drill can no longer run against a binary that does not match the tree.
+if ! cargo build --release --workspace --quiet 2>&1; then
+    echo "the workspace does not build; the drill would be testing nothing" >&2
     exit 2
 fi
 command -v openssl >/dev/null || { echo "need openssl" >&2; exit 2; }
