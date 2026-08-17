@@ -4772,8 +4772,8 @@ fn verify_cmd(args: &Args) -> Result<()> {
                 "aud": p.aud,
                 "caller": p.caller.id.as_str(),
                 "callee": p.callee.id.as_str(),
-                "surface": { "tools": p.surface.tools, "skills": p.surface.skills,
-                             "resources": p.surface.resources },
+                "surface": { "tools": p.surface.tools(), "skills": p.surface.skills(),
+                             "resources": p.surface.resources() },
                 "surface_digest": p.callee.surface_digest,
                 "exp": p.exp,
                 "remaining_secs": p.exp.saturating_sub(at),
@@ -4803,8 +4803,8 @@ fn verify_cmd(args: &Args) -> Result<()> {
         p.callee.tier.as_u8()
     );
     println!("  surface    {}", p.surface.items().join(", "));
-    if !p.surface.resources.is_empty() {
-        println!("  resources  {}", p.surface.resources.join(", "));
+    if !p.surface.resources().is_empty() {
+        println!("  resources  {}", p.surface.resources().join(", "));
     }
     println!(
         "  digest     {}",

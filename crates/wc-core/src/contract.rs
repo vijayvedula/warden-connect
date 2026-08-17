@@ -38,6 +38,42 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// The contracted MCP tool names.
+    ///
+    /// # Why these are accessors
+    ///
+    /// `Surface` is the one genuinely MCP/A2A-shaped type in the core: three named lists. If
+    /// this ever becomes `{ kind, items }` — which is the seam a second capability model would
+    /// need (`docs/limitations.md`, and `SurfaceKind` is already an enum) — then every place
+    /// that *constructs* one breaks at compile time and is found immediately, while every place
+    /// that *reads* a named field has to be rethought. Reading through an accessor states the
+    /// intent instead of the representation, so those call sites survive the change.
+    ///
+    /// Returning `&[String]` rather than `&Vec<String>` so the container is not part of the
+    /// contract either. It serialises identically, which matters: `PendingRequest`'s id is a
+    /// digest over a canonical JSON document containing `resources`, so a change in
+    /// representation here would move request ids and break idempotency for callers who had
+    /// done nothing.
+    #[must_use]
+    pub fn tools(&self) -> &[String] {
+        &self.tools
+    }
+
+    /// The contracted A2A skill ids.
+    #[must_use]
+    pub fn skills(&self) -> &[String] {
+        &self.skills
+    }
+
+    /// The contracted resource URI patterns.
+    ///
+    /// Separate from [`Self::items`] on purpose: resources are patterns rather than names and
+    /// have no per-item pin, so they are not part of the digested item set.
+    #[must_use]
+    pub fn resources(&self) -> &[String] {
+        &self.resources
+    }
+
     /// Every contracted item name — tools and skills, the things that have a
     /// per-item pin. Sorted and deduplicated, so it can feed
     /// [`crate::model::Pin::surface_digest`] directly.
@@ -1714,6 +1750,120 @@ impl Admitted {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod encapsulation {
+    //! `Surface`'s named fields must not be read outside this crate.
+    //!
+    //! The accessors exist so a later `{ kind, items }` shape only has to rethink construction,
+    //! not interpretation. Nothing enforces that but this, and an unenforced convention is a
+    //! convention that lasts until the next person in a hurry — which is the argument the
+    //! `drain` module makes about itself.
+    //!
+    //! Scans sibling crate sources rather than using visibility, because making the fields
+    //! private would churn 49 construction sites that are almost all test fixtures and that the
+    //! compiler would find anyway. This guards the half the compiler cannot.
+
+    use std::path::Path;
+
+    /// Field reads this test refuses to see outside `wc-core`.
+    const FORBIDDEN: &[&str] = &[".surface.tools", ".surface.skills", ".surface.resources"];
+
+    fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == "target") {
+                    continue;
+                }
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn no_crate_outside_wc_core_reads_a_surface_field_directly() {
+        // `crates/` from `crates/wc-core`. If the layout changes this fails loudly rather than
+        // scanning nothing and passing — a guard that silently checks zero files is worse than
+        // no guard, which is the lesson `alert-coverage.sh` exists to encode.
+        let crates_dir = Path::new("..");
+        let mut files = Vec::new();
+        rust_files(crates_dir, &mut files);
+        let scanned: Vec<_> = files
+            .iter()
+            .filter(|p| !p.components().any(|c| c.as_os_str() == "wc-core"))
+            .collect();
+        assert!(
+            scanned.len() > 20,
+            "expected to scan the sibling crates and found {} files — the layout moved",
+            scanned.len()
+        );
+
+        let mut offenders = Vec::new();
+        let mut production_lines = 0usize;
+
+        for path in scanned {
+            // Test code is exempt, and the reason is not convenience. This guard protects
+            // *interpretation*: production code reading a named field has encoded an assumption
+            // about the shape, and that assumption is what a `{ kind, items }` change
+            // invalidates. A fixture that constructs or pokes at fields is exercising the type
+            // deliberately, and a shape change breaks it at compile time, loudly, in the same
+            // commit. One test even does `widened.surface.tools.push(...)` to simulate somebody
+            // widening a surface after a human signed it — that needs raw access and should.
+            let in_tests_dir = path.components().any(|c| c.as_os_str() == "tests");
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
+
+            // Everything after a top-level `#[cfg(test)]` is test code. True for this
+            // repository, where every crate puts its test module at the end of the file — and
+            // the production-line count below is what catches it if that ever stops being true.
+            let mut reached_tests = in_tests_dir;
+            for (n, line) in text.lines().enumerate() {
+                if line.starts_with("#[cfg(test)]") {
+                    reached_tests = true;
+                }
+                if reached_tests {
+                    continue;
+                }
+                production_lines += 1;
+                let code = line.split("//").next().unwrap_or(line);
+                for pattern in FORBIDDEN {
+                    // `.resources()` is the accessor; `.resources` followed by anything else is
+                    // a field read.
+                    if let Some(rest) = code.split_once(pattern).map(|(_, r)| r) {
+                        if !rest.starts_with('(') {
+                            offenders.push(format!(
+                                "{}:{}: {}",
+                                path.display(),
+                                n + 1,
+                                code.trim()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // An exemption that swallowed everything would leave this test green while checking
+        // nothing, which is the failure `alert-coverage.sh` was written to prevent one tier up.
+        assert!(
+            production_lines > 5_000,
+            "only {production_lines} production lines scanned — the test-code exemption is \
+             eating real code, so this guard is passing without checking anything"
+        );
+        assert!(
+            offenders.is_empty(),
+            "read these through Surface::tools()/skills()/resources() instead:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

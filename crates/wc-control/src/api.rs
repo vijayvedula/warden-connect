@@ -1110,7 +1110,7 @@ fn request_json(r: &PendingRequest) -> Value {
         "caller": r.caller.as_str(),
         "callee": r.callee.as_str(),
         "surface": r.surface.items(),
-        "resources": r.surface.resources,
+        "resources": r.surface.resources(),
         "terms": r.terms,
         "mediators": r.mediators,
         "created_at": r.created_at,
