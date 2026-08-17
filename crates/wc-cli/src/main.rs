@@ -169,6 +169,7 @@ const TWO_WORD: &[&str] = &[
     "offer publish",
     "offer show",
     "need check",
+    "need apply",
     "scm probe",
 ];
 
@@ -186,6 +187,7 @@ const COMMANDS: &[&str] = &[
     "offer publish",
     "offer show",
     "need check",
+    "need apply",
     "scm probe",
     "blast-radius",
     "quarantine",
@@ -306,9 +308,32 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "oidc-subject-claim",
         ],
         "attest surface" => &["surface", "card-key", "out", "kid"],
-        "offer publish" => &["surface", "terms", "kind", "repo", "sha", "version"],
+        "offer publish" => &[
+            "surface",
+            "terms",
+            "kind",
+            "repo",
+            "sha",
+            "version",
+            "shim",
+            "shim-label",
+            "git-ref",
+        ],
         "offer show" => &["asset"],
         "need check" => &["manifest", "repo", "sha"],
+        "need apply" => &[
+            "manifest",
+            "repo",
+            "sha",
+            "git-ref",
+            "shim",
+            "shim-label",
+            "mediator",
+            "issuer-key",
+            "signer",
+            "kid",
+            "out",
+        ],
         "scm probe" => &[
             "shim",
             "label",
@@ -620,6 +645,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "offer publish" => offer_publish_cmd(args)?,
         "offer show" => offer_show_cmd(args)?,
         "need check" => need_check_cmd(args)?,
+        "need apply" => need_apply_cmd(args)?,
         "scm probe" => scm_probe_cmd(args)?,
         "audit verify" => audit_verify(args)?,
         "backup" => backup_cmd(args)?,
@@ -2337,7 +2363,7 @@ fn offer_publish_cmd(args: &Args) -> Result<()> {
         None => held.map_or(1, |h| h + 1),
     };
 
-    let offer = manifest.into_offer(
+    let mut offer = manifest.into_offer(
         &declared,
         kind,
         &surface_digest,
@@ -2348,6 +2374,36 @@ fn offer_publish_cmd(args: &Args) -> Result<()> {
             manifest_digest: format!("sha256:{}", wc_core::util::sha256_hex(&terms_text)),
         },
     )?;
+
+    // The provider's half of a bilateral contract. Without a shim the offer is recorded on the
+    // publisher's word alone — fine for a catalogue, and `need apply` refuses to mint against it,
+    // because one side's word is not an agreement.
+    if let Some(command) = args.get("shim") {
+        let label = args.get("shim-label").unwrap_or("scm");
+        let git_ref = args.get("git-ref").unwrap_or("refs/heads/main");
+        let shim = wc_control::scm::ScmShim::parse(label, command)?;
+        let authority = wc_control::authority::ScmMerge { shim: &shim };
+        let asserted = wc_control::pipeline::Asserted {
+            repo: repo.clone(),
+            git_ref: git_ref.to_string(),
+            sha: sha.clone(),
+        };
+        let consent = wc_control::authority::ApprovalAuthority::consent(
+            &authority,
+            wc_core::contract::Side::Target,
+            &asserted,
+            &wc_control::authority::ManifestBinding::of(terms_path, &terms_text),
+        )?;
+        println!(
+            "consent    {} approved by {} via {}",
+            consent.request_id,
+            consent.approvers.join(", "),
+            consent.via
+        );
+        offer = offer.with_consent(consent);
+    } else {
+        println!("consent    NONE — no --shim given, so `need apply` will refuse to mint");
+    }
 
     let items = offer.offered_items();
     store.commit(
@@ -2464,6 +2520,228 @@ fn scm_probe_cmd(args: &Args) -> Result<()> {
             wrong.len()
         ),
     ))
+}
+
+/// `need apply` — mint what a consumer's manifest asks for, on the strength of two merges (W5).
+///
+/// The verb `need check` could not be. It reports; this issues.
+fn need_apply_cmd(args: &Args) -> Result<()> {
+    let manifest_path = require(args, "manifest")?;
+    let repo = require(args, "repo")?.to_string();
+    let sha = require(args, "sha")?.to_string();
+    let mediator = require(args, "mediator")?.to_string();
+    let git_ref = args.get("git-ref").unwrap_or("refs/heads/main").to_string();
+    let shim_cmd = require(args, "shim")?;
+    let shim_label = args.get("shim-label").unwrap_or("scm");
+
+    let text = std::fs::read_to_string(manifest_path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {manifest_path}"))
+            .with_source(e)
+    })?;
+    let manifest = wc_control::need::NeedManifest::parse(&text)?;
+
+    // The consumer's consent is verified once for the manifest, not once per need: one merge
+    // carried the whole file, and asking the source host the same question per entry would be a
+    // slower way to get the same answer.
+    let shim = wc_control::scm::ScmShim::parse(shim_label, shim_cmd)?;
+    let authority = wc_control::authority::ScmMerge { shim: &shim };
+    let asserted = wc_control::pipeline::Asserted {
+        repo: repo.clone(),
+        git_ref,
+        sha: sha.clone(),
+    };
+    let consumer_consent = wc_control::authority::ApprovalAuthority::consent(
+        &authority,
+        wc_core::contract::Side::Source,
+        &asserted,
+        &wc_control::authority::ManifestBinding::of(manifest_path, &text),
+    )?;
+    println!(
+        "consumer   {} approved by {} via {}",
+        consumer_consent.request_id,
+        consumer_consent.approvers.join(", "),
+        consumer_consent.via
+    );
+
+    // Two phases, because the issuer borrows the store mutably and the matching needs to read
+    // it. Phase one decides everything and writes nothing; phase two mints.
+    let ts = now();
+    struct Planned {
+        matched: wc_control::need::Matched,
+        approval: wc_core::contract::ApprovalRef,
+        consumer: wc_core::model::Entity,
+        provider: wc_core::model::Entity,
+        input: wc_control::issuance::RequestInput,
+    }
+    let mut plan: Vec<Planned> = Vec::new();
+    let mut noop = 0usize;
+
+    {
+        let mut store = open_store(args)?;
+        for entry in &manifest.needs {
+            let need = manifest.resolve(entry)?;
+
+            let Some(offer) = store.projection.offers.get(&need.provider).cloned() else {
+                return Err(WcError::with_detail(
+                    Code::NO_CONTRACT,
+                    format!(
+                        "no offer is held for {}. There is no central fallback by design, so \
+                         provider consent is never implied",
+                        need.provider
+                    ),
+                ));
+            };
+            let Some(provider_consent) = offer.consent.clone() else {
+                return Err(WcError::with_detail(
+                    Code::APPROVAL_SIGNATURE_INVALID,
+                    format!(
+                        "the offer for {} carries no verified consent — it was published without \
+                         a shim, so only the publisher's word says its terms were reviewed. \
+                         Republish with `offer publish --shim` before contracting against it",
+                        need.provider
+                    ),
+                ));
+            };
+
+            let (consumer, provider) = {
+                let reg = store.registry(actor(args)?, ts);
+                (
+                    reg.require(&need.consumer)?.clone(),
+                    reg.require(&need.provider)?.clone(),
+                )
+            };
+
+            let matched =
+                wc_control::need::match_need(&need, &offer, consumer.zone.as_str(), consumer.tier)
+                    .map_err(|refusals| wc_control::need::refusal_error(&need, &refusals))?;
+
+            println!();
+            println!("{} -> {}", need.consumer, need.provider);
+
+            // Idempotency before anything is written, so an unchanged re-run appends no request
+            // row either: "no duplicate contract" and "no duplicate audit noise" are both part of
+            // the claim.
+            if store
+                .projection
+                .contracts
+                .get(&matched.cid)
+                .is_some_and(|c| c.jti == matched.jti)
+            {
+                println!("  already current  {} ({})", matched.cid, matched.jti);
+                noop += 1;
+                continue;
+            }
+
+            let approval = wc_core::contract::ApprovalRef::reviewed_merge(vec![
+                consumer_consent.clone(),
+                provider_consent,
+            ])?;
+            let input = wc_control::issuance::RequestInput {
+                caller: need.consumer.clone(),
+                callee: need.provider.clone(),
+                surface: wc_core::contract::Surface {
+                    tools: matched.items.iter().cloned().collect(),
+                    ..Default::default()
+                },
+                terms: wc_core::contract::Terms::default(),
+                ttl_secs: matched.ttl,
+                justification: need.justify.clone(),
+                requester: requester_of(&consumer_consent)?,
+                mediators: vec![mediator.clone()],
+            };
+            plan.push(Planned {
+                matched,
+                approval,
+                consumer,
+                provider,
+                input,
+            });
+        }
+    }
+
+    let mut minted = 0usize;
+    if !plan.is_empty() {
+        with_issuer(args, |issuer| {
+            for p in &plan {
+                // Routed through `request` so connect-policy is evaluated exactly as it is for a
+                // human request. The offer is the provider's ceiling; it is not a way past the
+                // estate's policy.
+                let pending = match issuer.request(&p.input)? {
+                    Outcome::Denied { reason, .. } => {
+                        return Err(WcError::with_detail(
+                            Code::POLICY_DENIED,
+                            format!("connection policy refused this need: {reason}"),
+                        ))
+                    }
+                    Outcome::Issued(issued) => {
+                        println!("  issued by standing policy  {}", issued.record.cid);
+                        minted += 1;
+                        continue;
+                    }
+                    Outcome::AwaitingApproval(pending) => pending,
+                };
+
+                let issued = issuer.mint_with_identity(
+                    &pending,
+                    p.approval.clone(),
+                    &p.consumer,
+                    &p.provider,
+                    p.matched.cid.clone(),
+                    p.matched.jti.clone(),
+                )?;
+                println!("  minted     {} ({})", issued.record.cid, issued.record.jti);
+                println!(
+                    "  items      {}",
+                    p.matched
+                        .items
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                println!("  ttl        {}s", p.matched.ttl);
+                if let Some(dir) = args.get("out") {
+                    for (name, jws) in &issued.artifacts {
+                        let path = std::path::Path::new(dir).join(name);
+                        std::fs::write(&path, format!("{jws}\n")).map_err(|e| {
+                            WcError::with_detail(
+                                Code::CONFIG_INVALID,
+                                format!("cannot write {}", path.display()),
+                            )
+                            .with_source(e)
+                        })?;
+                        println!("  artifact   {name}");
+                    }
+                }
+                minted += 1;
+            }
+            Ok(())
+        })?;
+    }
+
+    println!();
+    println!("{minted} minted · {noop} already current");
+    Ok(())
+}
+
+/// The requester recorded on a pipeline-driven request.
+///
+/// The change's author, not the pipeline: a contract's justification is written by a person and
+/// the record should name the person who wrote it. Falls back to the approver when a host reports
+/// no author, because a request with no accountable human is worse than an imprecise one.
+fn requester_of(consent: &wc_core::contract::MergeApproval) -> Result<HumanRef> {
+    let who = if consent.author.is_empty() {
+        consent.approvers.first().map(String::as_str).unwrap_or("")
+    } else {
+        consent.author.as_str()
+    };
+    if who.is_empty() {
+        return Err(WcError::with_detail(
+            Code::APPROVAL_SIGNATURE_INVALID,
+            "the merge names neither an author nor an approver, so no human can be recorded",
+        ));
+    }
+    HumanRef::new(format!("human:{who}"))
 }
 
 /// `need check` — does any provider's offer permit what this consumer asks for? (W6)
@@ -6527,6 +6805,27 @@ TOOLS
 
                 The --expect flags turn a print into an assertion, and exit
                 non-zero when the answer disagrees.
+
+  need apply --manifest FILE --repo NAME --sha SHA --mediator ID
+             --shim COMMAND [--shim-label NAME] [--git-ref REF]
+             (--issuer-key PEM | --signer COMMAND) --kid KID [--out DIR]
+                mint the contracts a consumer's manifest asks for, from the
+                consumer's pipeline on merge.
+
+                Both consents must already be evidenced. The provider's came from
+                `offer publish --shim` and is recorded on the offer; the consumer's
+                is verified here, from the merge that carried this manifest. An
+                offer with no consent is refused: one side's word is not an
+                agreement.
+
+                Idempotent by construction. The artifact id is derived from the
+                inputs, so re-running an unchanged build finds the contract already
+                current and does nothing — no duplicate, and no request row.
+
+                Policy still applies. This routes through the same evaluation
+                `request` does, so an org policy that denies a zone pair denies it
+                here too; the offer is the provider's ceiling, not a way past the
+                estate's.
 
   need check --manifest FILE [--repo NAME --sha SHA]
                 check a consumer's declared needs against the providers' offers.

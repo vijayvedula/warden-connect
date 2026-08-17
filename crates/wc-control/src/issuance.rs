@@ -889,7 +889,7 @@ impl<'a> Issuer<'a> {
         // deliberately the same mint every other contract goes through: an
         // emergency path with its own minting code is an emergency path with its
         // own bugs.
-        self.mint_unchecked(&pending, approval, &caller, &callee)
+        self.mint_unchecked(&pending, approval, &caller, &callee, None)
     }
 
     /// The request two approvers sign over for a break-glass issuance.
@@ -1104,7 +1104,32 @@ impl<'a> Issuer<'a> {
         // a party may have been quarantined or suspended while a human deliberated.
         caller.assert_connectable(self.mode)?;
         callee.assert_connectable(self.mode)?;
-        self.mint_unchecked(pending, approval, caller, callee)
+        self.mint_unchecked(pending, approval, caller, callee, None)
+    }
+
+    /// Mint with a caller-supplied identity, for the offer/need path.
+    ///
+    /// The existing flow derives `cid` from the *request* id and `jti` from the clock and the log
+    /// sequence, so re-raising the same request produces a different artifact every time. That is
+    /// fine when a human is deliberating over one request, and wrong for a pipeline: `need`'s
+    /// identity is derived from the inputs precisely so that re-running a build is a no-op
+    /// (`crate::need`). Supplying it here is what preserves that property through minting.
+    ///
+    /// A separate entry point rather than a flag, and rather than changing the derivation the
+    /// existing flow already uses: altering that would silently renumber every connection an
+    /// estate already holds.
+    pub fn mint_with_identity(
+        &mut self,
+        pending: &PendingRequest,
+        approval: ApprovalRef,
+        caller: &Entity,
+        callee: &Entity,
+        cid: Cid,
+        jti: Jti,
+    ) -> Result<Issued> {
+        caller.assert_connectable(self.mode)?;
+        callee.assert_connectable(self.mode)?;
+        self.mint_unchecked(pending, approval, caller, callee, Some((cid, jti)))
     }
 
     /// Mint without the connectability assertion.
@@ -1119,12 +1144,19 @@ impl<'a> Issuer<'a> {
         approval: ApprovalRef,
         caller: &Entity,
         callee: &Entity,
+        identity: Option<(Cid, Jti)>,
     ) -> Result<Issued> {
         let items = pending.surface.items();
         let surface_digest = callee.pin.surface_digest(&items)?;
 
-        let cid = Cid::new(mint_cid(pending))?;
-        let jti = Jti::new(mint_jti(&cid, self.now, self.store.log.last_seq()))?;
+        let (cid, jti) = match identity {
+            Some(pair) => pair,
+            None => {
+                let cid = Cid::new(mint_cid(pending))?;
+                let jti = Jti::new(mint_jti(&cid, self.now, self.store.log.last_seq()))?;
+                (cid, jti)
+            }
+        };
         let exp = self.now.saturating_add(pending.ttl_secs);
 
         let caller_party = Party {

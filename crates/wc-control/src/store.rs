@@ -1584,6 +1584,7 @@ mod tests {
                 sha: format!("sha-{version}"),
                 manifest_digest: format!("sha256:m{version}"),
             },
+            consent: None,
         }
     }
 
