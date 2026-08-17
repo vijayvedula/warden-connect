@@ -33,6 +33,7 @@ pub mod http;
 pub mod issuance;
 pub mod keys;
 pub mod lock;
+pub mod need;
 pub mod obs;
 pub mod offer;
 pub mod registry;
