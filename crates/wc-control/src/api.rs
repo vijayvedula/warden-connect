@@ -1460,33 +1460,22 @@ fn contract_set(cp: &Arc<ControlPlane>, mediator: &str, req: &Request) -> Result
     let now = (cp.now)();
 
     let store = lock(&cp.store);
-    let mut live: Vec<_> = store
-        .projection
-        .contracts
-        .values()
-        .filter(|c| c.aud.iter().any(|a| a == mediator))
-        .collect();
-    live.sort_unstable_by(|a, b| a.cid.as_str().cmp(b.cid.as_str()));
-
-    let seq = store.projection.seq;
-    let active: Vec<&&wc_core::contract::ContractRecord> = live
+    // One implementation of the set hash, shared with whatever wants to know the expected
+    // value — a deploy gate most of all. A second copy here would be a digest that can
+    // disagree with itself.
+    let view = store.projection.contract_set_for(mediator, now);
+    let seq = view.seq;
+    let set_hash = view.set_hash.clone();
+    let removed: Vec<&str> = view
+        .removed
         .iter()
-        .filter(|c| c.status == ContractStatus::Active && now < c.exp)
+        .map(wc_core::model::Cid::as_str)
         .collect();
-    // A revoked or expired contract is named explicitly, so a mediator drops it
-    // rather than inferring absence from a set it might have fetched partially.
-    let removed: Vec<&str> = live
+    let active: Vec<&wc_core::contract::ContractRecord> = view
+        .active
         .iter()
-        .filter(|c| c.status != ContractStatus::Active || now >= c.exp)
-        .map(|c| c.cid.as_str())
+        .filter_map(|cid| store.projection.contracts.get(cid))
         .collect();
-
-    let mut digest_input = String::new();
-    for c in &active {
-        digest_input.push_str(c.cid.as_str());
-        digest_input.push('\n');
-    }
-    let set_hash = format!("sha256:{}", sha256_hex(&digest_input));
 
     Ok(Response::json(
         200,
