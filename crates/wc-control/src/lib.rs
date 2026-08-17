@@ -36,6 +36,7 @@ pub mod lock;
 pub mod need;
 pub mod obs;
 pub mod offer;
+pub mod pipeline;
 pub mod registry;
 pub mod rekor;
 pub mod screen;

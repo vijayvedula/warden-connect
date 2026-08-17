@@ -426,8 +426,15 @@ impl OidcIdentity<'_> {
         Ok(())
     }
 
-    /// Verify the token and return the derived id and the `kid` that verified it.
-    fn authenticate(&self) -> Result<(EntityId, String)> {
+    /// Verify the token and hand back **all** of its claims, plus the `kid` that verified it.
+    ///
+    /// The primary entry point, with [`Self::authenticate`] layered on top. A pipeline's token
+    /// carries its repository, ref and commit in provider-specific claims, and those are
+    /// exactly what binds a deploy to a reviewed commit — so the verification cannot end at one
+    /// derived entity id. Reducing it here and re-verifying next door would be two copies of
+    /// pinned-issuer, key-by-`kid`, audience and injected-clock checking, and the second copy
+    /// is how one of them ends up subtly weaker.
+    pub fn verified_claims(&self) -> Result<(Map<String, Value>, String)> {
         self.check_config()?;
 
         let mut parts = self.token.split('.');
@@ -497,9 +504,13 @@ impl OidcIdentity<'_> {
             }
         }
 
-        let subject = data
-            .claims
-            .rest
+        Ok((data.claims.rest, kid))
+    }
+
+    /// Verify the token and return the derived id and the `kid` that verified it.
+    fn authenticate(&self) -> Result<(EntityId, String)> {
+        let (claims, kid) = self.verified_claims()?;
+        let subject = claims
             .get(&self.subject_claim)
             .and_then(Value::as_str)
             .map(str::trim)
@@ -514,7 +525,6 @@ impl OidcIdentity<'_> {
                     ),
                 )
             })?;
-
         Ok((Self::entity_id_for(&self.label, subject)?, kid))
     }
 }
