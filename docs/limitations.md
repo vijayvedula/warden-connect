@@ -616,6 +616,23 @@ subsystem.
   means a 2× regression in `blast_radius` or `rebuild` would slip through; it is not tighter
   because a shared runner swings more than 50% between runs and a flaky gate gets disabled.
   *(By design, and stated on the constants)*
+* **The four source-host shims have never been run against a real tenant.** `scripts/scm/`
+  contains wrappers for GitHub, GitLab, Azure Repos and Bitbucket, written from each vendor's API
+  documentation. The protocol, the client, the timeout and refusal behaviour, and the
+  raise-to-`Verified` logic are all tested against shims this repository controls — but the vendor
+  invocations themselves are unexecuted prose, which is exactly the class that produced four wrong
+  SPIRE commands here.
+
+  `connect scm probe` exists for that: it runs a shim against a commit whose answer you already
+  know and turns the result into assertions. **A shim nobody has probed is a shim nobody has run**,
+  and the README in that directory says so.
+
+  Worth stating plainly alongside it: a shim is a **trusted component**. A signing wrapper cannot
+  lie because cryptography catches it; a shim's answer is just JSON, so one that reports a merge
+  that never happened mints a contract on fabricated evidence and nothing downstream can tell.
+  They are deployed on the control-plane host with the same care as its configuration, never
+  consumer-supplied and never fetched at request time. *(Unproven, per host)*
+
 * **Our own commands in these documents are checked; third-party commands are not.**
   `every_documented_command_exists_with_the_flags_it_claims` parses every `connect …` line in
   every Markdown file — 72 of them — and validates the subcommand and every flag against
