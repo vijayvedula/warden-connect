@@ -165,6 +165,7 @@ const TWO_WORD: &[&str] = &[
     "bundle verify",
     "caep ingest",
     "attest verify",
+    "attest surface",
 ];
 
 /// Every dispatchable command.
@@ -177,6 +178,7 @@ const COMMANDS: &[&str] = &[
     "posture",
     "discover",
     "attest verify",
+    "attest surface",
     "blast-radius",
     "quarantine",
     "unquarantine",
@@ -295,6 +297,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "oidc-label",
             "oidc-subject-claim",
         ],
+        "attest surface" => &["surface", "card-key", "out", "kid"],
         "attest verify" => &[
             "file",
             "prov-key",
@@ -591,6 +594,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "bench" => bench_cmd(args)?,
         "caep ingest" => caep_ingest(args)?,
         "attest verify" => attest_verify_cmd(args)?,
+        "attest surface" => attest_surface_cmd(args)?,
         "audit verify" => audit_verify(args)?,
         "backup" => backup_cmd(args)?,
         "restore" => restore_cmd(args)?,
@@ -2251,6 +2255,65 @@ fn blast_radius_cmd(args: &Args) -> Result<()> {
 /// front of you, and `builder.id` in an allowlist you wrote. A verifier that reported the
 /// first as success would tell you a stranger's valid attestation about a different file was
 /// your build.
+/// `attest surface` — sign a declared surface so stage 3 can pass.
+///
+/// The counterpart to `attest verify`: that one checks somebody else's provenance, this one
+/// produces the attestation our own admission pipeline requires. Until this existed
+/// `wc_control::offer::attest_surface` had no caller outside its tests — the same shape as
+/// `drain`, which had nine tests and no flag.
+fn attest_surface_cmd(args: &Args) -> Result<()> {
+    let surface_path = require(args, "surface")?;
+    let out_path = require(args, "out")?;
+    let (kid, key) = card_key(args)?;
+
+    let raw = std::fs::read(surface_path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {surface_path}"))
+            .with_source(e)
+    })?;
+    let document: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| {
+        WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!("{surface_path} is not JSON; a surface is the document the callee declares"),
+        )
+        .with_source(e)
+    })?;
+
+    let signed = wc_control::offer::attest_surface(&document, &key)?;
+    let rendered = serde_json::to_string_pretty(&signed).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, "cannot render the signed surface")
+            .with_source(e)
+    })?;
+    std::fs::write(out_path, format!("{rendered}\n")).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot write {out_path}"))
+            .with_source(e)
+    })?;
+
+    println!("attested   {out_path}");
+    println!("  kid      {kid}");
+    println!("  covers   the canonical document with `signatures` removed");
+    println!(
+        "  next     register the party with --card {out_path} --card-key {kid}=<pub.pem>, and \
+         supply stage 1 and stage 4 material too — all three legs are required for Attested"
+    );
+    Ok(())
+}
+
+/// The card-signing key for `attest surface`, through the custody rules like every other role.
+fn card_key(args: &Args) -> Result<(String, IssuerKey)> {
+    let spec = require(args, "card-key")?;
+    let (kid, path) = spec.split_once('=').ok_or_else(|| {
+        WcError::with_detail(
+            Code::CONFIG_INVALID,
+            "--card-key takes KID=PEM, so the key id in the JWS header is the one you named",
+        )
+    })?;
+    let pem = std::fs::read(path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+    })?;
+    let key = IssuerKey::ec_pem(kid, &pem, Algorithm::ES256)?;
+    Ok((kid.to_string(), key))
+}
+
 fn attest_verify_cmd(args: &Args) -> Result<()> {
     let path = positional_or_flag(args, "file")?;
     let envelope = read_json(path)?;
@@ -5980,7 +6043,16 @@ REGISTER
     file and give it a `signatures` array of {{protected, signature}} over the
     wcs1-canonical document with `signatures` removed. Without this an MCP server
     stays Unattested, every mediated call fails WC-3109, and the estate looks
-    broken rather than unconfigured. `connect show <id>` names what is missing.
+    broken rather than unconfigured.
+
+    `register` names the stage that failed, in its own output — that is where to
+    look. `connect show <id>` reports the resulting posture but NOT which leg is
+    missing: the per-stage verdicts are computed at admission and not persisted
+    on the entity, so after the fact only the outcome survives. Re-register with
+    the material to see the reason.
+
+    `scripts/attest-drill.sh` does all of this end to end and then runs a mediator
+    in enforce mode, which is the only thing that proves the path works.
 
 CONNECT  (the core loop)
   request --from ID --to ID --tools a,b --justify TEXT [--ttl 30d]
@@ -6074,6 +6146,22 @@ POLICY
   policy dry-run [--policy FILE] [--json]      what a change does to live contracts
 
 TOOLS
+  attest surface --surface FILE --card-key KID=PEM --out FILE
+                sign a declared surface so it can be registered as an attested
+                card, satisfying §8.7.1 stage 3.
+
+                Why this exists: `Posture::Attested` needs identity, card AND
+                provenance verified, and an unsigned surface reports
+                card.verified = false. So a server registered from a plain
+                surface.json is permanently Unattested, WC-3109 is
+                ClosedUnlessObserve, and ENFORCE MODE REFUSES EVERY CALL. MCP
+                has no convention for signing a tools/list result, so nothing
+                produced the input the verifier wanted.
+
+                The signature is appended, not replaced, so a provider's own
+                signature survives a counter-signature. One trusted signature
+                is the whole claim.
+
   attest verify <provenance.dsse.json> --prov-key KID=PEM
                 (--artifact FILE | --artifact-digest sha256:...) --builder ID
                 verify a DSSE / in-toto SLSA envelope on its own — offline, no

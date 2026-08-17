@@ -94,6 +94,16 @@ jobs:
         working-directory: warden-connect
         run: cargo test -p wc-e2e --test attest -- --nocapture
 
+      # The e2e test above proves the stage machinery. It does not prove an OPERATOR can get a
+      # party to Attested, which is a different claim and the one that was false for months —
+      # enforce mode refused every call and the reason took two wrong guesses to find. This
+      # drill is the only thing that runs a mediator in enforce mode end to end.
+      - name: Attestation drill — a party reaches Attested and enforce mode admits it
+        working-directory: warden-connect
+        run: |
+          python3 -m pip install --quiet 'cryptography>=42'
+          ./scripts/attest-drill.sh   # builds the workspace itself
+
       # Named separately from the run above even though it is inside it: the §8.15.3
       # conformance vectors are the ground truth a third party implements against, and
       # a green summary line is not the same as knowing they ran.

@@ -233,8 +233,22 @@ subsystem.
   Naming `--policy`, `--audit`, `--approvals` or `--agent` on a standalone build is **refused
   at startup** rather than ignored, because a flag that reads as configured and does nothing is
   this codebase's recurring defect. *(Fixed)*
-* **`Attested` is unreachable for a party without a *signed* surface, which is every real MCP
-  server today — so enforce mode refuses them all.** This is the concrete reason
+* **Enforce mode is reachable, and for a long time it was not.** `scripts/attest-drill.sh`
+  takes a fresh party to `Attested` and then executes a contracted call **in enforce mode**,
+  with an uncontracted tool still refused. Mutation-checked twice: registering the unsigned
+  surface, or dropping the provenance leg, both fail it.
+
+  The history is worth keeping because two explanations were offered and both were wrong. The
+  first blamed the drill for not working through the attestation pipeline; it was not the drill.
+  The second claimed `attest surface` unblocked enforce mode; it unblocks **one of three legs**.
+  `Posture::Attested` is a conjunction of identity, card and provenance, and only supplying all
+  three gets a party admitted.
+
+  What the drill also settled: **only the callee is attested.** `issuance` copies
+  `callee.posture` into the contract's assurance, so a caller's posture never reaches the
+  mediator. Worth knowing before assuming both ends are checked. *(Fixed and proven)*
+
+* **The original blocker, kept for the reason it was hard to find.** This is the concrete reason
   `scripts/rotation-drill.sh` runs in `--observe`, and it is sharper than the earlier note that
   "attestation is a multi-stage pipeline the drill never gets through."
 
