@@ -159,6 +159,15 @@ pub struct Offer {
     pub terms: Vec<Term>,
     /// The reviewed commit this came from.
     pub source: OfferSource,
+    /// The provider's consent, when the publishing merge was verified against the source host.
+    ///
+    /// `None` means the offer was recorded on the publisher's word alone. That is acceptable for
+    /// a catalogue, and **not** acceptable as one half of a bilateral contract — so a need cannot
+    /// be minted against an offer that carries no consent. Optional rather than required because
+    /// the two facts are genuinely separable: an operator may want the terms on record before the
+    /// shim for that host has been probed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consent: Option<wc_core::contract::MergeApproval>,
 }
 
 /// What an offer says about one requested item.
@@ -180,6 +189,13 @@ pub enum TermOutcome {
 }
 
 impl Offer {
+    /// Attach the provider's verified consent.
+    #[must_use]
+    pub fn with_consent(mut self, consent: wc_core::contract::MergeApproval) -> Offer {
+        self.consent = Some(consent);
+        self
+    }
+
     /// What this offer permits for one item and one consumer.
     ///
     /// Strictest term wins, so the answer does not depend on the order terms were written in.
@@ -330,6 +346,7 @@ impl OfferManifest {
             surface_digest: surface_digest.to_string(),
             terms: self.terms,
             source,
+            consent: None,
         })
     }
 }
