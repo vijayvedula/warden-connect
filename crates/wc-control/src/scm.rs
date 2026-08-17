@@ -302,6 +302,21 @@ fn kill(child: &mut Child) {
 /// disagrees with, that is somebody claiming something false; returning a weaker binding would
 /// let them proceed with a lie priced in.
 pub fn verify_binding(shim: &ScmShim, asserted: &Asserted) -> Result<SourceBinding> {
+    checked_evidence(shim, asserted)?;
+    Ok(SourceBinding::Verified {
+        repo: asserted.repo.clone(),
+        git_ref: asserted.git_ref.clone(),
+        sha: asserted.sha.clone(),
+    })
+}
+
+/// Ask the host, and refuse anything that is not a reviewed merge of what was asserted.
+///
+/// Shared by [`verify_binding`] and [`crate::authority::ScmMerge`], which want the same three
+/// conditions checked and two different things built from the answer. Two copies of "is this a
+/// reviewed merge" is the shape of defect this project keeps finding — one of them ends up
+/// missing a condition, and the one that matters is whichever the caller happens to use.
+pub fn checked_evidence(shim: &ScmShim, asserted: &Asserted) -> Result<MergeEvidence> {
     let evidence = shim.merge_evidence(&asserted.repo, &asserted.sha)?;
 
     if evidence.git_ref != asserted.git_ref {
@@ -327,11 +342,7 @@ pub fn verify_binding(shim: &ScmShim, asserted: &Asserted) -> Result<SourceBindi
             ),
         ));
     }
-    Ok(SourceBinding::Verified {
-        repo: asserted.repo.clone(),
-        git_ref: asserted.git_ref.clone(),
-        sha: asserted.sha.clone(),
-    })
+    Ok(evidence)
 }
 
 #[cfg(test)]

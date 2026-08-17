@@ -17,6 +17,7 @@ pub mod admission;
 pub mod api;
 pub mod assurance;
 pub mod attest;
+pub mod authority;
 pub mod backup;
 pub mod bench;
 pub mod broker;

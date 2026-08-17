@@ -1206,6 +1206,7 @@ mod tests {
                 ticket: Some(s("RISK-14")),
                 mode: ApprovalMode::Human,
                 second: None,
+                merges: Vec::new(),
             },
             policy_version: s("connect-policy@v9"),
             iat: AS_OF - 1_000,

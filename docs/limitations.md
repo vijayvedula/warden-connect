@@ -616,6 +616,20 @@ subsystem.
   means a 2× regression in `blast_radius` or `rebuild` would slip through; it is not tighter
   because a shared runner swings more than 50% between runs and a flaky gate gets disabled.
   *(By design, and stated on the constants)*
+* **A contract carrying `ApprovalMode::ReviewedMerge` is refused by older mediators, and that
+  is the intended behaviour.** `ApprovalMode` has no catch-all variant, so an unknown mode fails
+  to deserialise and the contract is rejected outright — the same argument `ContractPayload`'s
+  `deny_unknown_fields` makes: an artifact from a newer schema should be refused, not guessed at.
+
+  Operationally it is a rollout ordering, like publishing an offer before deploying the surface it
+  describes: **upgrade mediators before contracts start carrying the new mode.** A mixed estate
+  fails closed rather than silently accepting an approval it cannot read.
+
+  `PAYLOAD_SCHEMA` deliberately stays at 1. Verification compares it exactly, so bumping it would
+  make every deployed mediator refuse every new contract — a much wider break than the mode alone.
+  The per-side consents are an additive, defaulted field, which older binaries ignore safely
+  because the mediator never re-checks an approval. *(By design; ordering is documented)*
+
 * **The four source-host shims have never been run against a real tenant.** `scripts/scm/`
   contains wrappers for GitHub, GitLab, Azure Repos and Bitbucket, written from each vendor's API
   documentation. The protocol, the client, the timeout and refusal behaviour, and the
