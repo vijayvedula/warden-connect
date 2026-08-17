@@ -277,6 +277,26 @@ subsystem.
   stronger claim than a hand-managed card key and requires no key in CI. Until that exists,
   production deployments are observe-mode only.
   *(Blocker for enforce mode; the fix is W1's surface attestation, not a posture change)*
+* **Nothing durably records that a mediator picked up a new contract set, so there is no
+  deploy gate yet.** `offer gate --wait-acked` is specified and unbuilt, and this is why.
+
+  There are two separate ack notions and only one is durable. Containment-order ACKs live in
+  `contain::AckLedger`, are persisted, and feed `wc_mediator_unconfirmed` — which is keyed on
+  `feed_seq` and therefore answers *"did mediators confirm a revocation"*. Contract-set ACKs live
+  in `api::ControlPlane.acks`, a `Mutex<HashMap<..>>` built with `HashMap::new()` and **never
+  loaded or saved**. They answer the question a deploy gate needs — *"did mediators pick up the
+  new set"* — and they do not survive a restart or reach any other process.
+
+  Two consequences. A provider's pipeline cannot gate its deploy on distribution having
+  completed, which is the ordering the whole breaking-change upgrade path depends on: publish,
+  re-mint, ACK, *then* deploy. And a control-plane restart would zero that state, so a gate built
+  naively on it would block every deploy until every mediator happened to refresh.
+
+  Also a correction, because the wrong claim was made out loud: the architecture notes for the
+  contract plane proposed `wc_mediator_unconfirmed` as the deploy gate. It cannot be — wrong
+  question, wrong ledger. Closing this needs a durable contract-set ack record, which belongs
+  with the upgrade-path work.
+  *(Unbuilt, and it blocks the deploy gate)*
 * **The containment drill uses a file where the hardware token belongs.** `containment-drill.sh`
   runs in CI and rehearses the *wrapper*. What fails on the day — a flat battery, a forgotten
   PIN, a share-holder who left in March — is precisely what a laptop cannot rehearse.
