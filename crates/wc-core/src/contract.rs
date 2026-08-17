@@ -326,6 +326,61 @@ pub enum ApprovalMode {
     StandingPolicy,
     /// Time-boxed emergency issuance, dual-controlled and maximally logged.
     BreakGlass,
+    /// Both parties consented by merging a reviewed change in their own repository.
+    ///
+    /// Distinct from [`ApprovalMode::Human`] on purpose, and the distinction is what was
+    /// cryptographically proven. `Human` means a named approver signed an approval artifact with
+    /// a key this control plane verifies. This means a source host reported a merge onto a
+    /// guarded ref with an approver who was not the author — evidence about a process, obtained
+    /// from a trusted shim, not a signature over these terms. Collapsing the two would let a
+    /// report claim a key-backed approval where none exists.
+    ///
+    /// **Old verifiers reject a contract carrying this mode**, because `ApprovalMode` has no
+    /// catch-all variant and unknown variants fail to deserialise. That is deliberate and it is
+    /// the same argument [`ContractPayload`]'s `deny_unknown_fields` makes: an artifact from a
+    /// newer schema should be refused, not guessed at. Operationally it means mediators are
+    /// upgraded *before* contracts start carrying it — a rollout ordering, like publishing an
+    /// offer before deploying the surface it describes.
+    ReviewedMerge,
+}
+
+/// Which end of a connection a consent came from.
+///
+/// Derived from *which manifest it was* — an offer is the target side, a need is the source side
+/// — and never asserted by the party submitting it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Side {
+    /// The consumer, which declared a need.
+    Source,
+    /// The provider, which published an offer.
+    Target,
+}
+
+/// One party's consent, evidenced by a reviewed merge in its own repository.
+///
+/// Recorded rather than summarised: "both sides approved" is not auditable, and the question an
+/// incident review asks is *which commit, reviewed by whom*.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeApproval {
+    /// Which end of the connection consented.
+    pub side: Side,
+    /// Opaque repository identifier, never parsed.
+    pub repo: String,
+    /// The commit that was merged.
+    pub sha: String,
+    /// The review unit's identifier — a PR or MR, as a string.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub request_id: String,
+    /// Who authored the change.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    /// Who approved it. At least one, and not the author.
+    #[serde(default)]
+    pub approvers: Vec<String>,
+    /// Which shim reported this, because a `Verified` claim is only as good as its source.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub via: String,
 }
 
 /// The approval that authorised a contract.
@@ -345,6 +400,15 @@ pub struct ApprovalRef {
     /// Second approver, where dual control applied (tier 1).
     #[serde(default)]
     pub second: Option<HumanRef>,
+    /// Per-side consents, when the mode is [`ApprovalMode::ReviewedMerge`].
+    ///
+    /// Additive and defaulted, so [`PAYLOAD_SCHEMA`] stays at 1: verification compares the
+    /// schema exactly, and bumping it would make every deployed mediator refuse every new
+    /// contract. `ApprovalRef` does not deny unknown fields, so an older binary reading this
+    /// simply does not see it — which is safe, because the mediator never re-checks an approval.
+    /// It is the *mode* that older binaries reject, and that refusal is the intended signal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merges: Vec<MergeApproval>,
 }
 
 impl ApprovalRef {
@@ -359,6 +423,48 @@ impl ApprovalRef {
         self.mode != ApprovalMode::BreakGlass
     }
 
+    /// Both parties consented by merging a reviewed change.
+    ///
+    /// Takes the consents rather than defaulting them, and refuses an incomplete set: a
+    /// `ReviewedMerge` approval with one side missing would claim bilateral consent it does not
+    /// have, which is the one thing this mode exists to assert. Named constructor rather than a
+    /// struct literal for exactly that reason — a literal cannot refuse.
+    pub fn reviewed_merge(merges: Vec<MergeApproval>) -> Result<Self> {
+        let has = |side: Side| merges.iter().any(|m| m.side == side);
+        if !has(Side::Source) || !has(Side::Target) {
+            return Err(WcError::with_detail(
+                Code::APPROVAL_SIGNATURE_INVALID,
+                "a reviewed-merge approval needs a consent from each side; one side alone is a \
+                 request, not an agreement",
+            ));
+        }
+        for m in &merges {
+            if !m.approvers.iter().any(|a| !a.is_empty() && a != &m.author) {
+                return Err(WcError::with_detail(
+                    Code::APPROVAL_SIGNATURE_INVALID,
+                    format!(
+                        "the {:?} consent from {} has no approver distinct from its author",
+                        m.side, m.repo
+                    ),
+                ));
+            }
+        }
+        Ok(ApprovalRef {
+            by: None,
+            jti: None,
+            ticket: None,
+            mode: ApprovalMode::ReviewedMerge,
+            second: None,
+            merges,
+        })
+    }
+
+    /// The consent from one side, if this approval records one.
+    #[must_use]
+    pub fn consent_from(&self, side: Side) -> Option<&MergeApproval> {
+        self.merges.iter().find(|m| m.side == side)
+    }
+
     /// Standing-policy issuance: no human, by design.
     #[must_use]
     pub fn standing() -> Self {
@@ -368,6 +474,7 @@ impl ApprovalRef {
             ticket: None,
             mode: ApprovalMode::StandingPolicy,
             second: None,
+            merges: Vec::new(),
         }
     }
 
@@ -2153,6 +2260,7 @@ mod tests {
             ticket: None,
             mode: ApprovalMode::Human,
             second: None,
+            merges: Vec::new(),
         };
         assert!(!single.satisfies_dual_control());
 
@@ -2609,6 +2717,7 @@ mod conformance {
             ticket: Some("RISK-4471".to_string()),
             mode: ApprovalMode::Human,
             second: None,
+            merges: Vec::new(),
         };
         p.policy_version = "connect-policy@v37".to_string();
         p

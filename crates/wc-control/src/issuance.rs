@@ -675,6 +675,9 @@ impl<'a> Issuer<'a> {
             ticket: verified.iter().find_map(|(_, c)| c.ticket.clone()),
             mode: ApprovalMode::Human,
             second: distinct.get(1).map(|h| (*h).clone()),
+            // Key-backed human approval records no merge evidence: the signature *is* the
+            // evidence, and an empty list keeps the two modes from being confused in a report.
+            merges: Vec::new(),
         };
 
         self.store.commit(
@@ -855,6 +858,7 @@ impl<'a> Issuer<'a> {
             ticket: Some(input.incident.clone()),
             mode: ApprovalMode::BreakGlass,
             second: Some(verified[1].clone()),
+            merges: Vec::new(),
         };
 
         self.evidence.record(
@@ -1824,6 +1828,7 @@ reason = "a sensitive callee needs a security architect"
             ticket: Some("SOC-1".to_string()),
             mode: ApprovalMode::BreakGlass,
             second: Some(dana()),
+            merges: Vec::new(),
         }
         .is_renewable());
         assert!(ApprovalRef::standing().is_renewable());
