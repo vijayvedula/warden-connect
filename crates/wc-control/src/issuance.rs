@@ -110,7 +110,7 @@ impl PendingRequest {
             "caller": self.caller.as_str(),
             "callee": self.callee.as_str(),
             "items": items,
-            "resources": self.surface.resources,
+            "resources": self.surface.resources(),
             "terms": self.terms,
             "ttl_secs": self.ttl_secs,
             "mediators": self.mediators,
@@ -1215,7 +1215,7 @@ impl<'a> Issuer<'a> {
                 .with_detail(serde_json::json!({
                     "request": pending.id,
                     "items": items,
-                    "resources": pending.surface.resources,
+                    "resources": pending.surface.resources(),
                     "aud": pending.mediators,
                     "exp": exp,
                     "approval_mode": format!("{:?}", record.approval.mode),
