@@ -169,6 +169,7 @@ const TWO_WORD: &[&str] = &[
     "offer publish",
     "offer show",
     "need check",
+    "scm probe",
 ];
 
 /// Every dispatchable command.
@@ -185,6 +186,7 @@ const COMMANDS: &[&str] = &[
     "offer publish",
     "offer show",
     "need check",
+    "scm probe",
     "blast-radius",
     "quarantine",
     "unquarantine",
@@ -307,6 +309,17 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "offer publish" => &["surface", "terms", "kind", "repo", "sha", "version"],
         "offer show" => &["asset"],
         "need check" => &["manifest", "repo", "sha"],
+        "scm probe" => &[
+            "shim",
+            "label",
+            "repo",
+            "sha",
+            "timeout",
+            "expect-ref",
+            "expect-protected",
+            "expect-approver",
+            "expect-file",
+        ],
         "attest verify" => &[
             "file",
             "prov-key",
@@ -607,6 +620,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "offer publish" => offer_publish_cmd(args)?,
         "offer show" => offer_show_cmd(args)?,
         "need check" => need_check_cmd(args)?,
+        "scm probe" => scm_probe_cmd(args)?,
         "audit verify" => audit_verify(args)?,
         "backup" => backup_cmd(args)?,
         "restore" => restore_cmd(args)?,
@@ -2357,6 +2371,99 @@ fn offer_publish_cmd(args: &Args) -> Result<()> {
     );
     println!("  from     {repo}@{sha}");
     Ok(())
+}
+
+/// `scm probe` — exercise a source-host shim and say exactly what it returned (W4).
+///
+/// The counterpart to the advice `signer.rs` gives about signing wrappers ("verify any wrapper
+/// before trusting it"), and more necessary, because a wrong answer here is not caught by
+/// cryptography.
+fn scm_probe_cmd(args: &Args) -> Result<()> {
+    let command = require(args, "shim")?;
+    let label = require(args, "label")?;
+    let repo = require(args, "repo")?;
+    let sha = require(args, "sha")?;
+
+    let mut shim = wc_control::scm::ScmShim::parse(label, command)?;
+    if let Some(secs) = args.number("timeout") {
+        shim = shim.with_timeout(std::time::Duration::from_secs(secs));
+    }
+
+    println!("probing    {label}  ({command})");
+    println!("  repo     {repo}");
+    println!("  sha      {sha}");
+
+    let evidence = shim.merge_evidence(repo, sha)?;
+    println!();
+    println!("merge evidence");
+    println!("  merged     {}", evidence.merged);
+    println!("  ref        {}", evidence.git_ref);
+    println!("  protected  {}", evidence.protected);
+    println!("  request    {}", evidence.request_id);
+    println!("  author     {}", evidence.author);
+    println!("  approvers  {}", evidence.approvers.join(", "));
+    println!(
+        "  verdict    {}",
+        if evidence.is_reviewed_merge() {
+            "a reviewed merge".to_string()
+        } else {
+            format!("NOT a reviewed merge — {}", evidence.why_not_reviewed())
+        }
+    );
+
+    // Every mismatch is collected rather than returned on the first one: probing a shim one
+    // wrong field per run is the slow loop this command exists to avoid.
+    let mut wrong: Vec<String> = Vec::new();
+    if let Some(want) = args.get("expect-ref") {
+        if evidence.git_ref != want {
+            wrong.push(format!("expected ref {want:?}, got {:?}", evidence.git_ref));
+        }
+    }
+    if args.has("expect-protected") && !evidence.protected {
+        wrong.push("expected a protected ref, and the shim says it is not".to_string());
+    }
+    for who in args.list("expect-approver") {
+        if !evidence.approvers.iter().any(|a| a == &who) {
+            wrong.push(format!(
+                "expected {who:?} among the approvers, got [{}]",
+                evidence.approvers.join(", ")
+            ));
+        }
+    }
+
+    if let Some(path) = args.get("expect-file") {
+        match shim.file(repo, sha, path) {
+            Ok(bytes) => {
+                println!();
+                println!("file       {path}");
+                println!("  bytes    {}", bytes.len());
+                println!(
+                    "  sha256   sha256:{}",
+                    wc_core::util::sha256_hex(&String::from_utf8_lossy(&bytes))
+                );
+                if bytes.is_empty() {
+                    wrong.push(format!("{path} came back empty"));
+                }
+            }
+            Err(e) => wrong.push(format!("the `file` verb failed: {}", e.detail())),
+        }
+    }
+
+    println!();
+    if wrong.is_empty() {
+        println!("PROBE OK — this shim answered as expected. Record that it has been probed.");
+        return Ok(());
+    }
+    for w in &wrong {
+        println!("  MISMATCH  {w}");
+    }
+    Err(WcError::with_detail(
+        Code::CONFIG_INVALID,
+        format!(
+            "{} expectation(s) not met; do not trust this shim until it answers correctly",
+            wrong.len()
+        ),
+    ))
 }
 
 /// `need check` — does any provider's offer permit what this consumer asks for? (W6)
@@ -6399,6 +6506,27 @@ TOOLS
                 version that is not higher than what is held is refused: the
                 projection keeps the highest, so a stale republish would be
                 silently ignored rather than applied.
+
+  scm probe --shim COMMAND --label NAME --repo NAME --sha SHA
+            [--expect-ref REF] [--expect-protected] [--expect-approver WHO]
+            [--expect-file PATH] [--timeout N]
+                exercise a source-host shim against a commit whose answer you
+                already know, and print what it returned.
+
+                Run this before trusting a shim with anything. The wrappers in
+                scripts/scm/ are written from vendor API documentation and have
+                NEVER been run against a real tenant — the same position that
+                produced four wrong SPIRE commands in these docs. A shim nobody
+                has probed is a shim nobody has run.
+
+                It matters more here than for a signing helper. A signing shim
+                cannot lie: cryptography catches it. An SCM shim's answer is just
+                JSON, so one that simply reports a merge happened mints a contract
+                on fabricated evidence and nothing downstream can tell. That is
+                why a shim is a trusted component and why this command exists.
+
+                The --expect flags turn a print into an assertion, and exit
+                non-zero when the answer disagrees.
 
   need check --manifest FILE [--repo NAME --sha SHA]
                 check a consumer's declared needs against the providers' offers.

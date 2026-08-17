@@ -39,6 +39,7 @@ pub mod offer;
 pub mod pipeline;
 pub mod registry;
 pub mod rekor;
+pub mod scm;
 pub mod screen;
 pub mod signer;
 pub mod sink;
