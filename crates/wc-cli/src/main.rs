@@ -166,6 +166,9 @@ const TWO_WORD: &[&str] = &[
     "caep ingest",
     "attest verify",
     "attest surface",
+    "offer publish",
+    "offer show",
+    "need check",
 ];
 
 /// Every dispatchable command.
@@ -179,6 +182,9 @@ const COMMANDS: &[&str] = &[
     "discover",
     "attest verify",
     "attest surface",
+    "offer publish",
+    "offer show",
+    "need check",
     "blast-radius",
     "quarantine",
     "unquarantine",
@@ -298,6 +304,9 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "oidc-subject-claim",
         ],
         "attest surface" => &["surface", "card-key", "out", "kid"],
+        "offer publish" => &["surface", "terms", "kind", "repo", "sha", "version"],
+        "offer show" => &["asset"],
+        "need check" => &["manifest", "repo", "sha"],
         "attest verify" => &[
             "file",
             "prov-key",
@@ -595,6 +604,9 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "caep ingest" => caep_ingest(args)?,
         "attest verify" => attest_verify_cmd(args)?,
         "attest surface" => attest_surface_cmd(args)?,
+        "offer publish" => offer_publish_cmd(args)?,
+        "offer show" => offer_show_cmd(args)?,
+        "need check" => need_check_cmd(args)?,
         "audit verify" => audit_verify(args)?,
         "backup" => backup_cmd(args)?,
         "restore" => restore_cmd(args)?,
@@ -2255,6 +2267,230 @@ fn blast_radius_cmd(args: &Args) -> Result<()> {
 /// front of you, and `builder.id` in an allowlist you wrote. A verifier that reported the
 /// first as success would tell you a stranger's valid attestation about a different file was
 /// your build.
+/// `offer publish` — record a provider's terms of availability (W6).
+///
+/// The provider's pipeline runs this on merge. Nothing here signs anything: the offer's
+/// authority is the review on the commit it names, and verifying *that* is W5's job
+/// (`ApprovalAuthority`). Until then `--by` names the actor, which is honest — the record says
+/// who asserted it rather than pretending it was verified.
+fn offer_publish_cmd(args: &Args) -> Result<()> {
+    let surface_path = require(args, "surface")?;
+    let terms_path = require(args, "terms")?;
+    let repo = require(args, "repo")?.to_string();
+    let sha = require(args, "sha")?.to_string();
+    let kind = surface_kind(args.get("kind").unwrap_or("mcp"))?;
+
+    let surface_raw = std::fs::read(surface_path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {surface_path}"))
+            .with_source(e)
+    })?;
+    let document: serde_json::Value = serde_json::from_slice(&surface_raw).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("{surface_path} is not JSON"))
+            .with_source(e)
+    })?;
+    let terms_text = std::fs::read_to_string(terms_path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {terms_path}"))
+            .with_source(e)
+    })?;
+
+    let manifest = wc_control::offer::OfferManifest::parse(&terms_text)?;
+    let asset = EntityId::new(&manifest.asset)?;
+
+    // The declared items come from canonicalising the surface, not from the manifest: a term may
+    // only offer what the callee actually declares, and the canonicaliser is the one thing that
+    // decides what "declares" means.
+    let pin =
+        wc_core::canon::canonicalise(kind, &asset, &document, &wc_core::canon::Limits::default())?;
+    let declared: std::collections::BTreeSet<String> = pin.items.keys().cloned().collect();
+    let surface_digest = pin.manifest_hash();
+
+    let mut store = open_store(args)?;
+    let held = store.projection.offers.get(&asset).map(|o| o.version);
+    let version = match args.number("version") {
+        Some(v) => {
+            if held.is_some_and(|h| v <= h) {
+                return Err(WcError::with_detail(
+                    Code::CONFIG_INVALID,
+                    format!(
+                        "--version {v} is not higher than the held version {}; the projection \
+                         keeps the highest, so this would be recorded and then ignored",
+                        held.unwrap_or(0)
+                    ),
+                ));
+            }
+            v
+        }
+        None => held.map_or(1, |h| h + 1),
+    };
+
+    let offer = manifest.into_offer(
+        &declared,
+        kind,
+        &surface_digest,
+        version,
+        wc_control::offer::OfferSource {
+            repo: repo.clone(),
+            sha: sha.clone(),
+            manifest_digest: format!("sha256:{}", wc_core::util::sha256_hex(&terms_text)),
+        },
+    )?;
+
+    let items = offer.offered_items();
+    store.commit(
+        wc_control::store::Event::OfferPublished {
+            offer: Box::new(offer),
+            actor: actor(args)?,
+        },
+        now(),
+        wc_control::store::Durability::Durable,
+    )?;
+
+    println!("published  {asset}");
+    println!(
+        "  version  {version}{}",
+        held.map_or(String::new(), |h| format!(" (was {h})"))
+    );
+    println!("  surface  {surface_digest}");
+    println!(
+        "  offers   {}",
+        items.iter().cloned().collect::<Vec<_>>().join(", ")
+    );
+    println!("  from     {repo}@{sha}");
+    Ok(())
+}
+
+/// `need check` — does any provider's offer permit what this consumer asks for? (W6)
+///
+/// The consumer's pipeline runs this on merge. It is deliberately read-only: see the usage text
+/// for why it cannot mint yet.
+fn need_check_cmd(args: &Args) -> Result<()> {
+    let manifest_path = require(args, "manifest")?;
+    let text = std::fs::read_to_string(manifest_path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {manifest_path}"))
+            .with_source(e)
+    })?;
+    let manifest = wc_control::need::NeedManifest::parse(&text)?;
+
+    let mut store = open_store(args)?;
+    let ts = now();
+    let mut refused = 0usize;
+    let mut ok = 0usize;
+
+    for entry in &manifest.needs {
+        let need = manifest.resolve(entry)?;
+
+        // The consumer's zone and tier come from the registry, never from the manifest: a party
+        // that could assert its own zone could write itself into any provider's audience.
+        let consumer = {
+            let reg = store.registry(actor(args)?, ts);
+            reg.require(&need.consumer)?.clone()
+        };
+
+        let Some(offer) = store.projection.offers.get(&need.provider).cloned() else {
+            println!("REFUSED  {} -> {}", need.consumer, need.provider);
+            println!(
+                "  no offer is held for {}. There is no central fallback by design, so provider \
+                 consent is never implied — ask its owner to publish one.",
+                need.provider
+            );
+            refused += 1;
+            continue;
+        };
+
+        match wc_control::need::match_need(&need, &offer, consumer.zone.as_str(), consumer.tier) {
+            Ok(m) => {
+                ok += 1;
+                println!("OK       {} -> {}", need.consumer, need.provider);
+                println!("  cid    {}", m.cid);
+                println!("  jti    {}", m.jti);
+                println!(
+                    "  items  {}",
+                    m.items.iter().cloned().collect::<Vec<_>>().join(", ")
+                );
+                println!(
+                    "  ttl    {}s{}",
+                    m.ttl,
+                    if m.ttl < need.ttl_requested {
+                        format!(" (asked {}s, capped by the offer)", need.ttl_requested)
+                    } else {
+                        String::new()
+                    }
+                );
+                println!("  offer  version {}", m.offer_version);
+            }
+            Err(refusals) => {
+                refused += 1;
+                println!("REFUSED  {} -> {}", need.consumer, need.provider);
+                for r in &refusals {
+                    if r.item.is_empty() {
+                        println!("  {}", r.why);
+                    } else {
+                        println!("  {}: {}", r.item, r.why);
+                    }
+                }
+            }
+        }
+    }
+
+    println!();
+    println!("{ok} contractable · {refused} refused");
+    if refused > 0 {
+        // Non-zero, so a consumer's pipeline fails on a need no provider offers. A check that
+        // reported a refusal and exited 0 would be a check nobody notices.
+        return Err(WcError::with_detail(
+            Code::POLICY_DENIED,
+            format!("{refused} need(s) are not permitted by the offers currently held"),
+        ));
+    }
+    Ok(())
+}
+
+/// `offer show` — the terms currently held for a provider.
+fn offer_show_cmd(args: &Args) -> Result<()> {
+    let asset = EntityId::new(positional_or_flag(args, "asset")?)?;
+    let store = open_store(args)?;
+    let offer = store
+        .projection
+        .offers
+        .get(&asset)
+        .cloned()
+        .ok_or_else(|| {
+            WcError::with_detail(
+                Code::NO_CONTRACT,
+                format!(
+                "no offer is held for {asset}. Without one nothing can be contracted against it \
+                 — there is no central fallback by design, so provider consent is never implied"
+            ),
+            )
+        })?;
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&serde_json::to_value(&offer).unwrap_or_default())?
+        );
+        return Ok(());
+    }
+    println!("{}", offer.asset);
+    println!("  version  {}", offer.version);
+    println!(
+        "  surface  {} ({})",
+        offer.surface_digest,
+        offer.surface_kind.as_str()
+    );
+    println!("  from     {}@{}", offer.source.repo, offer.source.sha);
+    println!("  manifest {}", offer.source.manifest_digest);
+    for (n, term) in offer.terms.iter().enumerate() {
+        println!(
+            "  term {n}    {:?} · ttl_max {}s · {}",
+            term.approval,
+            term.ttl_max,
+            term.items.join(", ")
+        );
+    }
+    Ok(())
+}
+
 /// `attest surface` — sign a declared surface so stage 3 can pass.
 ///
 /// The counterpart to `attest verify`: that one checks somebody else's provenance, this one
@@ -6146,6 +6382,42 @@ POLICY
   policy dry-run [--policy FILE] [--json]      what a change does to live contracts
 
 TOOLS
+  offer publish --surface FILE --terms FILE [--kind mcp|a2a]
+                --repo NAME --sha SHA [--version N]
+                publish a provider's terms of availability, from the provider's
+                own pipeline. The offer is the callee's half of a bilateral
+                contract: it says which items may be contracted, by which
+                consumers, for how long — and it is held until a consumer's need
+                arrives, so neither party reviews the other's pull request.
+
+                --repo and --sha are recorded, never parsed: Azure Repos is
+                org/project/repo, GitLab nests arbitrarily and Bitbucket
+                addresses by UUID. They make a contract auditable back to a
+                reviewed commit.
+
+                --version defaults to the held version plus one. An explicit
+                version that is not higher than what is held is refused: the
+                projection keeps the highest, so a stale republish would be
+                silently ignored rather than applied.
+
+  need check --manifest FILE [--repo NAME --sha SHA]
+                check a consumer's declared needs against the providers' offers.
+                Run from the consumer's pipeline on merge: it fails the build when
+                a manifest asks for something no provider has offered, which is
+                the point at which that is cheap to fix.
+
+                Reports what WOULD be contracted — the derived cid and jti, and
+                the TTL after the offer's ceiling is applied. It does NOT mint.
+                Minting needs a contract approval, and the only modes that exist
+                are Human, StandingPolicy and BreakGlass; an approval evidenced by
+                two reviewed merges is not expressible yet and belongs with the
+                approval-authority work. The verb is `check` rather than `apply`
+                for that reason — it does not apply anything.
+
+  offer show <asset>
+                the terms currently held for a provider, and where they came
+                from.
+
   attest surface --surface FILE --card-key KID=PEM --out FILE
                 sign a declared surface so it can be registered as an attested
                 card, satisfying §8.7.1 stage 3.
