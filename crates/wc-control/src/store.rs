@@ -607,6 +607,19 @@ pub enum Event {
 // Projection
 // ---------------------------------------------------------------------------
 
+/// One mediator's view of the contract set, and the hash it will acknowledge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractSetView {
+    /// The hash a mediator echoes back on acknowledgement.
+    pub set_hash: String,
+    /// Contracts it should be holding, sorted by cid.
+    pub active: Vec<Cid>,
+    /// Contracts it should drop, named rather than left absent.
+    pub removed: Vec<Cid>,
+    /// The projection sequence this view was taken at.
+    pub seq: u64,
+}
+
 /// Everything the control plane knows, rebuilt from the log.
 #[derive(Debug, Default)]
 pub struct Projection {
@@ -903,6 +916,56 @@ impl Projection {
             .collect();
         out.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
         out
+    }
+
+    /// The contract set a given mediator should be holding, and its hash.
+    ///
+    /// # Why this is one function
+    ///
+    /// The hash is what a mediator echoes back when it acknowledges a set, so it is the only
+    /// thing that can tell a deploy gate whether distribution has completed. It was computed
+    /// inline inside the API's pull handler, which meant anything else wanting to know the
+    /// expected value — a gate, a report, a test — had to recompute it. Two implementations of
+    /// a digest is the "two copies of a decision" problem §8.3 warns about, and here the failure
+    /// mode is specific and bad: a gate that computes it differently never releases, so a
+    /// correct deploy blocks forever and the operator is told nothing useful.
+    ///
+    /// Per mediator, not estate-wide: a contract names one `aud`, so each mediator holds a
+    /// different set and confirms a different hash.
+    #[must_use]
+    pub fn contract_set_for(&self, mediator: &str, now: u64) -> ContractSetView {
+        let mut live: Vec<&wc_core::contract::ContractRecord> = self
+            .contracts
+            .values()
+            .filter(|c| c.aud.iter().any(|a| a == mediator))
+            .collect();
+        // Sorted, because the hash is over a concatenation and a map's iteration order is not a
+        // promise. An unsorted digest would change between two identical states.
+        live.sort_unstable_by(|a, b| a.cid.as_str().cmp(b.cid.as_str()));
+
+        let mut active = Vec::new();
+        let mut removed = Vec::new();
+        for c in live {
+            if c.status == wc_core::contract::ContractStatus::Active && now < c.exp {
+                active.push(c.cid.clone());
+            } else {
+                // Named explicitly rather than left absent, so a mediator drops it instead of
+                // inferring removal from a set it might have fetched partially.
+                removed.push(c.cid.clone());
+            }
+        }
+
+        let mut digest_input = String::new();
+        for cid in &active {
+            digest_input.push_str(cid.as_str());
+            digest_input.push('\n');
+        }
+        ContractSetView {
+            set_hash: format!("sha256:{}", wc_core::util::sha256_hex(&digest_input)),
+            active,
+            removed,
+            seq: self.seq,
+        }
     }
 
     /// Rebuild from the newest snapshot plus the log tail.
@@ -1366,6 +1429,140 @@ mod tests {
     }
 
     // --- Log mechanics ---
+
+    // --- the contract set a mediator should hold (W6b) -----------------------
+
+    fn projection_with(records: Vec<ContractRecord>) -> Projection {
+        let mut p = Projection::default();
+        for r in records {
+            p.contracts.insert(r.cid.clone(), r);
+        }
+        p
+    }
+
+    fn for_mediator(cid: &str, mediator: &str, exp: u64, status: ContractStatus) -> ContractRecord {
+        let mut r = contract(cid, agent_id(), server_id(), "sha256:m", exp);
+        r.aud = vec![mediator.to_string()];
+        r.status = status;
+        r
+    }
+
+    #[test]
+    fn a_mediators_set_contains_only_its_own_contracts() {
+        // A contract names one `aud`. A set that leaked another mediator's contracts would hand
+        // a mediator artifacts it must refuse, and its ack would confirm a hash nobody expected.
+        let p = projection_with(vec![
+            for_mediator(
+                "conn_aaaaaaaa",
+                "warden:mediator:a",
+                9_000,
+                ContractStatus::Active,
+            ),
+            for_mediator(
+                "conn_bbbbbbbb",
+                "warden:mediator:b",
+                9_000,
+                ContractStatus::Active,
+            ),
+        ]);
+        let a = p.contract_set_for("warden:mediator:a", 1_000);
+        assert_eq!(a.active.len(), 1);
+        assert_eq!(a.active[0].as_str(), "conn_aaaaaaaa");
+        assert_ne!(
+            a.set_hash,
+            p.contract_set_for("warden:mediator:b", 1_000).set_hash,
+            "two mediators holding different sets must confirm different hashes"
+        );
+    }
+
+    #[test]
+    fn the_hash_does_not_depend_on_insertion_order() {
+        // The digest is a concatenation and `contracts` is a HashMap, so without the sort two
+        // identical states could produce different hashes — and a gate comparing them would
+        // never release.
+        let one = for_mediator(
+            "conn_11111111",
+            "warden:mediator:a",
+            9_000,
+            ContractStatus::Active,
+        );
+        let two = for_mediator(
+            "conn_22222222",
+            "warden:mediator:a",
+            9_000,
+            ContractStatus::Active,
+        );
+        let forward = projection_with(vec![one.clone(), two.clone()]);
+        let backward = projection_with(vec![two, one]);
+        assert_eq!(
+            forward
+                .contract_set_for("warden:mediator:a", 1_000)
+                .set_hash,
+            backward
+                .contract_set_for("warden:mediator:a", 1_000)
+                .set_hash
+        );
+    }
+
+    #[test]
+    fn an_expired_or_revoked_contract_is_named_as_removed_not_left_absent() {
+        // A mediator must be told to drop it rather than inferring removal from an absence it
+        // cannot distinguish from a partial fetch.
+        let p = projection_with(vec![
+            for_mediator(
+                "conn_aaaaaaaa",
+                "warden:mediator:a",
+                9_000,
+                ContractStatus::Active,
+            ),
+            for_mediator(
+                "conn_cccccccc",
+                "warden:mediator:a",
+                100,
+                ContractStatus::Active,
+            ),
+            for_mediator(
+                "conn_dddddddd",
+                "warden:mediator:a",
+                9_000,
+                ContractStatus::Revoked,
+            ),
+        ]);
+        let view = p.contract_set_for("warden:mediator:a", 1_000);
+        assert_eq!(view.active.len(), 1, "{:?}", view.active);
+        assert_eq!(view.removed.len(), 2, "{:?}", view.removed);
+    }
+
+    #[test]
+    fn the_hash_covers_the_active_set_so_a_revocation_moves_it() {
+        // What makes the hash usable as a distribution signal: revoking a contract changes it,
+        // so a mediator that still echoes the old hash has demonstrably not caught up.
+        let active = for_mediator(
+            "conn_aaaaaaaa",
+            "warden:mediator:a",
+            9_000,
+            ContractStatus::Active,
+        );
+        let before = projection_with(vec![active.clone()]);
+        let mut revoked = active;
+        revoked.status = ContractStatus::Revoked;
+        let after = projection_with(vec![revoked]);
+        assert_ne!(
+            before.contract_set_for("warden:mediator:a", 1_000).set_hash,
+            after.contract_set_for("warden:mediator:a", 1_000).set_hash
+        );
+    }
+
+    #[test]
+    fn a_mediator_with_no_contracts_still_has_a_stable_hash() {
+        // The empty set has a hash too, and it must be the same every time — otherwise a
+        // mediator holding nothing could never confirm anything.
+        let p = Projection::default();
+        let a = p.contract_set_for("warden:mediator:nobody", 1_000);
+        let b = p.contract_set_for("warden:mediator:nobody", 5_000);
+        assert!(a.active.is_empty());
+        assert_eq!(a.set_hash, b.set_hash);
+    }
 
     // --- offers (W1) --------------------------------------------------------
 
