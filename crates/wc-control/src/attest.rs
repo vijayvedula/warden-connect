@@ -795,7 +795,7 @@ pub struct DsseSignature {
 /// can verify, and this one silently refuses provenance that is perfectly valid.
 ///
 /// Returns `None` when the input is not DER, so a raw signature passes through untouched.
-fn der_ecdsa_to_raw(der: &[u8], coord_len: usize) -> Option<Vec<u8>> {
+pub(crate) fn der_ecdsa_to_raw(der: &[u8], coord_len: usize) -> Option<Vec<u8>> {
     if der.first() != Some(&0x30) {
         return None;
     }

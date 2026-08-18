@@ -109,12 +109,32 @@ subsystem.
   (`fixtures/rekor/`), including a substituted leaf, a tampered path, a reordered path, a
   truncated and a padded path, an out-of-range index, and a checkpoint that disagrees.
 
-  What it establishes is that a leaf is in a tree **with a given root**, and that a checkpoint
-  commits to the same root. What it does **not** do is verify that checkpoint's signature,
-  which needs the log's public key as a configured trust root. So a response carrying both a
-  proof and its root is still only self-consistent, and `Inclusion::root_trust` says so in
-  words on every result rather than leaving the distinction to the reader. *(Unbuilt: the
-  checkpoint signature)*
+  **The checkpoint signature is now verified too.** `--rekor-pub PEM [--rekor-log NAME]` checks
+  the note's signature against the log's own key, which is what turns *a checkpoint commits to
+  this root* into *the log signed this root*. Without it a response carrying a proof and a
+  matching checkpoint is self-consistent and nothing more: an attacker serving a forged entry can
+  serve a matching checkpoint just as easily, because nothing in the response is signed by anyone
+  the verifier trusts.
+
+  Tested against the **real** `rekor.sigstore.dev` checkpoint in `fixtures/rekor/`, verified
+  under the log's published key (also captured there). Two details were established by running
+  candidates against that fixture rather than reasoned about, and either wrong produces a verifier
+  that rejects every real checkpoint while passing every note we sign ourselves: the signature
+  covers the note text ending in **one** newline, not through the blank line separating text from
+  signatures; and the four-byte key hash is `SHA256(SPKI DER)[..4]`, Rekor's convention rather
+  than the Go sumdb one.
+
+  Three things it deliberately does: a key that does not verify **fails the whole verification**
+  rather than downgrading to the unsigned wording, because an operator who supplied a key is
+  asking a question; the signature line's name must match the configured log, or a valid
+  checkpoint from any log would vouch for an entry in yours; and a key-hash mismatch is reported
+  as *a different key for the same log name* rather than as a signature failure, which is the
+  difference between an operator finding a rotated key in a minute and in an afternoon.
+
+  What remains environmental: the key in `fixtures/rekor/` is a public key captured at a moment
+  in time. If Sigstore rotates it the fixture stops verifying, and
+  `a_different_key_for_the_same_log_name_is_named_as_such` is the test that will say so.
+  *(Built)*
 * **Stages are skipped, never assumed.** Not a limitation so much as the thing to understand:
   supply no material for a stage and the party simply does not attest for it. Read
   `connect posture` rather than assuming a green registration means five green stages.

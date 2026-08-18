@@ -185,75 +185,45 @@ const USAGE: &str = "\
 connect-mediate — the warden-connect inline mediator
 
 USAGE
-  connect-mediate --upstream \"<command>\" --mediator-id ID --issuer-id URL \\
-                  --caller SPIFFE_ID --callee SPIFFE_ID \\
-                  (--issuer-pub PEM --kid KID | --jwks-url URL | --jwks-file F) \\
-                  [--contracts URL --token TOKEN] | [--contract FILE ...]
-
-UPSTREAM
-  --upstream CMD          the real MCP server to spawn
-  --upstream-timeout N    seconds (default: 30)
-
-WARDEN CORE (optional; requires the `warden-proxy` build feature)
-  Omit all of these and connect-mediate runs STANDALONE: contract, surface pin,
-  ceilings and revocation only, with no Warden core and no warden.policy.toml.
-  Standalone is the default — passing these without the feature is an error
-  rather than a silently ignored flag.
-  --policy FILE           warden policy; giving it selects Warden-core mode
-  --audit FILE            audit chain (default: .warden/audit.jsonl)
-  --approvals FILE        held-call state (default: .warden/approvals.json)
-  --agent NAME            agent label for audit rows (default: the caller id)
-
-CONNECT
-  --mediator-id ID        this mediator's id; must equal each contract's aud
-  --issuer-id URL         the control plane this mediator obeys; must equal each
-                          contract's iss. Required, and not defaulted: a default
-                          would be the one value every estate shares, which is the
-                          same as not checking. It matters once a keyring can hold
-                          two planes' keys — a JWKS copied between environments, a
-                          federation import — because aud is then the only boundary
-                          left, and aud is commonly templated to the same string in
-                          every plane
-  --caller SPIFFE_ID      the authenticated calling party
-  --callee SPIFFE_ID      the authenticated called party
-  --issuer-pub PEM        the contract issuer's public key
-  --kid KID               the key id it is registered under
-  --alg ES256|ES384|EdDSA (default: ES256)
-  --jwks-url URL          the issuer's published key set, instead of a PEM;
-                          re-fetched on the TTL, so rotating the issuer key is
-                          a publish rather than a redeploy of every mediator
-  --jwks-file FILE        a key set on disk — a SPIRE bundle or a mounted
-                          ConfigMap — re-read on the same TTL
-  --jwks-ttl N            seconds between key-set reads (default: 300)
-  --jwks-max-stale N      how long a cached key set is still served while the
-                          fetch is failing, before verification stops
-                          (default: 3600); a set that can no longer be
-                          refreshed is a set nobody can withdraw a key from
-  --contracts URL         control plane to pull contract sets from
-  --token TOKEN           bearer token with the connect.mediator role
-  --contract FILE         a contract artifact to load directly (repeatable);
-                          the air-gapped alternative to --contracts
-  --refresh N             seconds between pulls (default: 5)
-  --observe               record findings instead of denying
-  --decision-log LEVEL    off|notable|all (default: notable). One JSON object per
-                          decision on stderr, carrying cid, WC-* code and mode.
-                          `notable` is denials and observe-mode findings; `all`
-                          adds allows, which in front of a busy agent is a lot.
-                          Counters are kept at every level, so turning the log
-                          down costs detail rather than visibility
-  --metrics-file PATH     write the Prometheus exposition here for a textfile
-                          collector. This process has no listener by design, so
-                          there is no /metrics to scrape
-  --any-zone              permit any zone pair (observe deployments only)
-  --peer-mode MODE        configured|mtls|mesh|jwt-svid (default: configured)
-                          only `configured` applies to this stdio sidecar; the
-                          others need a listening transport (§8.6.6)
-
-Peer identity is supplied by configuration here, which is correct for a sidecar
-owning one agent and one upstream — and is recorded as configuration, not as a
-handshake. mTLS, mesh and JWT-SVID modes live in `wc_mediator::peer` for the
-shared-gateway topology, where a flag is not an identity.
-";
+  connect-mediate --upstream \"<command>\" --mediator-id ID --issuer-id URL \\  --caller SPIFFE_ID --callee SPIFFE_ID \\ \
+   (--issuer-pub PEM --kid KID | --jwks-url URL | --jwks-file F) \\  [--contracts URL --token \
+   TOKEN] | [--contract FILE ...]  UPSTREAM  --upstream CMD the real MCP server to spawn \
+   --upstream-timeout N seconds (default: 30)  WARDEN CORE (optional; requires the `warden-proxy` \
+   build feature)  Omit all of these and connect-mediate runs STANDALONE: contract, surface pin, \
+   ceilings and revocation only, with no Warden core and no warden.policy.toml.  Standalone is \
+   the default — passing these without the feature is an error  rather than a silently ignored \
+   flag.  --policy FILE warden policy; giving it selects Warden-core mode  --audit FILE audit \
+   chain (default: .warden/audit.jsonl)  --approvals FILE held-call state (default: \
+   .warden/approvals.json)  --agent NAME agent label for audit rows (default: the caller id) \
+   CONNECT  --mediator-id ID this mediator's id; must equal each contract's aud  --issuer-id URL \
+   the control plane this mediator obeys; must equal each  contract's iss. Required, and not \
+   defaulted: a default  would be the one value every estate shares, which is the  same as not \
+   checking. It matters once a keyring can hold  two planes' keys — a JWKS copied between \
+   environments, a  federation import — because aud is then the only boundary  left, and aud is \
+   commonly templated to the same string in  every plane  --caller SPIFFE_ID the authenticated \
+   calling party  --callee SPIFFE_ID the authenticated called party  --issuer-pub PEM the \
+   contract issuer's public key  --kid KID the key id it is registered under  --alg \
+   ES256|ES384|EdDSA (default: ES256)  --jwks-url URL the issuer's published key set, instead of \
+   a PEM;  re-fetched on the TTL, so rotating the issuer key is  a publish rather than a redeploy \
+   of every mediator  --jwks-file FILE a key set on disk — a SPIRE bundle or a mounted  ConfigMap \
+   — re-read on the same TTL  --jwks-ttl N seconds between key-set reads (default: 300)  --jwks- \
+   max-stale N how long a cached key set is still served while the  fetch is failing, before \
+   verification stops  (default: 3600); a set that can no longer be  refreshed is a set nobody \
+   can withdraw a key from  --contracts URL control plane to pull contract sets from  --token \
+   TOKEN bearer token with the connect.mediator role  --contract FILE a contract artifact to load \
+   directly (repeatable);  the air-gapped alternative to --contracts  --refresh N seconds between \
+   pulls (default: 5)  --observe record findings instead of denying  --decision-log LEVEL \
+   off|notable|all (default: notable). One JSON object per  decision on stderr, carrying cid, \
+   WC-* code and mode.  `notable` is denials and observe-mode findings; `all`  adds allows, which \
+   in front of a busy agent is a lot.  Counters are kept at every level, so turning the log  down \
+   costs detail rather than visibility  --metrics-file PATH write the Prometheus exposition here \
+   for a textfile  collector. This process has no listener by design, so  there is no /metrics to \
+   scrape  --any-zone permit any zone pair (observe deployments only)  --peer-mode MODE \
+   configured|mtls|mesh|jwt-svid (default: configured)  only `configured` applies to this stdio \
+   sidecar; the  others need a listening transport (§8.6.6)  Peer identity is supplied by \
+   configuration here, which is correct for a sidecar owning one agent and one upstream — and is \
+   recorded as configuration, not as a handshake. mTLS, mesh and JWT-SVID modes live in \
+   `wc_mediator::peer` for the shared-gateway topology, where a flag is not an identity.";
 
 /// Which half of the family is in force, decided from the flags alone.
 ///

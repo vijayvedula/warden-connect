@@ -840,7 +840,10 @@ impl StandingLimits {
         // told. Every check below bounds a feature; this one asks whether the feature is on.
         if !self.enabled {
             return Some(
-                "standing issuance is off: every connection needs a human in v1. Set                  `[standing] enabled = true` once the estate is stable and these limits have                  been reviewed — auto-approval is the widest policy surface here, and it has                  already once issued to a party whose attestation had just failed"
+                "standing issuance is off: every connection needs a human in v1. Set `[standing] \
+                 enabled = true` once the estate is stable and these limits have been reviewed — \
+                 auto-approval is the widest policy surface here, and it has already once issued \
+                 to a party whose attestation had just failed"
                     .to_string(),
             );
         }
