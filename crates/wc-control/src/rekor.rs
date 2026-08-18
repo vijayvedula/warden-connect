@@ -70,8 +70,34 @@ pub struct Checkpoint {
     pub tree_size: u64,
     /// Root hash the note commits to, hex.
     pub root_hash: String,
-    /// The bytes the signature covers — everything up to and including the blank line.
+    /// The bytes the signature covers: the note text, ending in **one** newline.
+    ///
+    /// Not including the blank line that separates the text from the signatures — this comment
+    /// used to say otherwise, and the code was right while the prose was wrong. Established by
+    /// verifying the real `fixtures/rekor/` checkpoint against the log's published key: of the
+    /// four plausible byte ranges, only this one verifies. Guessing would have produced a
+    /// verifier that rejects every real checkpoint.
     pub signed_body: String,
+    /// The signature lines, in order.
+    pub signatures: Vec<NoteSignature>,
+}
+
+/// One `— <name> <base64>` line from a signed note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteSignature {
+    /// The key name the log signs under, e.g. `rekor.sigstore.dev`.
+    pub name: String,
+    /// First four bytes of `SHA256(SPKI DER)` of the signing key.
+    ///
+    /// Rekor's own convention, and **not** the Go sumdb one (`SHA256(name || 0x0A || 0x01 ||
+    /// key)`). Determined by computing all three candidates against the real fixture; only this
+    /// one matches. It is a hint, not a security property — the signature is what decides — but
+    /// checking it turns "signature does not verify" into "this note was signed by a different
+    /// key than the one you configured", which is the difference between an operator finding the
+    /// problem in a minute and in an afternoon.
+    pub key_hash: [u8; 4],
+    /// The signature bytes, as they appeared. ECDSA here is DER, as Sigstore emits.
+    pub signature: Vec<u8>,
 }
 
 impl Checkpoint {
@@ -103,15 +129,51 @@ impl Checkpoint {
             )));
         }
 
-        // The signature covers the note through the blank line that ends the body. Rebuilt
-        // rather than sliced by byte offset so a note with `\r\n` does not shift it.
+        // The signature covers the note text and its single trailing newline. Rebuilt rather
+        // than sliced by byte offset so a note with `\r\n` does not shift it.
         let signed_body = format!("{origin}\n{tree_size}\n{root_b64}\n");
+
+        // Signature lines: `— <name> <base64(keyhash[4] || sig)>`. The separator is an em-dash;
+        // a hyphen is not it, and a note whose signature lines are skipped because the character
+        // did not match would verify as "no signatures present" — which is why an unparseable
+        // line is an error rather than a line that is passed over.
+        let mut signatures = Vec::new();
+        for line in note.lines().skip(3) {
+            let line = line.trim_end();
+            if line.is_empty() {
+                continue;
+            }
+            let rest = line
+                .strip_prefix("\u{2014} ")
+                .ok_or_else(|| bad(format!("checkpoint line {line:?} is not a signature line")))?;
+            let (name, b64) = rest
+                .split_once(' ')
+                .ok_or_else(|| bad("a signature line carries no signature"))?;
+            let raw = base64::engine::general_purpose::STANDARD
+                .decode(b64.trim())
+                .map_err(|_| bad("a checkpoint signature is not base64"))?;
+            if raw.len() < 5 {
+                return Err(bad(format!(
+                    "a checkpoint signature is {} bytes, too short to carry a 4-byte key hash \
+                     and a signature",
+                    raw.len()
+                )));
+            }
+            let mut key_hash = [0u8; 4];
+            key_hash.copy_from_slice(&raw[..4]);
+            signatures.push(NoteSignature {
+                name: name.to_string(),
+                key_hash,
+                signature: raw[4..].to_vec(),
+            });
+        }
 
         Ok(Checkpoint {
             origin,
             tree_size,
             root_hash: hex_encode(&root),
             signed_body,
+            signatures,
         })
     }
 }
@@ -147,10 +209,145 @@ pub fn leaf_hash(body: &[u8]) -> String {
     hex_encode(&sha256_bytes(&input))
 }
 
+/// The log's own signing key, as an operator configures it.
+///
+/// A trust root, exactly like the issuer key and the SPIFFE bundle — which is why it is a
+/// separate type rather than an `Option<&[u8]>` threaded through: the thing that makes a
+/// checkpoint a proof rather than a claim should be visible in the signature of the function
+/// that uses it.
+#[derive(Debug, Clone)]
+pub struct LogKey {
+    /// The name the log signs under. Compared to the signature line's name.
+    pub name: String,
+    /// SPKI DER of the public key. `SHA256(..)[..4]` is the note's key hash.
+    pub spki_der: Vec<u8>,
+}
+
+impl LogKey {
+    /// Load a log key from a PEM `SubjectPublicKeyInfo`, as every log publishes it.
+    pub fn from_pem(name: &str, pem: &[u8]) -> Result<LogKey> {
+        let text = std::str::from_utf8(pem)
+            .map_err(|_| bad("the log public key is not valid UTF-8 PEM"))?;
+        let body: String = text
+            .lines()
+            .skip_while(|l| !l.starts_with("-----BEGIN"))
+            .skip(1)
+            .take_while(|l| !l.starts_with("-----END"))
+            .collect();
+        if body.is_empty() {
+            return Err(bad("the log public key has no PEM body"));
+        }
+        use base64::Engine as _;
+        let spki_der = base64::engine::general_purpose::STANDARD
+            .decode(body.trim())
+            .map_err(|_| bad("the log public key PEM body is not base64"))?;
+        Ok(LogKey {
+            name: name.to_string(),
+            spki_der,
+        })
+    }
+
+    /// The four-byte key hash a note carries for this key.
+    #[must_use]
+    pub fn key_hash(&self) -> [u8; 4] {
+        let full = sha256_bytes(&self.spki_der);
+        [full[0], full[1], full[2], full[3]]
+    }
+}
+
+/// Verify a checkpoint's signature against the log's key.
+///
+/// This is what turns "a checkpoint commits to this root" into "the log said so". Without it a
+/// response carrying a proof and a matching checkpoint is self-consistent and nothing more: an
+/// attacker serving a forged entry can serve a matching checkpoint just as easily, because
+/// nothing in the response is signed by anyone the verifier trusts.
+///
+/// ECDSA P-256 over SHA-256, DER-encoded, which is what Rekor emits. The DER is converted to the
+/// raw `R‖S` form the JWS verifier wants by the same `der_ecdsa_to_raw` the DSSE path uses — one
+/// implementation, because two would drift and the one used less would be the broken one.
+pub fn verify_checkpoint(cp: &Checkpoint, key: &LogKey) -> Result<()> {
+    if cp.signatures.is_empty() {
+        return Err(bad(
+            "the checkpoint carries no signature line, so there is nothing to verify",
+        ));
+    }
+
+    let expected_hash = key.key_hash();
+    let mut last: Option<WcError> = None;
+
+    for sig in &cp.signatures {
+        if sig.name != key.name {
+            continue;
+        }
+        if sig.key_hash != expected_hash {
+            // Reported specifically. "Signature does not verify" would be true and useless: the
+            // operator's problem is that they configured a different key, not that the log lied.
+            last = Some(bad(format!(
+                "the checkpoint was signed under key hash {} and the configured key hashes to \
+                 {} — this is a different key for the same log name",
+                hex_encode(&sig.key_hash),
+                hex_encode(&expected_hash)
+            )));
+            continue;
+        }
+
+        let decoding = jsonwebtoken::DecodingKey::from_ec_der(&spki_ec_point(&key.spki_der)?);
+        let raw = crate::attest::der_ecdsa_to_raw(&sig.signature, 32)
+            .unwrap_or_else(|| sig.signature.clone());
+        use base64::Engine as _;
+        let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&raw);
+        let ok = jsonwebtoken::crypto::verify(
+            &sig_b64,
+            cp.signed_body.as_bytes(),
+            &decoding,
+            jsonwebtoken::Algorithm::ES256,
+        )
+        .map_err(|e| bad("the checkpoint signature could not be checked").with_source(e))?;
+        if ok {
+            return Ok(());
+        }
+        last = Some(bad(
+            "the checkpoint signature does not verify under the configured log key",
+        ));
+    }
+
+    Err(last.unwrap_or_else(|| {
+        bad(format!(
+            "no signature line names {:?}; the note is signed by {}",
+            key.name,
+            cp.signatures
+                .iter()
+                .map(|s| s.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }))
+}
+
+/// Extract the uncompressed EC point from an SPKI DER, which is what `from_ec_der` wants.
+///
+/// `jsonwebtoken` names its constructor `from_ec_der` and means the **point**, not the SPKI
+/// wrapper — a distinction that costs an hour if you assume otherwise, because passing the SPKI
+/// produces a key that simply never verifies. An uncompressed P-256 point is 65 bytes starting
+/// `0x04`, and it is the tail of the SPKI, so this finds it rather than parsing ASN.1.
+fn spki_ec_point(spki: &[u8]) -> Result<Vec<u8>> {
+    if spki.len() >= 65 && spki[spki.len() - 65] == 0x04 {
+        return Ok(spki[spki.len() - 65..].to_vec());
+    }
+    Err(bad(
+        "the log public key does not end in an uncompressed P-256 point; only ES256 log keys are \
+         supported here",
+    ))
+}
+
 /// Verify an inclusion proof, and the checkpoint over it when one is present.
 ///
 /// `leaf` is the hex leaf hash — [`leaf_hash`] computes it from an entry body.
-pub fn verify(leaf: &str, proof: &InclusionProof) -> Result<Inclusion> {
+///
+/// `log_key` is what makes the checkpoint a proof. Supply it and the note's signature is checked
+/// and [`Inclusion::root_trust`] says so; omit it and the result says the root was *unattested*
+/// rather than pretending otherwise.
+pub fn verify(leaf: &str, proof: &InclusionProof, log_key: Option<&LogKey>) -> Result<Inclusion> {
     if proof.tree_size == 0 {
         return Err(bad("an empty tree contains nothing"));
     }
@@ -226,12 +423,28 @@ pub fn verify(leaf: &str, proof: &InclusionProof) -> Result<Inclusion> {
                     ),
                 ));
             }
-            (
-                true,
-                Some(cp.origin),
-                "a checkpoint commits to this root, and its SIGNATURE is not checked here — \
-                 supply the log's public key to make that a proof rather than a claim",
-            )
+            match log_key {
+                None => (
+                    true,
+                    Some(cp.origin),
+                    "a checkpoint commits to this root, and its SIGNATURE is not checked \
+                     because no log key was configured — supply one to make this a proof \
+                     rather than a claim",
+                ),
+                Some(key) => {
+                    // A configured key that does not verify is an error, never a downgrade to
+                    // the unsigned wording. An operator who supplied a key is asking a
+                    // question, and answering a weaker one would be the worst outcome here.
+                    verify_checkpoint(&cp, key)?;
+                    (
+                        true,
+                        Some(cp.origin),
+                        "the log SIGNED this root: the checkpoint verifies under the configured \
+                         log key, so the entry is in the public log and not merely in a tree \
+                         the response described",
+                    )
+                }
+            }
         }
     };
 
@@ -289,7 +502,7 @@ mod tests {
     fn a_real_rekor_inclusion_proof_verifies() {
         let (leaf, proof) = fixture();
         assert_eq!(proof.hashes.len(), 22, "the fixture's audit path changed");
-        let out = verify(&leaf, &proof).unwrap();
+        let out = verify(&leaf, &proof, None).unwrap();
         assert_eq!(out.computed_root, proof.root_hash);
         assert_eq!(out.tree_size, proof.tree_size);
         assert!(out.checkpoint_agrees, "the fixture carries a checkpoint");
@@ -323,7 +536,7 @@ mod tests {
     fn a_different_leaf_does_not_verify() {
         // The point of the whole exercise: this proof is about one entry.
         let (_, proof) = fixture();
-        let err = verify(&leaf_hash(b"not the entry that was logged"), &proof).unwrap_err();
+        let err = verify(&leaf_hash(b"not the entry that was logged"), &proof, None).unwrap_err();
         assert_eq!(err.code(), Code::PROVENANCE_UNVERIFIABLE);
         assert!(
             err.detail().contains("does not reproduce"),
@@ -342,7 +555,7 @@ mod tests {
             h
         };
         proof.hashes[3] = flipped;
-        assert!(verify(&leaf, &proof).is_err());
+        assert!(verify(&leaf, &proof, None).is_err());
     }
 
     #[test]
@@ -350,7 +563,7 @@ mod tests {
         // Order is the proof. Two hashes swapped is a different path through the tree.
         let (leaf, mut proof) = fixture();
         proof.hashes.swap(0, 1);
-        assert!(verify(&leaf, &proof).is_err());
+        assert!(verify(&leaf, &proof, None).is_err());
     }
 
     #[test]
@@ -358,22 +571,185 @@ mod tests {
         let (leaf, proof) = fixture();
         let mut short = proof.clone();
         short.hashes.truncate(20);
-        assert!(verify(&leaf, &short).is_err());
+        assert!(verify(&leaf, &short, None).is_err());
 
         let mut long = proof.clone();
         long.hashes.push(proof.hashes[0].clone());
-        assert!(verify(&leaf, &long).is_err());
+        assert!(verify(&leaf, &long, None).is_err());
     }
 
     #[test]
     fn an_index_outside_the_tree_is_refused() {
         let (leaf, mut proof) = fixture();
         proof.log_index = proof.tree_size;
-        let err = verify(&leaf, &proof).unwrap_err();
+        let err = verify(&leaf, &proof, None).unwrap_err();
         assert!(err.detail().contains("outside a tree"), "{}", err.detail());
 
         proof.tree_size = 0;
-        assert!(verify(&leaf, &proof).is_err());
+        assert!(verify(&leaf, &proof, None).is_err());
+    }
+
+    const LOG_PUB: &[u8] = include_bytes!("../../../fixtures/rekor/log-public-key.pem");
+    const LOG_NAME: &str = "rekor.sigstore.dev";
+
+    fn log_key() -> LogKey {
+        LogKey::from_pem(LOG_NAME, LOG_PUB).unwrap()
+    }
+
+    #[test]
+    fn the_real_checkpoint_verifies_under_the_real_log_key() {
+        // The test the whole feature exists for, and the only one that could have found the two
+        // things this got wrong on the first attempt. Both were determined by running candidates
+        // against this fixture rather than reasoned about:
+        //
+        //   * the signature covers the note text ending in ONE newline, not through the blank
+        //     line that separates text from signatures;
+        //   * the four-byte key hash is `SHA256(SPKI DER)[..4]`, which is Rekor's convention and
+        //     NOT the Go sumdb one (`SHA256(name || 0x0A || 0x01 || key)`).
+        //
+        // Either wrong and the verifier rejects every real checkpoint in existence, while every
+        // hand-rolled test of a note we signed ourselves would pass.
+        let (leaf, proof) = fixture();
+        let cp = Checkpoint::parse(proof.checkpoint.as_deref().unwrap()).unwrap();
+
+        assert_eq!(cp.signatures.len(), 1);
+        assert_eq!(cp.signatures[0].name, LOG_NAME);
+        assert_eq!(cp.signatures[0].key_hash, log_key().key_hash());
+        assert_eq!(
+            cp.signatures[0].signature[0], 0x30,
+            "Rekor emits DER; a raw R‖S here would mean the fixture changed shape"
+        );
+
+        verify_checkpoint(&cp, &log_key()).expect("the public log's own checkpoint must verify");
+
+        // And through the whole path, where the verdict wording changes because of it.
+        let unsigned = verify(&leaf, &proof, None).unwrap();
+        assert!(unsigned.root_trust.contains("not checked"));
+        let signed = verify(&leaf, &proof, Some(&log_key())).unwrap();
+        assert!(
+            signed.root_trust.contains("SIGNED"),
+            "{}",
+            signed.root_trust
+        );
+        assert_eq!(signed.computed_root, unsigned.computed_root);
+    }
+
+    #[test]
+    fn a_tampered_checkpoint_body_fails_the_signature() {
+        // The forgery the signature stops: a root the log never published, presented with the
+        // log's own signature line copied across. The proof is regenerated to match the forged
+        // root, so every check *except* the signature passes.
+        let (_, proof) = fixture();
+        let cp = Checkpoint::parse(proof.checkpoint.as_deref().unwrap()).unwrap();
+        let sig_line = proof
+            .checkpoint
+            .as_deref()
+            .unwrap()
+            .lines()
+            .find(|l| l.starts_with('\u{2014}'))
+            .unwrap()
+            .to_string();
+
+        let forged_root = base64::engine::general_purpose::STANDARD.encode([0x33u8; 32]);
+        let forged = format!(
+            "{}\n{}\n{}\n\n{}\n",
+            cp.origin, cp.tree_size, forged_root, sig_line
+        );
+        let parsed = Checkpoint::parse(&forged).unwrap();
+        assert_eq!(
+            parsed.signatures, cp.signatures,
+            "the signature was copied intact"
+        );
+
+        let err = verify_checkpoint(&parsed, &log_key()).unwrap_err();
+        assert!(err.detail().contains("does not verify"), "{}", err.detail());
+    }
+
+    #[test]
+    fn a_different_key_for_the_same_log_name_is_named_as_such() {
+        // The operator error this distinguishes. "Signature does not verify" is true and useless
+        // when the real problem is that a different key was configured for the same log — a
+        // rotated key, a staging log, a copy-paste. The key hash in the note says which, and
+        // saying so is the difference between a minute and an afternoon.
+        let (_, proof) = fixture();
+        let cp = Checkpoint::parse(proof.checkpoint.as_deref().unwrap()).unwrap();
+        let mut other = log_key();
+        // Same name, different key material.
+        let last = other.spki_der.len() - 1;
+        other.spki_der[last] ^= 0xff;
+
+        let err = verify_checkpoint(&cp, &other).unwrap_err();
+        assert!(
+            err.detail().contains("different key for the same log name"),
+            "{}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_signed_by_another_log_is_refused() {
+        // A note that verifies is not enough: it has to be *this* log's note. Otherwise a valid
+        // checkpoint from any transparency log would vouch for an entry in ours.
+        let (_, proof) = fixture();
+        let cp = Checkpoint::parse(proof.checkpoint.as_deref().unwrap()).unwrap();
+        let mut elsewhere = log_key();
+        elsewhere.name = "log.example.internal".to_string();
+
+        let err = verify_checkpoint(&cp, &elsewhere).unwrap_err();
+        assert!(
+            err.detail().contains("no signature line names"),
+            "{}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn a_configured_key_that_fails_is_an_error_not_a_downgrade() {
+        // The trap worth a test of its own: an operator who supplies a log key is asking a
+        // question, and answering the weaker one — "well, a checkpoint agrees" — would be the
+        // worst available outcome. A key that does not verify fails the whole verification.
+        let (leaf, proof) = fixture();
+        let mut wrong = log_key();
+        let n = wrong.spki_der.len() - 2;
+        wrong.spki_der[n] ^= 0x0f;
+        assert!(verify(&leaf, &proof, Some(&wrong)).is_err());
+        // ...while omitting the key still succeeds, with the weaker wording.
+        assert!(verify(&leaf, &proof, None).is_ok());
+    }
+
+    #[test]
+    fn a_note_with_no_signature_line_has_nothing_to_verify() {
+        let (_, proof) = fixture();
+        let cp = Checkpoint::parse(proof.checkpoint.as_deref().unwrap()).unwrap();
+        let bare = format!(
+            "{}\n{}\n{}\n\n",
+            cp.origin,
+            cp.tree_size,
+            base64::engine::general_purpose::STANDARD.encode(hex_decode(&cp.root_hash).unwrap())
+        );
+        let parsed = Checkpoint::parse(&bare).unwrap();
+        assert!(parsed.signatures.is_empty());
+        let err = verify_checkpoint(&parsed, &log_key()).unwrap_err();
+        assert!(
+            err.detail().contains("no signature line"),
+            "{}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn a_log_key_pem_is_read_the_way_logs_publish_it() {
+        let key = log_key();
+        assert_eq!(key.name, LOG_NAME);
+        // SPKI DER for a P-256 key: 91 bytes, ending in the 65-byte uncompressed point.
+        assert_eq!(key.spki_der.len(), 91);
+        assert_eq!(spki_ec_point(&key.spki_der).unwrap().len(), 65);
+        assert!(LogKey::from_pem(LOG_NAME, b"not a pem").is_err());
+        assert!(LogKey::from_pem(
+            LOG_NAME,
+            b"-----BEGIN PUBLIC KEY-----\n-----END PUBLIC KEY-----\n"
+        )
+        .is_err());
     }
 
     #[test]
@@ -384,11 +760,15 @@ mod tests {
         let (leaf, mut proof) = fixture();
         let cp = Checkpoint::parse(proof.checkpoint.as_deref().unwrap()).unwrap();
         let other_root = base64::engine::general_purpose::STANDARD.encode([0x11u8; 32]);
+        // A well-formed signature line carrying a bogus signature, so this test fails on the
+        // root disagreement it is named for rather than on the line being unparseable. It was
+        // `AAAA` — three bytes, which the signature parser now refuses before it gets this far.
+        let fake_sig = base64::engine::general_purpose::STANDARD.encode([0x22u8; 40]);
         proof.checkpoint = Some(format!(
-            "{}\n{}\n{}\n\n— fake AAAA\n",
+            "{}\n{}\n{}\n\n— fake {fake_sig}\n",
             cp.origin, cp.tree_size, other_root
         ));
-        let err = verify(&leaf, &proof).unwrap_err();
+        let err = verify(&leaf, &proof, None).unwrap_err();
         assert!(
             err.detail().contains("checkpoint commits to root"),
             "{}",
@@ -402,7 +782,7 @@ mod tests {
         // it as though the entry were shown to be in the public log.
         let (leaf, mut proof) = fixture();
         proof.checkpoint = None;
-        let out = verify(&leaf, &proof).unwrap();
+        let out = verify(&leaf, &proof, None).unwrap();
         assert!(!out.checkpoint_agrees);
         assert!(out.origin.is_none());
         assert!(
@@ -422,14 +802,19 @@ mod tests {
             "origin\n5\n!!!\n",
         ] {
             proof.checkpoint = Some(note.to_string());
-            assert!(verify(&leaf, &proof).is_err(), "{note:?} must not parse");
+            assert!(
+                verify(&leaf, &proof, None).is_err(),
+                "{note:?} must not parse"
+            );
         }
     }
 
     #[test]
-    fn the_checkpoint_signed_body_is_the_note_through_the_blank_line() {
-        // What a signature verifier would be handed. Rebuilt rather than byte-sliced, so a
-        // note delivered with CRLF does not shift the boundary and silently fail to verify.
+    fn the_checkpoint_signed_body_is_the_text_and_one_newline() {
+        // What the signature actually covers — established against the real fixture, not chosen.
+        // This test used to be named "…through the blank line", which was wrong; the code was
+        // right. Rebuilt rather than byte-sliced, so a note delivered with CRLF does not shift
+        // the boundary and silently fail to verify.
         let (_, proof) = fixture();
         let cp = Checkpoint::parse(proof.checkpoint.as_deref().unwrap()).unwrap();
         assert!(cp.signed_body.starts_with(&cp.origin));

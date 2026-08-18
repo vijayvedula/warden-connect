@@ -359,6 +359,8 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "artifact",
             "rekor-proof",
             "rekor-body",
+            "rekor-pub",
+            "rekor-log",
         ],
         "activate" => &["id", "why"],
         "unquarantine" => &["id", "approver", "why"],
@@ -838,7 +840,8 @@ fn open_store_or_stand_by(args: &Args) -> Result<Store> {
             // then declines to use.
             return Err(WcError::with_detail(
                 Code::CONFIG_INVALID,
-                "--read-only and --standby contradict each other: standby waits to become the                  writer, and read-only says this process never writes",
+                "--read-only and --standby contradict each other: standby waits to become the \
+                 writer, and read-only says this process never writes",
             ));
         }
         let p = paths(args);
@@ -3460,7 +3463,8 @@ fn attest_verify_cmd(args: &Args) -> Result<()> {
     if keys.is_empty() {
         return Err(WcError::with_detail(
             Code::CONFIG_INVALID,
-            "--prov-key KID=PEM is required: with no trusted key there is nothing to verify              the signature against, and an unverified envelope is a text file",
+            "--prov-key KID=PEM is required: with no trusted key there is nothing to verify the \
+             signature against, and an unverified envelope is a text file",
         ));
     }
 
@@ -3536,7 +3540,9 @@ fn attest_verify_cmd(args: &Args) -> Result<()> {
                     .ok_or_else(|| {
                         WcError::with_detail(
                             Code::CONFIG_INVALID,
-                            "the proof file carries no `body`, so pass --rekor-body FILE with                              the log entry's base64 body: the leaf is a hash of what the log                              stored, not of the artifact",
+                            "the proof file carries no `body`, so pass --rekor-body FILE with the log \
+                             entry's base64 body: the leaf is a hash of what the log \
+                             stored, not of the artifact",
                         )
                     })?
                     .to_string(),
@@ -3544,7 +3550,35 @@ fn attest_verify_cmd(args: &Args) -> Result<()> {
             let body = wc_core::util::base64_decode(&body_b64).ok_or_else(|| {
                 WcError::with_detail(Code::CONFIG_INVALID, "the Rekor entry body is not base64")
             })?;
-            Some(rekor::verify(&rekor::leaf_hash(&body), &proof)?)
+            // The log key is what turns the checkpoint from a claim into a proof. Optional,
+            // because an operator holding a proof and no key still gets the RFC 6962 maths and a
+            // result that says the root was unattested — which is worth having and is not the
+            // same thing.
+            let log_key = match (args.get("rekor-pub"), args.get("rekor-log")) {
+                (Some(path), name) => {
+                    let pem = std::fs::read(path).map_err(|e| {
+                        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}"))
+                            .with_source(e)
+                    })?;
+                    Some(rekor::LogKey::from_pem(
+                        name.unwrap_or("rekor.sigstore.dev"),
+                        &pem,
+                    )?)
+                }
+                (None, Some(_)) => {
+                    return Err(WcError::with_detail(
+                        Code::CONFIG_INVALID,
+                        "--rekor-log names the log key but --rekor-pub supplies it; without the \
+                         key the name checks nothing",
+                    ))
+                }
+                (None, None) => None,
+            };
+            Some(rekor::verify(
+                &rekor::leaf_hash(&body),
+                &proof,
+                log_key.as_ref(),
+            )?)
         }
     };
 
@@ -5054,7 +5088,8 @@ fn retention_cmd(args: &Args) -> Result<()> {
         let anchor_pub = read_optional(args, "anchor-pub")?.ok_or_else(|| {
             WcError::with_detail(
                 Code::CONFIG_INVALID,
-                "--retire needs --anchor-pub: retiring rows the anchor key never attested is                  indistinguishable from truncating them, so the key is not optional here",
+                "--retire needs --anchor-pub: retiring rows the anchor key never attested is \
+                 indistinguishable from truncating them, so the key is not optional here",
             )
         })?;
         let horizon = ts.saturating_sub(policy.contracts);
@@ -7492,8 +7527,27 @@ TOOLS
                 artifact, and builder.id in your allowlist. A signature alone
                 vouches for nothing in particular. Prefer --artifact: it computes
                 the digest from the bytes, where a digest retyped from a release
-                page is one the page's owner chose. Reports rekor inclusion as NOT
-                checked, because it does not check it. exit 4 if unverified/unbound
+                page is one the page's owner chose. exit 4 if unverified/unbound
+
+                [--rekor-proof FILE [--rekor-body FILE]]
+                also verify the transparency-log inclusion proof, offline, by the
+                RFC 6962 computation. On its own this shows the entry is in a tree
+                with a given root, and that a checkpoint commits to the same root —
+                which is self-consistency, not evidence: an attacker serving a
+                forged entry can serve a matching checkpoint.
+
+                [--rekor-pub PEM [--rekor-log NAME]]
+                verify the checkpoint's SIGNATURE against the log's public key,
+                which is what turns that into evidence the log itself signed. NAME
+                defaults to
+                rekor.sigstore.dev and must match the note's signature line, or a
+                valid checkpoint from any log would vouch for an entry in yours.
+
+                Omit --rekor-pub and the report says the root was unattested
+                rather than implying otherwise. Supply one that does not verify
+                and the whole verification FAILS — an operator who configured a
+                key is asking a question, and answering a weaker one would be the
+                worst outcome available here.
   canon <surface.json> [--kind mcp|a2a] [--entity ID] [--document] [--json]
   screen <surface.json> [--kind mcp|a2a] [--mode observe|flag|enforce] [--tier N]
                         [--rules screen-rules.toml] [--acceptances FILE]
@@ -7544,108 +7598,82 @@ HIGH AVAILABILITY  (§8.5.2, docs/production-readiness.md P1 #10)
 
   --standby           wait for the active writer to release, then take over. No
                       listener is bound while waiting, so a load balancer sees
-                      nothing rather than something answering \"not ready\" — the
-                      same signal with no room for a health-check to be wrong
-  --standby-timeout N give up after N seconds (default 3600) and exit non-zero.
-                      A standby that started anyway would be a second writer,
-                      which would look exactly like a successful failover
-
-  The lock is released by a crash as well as a clean exit, because it belongs to
-  the file descriptor and the kernel closes it. There is no lease to expire and
-  no heartbeat to tune. What this does NOT give you is fencing against a
-  partitioned active: flock is advisory and node-local, so a shared filesystem
-  must guarantee single attachment (ReadWriteOnce, one EBS volume, one LUN) —
-  that guarantee is what actually fences.
-
-TRANSPORT  (serve speaks plain HTTP; TLS is terminated in front of it)
-  A non-loopback listener refuses to start rather than accept bearer tokens in
-  clear. That is the whole control: the deployment contract was documented and
-  unenforced, so a pod bound to 0.0.0.0 shipped approval tokens in plaintext and
-  nothing objected.
-
-  --behind-tls-proxy    TLS is terminated in front. Every authenticated request
-                        must then carry `x-forwarded-proto: https`, so a request
-                        that reaches the port directly — bypassing the ingress —
-                        is refused rather than trusted
-  --trusted-proxy ADDR  believe that header only from this address or CIDR block
-                        (10.0.1.5 or 10.0.1.0/24). Repeatable. Omitted means any
-                        source, which is correct only if nothing else can reach
-                        the port. A /0 is refused: it reads as a restriction and
-                        matches everything, so omit the flag instead and let the
-                        banner say so
-  --proxy-secret-file F a secret the proxy sets in x-warden-proxy-secret and this
-                        listener requires. Closes the address check's real limit:
-                        a process SHARING a trusted address can forge the header,
-                        and no CIDR fixes that because the forger shares the
-                        address — which is the ordinary shape when the proxy is a
-                        localhost sidecar. With a secret, forging costs the secret
-                        instead of the position. From a file, not a flag value, so
-                        it stays out of the process list; >= 32 chars, checked in
-                        constant time, and narrowing only — the address check still
-                        applies. `openssl rand -hex 32 > proxy.secret`
-  --insecure-plaintext  accept tokens over plaintext from anywhere. Named so it is
-                        visible in the process list and in the startup banner
-
-KEY CUSTODY  (docs/key-custody.md)
-  Every signing flag has a PEM form and a delegated form. The delegated form runs
-  a command you supply, so the private key can live in an HSM, a smartcard or a
-  KMS and never reach this process. Giving both forms is an error, never a
-  preference: believing a key is in a token while a file was used is the worst
-  outcome available here.
-
-  --issuer-key PEM      the contract signing key, on this disk
-  --signer COMMAND      ...or delegated. stdin: base64url signing input,
-                        stdout: base64url signature. JWS ECDSA is raw R‖S, and
-                        every KMS returns DER — convert in the wrapper
-  --anchor-key PEM      the evidence checkpoint key, on this disk
-  --anchor-signer CMD   ...or delegated. Move this one first: a checkpoint signed
-                        by a key this host holds proves only that the host agrees
-                        with itself
-  --revocation-key PEM  the containment key, on this disk
-  --revocation-signer   ...or delegated. Two revocation keys are supported and
-                        wanted: --revocation-kid names the routine one (KMS), and
-                        --break-glass-kid names the offline one (hardware token,
-                        PIN split M-of-N) for when the KMS or this control plane
-                        is unavailable. Signing with the break-glass kid needs
-                        --break-glass and is recorded at Critical, because it is
-                        expected approximately never
-  --approver-signer CMD an approver's key, delegated. --second-signer for the
-                        second holder. An approver key belongs on that person's
-                        own token, and it may never be key material this service
-                        holds — if the control plane can sign its own approvals,
-                        dual control is theatre and the evidence chain cannot tell
-                        the difference afterwards. Refused structurally, on key
-                        material rather than on filenames
-  --envelope-signer CMD the air-gapped bundle envelope, delegated
-
-  --require-external-signing
-                        refuse to start if any signing key would be read from this
-                        disk (env WARDEN_CONNECT_REQUIRE_EXTERNAL_SIGNING). Covers
-                        every role that signs — issuer, anchor, both revocation
-                        keys, approvers and the bundle envelope. `connect bench` is
-                        the one exemption and says so: it measures the cost of
-                        signing and discards the signature. Every mint also records
-                        which kid signed and where it lives, so a local signature
-                        after the move is answerable from the evidence chain, not
-                        only from configuration
-
-GLOBAL
-  --config FILE      flag defaults from a TOML file (default: {DEFAULT_CONFIG} if it
-                     exists). Precedence is flag over file over env (§8.13); every
-                     flag also reads WARDEN_CONNECT_<FLAG>, derived not hand-wired.
-                     A key that maps to nothing is refused, not ignored — a config
-                     file is reviewed by somebody who believes it took effect
-  --root PATH        state and evidence root (env WARDEN_CONNECT_ROOT, default {DEFAULT_ROOT})
-  --tenant NAME      tenant (default: default)
-  --by human:x       the accountable operator (env WARDEN_CONNECT_ACTOR)
-  --anchor-interval N checkpoint every N appends (default 100)
-  --approvers FILE   approver registry (default: approvers.toml)
-  --json             machine-readable output
-
-EXIT CODES
-  0 ok · 1 operational · 2 usage · 3 denied · 4 verification failed
-  5 screening/drift · 6 approval required
-"
+                      nothing rather than something answering \"not ready\" — the  same signal with no room for a health-check to be wrong \
+                       --standby-timeout N give up after N seconds (default 3600) and exit non- \
+                       zero.  A standby that started anyway would be a second writer,  which \
+                       would look exactly like a successful failover   The lock is released by a \
+                       crash as well as a clean exit, because it belongs to  the file descriptor \
+                       and the kernel closes it. There is no lease to expire and  no heartbeat to \
+                       tune. What this does NOT give you is fencing against a  partitioned \
+                       active: flock is advisory and node-local, so a shared filesystem  must \
+                       guarantee single attachment (ReadWriteOnce, one EBS volume, one LUN) — \
+                       that guarantee is what actually fences.  TRANSPORT (serve speaks plain \
+                       HTTP; TLS is terminated in front of it)  A non-loopback listener refuses \
+                       to start rather than accept bearer tokens in  clear. That is the whole \
+                       control: the deployment contract was documented and  unenforced, so a pod \
+                       bound to 0.0.0.0 shipped approval tokens in plaintext and  nothing \
+                       objected.   --behind-tls-proxy TLS is terminated in front. Every \
+                       authenticated request  must then carry `x-forwarded-proto: https`, so a \
+                       request  that reaches the port directly — bypassing the ingress —  is \
+                       refused rather than trusted  --trusted-proxy ADDR believe that header only \
+                       from this address or CIDR block  (10.0.1.5 or 10.0.1.0/24). Repeatable. \
+                       Omitted means any  source, which is correct only if nothing else can reach \
+                       the port. A /0 is refused: it reads as a restriction and  matches \
+                       everything, so omit the flag instead and let the  banner say so  --proxy- \
+                       secret-file F a secret the proxy sets in x-warden-proxy-secret and this \
+                       listener requires. Closes the address check's real limit:  a process \
+                       SHARING a trusted address can forge the header,  and no CIDR fixes that \
+                       because the forger shares the  address — which is the ordinary shape when \
+                       the proxy is a  localhost sidecar. With a secret, forging costs the secret \
+                       instead of the position. From a file, not a flag value, so  it stays out \
+                       of the process list; >= 32 chars, checked in  constant time, and narrowing \
+                       only — the address check still  applies. `openssl rand -hex 32 > \
+                       proxy.secret`  --insecure-plaintext accept tokens over plaintext from \
+                       anywhere. Named so it is  visible in the process list and in the startup \
+                       banner  KEY CUSTODY (docs/key-custody.md)  Every signing flag has a PEM \
+                       form and a delegated form. The delegated form runs  a command you supply, \
+                       so the private key can live in an HSM, a smartcard or a  KMS and never \
+                       reach this process. Giving both forms is an error, never a  preference: \
+                       believing a key is in a token while a file was used is the worst  outcome \
+                       available here.   --issuer-key PEM the contract signing key, on this disk \
+                       --signer COMMAND ...or delegated. stdin: base64url signing input,  stdout: \
+                       base64url signature. JWS ECDSA is raw R‖S, and  every KMS returns DER — \
+                       convert in the wrapper  --anchor-key PEM the evidence checkpoint key, on \
+                       this disk  --anchor-signer CMD ...or delegated. Move this one first: a \
+                       checkpoint signed  by a key this host holds proves only that the host \
+                       agrees  with itself  --revocation-key PEM the containment key, on this \
+                       disk  --revocation-signer ...or delegated. Two revocation keys are \
+                       supported and  wanted: --revocation-kid names the routine one (KMS), and \
+                       --break-glass-kid names the offline one (hardware token,  PIN split \
+                       M-of-N) for when the KMS or this control plane  is unavailable. Signing \
+                       with the break-glass kid needs  --break-glass and is recorded at Critical, \
+                       because it is  expected approximately never  --approver-signer CMD an \
+                       approver's key, delegated. --second-signer for the  second holder. An \
+                       approver key belongs on that person's  own token, and it may never be key \
+                       material this service  holds — if the control plane can sign its own \
+                       approvals,  dual control is theatre and the evidence chain cannot tell \
+                       the difference afterwards. Refused structurally, on key  material rather \
+                       than on filenames  --envelope-signer CMD the air-gapped bundle envelope, \
+                       delegated   --require-external-signing  refuse to start if any signing key \
+                       would be read from this  disk (env \
+                       WARDEN_CONNECT_REQUIRE_EXTERNAL_SIGNING). Covers  every role that signs — \
+                       issuer, anchor, both revocation  keys, approvers and the bundle envelope. \
+                       `connect bench` is  the one exemption and says so: it measures the cost of \
+                       signing and discards the signature. Every mint also records  which kid \
+                       signed and where it lives, so a local signature  after the move is \
+                       answerable from the evidence chain, not  only from configuration  GLOBAL \
+                       --config FILE flag defaults from a TOML file (default: {DEFAULT_CONFIG} if \
+                       it  exists). Precedence is flag over file over env (§8.13); every  flag \
+                       also reads WARDEN_CONNECT_<FLAG>, derived not hand-wired.  A key that maps \
+                       to nothing is refused, not ignored — a config  file is reviewed by \
+                       somebody who believes it took effect  --root PATH state and evidence root \
+                       (env WARDEN_CONNECT_ROOT, default {DEFAULT_ROOT})  --tenant NAME tenant \
+                       (default: default)  --by human:x the accountable operator (env \
+                       WARDEN_CONNECT_ACTOR)  --anchor-interval N checkpoint every N appends \
+                       (default 100)  --approvers FILE approver registry (default: \
+                       approvers.toml)  --json machine-readable output  EXIT CODES  0 ok · 1 \
+                       operational · 2 usage · 3 denied · 4 verification failed  5 \
+                       screening/drift · 6 approval required"
     )
 }
 

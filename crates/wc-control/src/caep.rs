@@ -1119,10 +1119,13 @@ mod tests {
             pub_pem()
         );
         let err = TransmitterSet::parse(&unscoped).unwrap_err();
+        // One assertion, on the message the code actually produces. This was two, `||`-joined,
+        // and the first branch looked for a literal `\n` and a run of spaces — a string a Rust
+        // line continuation can never produce, so it could never match and the `||` kept it
+        // alive. An assertion that cannot be true is not a weaker check, it is no check.
         assert!(
             err.to_string()
-                .contains("could \n                         then cut any connection")
-                || err.to_string().contains("cut any connection"),
+                .contains("it could then cut any connection in the estate"),
             "{err}"
         );
 
