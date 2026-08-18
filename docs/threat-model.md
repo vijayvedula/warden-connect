@@ -21,7 +21,7 @@ effect.
 
 Two adversarial passes and two drills have now been run against the paths in
 [production-readiness.md](production-readiness.md), by executing the binaries, and together
-they found **thirteen more of exactly this shape** — the last thirteen rows. Several had
+they found **thirteen more of exactly this shape** — rows 12 to 24. Several had
 passing unit tests sitting beside them: `SurfaceMatch::matches` was covered only for
 `write = false`; the chain had tests for edited, deleted and reordered rows but none for a
 **truncated** one; and `drain` had nine tests and no caller. A one-sided test is how a
@@ -44,7 +44,13 @@ The second pass was built around three questions, each of which found something:
 3. **What does this counter reset with?** Ceilings are in-process, so a per-task mediator
    starts every allowance from zero.
 
-Those three questions are cheaper than reading the code and they found more.
+A fourth question found the last two rows: **what actually makes this boundary a boundary?**
+Two control planes with separate issuer keys are separate because an unknown `kid` is refused —
+that is real, and it is the whole of it. `iss` was carried, printed, and never compared, so the
+separation had exactly one mechanism and no defence in depth. The question is worth asking
+because the answer is often "one thing", and the field that looks like a second one is
+decoration until something checks it. `scripts/custody-drill.sh` phase 5 is that estate:
+signature good, `aud` matching, planes different.
 
 The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 
@@ -78,6 +84,8 @@ The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 | retiring an issuer key | did not stop sessions already admitted under it — the per-call path never re-consulted the cache that already knew |
 | `drain.rs`'s own doc | asserted "new calls are refused — **this half is real**", which was true of `Cache::resolve` and false of the mediator, because the hot path never called it |
 | ten unit-tested alert rules | three were asserted **nowhere**, and one of those could not fire at all — `promtool` checks the tests it is given and never asks what was left out |
+| `iss` carried in every contract and printed by `connect verify` | **never checked**, and not listed among what the report said it had not checked, so once two planes' keys shared one keyring a non-production contract verified in production |
+| an issuer key in a KMS | the mint path hard-coded `ES256` while `IssuerKeys`, `connect verify` and the mediator all accepted three algorithms — an estate mandated onto P-384 could verify contracts it had no way to mint |
 
 ### The review checklist
 

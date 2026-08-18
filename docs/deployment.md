@@ -127,6 +127,7 @@ One mediator per agent runtime, in the sidecar topology:
 ```sh
 connect-mediate --upstream "python payments_mcp.py" \
     --mediator-id warden:mediator:apac-ops \
+    --issuer-id https://connect.internal \
     --caller spiffe://org/ns/agents/sa/recon \
     --callee spiffe://org/ns/tools/sa/payments \
     --jwks-url https://connect.internal/v1/jwks.json \
@@ -147,6 +148,13 @@ Four things worth setting deliberately:
   node-exporter textfile-collector convention.
 * **`--mediator-id` must be unique per mediator.** Two sharing an id makes `aud` binding
   meaningless — see A2 in [threat-model.md](threat-model.md).
+* **`--issuer-id` is the plane boundary, and it is required.** It must equal each contract's
+  `iss`. While a mediator's keyring holds one plane's keys this check is redundant — an unknown
+  `kid` is refused, so the keyring is the boundary. It stops being redundant the moment two
+  planes' keys share a keyring, which a JWKS copied between environments produces and a
+  federation import produces by design: `aud` is then the only check left, and `--mediator-id`
+  is commonly templated to the same string in every plane. `scripts/custody-drill.sh` phase 5
+  is that estate. A wrong value is a startup refusal, not a runtime surprise.
 
 ### The exit criterion
 

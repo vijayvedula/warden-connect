@@ -395,7 +395,7 @@ connect approve req_7f3c --by human:cecil --approver-key cecil.pem
 <span class="out">minted conn_1a9b  →  contract.jws   exp +30d</span>
 
 connect verify contract.jws --issuer-pub issuer.pub --kid k1 \
-  --mediator-id warden:mediator:apac-ops</div>
+  --mediator-id warden:mediator:apac-ops --issuer-id https://connect.internal</div>
           <p>The payoff is the exit code. <code>4</code> means the artifact is not trustworthy; <code>3</code> means you asked for too much; <code>5</code> means the surface looks poisoned. CI can now fail on the difference <strong>without scraping stderr</strong> — and a contract that expires is a review that actually happens.</p>
           <div class="gains">
             <span class="tag get">get: signed, expiring permission</span>
@@ -412,7 +412,7 @@ connect verify contract.jws --issuer-pub issuer.pub --kid k1 \
           <h4>Put the contract on the path</h4>
           <p><code>connect-mediate</code> is one process that composes <strong>unmodified Warden core</strong> with a connect decorator. Your MCP client points where it already pointed. No manifest edit, no second network hop.</p>
           <div class="cmd">connect-mediate --upstream "python payments_server.py" \
-  --mediator-id warden:mediator:apac-ops \
+  --mediator-id warden:mediator:apac-ops --issuer-id https://connect.internal \
   --caller agent:recon --callee server:payments \
   --contract contract.jws --issuer-pub issuer.pub --kid k1 \
   <span class="c">--observe</span>            <span class="c"># record findings; deny nothing. start here.</span></div>

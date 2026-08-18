@@ -104,6 +104,16 @@ jobs:
           python3 -m pip install --quiet 'cryptography>=42'
           ./scripts/attest-drill.sh   # builds the workspace itself
 
+      # `iss` was carried in every contract, printed by `connect verify`, and never checked.
+      # With one plane's keys in a keyring that is harmless; the moment two planes' keys share
+      # one — a copied JWKS, a federation import — `aud` is the only boundary left, and `aud` is
+      # commonly templated to the same string in every plane. Phase 5 is that estate. The other
+      # phases take a contract through an external signer and back, which nothing had done end
+      # to end even though `--signer` had shipped.
+      - name: Custody drill — an external issuer key, and two planes that stay separate
+        working-directory: warden-connect
+        run: ./scripts/custody-drill.sh   # builds the workspace itself
+
       # Named separately from the run above even though it is inside it: the §8.15.3
       # conformance vectors are the ground truth a third party implements against, and
       # a green summary line is not the same as knowing they ran.

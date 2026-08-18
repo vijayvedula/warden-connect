@@ -72,9 +72,22 @@ clouds differ:
 Both wrappers must hash the input themselves: the helper receives the **signing input**, not a
 digest, and both KMS APIs want a digest.
 
+### What is already closed locally
+
+`scripts/custody-drill.sh` runs both halves of that pass condition against openssl-as-KMS: a
+contract minted through `--signer` verifies, a wrapper that forwards DER is refused with a
+message naming DER, and `--require-external-signing` refuses a PEM. So the *protocol* half is
+no longer an open item — the base64url round trip and the DER→`R‖S` conversion are proven by a
+script that runs in CI.
+
+What the KMS key buys is the half that script explicitly disclaims: a real authorisation policy,
+a real rate limit, a real availability characteristic, and a wrapper written against a vendor's
+CLI rather than against openssl. The drill's own closing note says so.
+
 ### Pass condition
 
-A contract signed through the wrapper passes `connect verify`, and
+A contract signed through the wrapper passes `connect verify` — the whole acceptance test, and
+`custody-drill.sh` phase 1 is the shape of it — and
 `connect request --require-external-signing` **refuses** a `--issuer-key` PEM. Then run
 `containment-drill.sh` with the break-glass shares held as KMS keys under distinct
 principals — which is the part a laptop cannot rehearse, because it is the only version where
@@ -234,6 +247,8 @@ identity, with no join token anywhere, and `connect` verifies it. This is the di
 | 12 | Fuzzing at depth | 1 spot VM for a weekend, or nothing | either |
 | 13 | Real SPIRE attestation | the cluster's own node identity | the cluster |
 | — | Rotation drill | **closed** — `scripts/rotation-drill.sh` | local |
+| — | Signing protocol, DER trap, ES384 | **closed** — `scripts/custody-drill.sh` (item 6 keeps the *custody* half) | local |
+| — | Two planes, separate issuer keys | **closed** — `scripts/custody-drill.sh` phases 4–5 | local |
 
 So: **one KMS key, one Kubernetes cluster, one weekend spot VM.** Held for a week and destroyed,
 on either cloud, this is small money — well under a hundred dollars. The expensive items on the

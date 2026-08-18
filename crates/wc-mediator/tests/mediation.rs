@@ -26,7 +26,7 @@ use wc_core::contract::{
 };
 use wc_core::error::{Code, Mode};
 use wc_core::model::{Cid, EntityId, Jti, Pin, Posture, Tier, ZoneId};
-use wc_mediator::cache::{Cache, Revocations, Snapshot};
+use wc_mediator::cache::{Cache, Revocations, Snapshot, Trust};
 use wc_mediator::ceiling::Ceilings;
 use wc_mediator::gate::{GateCfg, MediatedUpstream};
 
@@ -35,6 +35,17 @@ const PUB: &[u8] = include_bytes!("../../../fixtures/keys/test_issuer_es256_pub.
 const KID: &str = "wc-test-es256";
 const MEDIATOR: &str = "warden:mediator:apac-ops";
 const NOW: u64 = 1_785_312_500;
+const ISS: &str = "https://connect.internal/t/apac";
+
+/// The trust this mediator verifies under. Named once, so a test cannot quietly stop
+/// checking `iss` — which is what the check existing at all is for.
+fn trusting(keys: &IssuerKeys) -> Trust<'_> {
+    Trust {
+        keys,
+        mediator_id: MEDIATOR,
+        issuer: ISS,
+    }
+}
 
 fn now() -> u64 {
     NOW
@@ -245,8 +256,7 @@ fn build(
     let cache = Arc::new(Cache::new());
     cache.install(Snapshot::build(
         std::slice::from_ref(&jws),
-        &keys(),
-        MEDIATOR,
+        &trusting(&keys()),
         NOW,
     ));
 
@@ -817,7 +827,7 @@ fn uncontracted(mode: Mode) -> Fixture {
         recorder: recorder.clone(),
     };
     let cache = Arc::new(Cache::new());
-    cache.install(Snapshot::build(&[], &keys(), MEDIATOR, NOW));
+    cache.install(Snapshot::build(&[], &trusting(&keys()), NOW));
 
     let mut cfg = GateCfg::new(
         MEDIATOR,
@@ -1366,7 +1376,7 @@ fn withdrawing_the_issuer_key_stops_a_live_session() {
     live_session(&mut f);
 
     f.cache
-        .install(Snapshot::build(&[], &IssuerKeys::new(), MEDIATOR, NOW));
+        .install(Snapshot::build(&[], &trusting(&IssuerKeys::new()), NOW));
 
     let after = f.mediated.request(&call("get_balance"));
     let detail = tool_error(&after).expect("a withdrawn contract must stop the session");
@@ -1394,8 +1404,7 @@ fn replacing_the_contract_under_the_same_cid_stops_the_session() {
     );
     f.cache.install(Snapshot::build(
         std::slice::from_ref(&replacement.jws),
-        &keys(),
-        MEDIATOR,
+        &trusting(&keys()),
         NOW,
     ));
 
@@ -1485,7 +1494,7 @@ fn observe_mode_closes_on_a_withdrawn_contract_too() {
     live_session(&mut f);
 
     f.cache
-        .install(Snapshot::build(&[], &IssuerKeys::new(), MEDIATOR, NOW));
+        .install(Snapshot::build(&[], &trusting(&IssuerKeys::new()), NOW));
 
     let after = f.mediated.request(&call("get_balance"));
     let detail = tool_error(&after).expect("a withdrawn contract closes in observe mode as well");

@@ -37,6 +37,8 @@ pub const APPROVER_PUB: &[u8] = include_bytes!("../../../../fixtures/keys/test_a
 pub const KID: &str = "wc-e2e-es256";
 pub const MEDIATOR: &str = "warden:mediator:apac-ops";
 pub const NOW: u64 = 1_785_312_500;
+/// The plane the harness issues from; `Trust::issuer` must match or nothing verifies.
+pub const ISS: &str = "https://connect.e2e/t/apac";
 pub const DAY: u64 = 86_400;
 
 // ---------------------------------------------------------------------------
@@ -105,6 +107,17 @@ impl Drop for Root {
 
 pub fn signer() -> IssuerKey {
     IssuerKey::ec_pem(KID, PRIV, Algorithm::ES256).expect("issuer key")
+}
+
+/// The trust a test mediator verifies under. Named once, so a test cannot quietly stop
+/// checking `iss` — which is what the check existing at all is for.
+#[must_use]
+pub fn trusting(keys: &IssuerKeys) -> wc_mediator::cache::Trust<'_> {
+    wc_mediator::cache::Trust {
+        keys,
+        mediator_id: MEDIATOR,
+        issuer: ISS,
+    }
 }
 
 pub fn verifier() -> IssuerKeys {

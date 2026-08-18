@@ -1,0 +1,5 @@
+{
+  "caller": "spiffe://org/ns/agents/sa/recon-bot-7",
+  "callee": "spiffe://org/ns/tools/sa/payments-mcp",
+  "expected_iss": "https://connect.internal/t/emea"
+}

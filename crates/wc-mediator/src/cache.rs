@@ -12,7 +12,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-use wc_core::contract::{self, IssuerKeys, RevocationView, VerifiedContract, VerifyOpts};
+#[cfg(test)]
+use wc_core::contract::IssuerKeys;
+use wc_core::contract::{self, RevocationView, VerifiedContract, VerifyOpts};
 use wc_core::error::{Code, Result, WcError};
 use wc_core::model::EntityId;
 
@@ -106,6 +108,12 @@ impl RevocationView for Revocations {
     }
 }
 
+/// Re-exported because this is where a mediator meets it: `Snapshot::build` takes one, and a
+/// deployment reading this module should not have to know it is defined next to `VerifyOpts`.
+/// It lives in `wc-core` because the air-gapped bundle importer needs the same type and
+/// `wc-control` cannot depend on this crate.
+pub use wc_core::contract::Trust;
+
 /// A verified contract set, immutable once built.
 #[derive(Debug, Default)]
 pub struct Snapshot {
@@ -131,14 +139,14 @@ impl Snapshot {
     /// An artifact that fails verification is recorded in `rejected` and omitted
     /// — one bad contract in a published set must not cost the mediator every
     /// other contract in it.
-    pub fn build(artifacts: &[String], keys: &IssuerKeys, mediator_id: &str, now: u64) -> Snapshot {
+    pub fn build(artifacts: &[String], trust: &Trust<'_>, now: u64) -> Snapshot {
         let mut snapshot = Snapshot::default();
         let mut digest_input = String::new();
 
         for jws in artifacts {
             // Revocation is applied at lookup time, not here: a snapshot outlives
             // the feed state it was built under.
-            let opts = VerifyOpts::new(keys, mediator_id, now);
+            let opts = VerifyOpts::trusting(trust, now);
             match contract::verify_artifact(jws, &opts) {
                 Ok(verified) => {
                     let cid = verified.payload.cid.as_str().to_string();
@@ -395,6 +403,17 @@ mod tests {
     const KID: &str = "wc-test-es256";
     const MEDIATOR: &str = "warden:mediator:apac-ops";
     const NOW: u64 = 1_785_312_500;
+    const ISS: &str = "https://connect.internal/t/apac";
+
+    /// The trust a test mediator verifies under. Named once, so a test cannot quietly
+    /// stop checking `iss` — which is what the check existing at all is for.
+    fn trusting(keys: &IssuerKeys) -> Trust<'_> {
+        Trust {
+            keys,
+            mediator_id: MEDIATOR,
+            issuer: ISS,
+        }
+    }
 
     fn keys() -> IssuerKeys {
         let mut k = IssuerKeys::new();
@@ -474,7 +493,7 @@ mod tests {
     #[test]
     fn a_snapshot_verifies_once_and_indexes_both_ways() {
         let jws = contract_for("conn_11111111", &["get_balance"], NOW + 3_600);
-        let snapshot = Snapshot::build(&[jws], &keys(), MEDIATOR, NOW);
+        let snapshot = Snapshot::build(&[jws], &trusting(&keys()), NOW);
 
         assert_eq!(snapshot.len(), 1);
         assert!(snapshot.rejected.is_empty());
@@ -488,11 +507,55 @@ mod tests {
         // A published set with a stale contract in it must still deliver the rest.
         let good = contract_for("conn_11111111", &["get_balance"], NOW + 3_600);
         let expired = contract_for("conn_22222222", &["get_balance"], NOW - 1);
-        let snapshot = Snapshot::build(&[good, expired], &keys(), MEDIATOR, NOW);
+        let snapshot = Snapshot::build(&[good, expired], &trusting(&keys()), NOW);
 
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot.rejected.len(), 1);
         assert_eq!(snapshot.rejected[0].1, Code::CONTRACT_EXPIRED);
+    }
+
+    #[test]
+    fn a_snapshot_refuses_another_planes_contract_and_the_cache_never_holds_it() {
+        // The mediator's own version of the plane boundary, asserted here because
+        // `Snapshot::build` is where a real mediator applies it and a `wc-core` test of
+        // `verify_artifact` does not reach it. Dropping `.issued_by` from
+        // `VerifyOpts::trusting` leaves every core test green.
+        //
+        // Same keys, same `aud` — `mediator_id` is commonly templated to one string across
+        // planes — so `iss` is the only difference. The keyring holding both planes' keys is
+        // what a copied JWKS or a federation import produces.
+        let jws = contract_for("conn_11111111", &["get_balance"], NOW + 3_600);
+        let keys = keys();
+        let other_plane = Trust {
+            keys: &keys,
+            mediator_id: MEDIATOR,
+            issuer: "https://connect.internal/t/emea",
+        };
+
+        let snapshot = Snapshot::build(std::slice::from_ref(&jws), &other_plane, NOW);
+        assert_eq!(
+            snapshot.len(),
+            0,
+            "the other plane's contract was installed"
+        );
+        assert_eq!(snapshot.rejected.len(), 1);
+        assert_eq!(snapshot.rejected[0].1, Code::ISSUER_MISMATCH);
+
+        // And through the cache, because "not in the snapshot" is only half the claim: what a
+        // caller sees has to be a refusal, not a contract from a plane this mediator does not
+        // obey.
+        let cache = Cache::new();
+        cache.install(snapshot);
+        assert_eq!(
+            cache.resolve(None, &agent(), &server()).unwrap_err().code(),
+            Code::NO_CONTRACT
+        );
+
+        // Its own plane still installs it, or this test would pass for a build that rejects
+        // everything.
+        let own = Snapshot::build(std::slice::from_ref(&jws), &trusting(&keys), NOW);
+        assert_eq!(own.len(), 1);
+        assert!(own.rejected.is_empty());
     }
 
     #[test]
@@ -508,8 +571,7 @@ mod tests {
         let cache = Cache::new();
         cache.install(Snapshot::build(
             &[contract_for("conn_11111111", &["get_balance"], NOW + 3_600)],
-            &keys(),
-            MEDIATOR,
+            &trusting(&keys()),
             NOW,
         ));
 
@@ -533,8 +595,7 @@ mod tests {
         let cache = Cache::new();
         cache.install(Snapshot::build(
             &[contract_for("conn_11111111", &["get_balance"], NOW + 3_600)],
-            &keys(),
-            MEDIATOR,
+            &trusting(&keys()),
             NOW,
         ));
         assert!(cache.resolve(None, &agent(), &server()).is_ok());
@@ -554,8 +615,7 @@ mod tests {
         let cache = Cache::new();
         cache.install(Snapshot::build(
             &[contract_for("conn_11111111", &["get_balance"], NOW + 3_600)],
-            &keys(),
-            MEDIATOR,
+            &trusting(&keys()),
             NOW,
         ));
 
@@ -576,8 +636,7 @@ mod tests {
         let cache = Cache::new();
         cache.install(Snapshot::build(
             &[contract_for("conn_11111111", &["get_balance"], NOW + 3_600)],
-            &keys(),
-            MEDIATOR,
+            &trusting(&keys()),
             NOW,
         ));
         let mut revoked = Revocations::new();
@@ -594,16 +653,14 @@ mod tests {
         let cache = Cache::new();
         cache.install(Snapshot::build(
             &[contract_for("conn_11111111", &["get_balance"], NOW + 3_600)],
-            &keys(),
-            MEDIATOR,
+            &trusting(&keys()),
             NOW,
         ));
         let first = cache.snapshot().set_hash.clone();
 
         cache.install(Snapshot::build(
             &[contract_for("conn_22222222", &["get_balance"], NOW + 3_600)],
-            &keys(),
-            MEDIATOR,
+            &trusting(&keys()),
             NOW,
         ));
         assert_ne!(cache.snapshot().set_hash, first);
@@ -622,8 +679,7 @@ mod tests {
         let cache = Cache::new();
         cache.install(Snapshot::build(
             &[contract_for("conn_11111111", &["get_balance"], NOW + 3_600)],
-            &keys(),
-            MEDIATOR,
+            &trusting(&keys()),
             NOW,
         ));
         let held = cache.snapshot();
@@ -636,7 +692,7 @@ mod tests {
     #[test]
     fn an_untrusted_key_yields_an_empty_snapshot() {
         let jws = contract_for("conn_11111111", &["get_balance"], NOW + 3_600);
-        let snapshot = Snapshot::build(&[jws], &IssuerKeys::new(), MEDIATOR, NOW);
+        let snapshot = Snapshot::build(&[jws], &trusting(&IssuerKeys::new()), NOW);
         assert!(snapshot.is_empty());
         assert_eq!(snapshot.rejected[0].1, Code::SIGNATURE_INVALID);
     }

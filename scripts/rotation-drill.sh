@@ -88,6 +88,9 @@ case "$MODE" in
     *) echo "MODE must be enforce|observe, got $MODE" >&2; exit 2 ;;
 esac
 MEDIATOR_ID="warden:mediator:drill"
+# The plane the drill mints from — `connect request`'s default `iss`. Passed to the mediator
+# because `--issuer-id` is required there; see WC-3112.
+ISSUER_ID="https://connect.internal"
 TOKEN="tok_rotation_drill_0123456789"
 AGENT="spiffe://drill.example/ns/agents/sa/caller"
 SERVER="spiffe://drill.example/ns/svc/sa/callee"
@@ -249,7 +252,7 @@ env API="http://127.0.0.1:$API_PORT" TOKEN="$TOKEN" CALLEE="$SERVER" \
     python3 "$REPO/scripts/.rotation-driver.py" "$WORK" "$TTL" \
     "$MEDIATE" \
     --upstream "python3 $REPO/scripts/.rotation-upstream.py" \
-    --mediator-id "$MEDIATOR_ID" \
+    --mediator-id "$MEDIATOR_ID" --issuer-id "$ISSUER_ID" \
     --caller "$AGENT" --callee "$SERVER" \
     --contracts "http://127.0.0.1:$API_PORT" --token "$TOKEN" \
     --jwks-url "http://127.0.0.1:$JWKS_PORT/jwks-live.json" \

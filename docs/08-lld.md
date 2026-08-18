@@ -917,14 +917,15 @@ connect posture          [--expiring|--unattested|--score] [--json]
 connect blast-radius <id> [--depth N] [--services]
 connect export           --format dora|cps230|oscal|csv|json|bom [--as-of TS]
                          [--anchor-pub PEM] [--out FILE] [--id ID]   # id: bom only
-connect verify           <contract.jws> --mediator-id … [--jwks FILE | --issuer-pub PEM]
+connect verify           <contract.jws> --mediator-id … [--issuer-id URL]
+                         [--jwks FILE | --issuer-pub PEM]
 connect audit verify     [--anchor-pub PEM] [--json]
 connect canon            <surface.json>          # print the wcs1 doc + pin
 connect screen           <surface.json>          # screening report, exit 5 on block
 connect policy           lint | dry-run | show
 connect keys             list | new | add | rotate | note | retire | jwks
 connect bundle           export --mediator … --signing-key … --kid … --out b.wcb
-connect bundle           verify <b.wcb> --envelope-pub … --kid … --mediator …
+connect bundle           verify <b.wcb> --envelope-pub … --kid … --mediator … --issuer-id …
 connect bench            [--gate NAME] [--iterations N] [--scale N]
 connect federate         <chain.json> --anchors anchors.toml
 connect caep ingest      <token.jwt> --transmitters streams.toml
@@ -1122,6 +1123,7 @@ pub fn verify(
 | 2 | JWS verified against issuer JWKS by `kid` (once, at cache build) | ~70 µs cold, 0 warm | `WC-3102` |
 | 3 | `nbf ≤ now < exp`, no grace | ~0 | `WC-3103` |
 | 4 | `aud == cfg.mediator_id` | ~0 | `WC-3104` |
+| 4b | `iss == cfg.issuer_id` | ~0 | `WC-3112` |
 | 5 | `jti`, `cid`, both parties ∉ revocation set | ~0 | `WC-3105` |
 | 6 | `peer.caller == contract.caller.id` (authenticated identity) | ~0 | `WC-3106` |
 | 7 | `peer.callee == contract.callee.id` | ~0 | `WC-3107` |
@@ -2099,6 +2101,7 @@ so they are additive-only — never renumbered, never reused.
 | WC-3109 | Posture not attested | closed / observe: allow+finding | -32001 |
 | WC-3110 | Zone pair not permitted locally | closed | -32001 |
 | WC-3111 | Token/contract binding mismatch | closed | -32001 |
+| WC-3112 | Issuer is not the configured control plane | closed | -32001 |
 | WC-3120 | Unknown contract schema version | closed | -32001 |
 | WC-3121 | Contract exceeds size limit | closed | -32001 |
 | **WC-40xx mediation** | | | |
@@ -2310,6 +2313,7 @@ connect-mediate --upstream … --policy warden.policy.toml \
   --token         "$WARDEN_CONNECT_TOKEN" \
   --issuer-pub    /keys/connect-issuer.pub.pem --kid issuer-1 \
   --mediator-id   warden:mediator:apac-ops \
+  --issuer-id     https://connect.internal \
   --refresh       5 \
   --caller        spiffe://org/ns/agents/sa/recon \
   --callee        spiffe://org/ns/tools/sa/payments-mcp

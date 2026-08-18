@@ -135,6 +135,8 @@ impl Code {
     pub const ZONE_PAIR_FORBIDDEN: Code = Code(3110);
     /// Session token and contract are not bound to the same connection.
     pub const TOKEN_BINDING_MISMATCH: Code = Code(3111);
+    /// `iss` is not the control plane this verifier obeys.
+    pub const ISSUER_MISMATCH: Code = Code(3112);
     /// Unknown contract schema version — reject rather than guess.
     pub const SCHEMA_UNKNOWN: Code = Code(3120);
     /// Contract exceeds the size limit.
@@ -472,6 +474,7 @@ pub static CODES: &[CodeSpec] = &[
     spec(3109, ClosedUnlessObserve, None, Some(-32001), "posture not attested"),
     spec(3110, Closed, None, Some(-32001), "zone pair not permitted locally"),
     spec(3111, Closed, None, Some(-32001), "token and contract binding mismatch"),
+    spec(3112, Closed, None, Some(-32001), "issuer is not the configured control plane"),
     spec(3120, Closed, None, Some(-32001), "unknown contract schema version"),
     spec(3121, Closed, None, Some(-32001), "contract exceeds size limit"),
     // --- mediation ---
@@ -644,7 +647,7 @@ mod tests {
             );
             prev = s.code;
         }
-        assert_eq!(CODES.len(), 76, "the LLD §8.11 table has 76 codes");
+        assert_eq!(CODES.len(), 77, "the LLD §8.11 table has 77 codes");
     }
 
     #[test]

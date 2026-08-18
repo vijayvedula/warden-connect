@@ -327,14 +327,14 @@ impl JwksSource {
 /// host. What this type exists for is to keep the *call site* identical, so the refresh
 /// loop cannot end up refreshing contracts against a trust set it forgot to refresh.
 #[derive(Debug)]
-pub enum Trust {
+pub enum KeySource {
     /// Keys fixed at startup from a PEM. Never changes for the life of the process.
     Pinned(IssuerKeys),
     /// Keys from a published set, re-read on its TTL.
     Rotating(Box<JwksSource>),
 }
 
-impl Trust {
+impl KeySource {
     /// The keys to verify against, refreshing first if the source is due.
     ///
     /// A refresh failure is returned as the second element rather than as an error,
@@ -343,8 +343,8 @@ impl Trust {
     /// `keys` itself refuses, which is the staleness bound doing its job.
     pub fn keys(&mut self, now: u64) -> (Result<&IssuerKeys>, Option<WcError>) {
         match self {
-            Trust::Pinned(keys) => (Ok(keys), None),
-            Trust::Rotating(source) => {
+            KeySource::Pinned(keys) => (Ok(keys), None),
+            KeySource::Rotating(source) => {
                 let failure = source.refresh(now).err();
                 (source.keys(now), failure)
             }
@@ -355,8 +355,8 @@ impl Trust {
     #[must_use]
     pub fn describe(&self, now: u64) -> String {
         match self {
-            Trust::Pinned(keys) => format!("pinned key(s) {}", keys.kids().join(", ")),
-            Trust::Rotating(source) => {
+            KeySource::Pinned(keys) => format!("pinned key(s) {}", keys.kids().join(", ")),
+            KeySource::Rotating(source) => {
                 let s = source.status(now);
                 format!(
                     "{} from {} (ttl {}s){}",
@@ -573,12 +573,12 @@ mod tests {
 
     #[test]
     fn rotating_trust_refreshes_itself_at_the_call_site() {
-        // The point of `Trust`: a caller that asks for keys gets refreshed keys. The
+        // The point of `KeySource`: a caller that asks for keys gets refreshed keys. The
         // failure it prevents is a refresh loop that pulls new contracts every tick and
         // verifies them against the key set it loaded at boot — which works, silently,
         // right up until the rotation it was supposed to handle.
         let f = write(&set(&["k1"]));
-        let mut trust = Trust::Rotating(Box::new(JwksSource::file(&f.0).with_ttl(60)));
+        let mut trust = KeySource::Rotating(Box::new(JwksSource::file(&f.0).with_ttl(60)));
         let (keys, failure) = trust.keys(NOW);
         assert!(keys.unwrap().get("k1").is_some());
         assert!(failure.is_none());
@@ -597,7 +597,7 @@ mod tests {
     #[test]
     fn rotating_trust_reports_a_refresh_failure_without_failing_the_call() {
         let f = write(&set(&["k1"]));
-        let mut trust = Trust::Rotating(Box::new(
+        let mut trust = KeySource::Rotating(Box::new(
             JwksSource::file(&f.0).with_ttl(60).with_max_stale(600),
         ));
         assert!(trust.keys(NOW).0.is_ok());
@@ -619,7 +619,7 @@ mod tests {
     fn pinned_trust_needs_no_source_and_says_so() {
         let mut keys = IssuerKeys::default();
         keys.add_jwks(&set(&["pinned-1"])).unwrap();
-        let mut trust = Trust::Pinned(keys);
+        let mut trust = KeySource::Pinned(keys);
         assert!(trust.keys(NOW).0.unwrap().get("pinned-1").is_some());
         assert!(trust.describe(NOW).contains("pinned key(s) pinned-1"));
     }

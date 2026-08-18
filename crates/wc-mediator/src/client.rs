@@ -19,7 +19,7 @@ use serde::Deserialize;
 use wc_core::contract::IssuerKeys;
 use wc_core::error::{Code, Result, WcError};
 
-use crate::cache::{Cache, Revocations, Snapshot};
+use crate::cache::{Cache, Revocations, Snapshot, Trust};
 
 /// What the control plane says this mediator should hold.
 #[derive(Debug, Clone, Deserialize)]
@@ -368,8 +368,7 @@ impl RefreshReport {
 pub fn refresh(
     client: &ControlPlaneClient,
     cache: &Arc<Cache>,
-    keys: &IssuerKeys,
-    mediator_id: &str,
+    trust: &Trust<'_>,
     since: u64,
     now: u64,
 ) -> Result<RefreshReport> {
@@ -378,7 +377,7 @@ pub fn refresh(
 
     // The mediator verifies for itself. The control plane says which contracts it
     // should hold, not that they are valid.
-    let snapshot = Snapshot::build(&artifacts, keys, mediator_id, now);
+    let snapshot = Snapshot::build(&artifacts, trust, now);
     let installed = snapshot.len();
     let rejected: Vec<(String, Code)> = snapshot.rejected.clone();
 
