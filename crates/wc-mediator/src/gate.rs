@@ -576,6 +576,12 @@ impl MediatedUpstream {
             self.cache
                 .still_in_force(&cid, &jti, &self.cfg.peer.caller, &self.cfg.peer.callee)
         else {
+            // Still in force, and this call is about to proceed — so the connection is in use
+            // (W10). Recorded here rather than at admission because admission happens once per
+            // session and tells you a connection was *established*, which is not the question a
+            // re-certification review is asking. A contract whose consumer connects on every
+            // deploy and calls nothing is exactly the one to withdraw.
+            self.cache.mark_used(&cid, (self.cfg.now)());
             return;
         };
 

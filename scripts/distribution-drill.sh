@@ -31,7 +31,9 @@
 #      pipeline is trying not to lose;
 #   5  `--wait` blocks and then passes when the mediator catches up, rather than failing fast;
 #   6  a gate with NO mediators configured refuses rather than passing vacuously;
-#   7  `serve --read-only` distributes while a PIPELINE holds the writer lock, and refuses state
+#   7  a mediated CALL reaches the operator's re-certification view (W10) — and with no usage
+#      reported at all, the view says so instead of listing every contract as dormant;
+#   8  `serve --read-only` distributes while a PIPELINE holds the writer lock, and refuses state
 #      mutations with a message naming the mode — the shape a pipeline-driven estate needs.
 #
 # Phase 3 and phase 6 are the point. Everything else would have worked before.
@@ -304,8 +306,57 @@ else
     printf '%s\n' "$OUT" | sed 's/^/       /' | head -6
 fi
 
-# --- 7 · read-only serve, so a pipeline can be the writer ---------------------
-bold "7 · serve --read-only, with a pipeline writing underneath it"
+# --- 7 · last use, from a real call to the operator's report ------------------
+bold "7 · a call reaches the re-certification view"
+# Before any call, and before any mediator has reported usage, the view must refuse to imply
+# anything. This is the reading that would otherwise put the whole estate on a revoke list.
+COLD="$("$CONNECT" contracts --dormant 2>&1)"
+if printf '%s' "$COLD" | grep -q "NO USAGE DATA"; then
+    ok "with nothing reported, the view says so before it lists"
+    if printf '%s' "$COLD" | grep -q "unreported"; then
+        ok "     and marks them unreported rather than never used"
+    else
+        bad "     but it labelled unreported contracts as never used"
+    fi
+else
+    bad "the dormant view listed contracts without saying no usage had been reported"
+    printf '%s\n' "$COLD" | sed 's/^/       /' | head -5
+fi
+
+# A real mediated call, then a refresh so the mediator acks the usage it just recorded.
+printf '%s\n%s\n' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"dist-drill","version":"1"}}}' \
+    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_balance","arguments":{}}}' \
+    | "$MEDIATE" --upstream "python3 $REPO/scripts/.rotation-upstream.py" \
+        --mediator-id "$MEDIATOR_ID" --issuer-id "$ISSUER_ID" \
+        --caller "$AGENT" --callee "$SERVER" \
+        --issuer-pub issuer.pub.pem --kid k1 \
+        --contracts "http://127.0.0.1:$API_PORT" --token "$TOKEN" \
+        --refresh 1 --observe >> mediate.log 2>&1
+
+USED="$(python3 -c "
+import json
+d = json.load(open('$LEDGER'))
+u = d.get('last_used', {})
+print(len(u), next(iter(u.values()))['mediator'] if u else '-')" 2>/dev/null)"
+set -- $USED
+if [ "${1:-0}" -ge 1 ]; then
+    ok "the ledger recorded use of $1 connection(s), reported by ${2:-?}"
+else
+    bad "a mediated call did not reach the durable usage ledger"
+    tail -4 mediate.log | sed 's/^/       /'
+fi
+WARM="$("$CONNECT" contracts --dormant 2>&1)"
+if ! printf '%s' "$WARM" | grep -q "NO USAGE DATA"; then
+    ok "     and the view stops disclaiming, because absence now means something"
+    printf '%s' "$WARM" | head -1 | sed 's/^/       /'
+else
+    bad "     the view still reports no usage data after a call was recorded"
+    printf '%s\n' "$WARM" | sed 's/^/       /' | head -5
+fi
+
+# --- 8 · read-only serve, so a pipeline can be the writer ---------------------
+bold "8 · serve --read-only, with a pipeline writing underneath it"
 # The constraint this closes: the state log is single-writer and a writing `serve` holds that lock
 # for the life of the process, so `offer publish` and `need apply` — the verbs the whole
 # offer/acceptance design is built on — could not run against a live control plane at all.

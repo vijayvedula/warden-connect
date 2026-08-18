@@ -63,6 +63,15 @@ pub struct SetAck {
     pub rejected: u64,
 }
 
+/// When each connection was last actually used, and by which mediator (W10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastUse {
+    /// Latest timestamp any mediator reported a call on this connection.
+    pub at: u64,
+    /// The mediator that reported it.
+    pub mediator: String,
+}
+
 /// The durable record of what every mediator has applied.
 ///
 /// Durable is the whole point. This state lived in a `Mutex<HashMap<_, _>>` built with
@@ -73,6 +82,14 @@ pub struct SetAckLedger {
     /// Latest ack per mediator id.
     #[serde(default)]
     pub acked: BTreeMap<String, SetAck>,
+    /// When each connection was last used, by `cid` (W10).
+    ///
+    /// Kept beside the acks because it arrives on the same channel and answers a question of the
+    /// same kind: what the estate is *actually doing*, as opposed to what it was authorised to do.
+    /// A contract's existence is control-plane state; whether anything ever called through it is
+    /// knowable only at a mediator.
+    #[serde(default)]
+    pub last_used: BTreeMap<String, LastUse>,
 }
 
 impl SetAckLedger {
@@ -145,6 +162,46 @@ impl SetAckLedger {
     #[must_use]
     pub fn ack_for(&self, mediator: &str) -> Option<&SetAck> {
         self.acked.get(mediator)
+    }
+
+    /// Record connection usage reported by a mediator (W10).
+    ///
+    /// **Max across mediators, not last-write.** One connection can be served by several
+    /// mediators, their acks interleave, and a host with a skewed clock reporting an older
+    /// timestamp must not make a connection look less recently used than it is. Taking the max is
+    /// what makes the answer independent of which mediator acked last.
+    pub fn record_usage(&mut self, mediator: &str, used: &BTreeMap<String, u64>) {
+        for (cid, at) in used {
+            match self.last_used.get(cid) {
+                Some(held) if held.at >= *at => {}
+                _ => {
+                    self.last_used.insert(
+                        cid.clone(),
+                        LastUse {
+                            at: *at,
+                            mediator: mediator.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    /// When a connection was last used, if any mediator has reported it.
+    #[must_use]
+    pub fn last_use(&self, cid: &str) -> Option<&LastUse> {
+        self.last_used.get(cid)
+    }
+
+    /// Whether any mediator has ever reported usage at all.
+    ///
+    /// The question that decides whether *absence* of a record means anything. A ledger with no
+    /// usage in it cannot distinguish "nothing is being used" from "no mediator running a build
+    /// old enough to report usage has ever acked" — and reporting every contract as dormant on the
+    /// strength of the second would be the most destructive possible reading of this data.
+    #[must_use]
+    pub fn has_usage_data(&self) -> bool {
+        !self.last_used.is_empty()
     }
 
     /// Judge every expected mediator against a target sequence.
@@ -363,6 +420,69 @@ mod tests {
         assert!(!d.caught_up());
         assert!(!d.clean());
         assert!(d.summary().contains("NO MEDIATORS EXPECTED"));
+    }
+
+    // --- last use (W10) ------------------------------------------------------
+
+    fn usage(pairs: &[(&str, u64)]) -> BTreeMap<String, u64> {
+        pairs.iter().map(|(c, t)| ((*c).to_string(), *t)).collect()
+    }
+
+    #[test]
+    fn usage_takes_the_latest_across_mediators() {
+        // One connection can be served by several mediators, their acks interleave, and a host
+        // with a skewed clock must not make a connection look less recently used than it is.
+        let mut ledger = SetAckLedger::default();
+        ledger.record_usage("apac", &usage(&[("conn_1", 5_000)]));
+        ledger.record_usage("emea", &usage(&[("conn_1", 4_000)]));
+        assert_eq!(ledger.last_use("conn_1").unwrap().at, 5_000);
+        assert_eq!(ledger.last_use("conn_1").unwrap().mediator, "apac");
+
+        // ...and a later report wins whichever mediator sends it.
+        ledger.record_usage("emea", &usage(&[("conn_1", 6_000)]));
+        assert_eq!(ledger.last_use("conn_1").unwrap().at, 6_000);
+        assert_eq!(ledger.last_use("conn_1").unwrap().mediator, "emea");
+    }
+
+    #[test]
+    fn no_usage_data_is_distinguishable_from_nothing_being_used() {
+        // The distinction the whole feature rests on. A ledger with no usage in it cannot tell
+        // "nothing is being used" from "no mediator has ever reported" — and reading the second as
+        // the first would put every contract in the estate on a revoke list.
+        let mut ledger = SetAckLedger::default();
+        assert!(!ledger.has_usage_data());
+        assert!(ledger.last_use("conn_1").is_none());
+
+        ledger.record_usage("apac", &usage(&[("conn_2", 1_000)]));
+        assert!(ledger.has_usage_data());
+        // conn_1 is still absent — but now that absence means something, because another
+        // connection on the same estate did report.
+        assert!(ledger.last_use("conn_1").is_none());
+    }
+
+    #[test]
+    fn usage_survives_a_round_trip_through_disk() {
+        let dir = std::env::temp_dir().join(format!("wc-usage-{}", std::process::id()));
+        let path = dir.join("set-acks.json");
+        let mut ledger = SetAckLedger::default();
+        ledger.record("apac", ack(3));
+        ledger.record_usage("apac", &usage(&[("conn_1", 9_000)]));
+        ledger.save(&path).unwrap();
+
+        let read = SetAckLedger::open(&path).unwrap();
+        assert_eq!(read.last_use("conn_1").unwrap().at, 9_000);
+        assert!(read.has_usage_data());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_empty_usage_report_leaves_the_record_alone() {
+        // A mediator with no calls in the window acks with an empty map. That must not erase what
+        // it reported last time, or a quiet hour would make a busy contract look dormant.
+        let mut ledger = SetAckLedger::default();
+        ledger.record_usage("apac", &usage(&[("conn_1", 1_000)]));
+        ledger.record_usage("apac", &BTreeMap::new());
+        assert_eq!(ledger.last_use("conn_1").unwrap().at, 1_000);
     }
 
     #[test]

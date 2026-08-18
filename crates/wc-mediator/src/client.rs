@@ -300,13 +300,24 @@ impl ControlPlaneClient {
     /// Signed transport aside, this is the mediator asserting *"I applied exactly
     /// this set"* — which is what lets the control plane report an unacked mediator
     /// as unconfirmed rather than assuming it complied.
-    pub fn ack(&self, set_hash: &str, seq: u64, revoked: &[String], aborted: u64) -> Result<()> {
+    pub fn ack(
+        &self,
+        set_hash: &str,
+        seq: u64,
+        revoked: &[String],
+        aborted: u64,
+        used: &std::collections::BTreeMap<String, u64>,
+    ) -> Result<()> {
         let url = format!("{}/v1/mediators/{}/ack", self.base, self.encoded_id());
         let payload = serde_json::json!({
             "set_hash": set_hash,
             "seq": seq,
             "revoked": revoked,
             "aborted": aborted,
+            // Which connections were actually called since the last acknowledgement (W10). The
+            // mediator is the only place that knows, and a control plane cannot tell a
+            // load-bearing contract from one issued for a cancelled project without it.
+            "used": used,
         })
         .to_string();
 
@@ -396,7 +407,14 @@ pub fn refresh(
     };
 
     cache.install(snapshot);
-    report.acked = client.ack(&set.set_hash, set.seq, &set.removed, 0).is_ok();
+    // Drained on every refresh, whether or not the ack succeeds. A failed ack loses one
+    // window of usage data, which is the right trade: retaining it would mean an unreachable
+    // control plane grows the map without bound, and usage is a reporting signal rather than
+    // an authority — losing a window makes a contract look *less* used, never more.
+    let used = cache.take_usage();
+    report.acked = client
+        .ack(&set.set_hash, set.seq, &set.removed, 0, &used)
+        .is_ok();
     Ok(report)
 }
 
