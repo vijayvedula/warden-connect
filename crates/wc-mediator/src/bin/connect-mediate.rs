@@ -45,7 +45,7 @@ use wc_mediator::cache::Cache;
 use wc_mediator::ceiling::Ceilings;
 use wc_mediator::client::{self, ControlPlaneClient};
 use wc_mediator::gate::{GateCfg, MediatedUpstream};
-use wc_mediator::jwks::{JwksSource, Trust};
+use wc_mediator::jwks::{JwksSource, KeySource};
 
 fn main() -> std::process::ExitCode {
     match run() {
@@ -92,7 +92,7 @@ fn now() -> u64 {
 /// An operator who passes both has two different beliefs about where trust comes from,
 /// and silently honouring one of them means the mediator is trusting something its
 /// operator did not think it was.
-fn build_trust(args: &[String]) -> Result<Trust, String> {
+fn build_trust(args: &[String]) -> Result<KeySource, String> {
     let pem_path = flag(args, "issuer-pub");
     let url = flag(args, "jwks-url");
     let file = flag(args, "jwks-file");
@@ -134,7 +134,7 @@ fn build_trust(args: &[String]) -> Result<Trust, String> {
             other => return Err(format!("{other:?} is not an accepted contract algorithm")),
         }
         .map_err(|e| e.to_string())?;
-        return Ok(Trust::Pinned(keys));
+        return Ok(KeySource::Pinned(keys));
     }
 
     // `--kid` and `--alg` name one key; a key set names its own, so accepting them
@@ -178,14 +178,14 @@ fn build_trust(args: &[String]) -> Result<Trust, String> {
             report.skipped.join("; ")
         );
     }
-    Ok(Trust::Rotating(Box::new(source)))
+    Ok(KeySource::Rotating(Box::new(source)))
 }
 
 const USAGE: &str = "\
 connect-mediate — the warden-connect inline mediator
 
 USAGE
-  connect-mediate --upstream \"<command>\" --mediator-id ID \\
+  connect-mediate --upstream \"<command>\" --mediator-id ID --issuer-id URL \\
                   --caller SPIFFE_ID --callee SPIFFE_ID \\
                   (--issuer-pub PEM --kid KID | --jwks-url URL | --jwks-file F) \\
                   [--contracts URL --token TOKEN] | [--contract FILE ...]
@@ -206,6 +206,14 @@ WARDEN CORE (optional; requires the `warden-proxy` build feature)
 
 CONNECT
   --mediator-id ID        this mediator's id; must equal each contract's aud
+  --issuer-id URL         the control plane this mediator obeys; must equal each
+                          contract's iss. Required, and not defaulted: a default
+                          would be the one value every estate shares, which is the
+                          same as not checking. It matters once a keyring can hold
+                          two planes' keys — a JWKS copied between environments, a
+                          federation import — because aud is then the only boundary
+                          left, and aud is commonly templated to the same string in
+                          every plane
   --caller SPIFFE_ID      the authenticated calling party
   --callee SPIFFE_ID      the authenticated called party
   --issuer-pub PEM        the contract issuer's public key
@@ -289,6 +297,10 @@ fn run() -> Result<(), String> {
 
     // --- connect configuration ---
     let mediator_id = required(&args, "mediator-id")?;
+    // Required, not defaulted. A default would be the one value every estate shares, which is
+    // the same as not checking — and `iss` went unchecked for exactly as long as nobody had to
+    // name it. The failure for a wrong value is a startup refusal with the mismatch printed.
+    let issuer_id = required(&args, "issuer-id")?;
     let caller = EntityId::new(required(&args, "caller")?).map_err(|e| e.to_string())?;
     let callee = EntityId::new(required(&args, "callee")?).map_err(|e| e.to_string())?;
 
@@ -346,7 +358,12 @@ fn run() -> Result<(), String> {
     if !inline.is_empty() {
         let (keys, _) = trust.keys(now());
         let keys = keys.map_err(|e| e.to_string())?;
-        let snapshot = wc_mediator::cache::Snapshot::build(&inline, keys, &mediator_id, now());
+        let trusted = wc_mediator::cache::Trust {
+            keys,
+            mediator_id: &mediator_id,
+            issuer: &issuer_id,
+        };
+        let snapshot = wc_mediator::cache::Snapshot::build(&inline, &trusted, now());
         eprintln!(
             "connect-mediate: loaded {} contract(s) from disk, {} rejected",
             snapshot.len(),
@@ -366,7 +383,12 @@ fn run() -> Result<(), String> {
         // reached now, this mediator would deny everything while looking healthy.
         let (keys, _) = trust.keys(now());
         let keys = keys.map_err(|e| e.to_string())?;
-        let report = client::refresh(client, &cache, keys, &mediator_id, 0, now())
+        let trusted = wc_mediator::cache::Trust {
+            keys,
+            mediator_id: &mediator_id,
+            issuer: &issuer_id,
+        };
+        let report = client::refresh(client, &cache, &trusted, 0, now())
             .map_err(|e| format!("first contract refresh failed, refusing to start: {e}"))?;
         eprintln!(
             "connect-mediate: {} contract(s) installed, set {} seq {}{}",
@@ -395,12 +417,13 @@ fn run() -> Result<(), String> {
         let loop_client = client.clone();
         let loop_cache = Arc::clone(&cache);
         let loop_mediator = mediator_id.clone();
+        let loop_issuer = issuer_id.clone();
         let loop_telemetry = Arc::clone(&telemetry);
         // The trust itself moves into the loop rather than being rebuilt from the PEM
         // here, which is what it used to be. Rebuilding meant the thread held a *copy*
         // of the startup trust: contracts refreshed every tick and the keys they were
         // checked against never did, so `--jwks-url` would have looked configured and
-        // rotation would never have arrived. `Trust::keys` refreshes at the call site
+        // rotation would never have arrived. `KeySource::keys` refreshes at the call site
         // so that gap has nowhere to reopen.
         std::thread::spawn(move || {
             let mut trust = trust;
@@ -447,7 +470,12 @@ fn run() -> Result<(), String> {
                     true,
                     loop_cache.snapshot().len() as u64,
                 );
-                match client::refresh(&loop_client, &loop_cache, keys, &loop_mediator, seq, at) {
+                let trusted = wc_mediator::cache::Trust {
+                    keys,
+                    mediator_id: &loop_mediator,
+                    issuer: &loop_issuer,
+                };
+                match client::refresh(&loop_client, &loop_cache, &trusted, seq, at) {
                     Ok(report) => {
                         seq = report.seq;
                         if !report.is_clean() {

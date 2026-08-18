@@ -69,7 +69,7 @@ fn mediator(
     let keys = verifier();
     let (stub, recorder) = StubServer::new(surface);
     let cache = Arc::new(Cache::new());
-    cache.install(Snapshot::build(artifacts, &keys, MEDIATOR, now));
+    cache.install(Snapshot::build(artifacts, &trusting(&keys), now));
 
     let mut cfg = GateCfg::new(
         MEDIATOR,
@@ -209,8 +209,7 @@ fn existing_connections_survive_a_control_plane_outage_and_no_new_ones_appear() 
     let cache = Arc::new(Cache::new());
     cache.install(Snapshot::build(
         std::slice::from_ref(&artifact),
-        &keys,
-        MEDIATOR,
+        &trusting(&keys),
         e.now,
     ));
 
@@ -230,16 +229,21 @@ fn existing_connections_survive_a_control_plane_outage_and_no_new_ones_appear() 
             issued.record.is_live(clock),
             "a 30-day contract must not care about a one-hour outage"
         );
-        assert!(
-            contract::verify_artifact(&artifact, &VerifyOpts::new(&keys, MEDIATOR, clock)).is_ok()
-        );
+        assert!(contract::verify_artifact(
+            &artifact,
+            &VerifyOpts::new(&keys, MEDIATOR, clock).issued_by(ISS)
+        )
+        .is_ok());
     }
     let _ = (stub, recorder, cache);
 
     // Past `exp` the outage stops mattering, because the contract does.
     let after = issued.record.exp + 1;
-    let err =
-        contract::verify_artifact(&artifact, &VerifyOpts::new(&keys, MEDIATOR, after)).unwrap_err();
+    let err = contract::verify_artifact(
+        &artifact,
+        &VerifyOpts::new(&keys, MEDIATOR, after).issued_by(ISS),
+    )
+    .unwrap_err();
     assert_eq!(
         err.code(),
         Code::CONTRACT_EXPIRED,
@@ -471,7 +475,7 @@ fn clock_skew_is_bounded_by_leeway_and_fails_closed_past_it() {
     let skew = 600;
 
     // A mediator whose clock runs 10 minutes fast, at the moment of expiry.
-    let mut lenient = VerifyOpts::new(&keys, MEDIATOR, issued.record.exp + skew - 1);
+    let mut lenient = VerifyOpts::new(&keys, MEDIATOR, issued.record.exp + skew - 1).issued_by(ISS);
     lenient.leeway = skew;
     assert!(
         contract::verify_artifact(&artifact, &lenient).is_ok(),
@@ -481,7 +485,7 @@ fn clock_skew_is_bounded_by_leeway_and_fails_closed_past_it() {
     // One second past it, the same contract is refused. Leeway is a bound on skew,
     // not a grace period — a contract does not get eleven minutes because somebody
     // configured ten.
-    let mut past = VerifyOpts::new(&keys, MEDIATOR, issued.record.exp + skew);
+    let mut past = VerifyOpts::new(&keys, MEDIATOR, issued.record.exp + skew).issued_by(ISS);
     past.leeway = skew;
     assert_eq!(
         contract::verify_artifact(&artifact, &past)
@@ -491,7 +495,7 @@ fn clock_skew_is_bounded_by_leeway_and_fails_closed_past_it() {
     );
 
     // And the same on the other side: a clock 10 minutes slow, before `nbf`.
-    let mut early = VerifyOpts::new(&keys, MEDIATOR, issued.record.iat - skew - 1);
+    let mut early = VerifyOpts::new(&keys, MEDIATOR, issued.record.iat - skew - 1).issued_by(ISS);
     early.leeway = skew;
     assert_eq!(
         contract::verify_artifact(&artifact, &early)
@@ -501,7 +505,12 @@ fn clock_skew_is_bounded_by_leeway_and_fails_closed_past_it() {
     );
 
     // The default is zero, so an operator gets skew tolerance only by asking for it.
-    assert_eq!(VerifyOpts::new(&keys, MEDIATOR, e.now).leeway, 0);
+    assert_eq!(
+        VerifyOpts::new(&keys, MEDIATOR, e.now)
+            .issued_by(ISS)
+            .leeway,
+        0
+    );
 }
 
 // ===========================================================================

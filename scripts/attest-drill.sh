@@ -84,6 +84,9 @@ CALLER="spiffe://drill.example/ns/agents/sa/recon-bot"
 AUDIENCE="warden:mediator:attest-drill"
 BUILDER="https://drill.example/ci/builder@v1"
 MEDIATOR_ID="$AUDIENCE"
+# The plane. `connect request` defaults `iss` to this, and the mediator now requires it: a
+# mediator that does not know which control plane it obeys has only its keyring as a boundary.
+ISSUER_ID="https://connect.internal"
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 step() { printf '  %s\n' "$1"; }
@@ -248,7 +251,8 @@ else
         '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"attest-drill","version":"1"}}}' \
         '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_balance","arguments":{}}}' \
         | "$MEDIATE" --upstream "python3 $REPO/scripts/.rotation-upstream.py" \
-            --mediator-id "$MEDIATOR_ID" --caller "$CALLER" --callee "$CALLEE" \
+            --mediator-id "$MEDIATOR_ID" --issuer-id "$ISSUER_ID" \
+            --caller "$CALLER" --callee "$CALLEE" \
             --issuer-pub issuer.pub.pem --kid issuer-1 \
             --contract "$CONTRACT" 2>mediate.log)
 
@@ -265,7 +269,8 @@ else
         '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"attest-drill","version":"1"}}}' \
         '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"transfer_funds","arguments":{}}}' \
         | "$MEDIATE" --upstream "python3 $REPO/scripts/.rotation-upstream.py" \
-            --mediator-id "$MEDIATOR_ID" --caller "$CALLER" --callee "$CALLEE" \
+            --mediator-id "$MEDIATOR_ID" --issuer-id "$ISSUER_ID" \
+            --caller "$CALLER" --callee "$CALLEE" \
             --issuer-pub issuer.pub.pem --kid issuer-1 \
             --contract "$CONTRACT" 2>/dev/null)
     if printf '%s' "$UNCONTRACTED" | grep -q "WC-4002\|not in the contracted surface"; then

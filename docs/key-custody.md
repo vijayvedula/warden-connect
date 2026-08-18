@@ -227,6 +227,100 @@ an auditor asks after a migration — *was anything signed with an on-disk key a
 we moved?* — is answered from the chain rather than from configuration, and
 rewriting the answer breaks the chain.
 
+## The wrappers
+
+`--signer COMMAND` (and the four other `*-signer` flags) name a program, not a shell line:
+whitespace-split, no quoting, no shell — a signing helper invoked through a shell is an
+injection surface on the operation everything else rests on. Anything needing a pipe or a
+quote belongs in a script file the flag names.
+
+The protocol is three lines:
+
+```text
+stdin   the JWS signing input, base64url, UNPADDED, one line
+stdout  the signature, base64url unpadded. Nothing else
+exit    0, or the signature is refused
+```
+
+**The one trap, stated once because it costs an estate.** JWS ECDSA is the raw `R‖S`
+concatenation; **every** HSM and KMS interface returns DER. A wrapper that forwards DER
+produces contracts that are well-formed, signed and distributed — and rejected by every
+mediator. `IssuerKey` length-checks the result and names DER when it sees it, so this is one
+error message rather than an outage, but the conversion belongs in the wrapper. Two smaller
+ones: base64url arrives **unpadded** and must be re-padded before decoding, and ES384 means a
+SHA-384 digest and 48-byte halves, not 32.
+
+`scripts/custody-drill.sh` is a working wrapper that does all three, exercised end to end —
+mint through `--signer`, then `connect verify`. Its phase 2 forwards DER on purpose and asserts
+the refusal names it. Start from that script.
+
+### Reaching a real KMS
+
+**Everything in this section is UNVERIFIED.** No warden-connect contract has been signed by a
+hardware token or a cloud KMS in this repository, and vendor CLI flags move between versions —
+so treat the notes below as *what to look up*, not as a recipe to paste.
+
+The acceptance test does not depend on any of that being right, which is the point of stating
+it first: **a contract your wrapper signs must pass `connect verify`.** Run it before the
+wrapper goes anywhere near an estate. It fails loudly rather than subtly, and it is the same
+check every mediator will make.
+
+A PIV token via `pkcs11-tool` is the shape to prefer, because it emits `R‖S` directly and so
+needs no conversion:
+
+```sh
+#!/bin/sh
+set -eu
+tr '_-' '/+' | base64 -d \
+  | pkcs11-tool --sign --mechanism ECDSA-SHA256 --id "$WC_PIV_ID" \
+                --login --pin-source "$WC_PIV_PIN_FILE" \
+  | base64 | tr -d '=\n' | tr '/+' '_-'
+```
+
+The three cloud KMSes each sign a **digest** rather than a message, so the wrapper hashes
+first, and each returns a signature in its own encoding. Rather than restate flags that move
+between CLI versions, here is what to establish from the vendor's own documentation before
+writing the wrapper — and then the acceptance test below, which is the part that does not
+depend on our getting the flags right:
+
+| KMS | Key configuration | The two things to check |
+|---|---|---|
+| AWS KMS | `ECC_NIST_P256` for ES256, `ECC_NIST_P384` for ES384; `SIGN_VERIFY` usage | `kms sign` signs a digest (`--message-type DIGEST`) and the signature comes back **DER**, so the conversion is needed |
+| Azure Key Vault / Managed HSM | an EC key, curve `P-256` or `P-384` | Key Vault follows JOSE conventions, so its signature is reported to be raw `R‖S` in base64url already — confirm this on your own vault, because getting it wrong in the *other* direction (converting an already-raw signature) fails just as silently |
+| Google Cloud KMS | purpose `ASYMMETRIC_SIGN`, algorithm `EC_SIGN_P256_SHA256` or `EC_SIGN_P384_SHA384` | `asymmetric-sign` is digest-based and returns **DER**, so the conversion is needed |
+
+In all three cases the credential model stays the operator's: the wrapper inherits whatever
+role, managed identity or service account the process already has, and warden-connect never
+learns of it. That is the reason for a shell wrapper rather than a vendored SDK — §8.3 requires
+every dependency to be justified per-crate, and three cloud SDKs with three credential chains
+is a large surface for one function call.
+
+The DER→`R‖S` conversion, as a filter — the same code the drill runs:
+
+```python
+#!/usr/bin/env python3
+"""DER on stdin (raw bytes), base64url R||S on stdout. `width` is 32 for ES256, 48 for ES384."""
+import base64, sys
+der = sys.stdin.buffer.read()
+width = 32
+assert der[0] == 0x30, "not a DER SEQUENCE"
+i = 2 if der[1] < 0x80 else 2 + (der[1] & 0x7F)
+
+def integer(i):
+    assert der[i] == 0x02, "not a DER INTEGER"
+    n = der[i + 1]
+    # A leading 0x00 is DER's sign padding; a short value needs left-padding.
+    return der[i + 2 : i + 2 + n].rjust(width, b"\0")[-width:], i + 2 + n
+
+r, i = integer(i)
+s, _ = integer(i)
+sys.stdout.write(base64.urlsafe_b64encode(r + s).decode().rstrip("="))
+```
+
+A signing helper gets ten seconds (`signer::DEFAULT_TIMEOUT`) before the operation is refused.
+Generous for a KMS round trip, and short enough that a stuck token is a visible failure rather
+than an issuance that never returns.
+
 ## Honest limits
 
 - **A token in a safe protects against theft, not against a person with access.**
@@ -242,6 +336,10 @@ rewriting the answer breaks the chain.
   *permanent* to *bounded by detection*. Rate limits, per-key authorisation policy
   and alerting on mint volume are what bound it; they are operational work, not a
   property the KMS provides for free.
+- **The KMS wrappers above are unverified.** `scripts/custody-drill.sh` proves the protocol,
+  the base64url round trip and the DER→`R‖S` conversion against openssl. It proves nothing
+  about a real KMS's authorisation policy, rate limits or availability, and the four vendor
+  recipes have never been run here.
 - **The seams are built; the custody is not bought.** When this note was written nothing in
   it existed. All five sub-items now do — `--signer`, `--anchor-signer`,
   `--revocation-signer`, `--approver-signer`, `--envelope-signer`, the two revocation `kid`s,

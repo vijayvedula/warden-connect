@@ -527,7 +527,7 @@ connect approve req_7f3c --by role:cib-secarch-sg --approver-key sg.pem
     <div class="col">
       <section class="rungsec" style="border-top:0; padding-top:0">
         <div class="cmd">connect-mediate --upstream "python txb_server.py" \
-  --mediator-id warden:mediator:hk.cib.txb.01 \
+  --mediator-id warden:mediator:hk.cib.txb.01 --issuer-id https://connect.hk.internal \
   --caller agent:recon --callee server:txb-hk \
   --contract contract.jws --issuer-pub hk-issuer.pub --kid hk-k1 \
   <span class="c">--observe</span>            <span class="c"># record findings; deny nothing. start here.</span></div>

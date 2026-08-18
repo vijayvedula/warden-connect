@@ -1413,12 +1413,41 @@ impl RevocationView for NoRevocations {
     }
 }
 
+/// What a verifier checks an artifact against: the keys, its own id, and the plane.
+///
+/// Three values folded into one type because two of them are strings and both are
+/// identifiers: passed positionally, transposing `mediator_id` and `issuer` produces a
+/// verifier that rejects every contract as addressed elsewhere — recoverable — or, in the
+/// estate where the two happen to be equal, one that checks neither.
+///
+/// `issuer` is not optional here. A verifier that does not know which control plane it obeys
+/// has only its keyring as a plane boundary, and a keyring is a file that gets copied. The
+/// `VerifyOpts::new` path still allows `iss` to go unchecked, for the callers that verify one
+/// artifact in isolation and have no plane to speak of.
+#[derive(Debug, Clone, Copy)]
+pub struct Trust<'a> {
+    /// Trusted issuer keys, by `kid`.
+    pub keys: &'a IssuerKeys,
+    /// This verifier's id; must equal `aud`.
+    pub mediator_id: &'a str,
+    /// The control plane whose contracts are accepted; must equal `iss`.
+    pub issuer: &'a str,
+}
+
 /// What a verifier needs to check the artifact itself.
 pub struct VerifyOpts<'a> {
     /// Trusted issuer keys.
     pub keys: &'a IssuerKeys,
     /// This mediator's id; must equal `aud`.
     pub mediator_id: &'a str,
+    /// The control plane this verifier obeys; when `Some`, must equal `iss`.
+    ///
+    /// `None` means **`iss` is not checked**, which is what every verifier did before this
+    /// field existed. It is safe only while the keyring holds one issuer's keys, so a
+    /// deployment that can ever hold two — a copied JWKS, a federation import — should set
+    /// it. `connect-mediate` requires it for that reason; a library caller who leaves it
+    /// `None` is choosing to let the keyring be the whole boundary.
+    pub expected_iss: Option<&'a str>,
     /// Wall clock.
     pub now: u64,
     /// Clock-skew allowance, seconds.
@@ -1428,16 +1457,30 @@ pub struct VerifyOpts<'a> {
 }
 
 impl<'a> VerifyOpts<'a> {
-    /// Options with no revocation feed and no skew allowance.
+    /// Options with no revocation feed, no skew allowance, and `iss` unchecked.
     #[must_use]
     pub fn new(keys: &'a IssuerKeys, mediator_id: &'a str, now: u64) -> VerifyOpts<'a> {
         VerifyOpts {
             keys,
             mediator_id,
+            expected_iss: None,
             now,
             leeway: 0,
             revoked: &NoRevocations,
         }
+    }
+
+    /// Options from a [`Trust`], with `iss` checked.
+    #[must_use]
+    pub fn trusting(trust: &Trust<'a>, now: u64) -> VerifyOpts<'a> {
+        VerifyOpts::new(trust.keys, trust.mediator_id, now).issued_by(trust.issuer)
+    }
+
+    /// Pin the control plane whose contracts this verifier will accept.
+    #[must_use]
+    pub fn issued_by(mut self, iss: &'a str) -> VerifyOpts<'a> {
+        self.expected_iss = Some(iss);
+        self
     }
 }
 
@@ -1598,6 +1641,27 @@ pub fn verify_artifact(jws: &str, opts: &VerifyOpts<'_>) -> Result<VerifiedContr
                 payload.aud, opts.mediator_id
             ),
         ));
+    }
+
+    // 4b · issuer, when the verifier has been told which control plane it obeys.
+    //
+    // The signature already binds the artifact to a key, so with one issuer's keys in the
+    // keyring this check is redundant — which is exactly why it was missing. It stops being
+    // redundant the moment two planes' keys share a keyring, and that is not a hypothetical:
+    // a JWKS copied between environments to unblock a deployment, or a federation feed that
+    // imports a peer's keys, both produce it. From then on `aud` is the only boundary left,
+    // and `aud` is the mediator id — commonly templated to the same string in every plane.
+    // A non-production contract then verifies in production.
+    if let Some(expected) = opts.expected_iss {
+        if payload.iss != expected {
+            return Err(WcError::with_detail(
+                Code::ISSUER_MISMATCH,
+                format!(
+                    "contract was issued by {:?}, and this verifier obeys {:?}",
+                    payload.iss, expected
+                ),
+            ));
+        }
     }
 
     // 5 · revocation, by artifact, connection, or either party.
@@ -3378,6 +3442,64 @@ mod conformance {
             .unwrap();
         assert_eq!(admitted.findings.len(), 1);
         assert_eq!(admitted.findings[0].0, Code::POSTURE_NOT_ATTESTED);
+    }
+
+    #[test]
+    fn a_pinned_issuer_refuses_another_planes_contract_on_a_shared_keyring() {
+        // The case this exists for. Two planes, separate issuer keys — a real boundary,
+        // because an unknown `kid` is refused. Then one keyring ends up holding both, which
+        // is what a JWKS copied between environments produces, and `aud` is the only check
+        // left: the mediator id is commonly templated to the same string in every plane, so
+        // it matches. Without an issuer check the non-production contract verifies.
+        let jws = mint(&payload(), &es256()).unwrap();
+        let shared = trusted_keys();
+
+        // `aud` matches, the signature verifies, the clock is fine — and it is still
+        // refused, on `iss` alone.
+        let err = verify_artifact(
+            &jws,
+            &VerifyOpts::new(&shared, MEDIATOR, NOW).issued_by("https://connect.internal/t/emea"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), Code::ISSUER_MISMATCH);
+        // The message has to name both, or an operator cannot tell which end is wrong.
+        let detail = err.to_string();
+        assert!(detail.contains("t/apac"), "{detail}");
+        assert!(detail.contains("t/emea"), "{detail}");
+
+        // Its own plane still admits it.
+        assert!(verify_artifact(
+            &jws,
+            &VerifyOpts::new(&shared, MEDIATOR, NOW).issued_by("https://connect.internal/t/apac")
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn an_unpinned_verifier_does_not_check_iss_and_says_so_in_its_type() {
+        // The compatibility half, stated as a test so nobody has to guess: `VerifyOpts::new`
+        // leaves `iss` unchecked, which is what every verifier did before the field existed.
+        // A `Trust` cannot express that — its `issuer` is not an `Option` — which is why the
+        // mediator and the bundle importer take a `Trust` and this constructor is for callers
+        // verifying one artifact in isolation.
+        let jws = mint(&payload(), &es256()).unwrap();
+        let keys = trusted_keys();
+        let opts = VerifyOpts::new(&keys, MEDIATOR, NOW);
+        assert!(opts.expected_iss.is_none());
+        assert!(verify_artifact(&jws, &opts).is_ok());
+
+        // And `trusting` is the same thing with the check on.
+        let trust = Trust {
+            keys: &keys,
+            mediator_id: MEDIATOR,
+            issuer: "https://connect.internal/t/emea",
+        };
+        assert_eq!(
+            verify_artifact(&jws, &VerifyOpts::trusting(&trust, NOW))
+                .unwrap_err()
+                .code(),
+            Code::ISSUER_MISMATCH
+        );
     }
 
     #[test]

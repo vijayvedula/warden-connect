@@ -346,7 +346,7 @@ fn prop_mint_verify_round_trips_and_no_single_bit_mutation_survives() {
     let (e, issued) = one_contract("prop-mint");
     let artifact = e.artifact(issued.record.cid.as_str());
     let keys = verifier();
-    let opts = VerifyOpts::new(&keys, MEDIATOR, e.now);
+    let opts = VerifyOpts::new(&keys, MEDIATOR, e.now).issued_by(ISS);
 
     let verified = contract::verify_artifact(&artifact, &opts).expect("round trip");
     assert_eq!(verified.payload.cid, issued.record.cid);
@@ -1139,8 +1139,7 @@ fn mediate_recording(
     let cache = Arc::new(Cache::new());
     cache.install(Snapshot::build(
         std::slice::from_ref(&artifact),
-        &keys,
-        MEDIATOR,
+        &trusting(&keys),
         e.now,
     ));
 

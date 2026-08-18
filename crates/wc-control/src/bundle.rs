@@ -247,8 +247,7 @@ pub fn to_bytes(bundle: &Bundle) -> Result<String> {
 pub fn import(
     text: &str,
     envelope_keys: &IssuerKeys,
-    contract_keys: &IssuerKeys,
-    mediator_id: &str,
+    trust: &wc_core::contract::Trust<'_>,
     now: u64,
 ) -> Result<Imported> {
     let bundle: Bundle = serde_json::from_str(text).map_err(|e| {
@@ -297,12 +296,12 @@ pub fn import(
         ));
     }
 
-    if bundle.body.mediator_id != mediator_id {
+    if bundle.body.mediator_id != trust.mediator_id {
         return Err(WcError::with_detail(
             Code::AUDIENCE_MISMATCH,
             format!(
-                "bundle is for {:?}, this mediator is {mediator_id:?}",
-                bundle.body.mediator_id
+                "bundle is for {:?}, this mediator is {:?}",
+                bundle.body.mediator_id, trust.mediator_id
             ),
         ));
     }
@@ -332,8 +331,10 @@ pub fn import(
         ));
     }
 
-    // Each contract through the same verification a pulled one gets.
-    let opts = wc_core::contract::VerifyOpts::new(contract_keys, mediator_id, now);
+    // Each contract through the same verification a pulled one gets — including the
+    // issuer check. A bundle is the one path where a contract *arrives as a file carried
+    // between planes*, so it is the last place `iss` should be taken on trust.
+    let opts = wc_core::contract::VerifyOpts::trusting(trust, now);
     let mut verified: Vec<String> = Vec::new();
     let mut rejected: Vec<(usize, Code)> = Vec::new();
     for (i, jws) in bundle.body.contracts.iter().enumerate() {
@@ -360,8 +361,7 @@ pub fn import(
 pub fn import_file(
     path: &Path,
     envelope_keys: &IssuerKeys,
-    contract_keys: &IssuerKeys,
-    mediator_id: &str,
+    trust: &wc_core::contract::Trust<'_>,
     now: u64,
 ) -> Result<Imported> {
     let text = std::fs::read_to_string(path).map_err(|e| {
@@ -371,7 +371,7 @@ pub fn import_file(
         )
         .with_source(e)
     })?;
-    import(&text, envelope_keys, contract_keys, mediator_id, now)
+    import(&text, envelope_keys, trust, now)
 }
 
 /// Contract audiences present in a bundle, for a pre-flight check.
@@ -389,6 +389,17 @@ mod tests {
 
     const NOW: u64 = 1_800_000_000;
     const MEDIATOR: &str = "warden:mediator:apac-ops";
+    const ISS: &str = "https://connect.internal/t/apac";
+
+    /// The trust an importing mediator verifies under. Named once, so a test cannot
+    /// quietly stop checking `iss`.
+    fn trusting(keys: &IssuerKeys) -> wc_core::contract::Trust<'_> {
+        wc_core::contract::Trust {
+            keys,
+            mediator_id: MEDIATOR,
+            issuer: ISS,
+        }
+    }
 
     fn keys_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/keys")
@@ -432,10 +443,10 @@ mod tests {
         let text = to_bytes(&cut()).unwrap();
         let keys = envelope_keys();
 
-        let fresh = import(&text, &keys, &keys, MEDIATOR, NOW + 86_400).unwrap();
+        let fresh = import(&text, &keys, &trusting(&keys), NOW + 86_400).unwrap();
         assert_eq!(fresh.remaining, 6 * 86_400);
 
-        let err = import(&text, &keys, &keys, MEDIATOR, NOW + 7 * 86_400).unwrap_err();
+        let err = import(&text, &keys, &trusting(&keys), NOW + 7 * 86_400).unwrap_err();
         assert_eq!(err.code(), Code::CONTRACT_EXPIRED);
         assert!(
             err.to_string().contains("regardless of their own expiry"),
@@ -470,9 +481,9 @@ mod tests {
     fn a_bundle_from_the_future_is_refused() {
         let text = to_bytes(&cut()).unwrap();
         let keys = envelope_keys();
-        assert!(import(&text, &keys, &keys, MEDIATOR, NOW - 3_600).is_err());
+        assert!(import(&text, &keys, &trusting(&keys), NOW - 3_600).is_err());
         // Small skew is tolerated.
-        assert!(import(&text, &keys, &keys, MEDIATOR, NOW - 60).is_ok());
+        assert!(import(&text, &keys, &trusting(&keys), NOW - 60).is_ok());
     }
 
     // --- the signature covers everything -----------------------------------
@@ -486,7 +497,7 @@ mod tests {
         bundle.body.revocations.clear();
 
         let keys = envelope_keys();
-        let err = import(&to_bytes(&bundle).unwrap(), &keys, &keys, MEDIATOR, NOW).unwrap_err();
+        let err = import(&to_bytes(&bundle).unwrap(), &keys, &trusting(&keys), NOW).unwrap_err();
         assert_eq!(err.code(), Code::SIGNATURE_INVALID);
         assert!(err.to_string().contains("do not match the signed digest"));
     }
@@ -497,7 +508,7 @@ mod tests {
         bundle.body.exp += 365 * 86_400;
         let keys = envelope_keys();
         assert_eq!(
-            import(&to_bytes(&bundle).unwrap(), &keys, &keys, MEDIATOR, NOW)
+            import(&to_bytes(&bundle).unwrap(), &keys, &trusting(&keys), NOW)
                 .unwrap_err()
                 .code(),
             Code::SIGNATURE_INVALID
@@ -509,7 +520,7 @@ mod tests {
         let mut bundle = cut();
         bundle.body.contracts.push("x.y.z".to_string());
         let keys = envelope_keys();
-        assert!(import(&to_bytes(&bundle).unwrap(), &keys, &keys, MEDIATOR, NOW).is_err());
+        assert!(import(&to_bytes(&bundle).unwrap(), &keys, &trusting(&keys), NOW).is_err());
     }
 
     #[test]
@@ -519,14 +530,14 @@ mod tests {
         let mut bundle = cut();
         bundle.body.jwks = r#"{"keys":[{"kid":"attacker"}]}"#.to_string();
         let keys = envelope_keys();
-        assert!(import(&to_bytes(&bundle).unwrap(), &keys, &keys, MEDIATOR, NOW).is_err());
+        assert!(import(&to_bytes(&bundle).unwrap(), &keys, &trusting(&keys), NOW).is_err());
     }
 
     #[test]
     fn an_envelope_signed_by_an_untrusted_key_is_refused() {
         let text = to_bytes(&cut()).unwrap();
         let empty = IssuerKeys::new();
-        let err = import(&text, &empty, &empty, MEDIATOR, NOW).unwrap_err();
+        let err = import(&text, &empty, &trusting(&empty), NOW).unwrap_err();
         assert_eq!(err.code(), Code::SIGNATURE_INVALID);
     }
 
@@ -538,7 +549,17 @@ mod tests {
         // audience: a bundle usable anywhere is replayable anywhere.
         let text = to_bytes(&cut()).unwrap();
         let keys = envelope_keys();
-        let err = import(&text, &keys, &keys, "warden:mediator:emea", NOW).unwrap_err();
+        let err = import(
+            &text,
+            &keys,
+            &wc_core::contract::Trust {
+                keys: &keys,
+                mediator_id: "warden:mediator:emea",
+                issuer: ISS,
+            },
+            NOW,
+        )
+        .unwrap_err();
         assert_eq!(err.code(), Code::AUDIENCE_MISMATCH);
         assert_eq!(audiences(&cut()).len(), 1);
     }
@@ -580,7 +601,7 @@ mod tests {
         // dropped.
         let text = to_bytes(&cut()).unwrap();
         let keys = envelope_keys();
-        let imported = import(&text, &keys, &keys, MEDIATOR, NOW).unwrap();
+        let imported = import(&text, &keys, &trusting(&keys), NOW).unwrap();
         assert!(imported.contracts.is_empty());
         assert_eq!(imported.rejected.len(), 1);
         assert!(!imported.is_clean());
@@ -595,7 +616,7 @@ mod tests {
         bundle.body.schema = 99;
         let keys = envelope_keys();
         assert_eq!(
-            import(&to_bytes(&bundle).unwrap(), &keys, &keys, MEDIATOR, NOW)
+            import(&to_bytes(&bundle).unwrap(), &keys, &trusting(&keys), NOW)
                 .unwrap_err()
                 .code(),
             Code::SCHEMA_UNKNOWN
@@ -616,7 +637,7 @@ mod tests {
     fn garbage_is_refused_cleanly() {
         let keys = envelope_keys();
         assert_eq!(
-            import("{not json}", &keys, &keys, MEDIATOR, NOW)
+            import("{not json}", &keys, &trusting(&keys), NOW)
                 .unwrap_err()
                 .code(),
             Code::EXPORT_FAILED

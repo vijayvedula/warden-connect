@@ -332,6 +332,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "issuer-key",
             "signer",
             "kid",
+            "alg",
             "out",
         ],
         "scm probe" => &[
@@ -396,6 +397,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "file",
             "envelope-pub",
             "issuer-pub",
+            "issuer-id",
             "kid",
             "mediator",
             "now",
@@ -446,6 +448,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "kid",
             "alg",
             "mediator-id",
+            "issuer-id",
             "now",
             "leeway",
         ],
@@ -467,6 +470,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "issuer-key",
             "signer",
             "kid",
+            "alg",
             "iss",
             "out",
         ],
@@ -484,6 +488,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "issuer-key",
             "signer",
             "kid",
+            "alg",
             "iss",
             "out",
         ],
@@ -500,6 +505,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "issuer-key",
             "signer",
             "kid",
+            "alg",
             "iss",
             "jwks",
             "tokens",
@@ -525,6 +531,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "issuer-key",
             "signer",
             "kid",
+            "alg",
             "out",
             "max-ttl",
             "budget",
@@ -3328,13 +3335,16 @@ fn bundle_verify(args: &Args) -> Result<()> {
     };
 
     let ts = args.number("now").unwrap_or_else(now);
-    let imported = wc_control::bundle::import_file(
-        std::path::Path::new(path),
-        &envelope,
-        &contract_keys,
-        mediator,
-        ts,
-    )?;
+    // Required here for the same reason the mediator requires it: a bundle is a contract set
+    // that travelled as a file, so the plane it came from is the one thing the courier's
+    // envelope cannot vouch for.
+    let trust = wc_core::contract::Trust {
+        keys: &contract_keys,
+        mediator_id: mediator,
+        issuer: require(args, "issuer-id")?,
+    };
+    let imported =
+        wc_control::bundle::import_file(std::path::Path::new(path), &envelope, &trust, ts)?;
 
     println!("bundle      {path}");
     println!("mediator    {}", imported.mediator_id);
@@ -5099,6 +5109,14 @@ struct Scenario {
     /// `wcid` from the session token, when there is one.
     #[serde(default)]
     token_wcid: Option<String>,
+    /// The control plane the mediator obeys, when the scenario is testing that boundary.
+    ///
+    /// Absent means `iss` is not checked, which is right for every other scenario: they are
+    /// about a mediator's context, and the plane is configuration. Present, it is LLD check
+    /// 4b — the one check a command-line verifier cannot reach on its own, because an artifact
+    /// carries its issuer and nothing in the artifact says which issuer was expected.
+    #[serde(default)]
+    expected_iss: Option<String>,
 }
 
 /// Revocations from a scenario file.
@@ -5163,6 +5181,7 @@ fn verify_with_scenario(
     let mut opts = VerifyOpts::new(keys, mediator, at);
     opts.leeway = leeway;
     opts.revoked = &revocations;
+    opts.expected_iss = scenario.expected_iss.as_deref();
 
     // The artifact stage first, with the feed attached — revocation is an artifact-stage
     // check that needs a context input, which is exactly why `revoked-jti` was deferred.
@@ -5364,6 +5383,11 @@ fn verify_cmd(args: &Args) -> Result<()> {
     let mediator = require(args, "mediator-id")?;
     let at = args.number("now").unwrap_or_else(now);
     let mut opts = VerifyOpts::new(&keys, mediator, at);
+    // Optional here and required at the mediator, deliberately: this command exists partly to
+    // inspect an artifact somebody handed you, where the plane it came from is the question
+    // rather than a setting. When it is not given, the report says `iss` was not checked
+    // instead of leaving a printed `issuer` line to imply that it was.
+    opts.expected_iss = args.get("issuer-id");
     opts.leeway = args.number("leeway").unwrap_or(0);
 
     // `--scenario` supplies what the artifact stage deliberately does not have: an
@@ -5440,8 +5464,19 @@ fn verify_cmd(args: &Args) -> Result<()> {
     println!("  policy     {}", p.policy_version);
     // Saying what was *not* checked matters: a verdict that overstates its scope
     // is worse than no verdict.
-    println!("\n  checked: size, alg, signature, schema, typ, nbf/exp, aud, revocation");
-    println!("  not checked here: peer identity, presented surface, zone policy, token binding");
+    let iss_checked = args.get("issuer-id").is_some();
+    println!(
+        "\n  checked: size, alg, signature, schema, typ, nbf/exp, aud{}, revocation",
+        if iss_checked { ", iss" } else { "" }
+    );
+    println!(
+        "  not checked here: {}peer identity, presented surface, zone policy, token binding",
+        if iss_checked {
+            ""
+        } else {
+            "iss (pass --issuer-id), "
+        }
+    );
     Ok(())
 }
 
@@ -5538,44 +5573,19 @@ fn custody_key(
     )
 }
 
+/// The issuer signing key, from a PEM on disk or a key held elsewhere.
+///
+/// This used to be a second implementation of [`custody::resolve`] — same three refusals,
+/// re-written — and the copy had drifted: it hard-coded `Algorithm::ES256` and never read
+/// `--alg`. Everything downstream of it accepted three algorithms (`IssuerKeys` verifies
+/// ES256, ES384 and Ed25519; `connect verify` takes `--alg`; the mediator's `--alg` selects
+/// among all three), so an estate mandated onto P-384 — which is not unusual where the issuer
+/// key sits in a bank's KMS — could verify contracts it had no way to mint. With `--signer`
+/// the failure was at least loud, because a 96-byte signature fails the length check; with a
+/// PEM it was `ec_pem` refusing a key that was perfectly good.
 fn issuer_key(args: &Args) -> Result<IssuerKey> {
     let kid = require(args, "kid")?;
-
-    // `--signer` is the custody choice: the private key lives in an HSM, a
-    // smartcard or a KMS and this process never sees it (`docs/key-custody.md`).
-    // Checked before `--issuer-key` so that supplying both is an error rather than a
-    // silent preference — an operator who believes their key is in a token and finds
-    // a PEM was used instead has the worst possible outcome here.
-    match (args.get("signer"), args.get("issuer-key")) {
-        (Some(_), Some(_)) => Err(WcError::with_detail(
-            Code::CONFIG_INVALID,
-            "--signer and --issuer-key both given; one names a key held elsewhere \
-             and the other a key on this disk, so which is in force must not be a guess",
-        )),
-        (Some(command), None) => {
-            CommandSigner::parse(command)?.into_issuer_key(kid, Algorithm::ES256)
-        }
-        (None, Some(path)) => {
-            if external_signing_required(args) {
-                return Err(WcError::with_detail(
-                    Code::CONFIG_INVALID,
-                    format!(
-                        "--require-external-signing is set and --issuer-key {path} is a key on \
-                         this disk; use --signer COMMAND"
-                    ),
-                ));
-            }
-            let pem = std::fs::read(path).map_err(|e| {
-                WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}"))
-                    .with_source(e)
-            })?;
-            IssuerKey::ec_pem(kid, &pem, Algorithm::ES256)
-        }
-        (None, None) => Err(WcError::with_detail(
-            Code::CONFIG_INVALID,
-            "--issuer-key PEM or --signer COMMAND is required",
-        )),
-    }
+    custody_key(args, custody::Role::Issuer, kid, args.get("alg"))
 }
 
 /// Where artifacts are written. One file per mediator, because one contract is
@@ -6722,7 +6732,10 @@ AIR-GAPPED
   bundle export   --mediator ID (--signing-key PEM | --envelope-signer CMD) --kid KID
                   [--ttl 7d] [--out FILE]
   bundle verify   <bundle.wcb> --envelope-pub PEM --kid KID --mediator ID
-                  [--issuer-pub PEM]              exit 4 if it does not verify
+                  --issuer-id URL [--issuer-pub PEM]
+                  exit 4 if it does not verify. --issuer-id is required: a bundle
+                  is a contract set that travelled as a file, so the plane it came
+                  from is the one thing the courier envelope cannot vouch for
 
 SHARED SIGNALS
   caep ingest     <token.jwt> --transmitters streams.toml [--now TS] [--json]
@@ -6876,9 +6889,14 @@ TOOLS
                         [--rules screen-rules.toml] [--acceptances FILE]
                         [--estate names.json] [--json]      exit 5 on block
   verify <contract.jws> (--issuer-pub PEM --kid KID | --jwks FILE) --mediator-id ID
-                        [--alg ES256|ES384|EdDSA] [--now TS] [--leeway N] [--json]
+                        [--issuer-id URL] [--alg ES256|ES384|EdDSA] [--now TS]
+                        [--leeway N] [--json]
                         --jwks takes an issuer key set — what an OIDC issuer or a
-                        SPIRE server publishes — instead of a converted PEM
+                        SPIRE server publishes — instead of a converted PEM.
+                        --issuer-id pins the control plane, as a mediator must; it
+                        is optional here because this command also exists to inspect
+                        an artifact somebody handed you. Omit it and the report says
+                        iss was not checked rather than implying it was
   version
 
 SERVE

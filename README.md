@@ -121,11 +121,12 @@ connect approve <req-id> --by human:vijay --approver-key .keys/approver.pem \
     --issuer-key .keys/k-2026-01.pem --kid k-2026-01
 
 # 3 · verify the artifact the way a third party would
-connect verify contract.jws --jwks jwks.json --mediator-id warden:mediator:apac-ops
+connect verify contract.jws --jwks jwks.json --mediator-id warden:mediator:apac-ops \
+    --issuer-id https://connect.internal
 
 # 4 · enforce it, inline, in front of the real server
 connect-mediate --upstream "python payments_mcp.py" \
-    --mediator-id warden:mediator:apac-ops \
+    --mediator-id warden:mediator:apac-ops --issuer-id https://connect.internal \
     --caller spiffe://org/ns/agents/sa/recon --callee spiffe://org/ns/tools/sa/payments \
     --jwks-url https://connect.internal/v1/jwks.json \
     --contracts https://connect.internal --token "$MEDIATOR_TOKEN"

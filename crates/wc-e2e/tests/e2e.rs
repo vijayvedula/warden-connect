@@ -433,8 +433,11 @@ fn uc04_connection() {
 
     // --- verify -----------------------------------------------------------
     let keys = verifier();
-    let verified = contract::verify_artifact(&artifact, &VerifyOpts::new(&keys, MEDIATOR, e.now))
-        .expect("the artifact the issuer wrote must verify");
+    let verified = contract::verify_artifact(
+        &artifact,
+        &VerifyOpts::new(&keys, MEDIATOR, e.now).issued_by(ISS),
+    )
+    .expect("the artifact the issuer wrote must verify");
     assert_eq!(verified.payload.cid.as_str(), cid);
 
     // --- the mediator, over the real stub server ---------------------------
@@ -442,8 +445,7 @@ fn uc04_connection() {
     let cache = Arc::new(Cache::new());
     cache.install(Snapshot::build(
         std::slice::from_ref(&artifact),
-        &keys,
-        MEDIATOR,
+        &trusting(&keys),
         e.now,
     ));
 
@@ -673,8 +675,7 @@ fn uc06_drift() {
     let cache = Arc::new(Cache::new());
     cache.install(Snapshot::build(
         &[e.artifact(issued.record.cid.as_str())],
-        &keys,
-        MEDIATOR,
+        &trusting(&keys),
         e.now,
     ));
     let mut cfg = GateCfg::new(
@@ -863,7 +864,7 @@ fn uc08_shadow() {
     for (mode, expect_refusal) in [(Mode::Observe, false), (Mode::Enforce, true)] {
         let (stub, recorder) = StubServer::new(&surface);
         let cache = Arc::new(Cache::new());
-        cache.install(Snapshot::build(&[], &keys, MEDIATOR, e.now));
+        cache.install(Snapshot::build(&[], &trusting(&keys), e.now));
 
         let mut cfg = GateCfg::new(
             MEDIATOR,
@@ -967,8 +968,7 @@ fn uc08_a_contracted_pair_is_not_a_shadow_finding() {
     let cache = Arc::new(Cache::new());
     cache.install(Snapshot::build(
         &[e.artifact(issued.record.cid.as_str())],
-        &keys,
-        MEDIATOR,
+        &trusting(&keys),
         e.now,
     ));
     let mut cfg = GateCfg::new(
@@ -1398,15 +1398,35 @@ fn uc04_alt_air_gapped_bundle_delivers_the_same_contract() {
     .unwrap();
     let text = bundle::to_bytes(&bundle).unwrap();
 
-    let imported = bundle::import(&text, &keys, &keys, MEDIATOR, e.now).unwrap();
+    let imported = bundle::import(&text, &keys, &trusting(&keys), e.now).unwrap();
     assert!(imported.is_clean());
     assert_eq!(imported.contracts, vec![artifact]);
 
     // Past its own expiry the whole bundle is refused, even though the contract
     // inside is still live for another three weeks.
     assert!(issued.record.is_live(e.now + 8 * DAY));
-    let err = bundle::import(&text, &keys, &keys, MEDIATOR, e.now + 8 * DAY).unwrap_err();
+    let err = bundle::import(&text, &keys, &trusting(&keys), e.now + 8 * DAY).unwrap_err();
     assert_eq!(err.code(), Code::CONTRACT_EXPIRED);
+
+    // And into the wrong PLANE. The air gap is where a contract most plausibly arrives from the
+    // wrong control plane, because a bundle is a set of contracts that travelled as a *file* and
+    // a file is what gets carried to the wrong environment. The courier's envelope key vouches
+    // for who cut the bundle and for nothing about where the contracts inside came from — so the
+    // importer applies the same issuer check a mediator does. Everything else here matches: same
+    // envelope key, same `aud`, same clock.
+    let elsewhere = wc_core::contract::Trust {
+        keys: &keys,
+        mediator_id: MEDIATOR,
+        issuer: "https://connect.elsewhere/t/apac",
+    };
+    let foreign = bundle::import(&text, &keys, &elsewhere, e.now)
+        .expect("the envelope is sound; it is the contracts inside that are foreign");
+    assert!(
+        foreign.contracts.is_empty(),
+        "a contract from another plane was imported"
+    );
+    assert_eq!(foreign.rejected, vec![(0, Code::ISSUER_MISMATCH)]);
+    assert!(!foreign.is_clean());
 }
 
 // ===========================================================================

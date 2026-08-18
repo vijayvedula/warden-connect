@@ -79,10 +79,10 @@ The convention is the verifier's plus one argument, so an artifact-only implemen
 ignores the eighth fails the context vectors rather than silently appearing to pass them.
 Point the harness at yours with `MEDIATOR_CMD=./my-mediator scripts/conformance.sh`.
 
-Six scenarios, and **one of them must be admitted** — `valid-es256.json`, every context check
-satisfied. Without it an implementation that refuses everything would pass all five refusals.
+Seven scenarios, and **one of them must be admitted** — `valid-es256.json`, every context check
+satisfied. Without it an implementation that refuses everything would pass all six refusals.
 The harness is mutation-checked against exactly those two wrong implementations: an
-artifact-only verifier (5 failures) and a refuse-everything stub (6 failures).
+artifact-only verifier and a refuse-everything stub.
 
 | Scenario | Code | What it pins |
 |---|---|---|
@@ -92,9 +92,19 @@ artifact-only verifier (5 failures) and a refuse-everything stub (6 failures).
 | `surface-superset.json` | `WC-3108` | a contracted item the callee no longer presents is drift |
 | `posture-unattested.json` | `WC-3109` | posture travels in the artifact and is enforced by the mediator |
 | `zone-crossing.json` | `WC-3110` | zone policy is the mediator's; a signed contract cannot open a crossing |
+| `issuer-other-plane.json` | `WC-3112` | `iss` is a boundary only where something compares it — see below |
 
-`crates/wc-mediator` is the reference implementation, and §8.6.3 lists the eleven checks in
-order.
+`issuer-other-plane.json` is the one scenario whose input is neither a peer, a surface, a feed
+nor a zone rule: it carries `expected_iss`, the control plane the mediator obeys. It is context
+for the same reason those are — an artifact carries its issuer, and nothing in an artifact says
+which issuer was *expected*, so a command-line verifier with no configured plane must admit it.
+The scenario uses `valid-es256.jws` deliberately: the signature verifies and `aud` matches, so
+`iss` is the only thing separating a non-production contract from a production one. That is
+harmless while a keyring holds one plane's keys, since an unknown `kid` is refused — and a
+keyring is a file that gets copied between environments, and a federation feed imports a peer's
+keys by design.
+
+`crates/wc-mediator` is the reference implementation, and §8.6.3 lists the checks in order.
 
 ## The vectors
 
@@ -169,12 +179,12 @@ the implementation that defines it.
 
 ## What this kit does not yet cover
 
-* **The mediator's eleven checks as vectors.** The context stage is four artifacts and a
+* **The mediator's checks as vectors.** The context stage is four artifacts and a
   prose description of what a mediator must do with them. **That is now done**:
   `fixtures/contracts/scenarios/` carries the peers, presented surfaces, revocation feeds and
-  zone policy, driven by `connect verify --scenario` and by this harness's mediator pass. Six
-  scenarios, one of them a positive control. What remains is a second implementation to run
-  them against.
+  zone policy — plus the expected control plane — driven by `connect verify --scenario` and by
+  this harness's mediator pass. Seven scenarios, one of them a positive control. What remains is
+  a second implementation to run them against.
 * **A second implementation of `wcs1`.** The vector set itself is now published —
   [`fixtures/canon/`](../fixtures/canon/README.md), 31 vectors, driven by
   `scripts/canon-conformance.sh` on the same calling-convention pattern as this kit. What is
