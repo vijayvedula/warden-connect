@@ -86,6 +86,9 @@ The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 | ten unit-tested alert rules | three were asserted **nowhere**, and one of those could not fire at all — `promtool` checks the tests it is given and never asks what was left out |
 | `iss` carried in every contract and printed by `connect verify` | **never checked**, and not listed among what the report said it had not checked, so once two planes' keys shared one keyring a non-production contract verified in production |
 | an issuer key in a KMS | the mint path hard-coded `ES256` while `IssuerKeys`, `connect verify` and the mediator all accepted three algorithms — an estate mandated onto P-384 could verify contracts it had no way to mint |
+| `Term.deprecates`, a published withdrawal date | had **no reader anywhere**; `Offer::deprecated_after` existed to serve it and had no caller either, so a consumer could contract an item for thirty days past the date the provider said it was gone |
+| `Matched.offer_version`, commented "so a later upgrade can find what it affects" | was dropped on the floor at mint time — `ContractRecord` had no field for it, so *who breaks if I remove this?* was unanswerable and a comment in the source said otherwise |
+| `Registry::revoke_contract` and `contain::Revoked::Connection`, both tested | had **no caller outside their own tests**, so the only way to end one contract early was `quarantine` — containing the whole counterparty |
 
 ### The review checklist
 

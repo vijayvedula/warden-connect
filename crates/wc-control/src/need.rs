@@ -146,6 +146,26 @@ pub struct Matched {
     pub ttl: u64,
     /// Which offer version permitted this, so a later upgrade can find what it affects.
     pub offer_version: u64,
+    /// Contracted items the provider has scheduled for withdrawal, with the date, when the
+    /// contract expires before it. Not a refusal — the contract is sound — but the consumer's
+    /// *next* one may not be, and this is the only notice they get.
+    pub deprecating: Vec<(String, u64)>,
+}
+
+impl Matched {
+    /// The identity and offer version, as issuance wants them.
+    ///
+    /// A method rather than a caller assembling the struct field by field: the whole point of
+    /// [`crate::issuance::Derived`] is that the version and the `jti` it is folded into cannot
+    /// drift apart, and that only holds if one place builds it.
+    #[must_use]
+    pub fn derived(&self) -> crate::issuance::Derived {
+        crate::issuance::Derived {
+            cid: self.cid.clone(),
+            jti: self.jti.clone(),
+            offer_version: self.offer_version,
+        }
+    }
 }
 
 /// Why a need was refused, per item.
@@ -185,6 +205,15 @@ pub fn derive_jti(cid: &Cid, offer_version: u64, items: &BTreeSet<String>, ttl: 
         .unwrap_or_else(|_| unreachable!("a sha256 prefix is always valid for a jti"))
 }
 
+/// A deprecation date, rendered for an operator rather than as a Unix second.
+///
+/// `export::iso8601` rather than a second date implementation: it is already correct across the
+/// awkward cases and has a test saying so, and two renderings of the same instant that disagree
+/// is a bug waiting for a leap year.
+fn on_day(after: u64) -> String {
+    format!("{} (unix {after})", crate::export::iso8601(after))
+}
+
 /// Decide whether an offer permits a need.
 ///
 /// `consumer_zone` and `consumer_tier` come from the consumer's registry record, never from its
@@ -194,6 +223,7 @@ pub fn match_need(
     offer: &Offer,
     consumer_zone: &str,
     consumer_tier: Tier,
+    now: u64,
 ) -> std::result::Result<Matched, Vec<ItemRefusal>> {
     // The offer must be the provider's. Checked rather than assumed, because a caller holding
     // the wrong offer would otherwise contract against terms nobody published for this party.
@@ -209,6 +239,7 @@ pub fn match_need(
 
     let mut refusals = Vec::new();
     let mut ceiling = need.ttl_requested;
+    let mut deprecating = Vec::new();
 
     for item in &need.items {
         match offer.permits(item, consumer_zone, consumer_tier) {
@@ -234,6 +265,51 @@ pub fn match_need(
         }
     }
 
+    // Withdrawal dates, applied after the TTL ceiling is known because that is what they are
+    // compared against.
+    //
+    // Three cases, and the middle one is the design decision worth defending. A contract must
+    // never outlive the item it names, so an offer that schedules an item for withdrawal has to
+    // bound the contracts covering it. The obvious move is to *clamp* the TTL to `after - now`
+    // — and it is wrong here, because `ttl` is folded into the derived `jti`. A ceiling that
+    // shrinks with the clock gives every build in the final window a different artifact id, so
+    // an unchanged pipeline re-mints on every run, the contract set churns, and the mediator
+    // refreshes for nothing. The idempotency this whole derivation exists for would hold only
+    // until a provider deprecated something.
+    //
+    // So it refuses instead, naming the largest TTL that fits. The consumer edits one line of
+    // their manifest and their next build is stable again — and the refusal is the deprecation
+    // notice actually arriving, which a silent shortening would not be.
+    for item in &need.items {
+        let Some(after) = offer.deprecated_after(item) else {
+            continue;
+        };
+        if now >= after {
+            refusals.push(ItemRefusal {
+                item: item.clone(),
+                why: format!(
+                    "the provider withdrew this item on {} — it is still listed in a term, and the \
+                     withdrawal date is what governs, or the schedule would be decorative",
+                    on_day(after)
+                ),
+            });
+        } else if now.saturating_add(ceiling) > after {
+            refusals.push(ItemRefusal {
+                item: item.clone(),
+                why: format!(
+                    "the provider withdraws this item on {}, and a contract at the current ceiling \
+                     of {ceiling}s would outlive it. Lower `ttl` in your need to at most {}s, or \
+                     drop the item. Not shortened for you: the TTL is folded into the artifact \
+                     id, so a ceiling that moved with the clock would re-mint on every build",
+                    on_day(after),
+                    after - now
+                ),
+            });
+        } else {
+            deprecating.push((item.clone(), after));
+        }
+    }
+
     // All or nothing. A partial contract is one the consumer did not ask for.
     if !refusals.is_empty() {
         return Err(refusals);
@@ -247,6 +323,7 @@ pub fn match_need(
         items: need.items.clone(),
         ttl: ceiling,
         offer_version: offer.version,
+        deprecating,
     })
 }
 
@@ -277,11 +354,14 @@ pub fn refusal_error(need: &Need, refusals: &[ItemRefusal]) -> WcError {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use crate::offer::{OfferManifest, OfferSource};
+    use crate::offer::{Deprecation, OfferManifest, OfferSource};
     use wc_core::canon::SurfaceKind;
 
     const CONSUMER: &str = "spiffe://bank/ns/agents/sa/recon-bot";
     const PROVIDER: &str = "spiffe://bank/ns/svc/sa/payments-mcp";
+
+    /// A fixed clock. Deprecation dates in these fixtures are relative to it.
+    const NOW: u64 = 1_785_312_500;
 
     fn tier(n: u8) -> Tier {
         Tier::new(n).unwrap()
@@ -342,6 +422,92 @@ ttl_max = 3600
         m.resolve(&m.needs[0]).unwrap()
     }
 
+    /// An offer whose `get_balance` term deprecates the item at `after`.
+    fn offer_deprecating(version: u64, after: u64) -> Offer {
+        let mut o = offer(version);
+        o.terms[0].deprecates = vec![Deprecation {
+            item: "get_balance".into(),
+            after,
+        }];
+        o
+    }
+
+    #[test]
+    fn a_withdrawal_date_already_passed_refuses_the_item() {
+        // The term still lists it. The date governs anyway, or a deprecation schedule is a
+        // comment: a provider who published a removal date and then forgot to edit the term
+        // would keep issuing contracts for something they consider gone.
+        let refusals = match_need(
+            &need_of(&["get_balance"], Some(3_600)),
+            &offer_deprecating(1, NOW - 1),
+            "internal.apac",
+            tier(2),
+            NOW,
+        )
+        .unwrap_err();
+        assert_eq!(refusals.len(), 1);
+        assert_eq!(refusals[0].item, "get_balance");
+        assert!(refusals[0].why.contains("withdrew"), "{}", refusals[0].why);
+    }
+
+    #[test]
+    fn a_contract_that_would_outlive_a_withdrawal_is_refused_not_shortened() {
+        // Refused rather than clamped, and this test is the reason. `ttl` is folded into the
+        // derived `jti`, so a ceiling of `after - now` would give every build in the final
+        // window a different artifact id: an unchanged pipeline would re-mint on every run and
+        // the contract set would churn. The refusal names the TTL that fits, so the fix is one
+        // line of the consumer's manifest and the next build is stable again.
+        let after = NOW + 3_600;
+        let refusals = match_need(
+            &need_of(&["get_balance"], Some(7_200)),
+            &offer_deprecating(1, after),
+            "internal.apac",
+            tier(2),
+            NOW,
+        )
+        .unwrap_err();
+        assert_eq!(refusals.len(), 1);
+        assert!(refusals[0].why.contains("3600s"), "{}", refusals[0].why);
+
+        // Inside the window it is permitted, and reported rather than silent — the consumer's
+        // pipeline is the only place the provider's withdrawal date reaches them.
+        let m = match_need(
+            &need_of(&["get_balance"], Some(1_800)),
+            &offer_deprecating(1, after),
+            "internal.apac",
+            tier(2),
+            NOW,
+        )
+        .expect("a contract that expires before the withdrawal is fine");
+        assert_eq!(m.ttl, 1_800);
+        assert_eq!(m.deprecating, vec![("get_balance".to_string(), after)]);
+
+        // And the identity does not move with the clock, which is the property the refusal
+        // exists to protect. Ten minutes later, same build, same artifact id.
+        let later = match_need(
+            &need_of(&["get_balance"], Some(1_800)),
+            &offer_deprecating(1, after),
+            "internal.apac",
+            tier(2),
+            NOW + 600,
+        )
+        .expect("still inside the window");
+        assert_eq!(later.jti, m.jti, "the derived jti moved with the clock");
+    }
+
+    #[test]
+    fn an_item_with_no_withdrawal_date_reports_nothing() {
+        let m = match_need(
+            &need_of(&["get_balance"], Some(3_600)),
+            &offer(1),
+            "internal.apac",
+            tier(2),
+            NOW,
+        )
+        .expect("permitted");
+        assert!(m.deprecating.is_empty());
+    }
+
     #[test]
     fn a_need_inside_the_offer_is_contractable() {
         let m = match_need(
@@ -349,6 +515,7 @@ ttl_max = 3600
             &offer(7),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .expect("permitted");
         assert_eq!(m.offer_version, 7);
@@ -365,6 +532,7 @@ ttl_max = 3600
             &offer(1),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .unwrap();
         assert_eq!(m.ttl, 604_800);
@@ -377,6 +545,7 @@ ttl_max = 3600
             &offer(1),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .unwrap();
         assert_eq!(m.ttl, 3_600, "ttl_max is a ceiling, not a target");
@@ -391,6 +560,7 @@ ttl_max = 3600
             &offer(3),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .unwrap();
         let b = match_need(
@@ -398,6 +568,7 @@ ttl_max = 3600
             &offer(3),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .unwrap();
         assert_eq!(a.jti, b.jti);
@@ -411,6 +582,7 @@ ttl_max = 3600
             &offer(4),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .unwrap();
         let again = match_need(
@@ -418,6 +590,7 @@ ttl_max = 3600
             &offer(4),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .unwrap();
         assert_eq!(
@@ -435,6 +608,7 @@ ttl_max = 3600
             &offer(6),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .unwrap();
         let new = match_need(
@@ -442,6 +616,7 @@ ttl_max = 3600
             &offer(7),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .unwrap();
         assert_eq!(
@@ -458,6 +633,7 @@ ttl_max = 3600
             &offer(1),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .unwrap();
         let wide = match_need(
@@ -465,6 +641,7 @@ ttl_max = 3600
             &offer(1),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .unwrap();
         assert_eq!(narrow.cid, wide.cid);
@@ -480,6 +657,7 @@ ttl_max = 3600
             &offer(1),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .expect_err("must refuse");
         assert_eq!(refusals.len(), 1);
@@ -498,6 +676,7 @@ ttl_max = 3600
             &offer(1),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .expect_err("must refuse");
         assert_eq!(refusals.len(), 2, "{refusals:?}");
@@ -511,6 +690,7 @@ ttl_max = 3600
             &offer(1),
             "partner.acme",
             tier(2),
+            NOW,
         )
         .expect_err("must refuse");
         assert!(refusals[0].why.contains("audience"), "{:?}", refusals[0]);
@@ -520,6 +700,7 @@ ttl_max = 3600
             &offer(1),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .expect_err("must refuse");
         assert!(unknown[0].why.contains("at all"), "{:?}", unknown[0]);
@@ -536,6 +717,7 @@ ttl_max = 3600
             &wrong,
             "internal.apac",
             tier(2),
+            NOW,
         )
         .expect_err("must refuse");
         assert!(refusals[0].why.contains("belongs to"), "{:?}", refusals[0]);
@@ -570,6 +752,7 @@ ttl_max = 3600
             &offer(1),
             "internal.apac",
             tier(2),
+            NOW,
         )
         .unwrap();
         assert_eq!(m.ttl, DEFAULT_TTL);
@@ -594,7 +777,7 @@ ttl_max = 3600
     #[test]
     fn a_refusal_renders_as_one_error_a_pipeline_can_fail_on() {
         let need = need_of(&["transfer_funds"], None);
-        let refusals = match_need(&need, &offer(1), "internal.apac", tier(2)).unwrap_err();
+        let refusals = match_need(&need, &offer(1), "internal.apac", tier(2), NOW).unwrap_err();
         let err = refusal_error(&need, &refusals);
         assert_eq!(err.code(), Code::POLICY_DENIED);
         assert!(err.detail().contains("transfer_funds"), "{}", err.detail());

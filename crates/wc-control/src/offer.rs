@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use wc_core::canon::SurfaceKind;
-use wc_core::contract::IssuerKey;
+use wc_core::contract::{ContractRecord, IssuerKey};
 use wc_core::error::{Code, Result, WcError};
 use wc_core::model::{EntityId, Tier};
 
@@ -417,6 +417,132 @@ pub fn attest_surface(document: &Value, key: &IssuerKey) -> Result<Value> {
     Ok(signed)
 }
 
+// ---------------------------------------------------------------------------
+// The upgrade question (W7)
+// ---------------------------------------------------------------------------
+
+/// One live contract, judged against the offer version now in force.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Affected {
+    /// The connection.
+    pub cid: String,
+    /// Who holds it.
+    pub consumer: EntityId,
+    /// The offer version it was minted under. `None` means a human requested it directly rather
+    /// than a pipeline matching a need, which is a different kind of contract and not a gap.
+    pub minted_under: Option<u64>,
+    /// When it lapses on its own.
+    pub exp: u64,
+    /// Contracted items the current offer no longer covers for this consumer at all. The most
+    /// serious row: the provider's intent and the contract have diverged with no schedule
+    /// between them.
+    pub gone: Vec<String>,
+    /// Contracted items past their published withdrawal date.
+    pub withdrawn: Vec<(String, u64)>,
+    /// Contracted items with a withdrawal date still ahead.
+    pub withdrawing: Vec<(String, u64)>,
+}
+
+impl Affected {
+    /// Whether this contract has anything the provider needs to know about.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.gone.is_empty() && self.withdrawn.is_empty() && self.withdrawing.is_empty()
+    }
+}
+
+/// What the offer now in force means for the contracts already out there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Impact {
+    /// The version published.
+    pub version: u64,
+    /// Live contracts naming this asset.
+    pub live: usize,
+    /// How many were minted under an earlier version of the offer.
+    pub behind: usize,
+    /// Every contract with something to report, worst first.
+    pub affected: Vec<Affected>,
+}
+
+/// One live contract as this analysis needs it: the record, plus the consumer's zone and tier
+/// **as they are now**.
+///
+/// Now rather than at mint time, and the distinction matters: the question being answered is
+/// *what would happen on the consumer's next build*, and that is evaluated against the registry
+/// as it stands. A consumer whose tier was raised out of an audience is as affected as one whose
+/// item was withdrawn, and neither is visible from the contract record alone — `ContractRecord`
+/// keeps the caller's zone but not its tier.
+#[derive(Debug, Clone, Copy)]
+pub struct LiveContract<'a> {
+    /// The record.
+    pub record: &'a ContractRecord,
+    /// The consumer's zone in the registry now.
+    pub consumer_zone: &'a str,
+    /// The consumer's tier in the registry now.
+    pub consumer_tier: Tier,
+}
+
+/// Judge live contracts against the offer now in force.
+///
+/// **A version bump changes nothing about a contract already issued**, and that is deliberate:
+/// a contract is a signed ceiling with a hard expiry, and letting a publisher shorten one
+/// remotely would make the artifact a cache of a mutable decision rather than a decision. So
+/// this reports rather than acts, and the three things that actually close the gap are the
+/// contract's own `exp`, the consumer's next build (where `match_need` refuses what the offer no
+/// longer permits), and the surface pin — a provider who truly removes a tool causes `WC-3108`
+/// drift at the mediator, which fails closed without anyone publishing anything.
+#[must_use]
+pub fn impact(offer: &Offer, live: &[LiveContract<'_>], now: u64) -> Impact {
+    let mut affected = Vec::new();
+    let mut behind = 0;
+
+    for c in live {
+        if c.record.offer_version.is_some_and(|v| v < offer.version) {
+            behind += 1;
+        }
+        let mut row = Affected {
+            cid: c.record.cid.as_str().to_string(),
+            consumer: c.record.caller.clone(),
+            minted_under: c.record.offer_version,
+            exp: c.record.exp,
+            gone: Vec::new(),
+            withdrawn: Vec::new(),
+            withdrawing: Vec::new(),
+        };
+        for item in c.record.surface.items() {
+            match offer.permits(&item, c.consumer_zone, c.consumer_tier) {
+                TermOutcome::NotOffered { .. } | TermOutcome::NeedsNamedApproval => {
+                    row.gone.push(item);
+                }
+                TermOutcome::PreGranted { .. } => match offer.deprecated_after(&item) {
+                    Some(after) if now >= after => row.withdrawn.push((item, after)),
+                    Some(after) => row.withdrawing.push((item, after)),
+                    None => {}
+                },
+            }
+        }
+        if !row.is_clean() {
+            affected.push(row);
+        }
+    }
+
+    // Worst first: contracts holding something already gone, then something past its date, then
+    // something scheduled. An operator reading a long list needs the top of it to be the part
+    // that cannot wait.
+    affected.sort_by(|a, b| {
+        (b.gone.len(), b.withdrawn.len(), b.withdrawing.len())
+            .cmp(&(a.gone.len(), a.withdrawn.len(), a.withdrawing.len()))
+            .then_with(|| a.cid.cmp(&b.cid))
+    });
+
+    Impact {
+        version: offer.version,
+        live: live.len(),
+        behind,
+        affected,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -622,6 +748,183 @@ deprecates = [{ item = "get_balance", after = 1000 }]
                 .deprecated_after("get_balance"),
             None
         );
+    }
+
+    // --- the upgrade question ------------------------------------------------
+
+    const NOW: u64 = 1_785_312_500;
+
+    fn record(cid: &str, consumer: &str, tools: &[&str], version: Option<u64>) -> ContractRecord {
+        use wc_core::contract::{ApprovalRef, ContractStatus, Surface, Terms};
+        use wc_core::model::{Cid, Jti, ZoneId};
+        ContractRecord {
+            cid: Cid::new(cid).unwrap(),
+            jti: Jti::new("cx_000000000000000000000001").unwrap(),
+            caller: EntityId::new(consumer).unwrap(),
+            callee: EntityId::new("spiffe://bank/ns/svc/sa/payments-mcp").unwrap(),
+            caller_zone: ZoneId::new("internal.apac").unwrap(),
+            callee_zone: ZoneId::new("internal.payments").unwrap(),
+            callee_tier: tier(2),
+            callee_manifest: "sha256:m".to_string(),
+            surface_digest: "sha256:d".to_string(),
+            surface: Surface {
+                tools: tools.iter().map(|t| (*t).to_string()).collect(),
+                ..Surface::default()
+            },
+            terms: Terms::default(),
+            aud: vec!["warden:mediator:apac".to_string()],
+            jws_sha256: "sha256:j".to_string(),
+            status: ContractStatus::Active,
+            approval: ApprovalRef::standing(),
+            policy_version: "connect-policy@v1".to_string(),
+            iat: NOW - 100,
+            exp: NOW + 86_400,
+            offer_version: version,
+            schema: wc_core::contract::CONTRACT_SCHEMA,
+        }
+    }
+
+    #[test]
+    fn impact_finds_the_contracts_a_removal_would_break() {
+        let mut offer = offer_from(TWO_TERMS).unwrap();
+        offer.version = 9;
+        offer.terms[0].deprecates = vec![Deprecation {
+            item: "list_transactions".to_string(),
+            after: NOW + 30 * 86_400,
+        }];
+
+        // Three consumers: one clean, one holding an item that needs named approval under the
+        // current terms, one holding a scheduled item under an older offer version.
+        let clean = record(
+            "conn_1111111111111111",
+            "spiffe://bank/ns/a/sa/one",
+            &["get_balance"],
+            Some(9),
+        );
+        let broken = record(
+            "conn_2222222222222222",
+            "spiffe://bank/ns/a/sa/two",
+            &["transfer_funds"],
+            Some(9),
+        );
+        let stale = record(
+            "conn_3333333333333333",
+            "spiffe://bank/ns/a/sa/three",
+            &["get_balance", "list_transactions"],
+            Some(4),
+        );
+        let live: Vec<LiveContract<'_>> = [&clean, &broken, &stale]
+            .into_iter()
+            .map(|r| LiveContract {
+                record: r,
+                consumer_zone: "internal.apac",
+                consumer_tier: tier(2),
+            })
+            .collect();
+
+        let i = impact(&offer, &live, NOW);
+        assert_eq!(i.version, 9);
+        assert_eq!(i.live, 3);
+        assert_eq!(i.behind, 1, "only the version-4 contract is behind");
+
+        // The clean one is absent, not present-and-empty: a report an operator has to filter is
+        // a report they stop reading.
+        assert_eq!(i.affected.len(), 2);
+
+        // Worst first. `transfer_funds` needs named approval under the current terms, which for
+        // this purpose is the same as gone — the consumer could not get it today.
+        assert_eq!(i.affected[0].cid, "conn_2222222222222222");
+        assert_eq!(i.affected[0].gone, vec!["transfer_funds".to_string()]);
+        assert_eq!(i.affected[0].minted_under, Some(9));
+
+        assert_eq!(i.affected[1].cid, "conn_3333333333333333");
+        assert!(i.affected[1].gone.is_empty());
+        assert_eq!(
+            i.affected[1].withdrawing,
+            vec![("list_transactions".to_string(), NOW + 30 * 86_400)]
+        );
+    }
+
+    #[test]
+    fn impact_separates_a_passed_withdrawal_from_a_scheduled_one() {
+        let mut offer = offer_from(TWO_TERMS).unwrap();
+        offer.terms[0].deprecates = vec![Deprecation {
+            item: "get_balance".to_string(),
+            after: NOW - 1,
+        }];
+        let r = record(
+            "conn_4444444444444444",
+            "spiffe://bank/ns/a/sa/four",
+            &["get_balance"],
+            Some(7),
+        );
+        let live = [LiveContract {
+            record: &r,
+            consumer_zone: "internal.apac",
+            consumer_tier: tier(2),
+        }];
+
+        let i = impact(&offer, &live, NOW);
+        assert_eq!(i.affected.len(), 1);
+        assert_eq!(
+            i.affected[0].withdrawn,
+            vec![("get_balance".to_string(), NOW - 1)]
+        );
+        assert!(i.affected[0].withdrawing.is_empty());
+    }
+
+    #[test]
+    fn a_contract_from_a_direct_request_is_not_counted_as_behind() {
+        // `None` is not "version zero". A human who requested a contract directly was never on
+        // the offer's version track, and counting them as behind would make every estate look
+        // permanently out of date — an alarm that is always on is not read.
+        let offer = offer_from(TWO_TERMS).unwrap();
+        let r = record(
+            "conn_5555555555555555",
+            "spiffe://bank/ns/a/sa/five",
+            &["get_balance"],
+            None,
+        );
+        let live = [LiveContract {
+            record: &r,
+            consumer_zone: "internal.apac",
+            consumer_tier: tier(2),
+        }];
+
+        let i = impact(&offer, &live, NOW);
+        assert_eq!(i.behind, 0);
+        assert!(i.affected.is_empty());
+    }
+
+    #[test]
+    fn impact_judges_the_audience_as_it_stands_now_not_at_mint_time() {
+        // The consumer's tier was raised out of the audience after the contract was minted. The
+        // contract is still live and still authorises the item — and the consumer's next build
+        // will refuse, so the provider needs to see it. `ContractRecord` keeps the caller's zone
+        // but not its tier, so this can only be answered from the registry.
+        let offer = offer_from(TWO_TERMS).unwrap();
+        let r = record(
+            "conn_6666666666666666",
+            "spiffe://bank/ns/a/sa/six",
+            &["get_balance"],
+            Some(7),
+        );
+        let inside = [LiveContract {
+            record: &r,
+            consumer_zone: "internal.apac",
+            consumer_tier: tier(2),
+        }];
+        assert!(impact(&offer, &inside, NOW).affected.is_empty());
+
+        // tier 3 fails `tier = { op = "lt", value = 3 }`.
+        let outside = [LiveContract {
+            record: &r,
+            consumer_zone: "internal.apac",
+            consumer_tier: tier(3),
+        }];
+        let i = impact(&offer, &outside, NOW);
+        assert_eq!(i.affected.len(), 1);
+        assert_eq!(i.affected[0].gone, vec!["get_balance".to_string()]);
     }
 
     #[test]

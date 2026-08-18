@@ -1424,6 +1424,7 @@ mod tests {
             policy_version: "connect-policy@v37".to_string(),
             iat: 1_000,
             exp,
+            offer_version: None,
             schema: CONTRACT_SCHEMA,
         }
     }

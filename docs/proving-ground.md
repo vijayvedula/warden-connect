@@ -249,6 +249,7 @@ identity, with no join token anywhere, and `connect` verifies it. This is the di
 | — | Rotation drill | **closed** — `scripts/rotation-drill.sh` | local |
 | — | Signing protocol, DER trap, ES384 | **closed** — `scripts/custody-drill.sh` (item 6 keeps the *custody* half) | local |
 | — | Two planes, separate issuer keys | **closed** — `scripts/custody-drill.sh` phases 4–5 | local |
+| — | Provider upgrade path, deprecation | **closed** — `scripts/upgrade-drill.sh` | local |
 
 So: **one KMS key, one Kubernetes cluster, one weekend spot VM.** Held for a week and destroyed,
 on either cloud, this is small money — well under a hundred dollars. The expensive items on the

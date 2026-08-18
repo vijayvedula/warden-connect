@@ -887,7 +887,17 @@ pub fn contain(
 
     // Then each affected connection by name, so a mediator can apply the cut
     // without having to derive the contract set itself.
+    //
+    // Skipping the one that would restate the order. For a party containment the two are
+    // genuinely different — the order is the backstop a mediator can apply without knowing which
+    // contracts exist, and the per-connection rows are the specifics — but for
+    // `Revoked::Connection` they are the same row, and writing it twice doubles the feed for
+    // every single-connection revocation and makes the seq an operator reads not mean what they
+    // think. Filtered here rather than at the caller: a caller who forgot would put it back.
     for cid in contracts {
+        if matches!(&revoked, Revoked::Connection { cid: ordered } if ordered == cid) {
+            continue;
+        }
         ctx.feed.append(
             Revoked::Connection { cid: cid.clone() },
             reason,
@@ -1316,6 +1326,63 @@ mod tests {
         fn notify(&self, _t: &MediatorTarget, _s: u64) -> PushOutcome {
             PushOutcome::Accepted
         }
+    }
+
+    #[test]
+    fn a_single_connection_revocation_writes_one_feed_row_not_two() {
+        // `contain` appends the order and then each affected connection by name. For a party
+        // containment those are different things — the order is the backstop a mediator can
+        // apply without knowing which contracts exist. For a connection revocation they are the
+        // same row, and writing it twice doubles the feed for the commonest case (a provider
+        // ending one connection after narrowing their terms) and makes the feed seq an operator
+        // reads not mean what they think it means.
+        let dir = tmp("one-row");
+        let key = signing_key();
+        let mut feed = RevocationFeed::open(&dir.join("r.jsonl")).unwrap();
+        let mut ledger = AckLedger::default();
+        let set = mediator_set(&[]);
+        let push = NoPush;
+        let mut ctx = ContainCtx {
+            feed: &mut feed,
+            ledger: &mut ledger,
+            mediators: &set,
+            push: &push,
+            key: &key,
+            ack_deadline: DEFAULT_ACK_DEADLINE,
+        };
+
+        let target = Revoked::Connection { cid: cid(1) };
+        contain(
+            target,
+            &[cid(1)],
+            "narrowed terms",
+            "human:sam",
+            1_000,
+            &mut ctx,
+        )
+        .unwrap();
+        assert_eq!(feed.next_seq(), 2, "one row, so the next seq is 2");
+
+        // And a party containment still names its connections, which is the behaviour the skip
+        // must not have touched: the order plus one row per contract.
+        let mut ctx = ContainCtx {
+            feed: &mut feed,
+            ledger: &mut ledger,
+            mediators: &set,
+            push: &push,
+            key: &key,
+            ack_deadline: DEFAULT_ACK_DEADLINE,
+        };
+        contain(
+            party(),
+            &[cid(2), cid(3)],
+            "SOC-1",
+            "human:sam",
+            1_100,
+            &mut ctx,
+        )
+        .unwrap();
+        assert_eq!(feed.next_seq(), 5, "the order plus two named connections");
     }
 
     #[test]

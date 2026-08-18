@@ -114,6 +114,14 @@ jobs:
         working-directory: warden-connect
         run: ./scripts/custody-drill.sh   # builds the workspace itself
 
+      # `Term.deprecates` had no reader and `Matched.offer_version` was dropped at mint time —
+      # the second with a doc comment claiming it existed "so a later upgrade can find what it
+      # affects". So a provider could publish a withdrawal schedule that bound nothing, and could
+      # not be told who a removal would break. This drill runs the whole change of terms.
+      - name: Upgrade drill — a provider changes their terms and everyone finds out in time
+        working-directory: warden-connect
+        run: ./scripts/upgrade-drill.sh   # builds the workspace itself
+
       # Named separately from the run above even though it is inside it: the §8.15.3
       # conformance vectors are the ground truth a third party implements against, and
       # a green summary line is not the same as knowing they ran.

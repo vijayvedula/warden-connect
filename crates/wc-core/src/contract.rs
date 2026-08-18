@@ -547,6 +547,18 @@ pub struct ContractRecord {
     pub iat: u64,
     /// Expires at. Hard: there is no grace period.
     pub exp: u64,
+    /// The offer version whose terms permitted this contract, when it came from an offer.
+    ///
+    /// `None` is not a missing value: it means a human requested this contract directly rather
+    /// than a pipeline matching a need against published terms. The two are genuinely different
+    /// and a provider asking "who is on my old terms?" wants only the former.
+    ///
+    /// Deliberately **not** in [`ContractPayload`]. A mediator has no use for it — it enforces a
+    /// surface and a set of terms, not a version number — and adding a payload claim would bump
+    /// `PAYLOAD_SCHEMA`, which is compared exactly on verify, so every deployed mediator would
+    /// refuse every new contract. The upgrade question is the control plane's to answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer_version: Option<u64>,
     /// Record schema version.
     #[serde(default = "default_schema")]
     pub schema: u16,
@@ -2378,6 +2390,7 @@ mod tests {
             policy_version: "connect-policy@v37".to_string(),
             iat: 1_000,
             exp,
+            offer_version: None,
             schema: CONTRACT_SCHEMA,
         }
     }

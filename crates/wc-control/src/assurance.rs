@@ -1170,6 +1170,7 @@ mod tests {
             policy_version: "connect-policy@v1".to_string(),
             iat: 1_000,
             exp: 1_000_000,
+            offer_version: None,
             schema: wc_core::contract::CONTRACT_SCHEMA,
         }
     }
