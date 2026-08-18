@@ -3299,6 +3299,7 @@ mod dry_run_tests {
             policy_version: "connect-policy@v0".to_string(),
             iat: fixtures::NOW - 86_400,
             exp: fixtures::NOW + 86_400,
+            offer_version: None,
             schema: CONTRACT_SCHEMA,
         }
     }

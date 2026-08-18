@@ -1211,6 +1211,7 @@ mod tests {
             policy_version: s("connect-policy@v9"),
             iat: AS_OF - 1_000,
             exp: AS_OF + 86_400,
+            offer_version: None,
             schema: CONTRACT_SCHEMA,
         }
     }

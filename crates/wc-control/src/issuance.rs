@@ -414,6 +414,23 @@ fn breakglass_id(input: &BreakGlassInput, now: u64) -> String {
     format!("bg_{}", &wc_core::util::sha256_hex(&seed)[..12])
 }
 
+/// The identity a pipeline derived, and the offer it derived it from.
+///
+/// One value rather than three arguments because the three are one fact: this contract is what
+/// *these* terms permit for *this* pair, and the `jti` is a hash over the offer version among
+/// other things. Passing the version separately from the identity it is folded into is how they
+/// come apart — a record claiming version 2 whose `jti` was derived from version 1 would be
+/// worse than no record, because every later query would trust it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Derived {
+    /// The connection id, from the pair alone.
+    pub cid: Cid,
+    /// The artifact id, from the semantic inputs including `offer_version`.
+    pub jti: Jti,
+    /// The offer version whose terms permitted this.
+    pub offer_version: u64,
+}
+
 /// A minted contract and its artifacts.
 #[derive(Debug, Clone)]
 pub struct Issued {
@@ -1124,12 +1141,11 @@ impl<'a> Issuer<'a> {
         approval: ApprovalRef,
         caller: &Entity,
         callee: &Entity,
-        cid: Cid,
-        jti: Jti,
+        derived: Derived,
     ) -> Result<Issued> {
         caller.assert_connectable(self.mode)?;
         callee.assert_connectable(self.mode)?;
-        self.mint_unchecked(pending, approval, caller, callee, Some((cid, jti)))
+        self.mint_unchecked(pending, approval, caller, callee, Some(derived))
     }
 
     /// Mint without the connectability assertion.
@@ -1144,13 +1160,14 @@ impl<'a> Issuer<'a> {
         approval: ApprovalRef,
         caller: &Entity,
         callee: &Entity,
-        identity: Option<(Cid, Jti)>,
+        derived: Option<Derived>,
     ) -> Result<Issued> {
         let items = pending.surface.items();
         let surface_digest = callee.pin.surface_digest(&items)?;
 
-        let (cid, jti) = match identity {
-            Some(pair) => pair,
+        let offer_version = derived.as_ref().map(|d| d.offer_version);
+        let (cid, jti) = match derived {
+            Some(d) => (d.cid, d.jti),
             None => {
                 let cid = Cid::new(mint_cid(pending))?;
                 let jti = Jti::new(mint_jti(&cid, self.now, self.store.log.last_seq()))?;
@@ -1235,6 +1252,7 @@ impl<'a> Issuer<'a> {
             policy_version: pending.policy_version.clone(),
             iat: self.now,
             exp,
+            offer_version,
             schema: CONTRACT_SCHEMA,
         };
 
@@ -2446,6 +2464,90 @@ reason = "a sensitive callee needs a security architect"
         for id in &ids {
             assert_eq!(store.projection.requests[id].status, RequestStatus::Lapsed);
         }
+    }
+
+    // --- the pipeline path (W5, W7) ---
+
+    #[test]
+    fn a_pipeline_mint_records_the_offer_version_that_permitted_it() {
+        // The whole of W7 rests on this one field being written. `Matched.offer_version` existed
+        // for a release with a doc comment saying it was there "so a later upgrade can find what
+        // it affects", and nothing carried it to the record — so the provider's question, *who
+        // breaks if I remove this?*, had no answer and a comment claiming one.
+        //
+        // Also the first test of `mint_with_identity` at all: W5 added it and only the drill ran
+        // it, which is the shape this project keeps finding.
+        let tmp = TmpDir::new("offer-version");
+        let pol = policy();
+        let mut store = seeded(&tmp, Tier::TWO);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+
+        let pending = {
+            let mut issuer = Issuer::new(
+                &mut store,
+                &mut evidence,
+                &pol,
+                &key,
+                "https://connect.internal",
+                NOW,
+                Actor::Human { id: priya() },
+            );
+            match issuer.request(&input(&["get_balance"])).unwrap() {
+                Outcome::AwaitingApproval(p) => p,
+                other => panic!("{other:?}"),
+            }
+        };
+
+        let (caller, callee) = {
+            let reg = store.registry(Actor::Human { id: priya() }, NOW);
+            (
+                reg.require(&agent_id()).unwrap().clone(),
+                reg.require(&server_id()).unwrap().clone(),
+            )
+        };
+
+        // A derived identity, as a consumer's pipeline supplies it: the cid from the pair, the
+        // jti from the semantic inputs, and the offer version folded into that jti.
+        let derived = Derived {
+            cid: Cid::new("conn_a1b2c3d4a1b2c3d4").unwrap(),
+            jti: Jti::new("cx_000000000000000000000042").unwrap(),
+            offer_version: 9,
+        };
+
+        let mut issuer = Issuer::new(
+            &mut store,
+            &mut evidence,
+            &pol,
+            &key,
+            "https://connect.internal",
+            NOW + 10,
+            Actor::Service {
+                id: "ci".to_string(),
+            },
+        );
+        let issued = issuer
+            .mint_with_identity(
+                &pending,
+                ApprovalRef::standing(),
+                &caller,
+                &callee,
+                derived.clone(),
+            )
+            .expect("a pipeline mint with a derived identity");
+
+        assert_eq!(issued.record.offer_version, Some(9));
+        // The identity is the caller's, not re-derived here: `mint`'s own derivation folds in the
+        // request id, the clock and the log sequence, which is right for one human deliberating
+        // over one request and fatal to a pipeline that re-runs.
+        assert_eq!(issued.record.cid, derived.cid);
+        assert_eq!(issued.record.jti, derived.jti);
+
+        // And it survives the round trip through the store, because that is where `offer status`
+        // reads it from — a field set in memory and dropped on serialisation would look correct
+        // in this test and be useless in the estate.
+        let held = &store.projection.contracts[&derived.cid];
+        assert_eq!(held.offer_version, Some(9));
     }
 
     // --- preconditions re-checked at mint ---

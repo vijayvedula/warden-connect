@@ -294,9 +294,38 @@ subsystem.
 
   Also a correction, because the wrong claim was made out loud: the architecture notes for the
   contract plane proposed `wc_mediator_unconfirmed` as the deploy gate. It cannot be — wrong
-  question, wrong ledger. Closing this needs a durable contract-set ack record, which belongs
-  with the upgrade-path work.
+  question, wrong ledger. Closing this needs a durable contract-set ack record.
+
+  The rest of the upgrade path is built — `scripts/upgrade-drill.sh` runs it — so this ACK
+  record is now the only missing piece of it rather than one of several.
   *(Unbuilt, and it blocks the deploy gate)*
+* **A narrowed offer leaves a window, bounded only by the contract's TTL.** A version bump does
+  not touch a contract already issued, deliberately: a contract is a signed ceiling with a hard
+  expiry, and a publisher who could shorten one remotely would make the artifact a cache of a
+  mutable decision rather than a decision. So between a provider publishing terms that drop an
+  item and the consumer's next build, the old contract keeps authorising it — up to
+  `TTL_MAX_CEILING`, thirty days.
+
+  Three things bound that, and it is worth knowing which one you are relying on. `exp` closes it
+  eventually. The consumer's next `need apply` refuses, which closes it at their next merge — a
+  date the provider does not control. And if the provider *actually removes the tool*, the
+  surface pin makes the mediator refuse on `WC-3108` without anyone publishing anything, which
+  is the only one of the three that acts immediately.
+
+  A provider who wants to end it deliberately now can: `connect revoke <cid> --reason R` ends one
+  connection and puts a signed `kind: connection` entry on the revocation feed, which is the row
+  a mediator already knew how to apply. `connect offer status <asset>` lists the connections to
+  pass it. Before this the only way to end a contract early was `quarantine`, which contains the
+  whole *party* — so ending one narrowed connection meant taking down a counterparty.
+  `Registry::revoke_contract` and `contain::Revoked::Connection` were both built and both had no
+  caller outside their own tests.
+
+  What remains manual: there is no "revoke everything this version broke" verb, so a provider
+  with fifty affected connections runs fifty commands. And **a deprecation date does not cause
+  revocation when it arrives** — it stops new contracts and refuses ones that would outlive it,
+  which bounds the exposure without anything having to run on a schedule, but a contract minted
+  the day before a withdrawal still lives out its term.
+  *(Partly built: the window is visible, bounded, and closable one connection at a time)*
 * **The containment drill uses a file where the hardware token belongs.** `containment-drill.sh`
   runs in CI and rehearses the *wrapper*. What fails on the day — a flat battery, a forgotten
   PIN, a share-holder who left in March — is precisely what a laptop cannot rehearse.

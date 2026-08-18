@@ -168,6 +168,7 @@ const TWO_WORD: &[&str] = &[
     "attest surface",
     "offer publish",
     "offer show",
+    "offer status",
     "need check",
     "need apply",
     "scm probe",
@@ -186,11 +187,13 @@ const COMMANDS: &[&str] = &[
     "attest surface",
     "offer publish",
     "offer show",
+    "offer status",
     "need check",
     "need apply",
     "scm probe",
     "blast-radius",
     "quarantine",
+    "revoke",
     "unquarantine",
     "mediators",
     "federate",
@@ -320,6 +323,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "git-ref",
         ],
         "offer show" => &["asset"],
+        "offer status" => &["asset", "now"],
         "need check" => &["manifest", "repo", "sha"],
         "need apply" => &[
             "manifest",
@@ -357,6 +361,19 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         ],
         "activate" => &["id", "why"],
         "unquarantine" => &["id", "approver", "why"],
+        "revoke" => &[
+            "cid",
+            "reason",
+            "revocation-key",
+            "revocation-signer",
+            "revocation-kid",
+            "break-glass-kid",
+            "break-glass",
+            "kid",
+            "mediators",
+            "ack-deadline",
+            "push-token",
+        ],
         "quarantine" => &[
             "id",
             "reason",
@@ -632,6 +649,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "discover" => discover_cmd(args)?,
         "blast-radius" => blast_radius_cmd(args)?,
         "quarantine" => quarantine(args)?,
+        "revoke" => revoke(args)?,
         "unquarantine" => unquarantine(args)?,
         "mediators" => mediators_cmd(args)?,
         "federate" => federate_cmd(args)?,
@@ -651,6 +669,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "attest surface" => attest_surface_cmd(args)?,
         "offer publish" => offer_publish_cmd(args)?,
         "offer show" => offer_show_cmd(args)?,
+        "offer status" => offer_status_cmd(args)?,
         "need check" => need_check_cmd(args)?,
         "need apply" => need_apply_cmd(args)?,
         "scm probe" => scm_probe_cmd(args)?,
@@ -1586,6 +1605,131 @@ fn unquarantine(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// Write the signed revocation, push it, and read back what mediators confirmed.
+///
+/// Extracted so `quarantine` and `revoke` share one fan-out. A second copy of this would be the
+/// hazard the threat model's checklist names — the enforcing path consulting a copy of a decision
+/// rather than the decision — and the copy that drifted would be the per-connection one, because
+/// it is the one used less.
+fn propagate(
+    args: &Args,
+    mediators: &contain::MediatorSet,
+    key: &IssuerKey,
+    revoked: contain::Revoked,
+    contracts: &[wc_core::model::Cid],
+    reason: &str,
+    ts: u64,
+) -> Result<contain::ContainmentReport> {
+    let p = paths(args);
+    let mut feed = contain::RevocationFeed::open(&p.revocations)?;
+    let mut ledger = contain::AckLedger::open(&p.acks)?;
+    let push: Box<dyn contain::Push> = match args.get("push-token") {
+        Some(token) => Box::new(contain::HttpPush {
+            token: token.to_string(),
+            ..contain::HttpPush::default()
+        }),
+        // No token means pull-only, which is slower to confirm and exactly as safe. It is never
+        // silently treated as a successful push.
+        None => Box::new(contain::NoPush),
+    };
+    let deadline = args
+        .number("ack-deadline")
+        .unwrap_or(u64::from(contain::DEFAULT_ACK_DEADLINE))
+        .min(u64::from(u32::MAX)) as u32;
+    let report = {
+        let mut ctx = contain::ContainCtx {
+            feed: &mut feed,
+            ledger: &mut ledger,
+            mediators,
+            push: push.as_ref(),
+            key,
+            ack_deadline: deadline,
+        };
+        contain::contain(revoked, contracts, reason, &actor_id(args), ts, &mut ctx)?
+    };
+    ledger.save(&p.acks)?;
+    Ok(report)
+}
+
+/// `revoke <cid>` — end one connection, deliberately.
+///
+/// The gap this closes. `Registry::revoke_contract` and `contain::Revoked::Connection` were both
+/// built, both tested, and neither had a caller outside its own tests — so the only way to end a
+/// contract early was `quarantine`, which contains the whole *party* and every connection it
+/// holds in either direction. A provider who narrowed their terms and wanted to end the one
+/// affected connection had to take down a counterparty to do it.
+///
+/// Not dual-controlled, unlike `quarantine`. Ending one connection between two parties that both
+/// still work is an ordinary operational act with a bounded, visible cost — the consumer's next
+/// build re-mints it if the offer still permits — where containing a tier-1 party is not. Making
+/// it ceremonial would push operators toward the blunter instrument, which is the outcome to
+/// avoid.
+fn revoke(args: &Args) -> Result<()> {
+    let cid = wc_core::model::Cid::new(positional_or_flag(args, "cid")?)?;
+    let reason = require(args, "reason")?.to_string();
+
+    // Custody resolved before any state is written, for the same reason `quarantine` does it:
+    // a misdeclared key would otherwise revoke in the register, fail, and leave the mediators
+    // never told — a half-applied cut that reads as done.
+    let revocation = resolve_revocation_custody(args)?;
+
+    let ts = now();
+    let mut store = open_store(args)?;
+    let held = store
+        .projection
+        .contracts
+        .get(&cid)
+        .cloned()
+        .ok_or_else(|| {
+            WcError::with_detail(Code::CONTRACT_NOT_FOUND, format!("{cid} is not known here"))
+        })?;
+    store
+        .registry(actor(args)?, ts)
+        .revoke_contract(&cid, &reason)?;
+
+    let mut evidence = open_evidence(args)?;
+    let recorded = evidence.record(
+        &LifecycleEvent::new(EventKind::Revoke, actor_id(args))
+            .with_cid(cid.as_str())
+            .with_contract_jti(held.jti.as_str())
+            .with_entities([held.caller.as_str(), held.callee.as_str()])
+            .with_reason(reason.clone())
+            .with_detail(json!({
+                "offer_version": held.offer_version,
+                "items": held.surface.items().to_vec(),
+            })),
+        ts,
+    )?;
+
+    let mediator_set = match args.get("mediators") {
+        Some(path) => contain::MediatorSet::load(std::path::Path::new(path))?,
+        None => contain::MediatorSet::default(),
+    };
+    let containment = match &revocation {
+        Some(revocation) => Some(propagate(
+            args,
+            &mediator_set,
+            &revocation.key,
+            contain::Revoked::Connection { cid: cid.clone() },
+            std::slice::from_ref(&cid),
+            &reason,
+            ts,
+        )?),
+        None => None,
+    };
+
+    println!("revoked    {cid}");
+    println!("  caller   {}", held.caller);
+    println!("  callee   {}", held.callee);
+    println!("  items    {}", held.surface.items().join(", "));
+    if let Some(v) = held.offer_version {
+        println!("  offer    version {v}");
+    }
+    println!("  evidence seq {}", recorded.seq);
+    print_containment(containment.as_ref(), "revocation");
+    Ok(())
+}
+
 fn quarantine(args: &Args) -> Result<()> {
     let id = EntityId::new(positional_or_flag(args, "id")?)?;
     let reason = require(args, "reason")?.to_string();
@@ -1636,41 +1780,15 @@ fn quarantine(args: &Args) -> Result<()> {
     let containment = if let Some(revocation) = &revocation {
         {
             let (kid, signing_role, key) = (&revocation.kid, revocation.role, &revocation.key);
-            let p = paths(args);
-            let mut feed = contain::RevocationFeed::open(&p.revocations)?;
-            let mut ledger = contain::AckLedger::open(&p.acks)?;
-            let push: Box<dyn contain::Push> = match args.get("push-token") {
-                Some(token) => Box::new(contain::HttpPush {
-                    token: token.to_string(),
-                    ..contain::HttpPush::default()
-                }),
-                // No token means pull-only, which is slower to confirm and exactly
-                // as safe. It is never silently treated as a successful push.
-                None => Box::new(contain::NoPush),
-            };
-            let deadline = args
-                .number("ack-deadline")
-                .unwrap_or(u64::from(contain::DEFAULT_ACK_DEADLINE))
-                .min(u64::from(u32::MAX)) as u32;
-            let report = {
-                let mut ctx = contain::ContainCtx {
-                    feed: &mut feed,
-                    ledger: &mut ledger,
-                    mediators: &mediator_set,
-                    push: push.as_ref(),
-                    key,
-                    ack_deadline: deadline,
-                };
-                contain::contain(
-                    contain::Revoked::Party { id: id.clone() },
-                    &outcome.revoked,
-                    &reason_for_feed,
-                    &actor_id(args),
-                    ts,
-                    &mut ctx,
-                )?
-            };
-            ledger.save(&p.acks)?;
+            let report = propagate(
+                args,
+                &mediator_set,
+                key,
+                contain::Revoked::Party { id: id.clone() },
+                &outcome.revoked,
+                &reason_for_feed,
+                ts,
+            )?;
 
             // Break-glass use is itself the event. It happens approximately never, so
             // one use is a page — and recorded at `Critical` rather than left to whoever
@@ -1725,54 +1843,58 @@ fn quarantine(args: &Args) -> Result<()> {
     }
     println!("  evidence seq       {}", recorded.seq);
 
-    match &containment {
-        None => {
-            // Never phrase an unenforced cut as containment.
-            println!();
-            println!("  NOT PROPAGATED — no --revocation-key, so no signed revocation was");
-            println!("  written and no mediator has been told. The registry says quarantined;");
-            println!("  the data plane has not been asked.");
-        }
-        Some(report) => {
-            println!();
-            println!("  feed seq           {}", report.feed_seq);
-            println!("  {}", report.summary());
-            for m in &report.mediators {
-                let ack = match &m.ack {
-                    contain::AckState::Confirmed { confirmation } => {
-                        format!(
-                            "confirmed seq {} ({} aborted)",
-                            confirmation.feed_seq, confirmation.aborted
-                        )
-                    }
-                    contain::AckState::Waiting { seconds_left } => {
-                        format!("waiting, {seconds_left}s to deadline")
-                    }
-                    contain::AckState::Overdue { seconds_late, .. } => {
-                        format!("OVERDUE by {seconds_late}s")
-                    }
-                };
-                let push = match &m.push {
-                    contain::PushOutcome::Accepted => "pushed".to_string(),
-                    contain::PushOutcome::PullOnly => "pull-only".to_string(),
-                    contain::PushOutcome::Failed { attempts, detail } => {
-                        format!("push failed after {attempts}: {detail}")
-                    }
-                };
-                println!(
-                    "    {:<34} {:<12} {}  (bound {}s)",
-                    m.mediator, push, ack, m.bounded_by
-                );
-            }
-            if !report.fully_confirmed() {
-                println!();
-                println!("  Unconfirmed is not contained. Run `connect mediators` to chase it;");
-                println!("  each unconfirmed mediator applies the cut within its own poll");
-                println!("  interval regardless, which is the bound printed above.");
-            }
-        }
-    }
+    print_containment(containment.as_ref(), "quarantine");
     Ok(())
+}
+
+/// Report how far a cut reached, and never phrase an unenforced one as containment.
+///
+/// Shared by `quarantine` and `revoke`. The wording matters more than it looks: the first
+/// version of the quarantine path printed a success line for a registry transition no mediator
+/// had been told about, and `connect quarantine` returning 202 while a session kept executing is
+/// one of the rows in the threat model's Part 1.
+fn print_containment(report: Option<&contain::ContainmentReport>, what: &str) {
+    let Some(report) = report else {
+        println!();
+        println!("  NOT PROPAGATED — no --revocation-key, so no signed revocation was");
+        println!("  written and no mediator has been told. The registry records the");
+        println!("  {what}; the data plane has not been asked.");
+        return;
+    };
+    println!();
+    println!("  feed seq           {}", report.feed_seq);
+    println!("  {}", report.summary());
+    for m in &report.mediators {
+        let ack = match &m.ack {
+            contain::AckState::Confirmed { confirmation } => format!(
+                "confirmed seq {} ({} aborted)",
+                confirmation.feed_seq, confirmation.aborted
+            ),
+            contain::AckState::Waiting { seconds_left } => {
+                format!("waiting, {seconds_left}s to deadline")
+            }
+            contain::AckState::Overdue { seconds_late, .. } => {
+                format!("OVERDUE by {seconds_late}s")
+            }
+        };
+        let push = match &m.push {
+            contain::PushOutcome::Accepted => "pushed".to_string(),
+            contain::PushOutcome::PullOnly => "pull-only".to_string(),
+            contain::PushOutcome::Failed { attempts, detail } => {
+                format!("push failed after {attempts}: {detail}")
+            }
+        };
+        println!(
+            "    {:<34} {:<12} {}  (bound {}s)",
+            m.mediator, push, ack, m.bounded_by
+        );
+    }
+    if !report.fully_confirmed() {
+        println!();
+        println!("  Unconfirmed is not contained. Run `connect mediators` to chase it;");
+        println!("  each unconfirmed mediator applies the cut within its own poll");
+        println!("  interval regardless, which is the bound printed above.");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2413,6 +2535,7 @@ fn offer_publish_cmd(args: &Args) -> Result<()> {
     }
 
     let items = offer.offered_items();
+    let published = offer.clone();
     store.commit(
         wc_control::store::Event::OfferPublished {
             offer: Box::new(offer),
@@ -2433,6 +2556,63 @@ fn offer_publish_cmd(args: &Args) -> Result<()> {
         items.iter().cloned().collect::<Vec<_>>().join(", ")
     );
     println!("  from     {repo}@{sha}");
+
+    // Who this just affected, printed here rather than left for someone to go and ask. A
+    // provider narrowing their terms finds out at the moment they can still do something about
+    // it — and a pipeline that publishes offers now has the answer in its own build log, which
+    // is the only place anybody will look afterwards.
+    //
+    // Reported, not refused. A provider is entitled to narrow their own terms, and blocking the
+    // publish because a consumer holds an old contract would make the offer the consumer's to
+    // veto. `offer status` is the same view on demand.
+    let at = now();
+    let records: Vec<wc_core::contract::ContractRecord> = store
+        .projection
+        .contracts
+        .values()
+        .filter(|c| c.callee == asset && c.is_live(at))
+        .cloned()
+        .collect();
+    let reg = store.registry(actor(args)?, at);
+    let live: Vec<wc_control::offer::LiveContract<'_>> = records
+        .iter()
+        .filter_map(|r| {
+            reg.get(&r.caller).map(|e| wc_control::offer::LiveContract {
+                record: r,
+                consumer_zone: e.zone.as_str(),
+                consumer_tier: e.tier,
+            })
+        })
+        .collect();
+    let impact = wc_control::offer::impact(&published, &live, at);
+    if impact.affected.is_empty() {
+        println!(
+            "  affects  nothing — all {} live contract(s) sit inside these terms",
+            impact.live
+        );
+    } else {
+        println!();
+        println!(
+            "  {} of {} live contract(s) hold something these terms no longer cover. \
+             `connect offer status {asset}` for the detail.",
+            impact.affected.len(),
+            impact.live
+        );
+        for a in &impact.affected {
+            for item in &a.gone {
+                println!(
+                    "  AFFECTED {} {} — {item} is no longer offered to it",
+                    a.cid, a.consumer
+                );
+            }
+            for (item, _) in &a.withdrawn {
+                println!(
+                    "  AFFECTED {} {} — {item} is past its withdrawal date",
+                    a.cid, a.consumer
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2618,9 +2798,14 @@ fn need_apply_cmd(args: &Args) -> Result<()> {
                 )
             };
 
-            let matched =
-                wc_control::need::match_need(&need, &offer, consumer.zone.as_str(), consumer.tier)
-                    .map_err(|refusals| wc_control::need::refusal_error(&need, &refusals))?;
+            let matched = wc_control::need::match_need(
+                &need,
+                &offer,
+                consumer.zone.as_str(),
+                consumer.tier,
+                ts,
+            )
+            .map_err(|refusals| wc_control::need::refusal_error(&need, &refusals))?;
 
             println!();
             println!("{} -> {}", need.consumer, need.provider);
@@ -2693,8 +2878,7 @@ fn need_apply_cmd(args: &Args) -> Result<()> {
                     p.approval.clone(),
                     &p.consumer,
                     &p.provider,
-                    p.matched.cid.clone(),
-                    p.matched.jti.clone(),
+                    p.matched.derived(),
                 )?;
                 println!("  minted     {} ({})", issued.record.cid, issued.record.jti);
                 println!(
@@ -2707,6 +2891,14 @@ fn need_apply_cmd(args: &Args) -> Result<()> {
                         .join(", ")
                 );
                 println!("  ttl        {}s", p.matched.ttl);
+                println!("  offer      version {}", p.matched.offer_version);
+                for (item, after) in &p.matched.deprecating {
+                    println!(
+                        "  NOTICE     {item} is withdrawn on {} — this contract expires first, \
+                         the next one may not",
+                        wc_control::export::iso8601(*after)
+                    );
+                }
                 if let Some(dir) = args.get("out") {
                     for (name, jws) in &issued.artifacts {
                         let path = std::path::Path::new(dir).join(name);
@@ -2789,7 +2981,8 @@ fn need_check_cmd(args: &Args) -> Result<()> {
             continue;
         };
 
-        match wc_control::need::match_need(&need, &offer, consumer.zone.as_str(), consumer.tier) {
+        match wc_control::need::match_need(&need, &offer, consumer.zone.as_str(), consumer.tier, ts)
+        {
             Ok(m) => {
                 ok += 1;
                 println!("OK       {} -> {}", need.consumer, need.provider);
@@ -2809,6 +3002,16 @@ fn need_check_cmd(args: &Args) -> Result<()> {
                     }
                 );
                 println!("  offer  version {}", m.offer_version);
+                // Printed on the OK path on purpose. A withdrawal a consumer hears about only
+                // when their build breaks is a withdrawal nobody planned for, and this is the
+                // one moment the consumer's own pipeline is looking at the provider's terms.
+                for (item, after) in &m.deprecating {
+                    println!(
+                        "  NOTICE {item} is withdrawn on {} — this contract expires first, the \
+                         next one may not",
+                        wc_control::export::iso8601(*after)
+                    );
+                }
             }
             Err(refusals) => {
                 refused += 1;
@@ -2879,6 +3082,140 @@ fn offer_show_cmd(args: &Args) -> Result<()> {
             term.ttl_max,
             term.items.join(", ")
         );
+    }
+    Ok(())
+}
+
+/// `offer status` — what the current terms mean for contracts already in force.
+///
+/// The provider's question before removing anything: *who breaks?* It was unanswerable until
+/// `ContractRecord` recorded the offer version it was minted under. `Matched.offer_version`
+/// existed, with a doc comment saying it was there "so a later upgrade can find what it
+/// affects", and it was dropped on the floor at mint time — the field, the comment, and no path
+/// between them.
+fn offer_status_cmd(args: &Args) -> Result<()> {
+    let asset = EntityId::new(positional_or_flag(args, "asset")?)?;
+    let at = args.number("now").unwrap_or_else(now);
+    let mut store = open_store(args)?;
+
+    let offer = store
+        .projection
+        .offers
+        .get(&asset)
+        .cloned()
+        .ok_or_else(|| {
+            WcError::with_detail(
+                Code::NO_CONTRACT,
+                format!("no offer is held for {asset}, so there are no terms to judge against"),
+            )
+        })?;
+
+    // The consumer's zone and tier are read from the registry as it stands now, not from the
+    // contract, because the question is what the consumer's *next* build would get. A consumer
+    // whose tier was raised out of an audience is as affected as one whose item was withdrawn,
+    // and `ContractRecord` keeps the caller's zone but not its tier, so the record could not
+    // answer it anyway.
+    let records: Vec<wc_core::contract::ContractRecord> = store
+        .projection
+        .contracts
+        .values()
+        .filter(|c| c.callee == asset && c.is_live(at))
+        .cloned()
+        .collect();
+
+    let mut live = Vec::new();
+    let mut unknown = Vec::new();
+    {
+        let reg = store.registry(actor(args)?, at);
+        for r in &records {
+            match reg.get(&r.caller) {
+                Some(e) => live.push(wc_control::offer::LiveContract {
+                    record: r,
+                    consumer_zone: e.zone.as_str(),
+                    consumer_tier: e.tier,
+                }),
+                // Named rather than skipped. A contract whose consumer is no longer registered
+                // cannot be judged against an audience, and quietly dropping it from the count
+                // would make the report read as complete when it is not.
+                None => unknown.push(r.cid.as_str().to_string()),
+            }
+        }
+        let impact = wc_control::offer::impact(&offer, &live, at);
+
+        if args.has("json") {
+            println!(
+                "{}",
+                pretty(&json!({
+                    "asset": asset.as_str(),
+                    "version": impact.version,
+                    "live": impact.live,
+                    "behind": impact.behind,
+                    "unjudgeable": unknown,
+                    "affected": impact.affected.iter().map(|a| json!({
+                        "cid": a.cid,
+                        "consumer": a.consumer.as_str(),
+                        "minted_under": a.minted_under,
+                        "exp": a.exp,
+                        "gone": a.gone,
+                        "withdrawn": a.withdrawn.iter().map(|(i, t)| json!([i, t])).collect::<Vec<_>>(),
+                        "withdrawing": a.withdrawing.iter().map(|(i, t)| json!([i, t])).collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>(),
+                }))?
+            );
+            return Ok(());
+        }
+
+        println!("{asset}");
+        println!("  offer      version {}", impact.version);
+        println!(
+            "  live       {} contract(s), {} minted under an earlier version",
+            impact.live, impact.behind
+        );
+        for cid in &unknown {
+            println!("  UNJUDGED   {cid} — its consumer is no longer registered");
+        }
+        if impact.affected.is_empty() {
+            println!("  nothing to report: every live contract sits inside the current terms");
+        }
+        for a in &impact.affected {
+            println!();
+            println!(
+                "  {}  {} (minted under {}, expires {})",
+                a.cid,
+                a.consumer,
+                a.minted_under.map_or_else(
+                    || "a direct request".to_string(),
+                    |v| format!("version {v}")
+                ),
+                wc_control::export::iso8601(a.exp)
+            );
+            for item in &a.gone {
+                println!(
+                    "    GONE       {item} — the current terms do not offer it to this consumer"
+                );
+            }
+            for (item, t) in &a.withdrawn {
+                println!(
+                    "    WITHDRAWN  {item} — published removal date {} has passed",
+                    wc_control::export::iso8601(*t)
+                );
+            }
+            for (item, t) in &a.withdrawing {
+                println!(
+                    "    SCHEDULED  {item} — removal on {}",
+                    wc_control::export::iso8601(*t)
+                );
+            }
+        }
+        if !impact.affected.is_empty() {
+            println!();
+            println!(
+                "  A version bump does not touch a contract already issued. What closes these: \
+                 the contract's own exp, the consumer's next `need apply` (which refuses what the \
+                 offer no longer permits), and — if you actually remove the tool — WC-3108 drift \
+                 at the mediator, which fails closed."
+            );
+        }
     }
     Ok(())
 }
@@ -3934,6 +4271,7 @@ fn bench_estate(contracts: usize) -> Result<wc_control::store::Projection> {
             policy_version: "bench@v1".to_string(),
             iat: 0,
             exp: u64::MAX,
+            offer_version: None,
             schema: CONTRACT_SCHEMA,
         };
         projection
@@ -6716,6 +7054,17 @@ ESTATE
                   [--revocation-key PEM | --revocation-signer CMD] [--kid KID]
                   [--revocation-kid KID] [--break-glass-kid KID] [--break-glass]
                   [--mediators FILE] [--ack-deadline 60] [--push-token TOKEN]
+  revoke <cid>    --reason R [the same revocation-key, mediators and ack flags]
+                  end ONE connection. Not dual-controlled, unlike quarantine:
+                  ending one connection between two parties that both still work is
+                  an ordinary act with a bounded, visible cost — the consumer's next
+                  `need apply` re-mints it if the offer still permits — where
+                  containing a tier-1 party is not. Making it ceremonial would push
+                  operators toward the blunter instrument.
+
+                  What it is for: a provider who narrowed their terms and wants to
+                  end the affected connections now rather than at their exp.
+                  `connect offer status <asset>` lists them.
   mediators       [--mediators FILE] [--revocation-pub PEM --kid KID] [--json]
   tenants         [--registry tenants.toml] [--json]   what exists on this root
 
@@ -6847,16 +7196,37 @@ TOOLS
                 the point at which that is cheap to fix.
 
                 Reports what WOULD be contracted — the derived cid and jti, and
-                the TTL after the offer's ceiling is applied. It does NOT mint.
-                Minting needs a contract approval, and the only modes that exist
-                are Human, StandingPolicy and BreakGlass; an approval evidenced by
-                two reviewed merges is not expressible yet and belongs with the
-                approval-authority work. The verb is `check` rather than `apply`
-                for that reason — it does not apply anything.
+                the TTL after the offer's ceiling is applied. It does NOT mint,
+                and needs no signing key or shim; `need apply` is the verb that
+                mints. Safe to run on every pull request, which is where a
+                manifest asking for something nobody offers is cheapest to fix.
+
+                Also prints a NOTICE for any contracted item the provider has
+                scheduled for withdrawal. A consumer's own pipeline is the one
+                place that reads the provider's terms, so it is the only place a
+                withdrawal date reaches them before their build breaks.
 
   offer show <asset>
                 the terms currently held for a provider, and where they came
                 from.
+
+  offer status <asset> [--now TS]
+                what the offer now in force means for the contracts already out
+                there — the provider's question before removing anything.
+
+                Per contract: the version it was minted under, and which of its
+                items are gone from the current terms, past a published
+                withdrawal date, or scheduled for one. Worst first.
+
+                A version bump changes NOTHING about a contract already issued,
+                and that is deliberate — a contract is a signed ceiling with a
+                hard expiry, and a publisher who could shorten one remotely would
+                make the artifact a cache of a mutable decision rather than a
+                decision. Three things close the gap instead: the contract's own
+                exp, the consumer's next build (where `need apply` refuses what
+                the offer no longer permits), and the surface pin — a provider who
+                actually removes a tool causes WC-3108 drift at the mediator,
+                which fails closed with nobody publishing anything.
 
   attest surface --surface FILE --card-key KID=PEM --out FILE
                 sign a declared surface so it can be registered as an attested
