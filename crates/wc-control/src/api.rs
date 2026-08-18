@@ -1562,9 +1562,26 @@ fn record_ack(cp: &Arc<ControlPlane>, mediator: &str, req: &Request) -> Result<R
 
     // Persist while the lock is held, so a concurrent ack cannot write a file that disagrees
     // with the map. Two mediators acking at once is the ordinary case, not the rare one.
+    let used: std::collections::BTreeMap<String, u64> = body
+        .get("used")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_u64().map(|at| (k.clone(), at)))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut ledger = lock(&cp.acks);
     let moved = ledger.record(mediator, ack);
-    if moved {
+    // Usage is recorded even when the ack itself did not move the ledger. A mediator re-acking the
+    // same set is the ordinary steady state — nothing new to distribute, calls still flowing — and
+    // discarding usage in that case would make every stable connection look dormant.
+    let used_moved = !used.is_empty();
+    if used_moved {
+        ledger.record_usage(mediator, &used);
+    }
+    if moved || used_moved {
         if let Some(path) = &cp.acks_path {
             // A failed write is reported and does not fail the ack. The mediator has already
             // applied the set; refusing here would make it retry a state change it has made,

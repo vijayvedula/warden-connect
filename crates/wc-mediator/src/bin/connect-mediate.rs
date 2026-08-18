@@ -632,13 +632,45 @@ fn run() -> Result<(), String> {
         ));
         let status = warden_loop(&gateway);
         gateway.checkpoint_audit();
+        flush_usage(client.as_ref(), &cache);
         telemetry.flush();
         return status;
     }
 
     let status = standalone_loop(mediated);
+    flush_usage(client.as_ref(), &cache);
     telemetry.flush();
     status
+}
+
+/// Report connection usage one last time before exiting (W10).
+///
+/// The refresh loop drains usage on its tick, so anything recorded between the last tick and
+/// shutdown would be lost — and for a **per-task mediator**, which is a topology this project
+/// already documents for its effect on ceilings, that is *all* of it: such a process serves a
+/// handful of calls and exits, usually without ever ticking. Without this flush the
+/// re-certification view would report every per-task connection as never used, which is the most
+/// destructive way that data can be wrong.
+///
+/// Best effort. A failed final ack loses one window, and blocking shutdown on an unreachable
+/// control plane would be worse: usage is a reporting signal, and losing a window makes a contract
+/// look *less* used rather than more.
+fn flush_usage(client: Option<&ControlPlaneClient>, cache: &Arc<Cache>) {
+    let Some(client) = client else {
+        return;
+    };
+    let used = cache.take_usage();
+    if used.is_empty() {
+        return;
+    }
+    let snapshot = cache.snapshot();
+    let n = used.len();
+    if client
+        .ack(&snapshot.set_hash, snapshot.seq, &[], 0, &used)
+        .is_err()
+    {
+        eprintln!("connect-mediate: final usage report for {n} connection(s) could not be sent");
+    }
 }
 
 /// The stdio loop when there is no Warden core.

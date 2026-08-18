@@ -568,7 +568,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "window",
         ],
         "requests" => &["all"],
-        "contracts" => &["cid"],
+        "contracts" => &["cid", "dormant", "since"],
         _ => &[],
     }
 }
@@ -6618,6 +6618,28 @@ fn contracts_cmd(args: &Args) -> Result<()> {
                 println!("  ticket     {ticket}");
             }
             println!("  policy     {}", record.policy_version);
+            if let Some(v) = record.offer_version {
+                println!("  offer      version {v}");
+            }
+            // Last use, on the single-contract view, because "should this be renewed?" is asked
+            // one contract at a time (W10).
+            let ledger = wc_control::dist::SetAckLedger::open(&paths(args).set_acks)?;
+            match ledger.last_use(record.cid.as_str()) {
+                Some(u) => println!(
+                    "  last used  {} by {} ({} ago)",
+                    wc_control::export::iso8601(u.at),
+                    u.mediator,
+                    human_duration(now().saturating_sub(u.at))
+                ),
+                None if ledger.has_usage_data() => println!(
+                    "  last used  no call recorded — other connections have reported use, so \
+                     this is evidence rather than silence"
+                ),
+                None => println!(
+                    "  last used  UNKNOWN — no mediator has reported usage for any connection, \
+                     so absence here means nothing"
+                ),
+            }
         }
         return Ok(());
     }
@@ -6628,6 +6650,93 @@ fn contracts_cmd(args: &Args) -> Result<()> {
         println!("no contracts");
         return Ok(());
     }
+
+    // --- the re-certification view (W10) -------------------------------------
+    if args.has("dormant") {
+        let ledger = wc_control::dist::SetAckLedger::open(&paths(args).set_acks)?;
+        let at = now();
+        let window = args
+            .get("since")
+            .map(|t| {
+                wc_control::cpolicy::parse_duration(t).ok_or_else(|| {
+                    WcError::with_detail(
+                        Code::CONFIG_INVALID,
+                        format!("--since {t:?} is not a duration; try 30d, 12h, 90d"),
+                    )
+                })
+            })
+            .transpose()?
+            .unwrap_or(30 * 86_400);
+
+        // Stated before the list, not after it. A list of "dormant" contracts read without this
+        // sentence is an instruction to revoke things, and if no mediator has ever reported usage
+        // then every contract in the estate appears on it — which is the single most destructive
+        // way this data could be misread.
+        if !ledger.has_usage_data() {
+            println!(
+                "NO USAGE DATA. No mediator has reported a call on any connection, so this \
+                 cannot tell a dormant contract from an unreported one."
+            );
+            println!(
+                "  Usage arrives on the mediator acknowledgement. Check `connect distribution` \
+                 first: a mediator that has never acked has never reported."
+            );
+            println!();
+        }
+
+        let mut dormant = Vec::new();
+        let mut never = Vec::new();
+        for r in rows.iter().filter(|r| r.is_live(at)) {
+            match ledger.last_use(r.cid.as_str()) {
+                Some(u) if at.saturating_sub(u.at) > window => dormant.push((*r, Some(u))),
+                Some(_) => {}
+                None => never.push(*r),
+            }
+        }
+
+        println!(
+            "live {} · unused for over {} {} · never used {}",
+            rows.iter().filter(|r| r.is_live(at)).count(),
+            human_duration(window),
+            dormant.len(),
+            never.len()
+        );
+        if dormant.is_empty() && never.is_empty() {
+            println!("  every live contract has been used inside the window");
+            return Ok(());
+        }
+        println!();
+        println!("{:<18} {:<28} {:<22} LAST USE", "CID", "CALLER", "CALLEE");
+        for (r, last) in &dormant {
+            println!(
+                "{:<18} {:<28} {:<22} {} ago",
+                r.cid,
+                truncate(r.caller.as_str(), 28),
+                truncate(r.callee.as_str(), 22),
+                human_duration(at.saturating_sub(last.map_or(at, |u| u.at)))
+            );
+        }
+        for r in &never {
+            println!(
+                "{:<18} {:<28} {:<22} {}",
+                r.cid,
+                truncate(r.caller.as_str(), 28),
+                truncate(r.callee.as_str(), 22),
+                if ledger.has_usage_data() {
+                    "never"
+                } else {
+                    "unreported"
+                }
+            );
+        }
+        println!();
+        println!(
+            "  `connect revoke <cid> --reason R` ends one. Read the caller's own owner in first: \
+             a contract used once a quarter is not dormant, it is seasonal."
+        );
+        return Ok(());
+    }
+
     println!(
         "{:<18} {:<10} {:<28} {:<22} EXPIRES",
         "CID", "STATUS", "CALLER", "CALLEE"
@@ -7293,6 +7402,20 @@ CONNECT  (the core loop)
              [--max-ttl 1h] [--budget 3] [--window 24h]
   requests [--all]
   contracts [<cid>]
+  contracts --dormant [--since 30d]
+                the RE-CERTIFICATION view: live contracts nothing has called
+                through. A contract nobody uses is privilege nobody needs, and
+                without this every contract looks equally necessary at renewal.
+
+                Usage is known only at the mediator — a control plane sees a
+                contract minted and sees it expire, and cannot see whether anything
+                ever called through it. Mediators report it on the acknowledgement.
+
+                Read the first line before the list. `never` and `unreported` are
+                different answers: if NO mediator has ever reported usage, every
+                contract appears here and none of them is evidence of anything. The
+                report says so before it lists, because a list read without that
+                sentence is an instruction to revoke the estate.
 
 ESTATE
   activate <id> [--why REASON]

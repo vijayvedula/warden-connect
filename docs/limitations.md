@@ -327,6 +327,27 @@ subsystem.
   flap with no state change. And an ack means the set was *installed*, not that every artifact in
   it verified — `--require-clean` is the stricter question.
   *(Built; the measurement of how long distribution takes under load still needs the cluster)*
+* **Usage data is best-effort, and its absence is not evidence.** `connect contracts --dormant`
+  answers the re-certification question — *which live contracts is nothing calling through?* —
+  from usage mediators report on their acknowledgement. Three honest limits.
+
+  **A mediator that has never acked has never reported.** With no usage in the ledger at all the
+  view cannot distinguish a dormant contract from an unreported one, so it says `NO USAGE DATA`
+  and labels rows `unreported` rather than `never`, before the list. Reading that list as an
+  instruction to revoke would take down the estate, which is why the disclaimer comes first and is
+  asserted in `scripts/distribution-drill.sh` phase 7.
+
+  **A window can be lost.** Usage is drained into each acknowledgement, and a failed ack loses that
+  window rather than retaining it — retaining would let an unreachable control plane grow the map
+  without bound. The mediator flushes once more on clean exit, which is what makes a **per-task
+  mediator** report at all: such a process serves a few calls and exits, usually without a single
+  refresh tick. A mediator that is *killed* rather than closed still loses its last window, and
+  losing a window makes a contract look less used, never more.
+
+  **Seasonal is not dormant.** A contract used once a quarter is dormant against a 30-day window
+  and load-bearing in fact. The report says to read the caller's owner in before revoking; it
+  cannot know this itself, and no window length would fix it.
+  *(Built, with these limits stated in the output rather than only here)*
 * **The pipeline verbs cannot run while the control plane is serving.** `connect offer publish`
   and `connect need apply` write to the state log, which is single-writer by design, and
   `connect serve` holds that lock for the life of the process. So a consumer's pipeline running

@@ -236,6 +236,17 @@ impl Snapshot {
 pub struct Cache {
     live: RwLock<Arc<Snapshot>>,
     revocations: RwLock<Arc<Revocations>>,
+    /// When each connection was last actually used, by `cid` (W10).
+    ///
+    /// The mediator is the only place that knows. A control plane sees a contract minted and can
+    /// see it expire; whether anything ever *called* through it is visible only here, and without
+    /// it a re-certification review has no way to tell a load-bearing contract from one issued for
+    /// a project that was cancelled. Least privilege decays silently otherwise: every contract
+    /// looks equally necessary at renewal time.
+    ///
+    /// Drained into the acknowledgement rather than accumulated forever — see
+    /// [`Cache::take_usage`].
+    used: RwLock<BTreeMap<String, u64>>,
 }
 
 impl Default for Cache {
@@ -243,6 +254,7 @@ impl Default for Cache {
         Cache {
             live: RwLock::new(Arc::new(Snapshot::default())),
             revocations: RwLock::new(Arc::new(Revocations::default())),
+            used: RwLock::new(BTreeMap::new()),
         }
     }
 }
@@ -252,6 +264,35 @@ impl Cache {
     #[must_use]
     pub fn new() -> Cache {
         Cache::default()
+    }
+
+    /// Record that a connection was used, at `at` (W10).
+    ///
+    /// Called from the gate, which holds the clock. Last write wins rather than max: calls arrive
+    /// in order on one connection, and a `max` would need a read before every write on the hot
+    /// path to defend against a clock that went backwards — which is a cost paid on every call to
+    /// improve a *reporting* field. The control plane takes the max across mediators, which is
+    /// where a skewed host actually needs handling.
+    pub fn mark_used(&self, cid: &str, at: u64) {
+        let mut used = match self.used.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        used.insert(cid.to_string(), at);
+    }
+
+    /// Take the usage recorded since the last call, leaving the map empty.
+    ///
+    /// Drained rather than accumulated, because this map would otherwise grow with every
+    /// connection the mediator has ever served and never shrink — a slow leak in a long-lived
+    /// process, for data whose only consumer has already been handed it. The control plane keeps
+    /// the durable record.
+    pub fn take_usage(&self) -> BTreeMap<String, u64> {
+        let mut used = match self.used.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        std::mem::take(&mut used)
     }
 
     /// Install a verified snapshot, replacing whatever was live.
