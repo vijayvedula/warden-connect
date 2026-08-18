@@ -60,14 +60,12 @@ impl Registry<'_> {
     /// Look up one entity.
     #[must_use]
     pub fn get(&self, id: &EntityId) -> Option<&Entity> {
-        self.store.projection.entities.get(id)
+        self.store.projection.entity(id)
     }
 
     /// Look up one entity or fail with [`Code::ENTITY_NOT_FOUND`].
     pub fn require(&self, id: &EntityId) -> Result<&Entity> {
-        self.get(id).ok_or_else(|| {
-            WcError::with_detail(Code::ENTITY_NOT_FOUND, format!("{id} is not registered"))
-        })
+        self.store.projection.require_entity(id)
     }
 
     /// A bulk read of the estate, for exports, posture reports and the operator
@@ -78,25 +76,14 @@ impl Registry<'_> {
     /// operator path.
     #[must_use]
     pub fn enumerate_for_operator(&self) -> Vec<&Entity> {
-        let mut out: Vec<&Entity> = self.store.projection.entities.values().collect();
-        out.sort_unstable_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
-        out
+        self.store.projection.enumerate_for_operator()
     }
 
     /// Entities whose re-attestation interval has lapsed — the assurance loop's work
     /// queue (§8.5.7).
     #[must_use]
     pub fn reattest_due(&self, now: u64) -> Vec<EntityId> {
-        let mut out: Vec<EntityId> = self
-            .store
-            .projection
-            .entities
-            .values()
-            .filter(|e| e.lifecycle == Lifecycle::Active && e.reattest_overdue(now))
-            .map(|e| e.id.clone())
-            .collect();
-        out.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
-        out
+        self.store.projection.reattest_due(now)
     }
 
     // -----------------------------------------------------------------------

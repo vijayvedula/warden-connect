@@ -196,6 +196,7 @@ const COMMANDS: &[&str] = &[
     "revoke",
     "unquarantine",
     "mediators",
+    "distribution",
     "federate",
     "keys list",
     "keys new",
@@ -391,6 +392,14 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "push-token",
         ],
         "mediators" => &["mediators", "revocation-pub", "kid"],
+        "distribution" => &[
+            "mediators",
+            "seq",
+            "wait",
+            "timeout",
+            "interval",
+            "require-clean",
+        ],
         "federate" => &["anchors", "chain", "now", "leeway"],
         "tenants" => &["registry"],
         "keys list" => &["keyring"],
@@ -652,6 +661,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "revoke" => revoke(args)?,
         "unquarantine" => unquarantine(args)?,
         "mediators" => mediators_cmd(args)?,
+        "distribution" => distribution_cmd(args)?,
         "federate" => federate_cmd(args)?,
         "tenants" => tenants_cmd(args)?,
         "keys list" => keys_list(args)?,
@@ -709,8 +719,12 @@ struct Paths {
     /// The signed revocation feed mediators pull. Beside the state, not inside the
     /// evidence chain: the chain records what happened, this instructs.
     revocations: PathBuf,
-    /// Durable per-mediator acknowledgement state.
+    /// Durable per-mediator revocation acknowledgement state.
     acks: PathBuf,
+    /// Durable per-mediator contract-set acknowledgement state.
+    set_acks: PathBuf,
+    /// Issued contract artifacts, readable without the writer lock.
+    artifacts: PathBuf,
 }
 
 /// The tenant this invocation acts on.
@@ -746,6 +760,8 @@ fn paths_checked(args: &Args) -> Result<Paths> {
         evidence: derived.evidence,
         revocations: derived.revocations,
         acks: derived.acks,
+        set_acks: derived.set_acks,
+        artifacts: derived.artifacts,
     })
 }
 
@@ -765,6 +781,8 @@ fn paths(args: &Args) -> Paths {
             evidence: PathBuf::from("/nonexistent/invalid-tenant/evidence"),
             revocations: PathBuf::from("/nonexistent/invalid-tenant/revocations.jsonl"),
             acks: PathBuf::from("/nonexistent/invalid-tenant/acks.json"),
+            set_acks: PathBuf::from("/nonexistent/invalid-tenant/set-acks.json"),
+            artifacts: PathBuf::from("/nonexistent/invalid-tenant/artifacts"),
         }
     })
 }
@@ -776,6 +794,27 @@ fn open_store(args: &Args) -> Result<Store> {
     let (store, report) = Store::open(&p.state)?;
     warn_if_unclean(&report);
     Ok(store)
+}
+
+/// Read the state **without taking the writer lock**.
+///
+/// Every read-only verb used `open_store`, which acquires the single-writer lock. That lock is
+/// right for a writer and wrong here: in production `connect serve` holds it permanently, so
+/// `connect posture`, `discover`, `blast-radius`, `contracts`, `requests`, `offer show|status`
+/// and `policy dry-run` all failed with `WC-8003` against a live control plane. An operator could
+/// inspect the estate only by stopping it.
+///
+/// `Projection::rebuild` reads the newest snapshot plus the log tail and takes nothing. A reader
+/// can therefore race a commit and see state one event old, which is the correct trade: a report
+/// that is a moment stale beats a report that cannot be run. The one place where staleness would
+/// matter — a gate deciding whether to deploy — compares a monotonic sequence, so seeing an older
+/// head makes it *more* conservative, never less.
+fn open_projection(args: &Args) -> Result<wc_control::store::Projection> {
+    let p = paths(args);
+    let (projection, report) =
+        wc_control::store::Projection::rebuild(&p.state, wc_control::store::STATE_LOG_NAME)?;
+    warn_if_unclean(&report);
+    Ok(projection)
 }
 
 /// Open the store, standing by for the active writer if `--standby` was given (P1 #10).
@@ -1907,6 +1946,138 @@ fn print_containment(report: Option<&contain::ContainmentReport>, what: &str) {
 /// This is the command that keeps "never assumed contained" true after the
 /// incident call ends: an order nobody confirmed stays listed until somebody
 /// does, however old it gets.
+/// `distribution` — have the mediators picked up the current contract set? (W6b)
+///
+/// The deploy gate. A pipeline that has just minted a contract needs to know the mediator is
+/// holding it before the code that uses it goes live, or the first call is refused with
+/// `WC-4002` for a contract that exists. Likewise a provider deploying a narrowed surface wants
+/// mediators off the old set first.
+///
+/// Two things this deliberately does not do.
+///
+/// It does not compare set hashes. `Projection::contract_set_for` filters on `now < exp`, so the
+/// hash a control plane computes drifts as contracts lapse with no state change at all, and a
+/// gate built on it would flap for reasons invisible from either end. The state-log sequence only
+/// moves when the log does.
+///
+/// It does not treat an ack as proof that a contract works. A mediator installs what verifies and
+/// reports the rest as rejected, so `--require-clean` is a separate, stricter question and the
+/// default answers the one the gate was asked.
+fn distribution_cmd(args: &Args) -> Result<()> {
+    let p = paths(args);
+    let expected: Vec<String> = {
+        let set = match args.get("mediators") {
+            Some(path) => contain::MediatorSet::load(std::path::Path::new(path))?,
+            None => contain::MediatorSet::default(),
+        };
+        set.mediators.iter().map(|m| m.id.clone()).collect()
+    };
+
+    // The target is the log head unless an operator names one. The head is what a pipeline
+    // wants: everything committed by the step before this one, whatever that was.
+    let target = match args.number("seq") {
+        Some(seq) => seq,
+        None => open_projection(args)?.seq,
+    };
+
+    let wait = args.has("wait");
+    let timeout = args.number("timeout").unwrap_or(120);
+    let interval = args.number("interval").unwrap_or(5).max(1);
+    let started = now();
+
+    let report = loop {
+        let ledger = wc_control::dist::SetAckLedger::open(&p.set_acks)?;
+        let d = ledger.distribution(&expected, target);
+        let done = if args.has("require-clean") {
+            d.clean()
+        } else {
+            d.caught_up()
+        };
+        if done || !wait || now().saturating_sub(started) >= timeout {
+            break d;
+        }
+        // Re-read the file each tick rather than holding it: the control plane is a separate
+        // process, and a gate that cached the ledger would wait forever on the first answer.
+        std::thread::sleep(std::time::Duration::from_secs(interval));
+    };
+
+    let satisfied = if args.has("require-clean") {
+        report.clean()
+    } else {
+        report.caught_up()
+    };
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({
+                "target_seq": report.target_seq,
+                "satisfied": satisfied,
+                "caught_up": report.caught_up(),
+                "clean": report.clean(),
+                "waited_secs": now().saturating_sub(started),
+                "mediators": report.lags.iter().map(|l| json!({
+                    "mediator": l.mediator,
+                    "acked_seq": l.acked_seq,
+                    "set_hash": l.set_hash,
+                    "lag_secs": l.at.map(|t| now().saturating_sub(t)),
+                    "rejected": l.rejected,
+                    "caught_up": l.caught_up(report.target_seq),
+                })).collect::<Vec<_>>(),
+            }))?
+        );
+    } else {
+        println!("distribution  target seq {}", report.target_seq);
+        println!("  {}", report.summary());
+        for l in &report.lags {
+            let state = match l.acked_seq {
+                None => "NEVER ACKED".to_string(),
+                Some(seq) if l.caught_up(report.target_seq) => format!("seq {seq}"),
+                Some(seq) => format!("BEHIND at seq {seq}"),
+            };
+            let age = l.at.map_or_else(
+                || "-".to_string(),
+                |t| format!("{}s ago", now().saturating_sub(t)),
+            );
+            let rejected = if l.rejected > 0 {
+                format!("  {} rejected", l.rejected)
+            } else {
+                String::new()
+            };
+            println!("    {:<34} {:<18} {age}{rejected}", l.mediator, state);
+        }
+        if !satisfied {
+            println!();
+            if report.lags.is_empty() {
+                println!("  No mediators are configured, so nothing here confirms anything. Pass");
+                println!("  --mediators FILE naming the estate, or this gate is decoration.");
+            } else {
+                println!("  Not distributed. A mediator that has not acked may still be serving a");
+                println!(
+                    "  correct older set — this says it has not confirmed the current one, and"
+                );
+                println!("  deploying code that depends on a new contract now would be a race.");
+            }
+        }
+    }
+
+    if satisfied {
+        Ok(())
+    } else {
+        // Exit 1, so `set -e` in a pipeline stops. Deliberately not exit 0 with a warning: the
+        // whole value of a gate is that it fails the build.
+        Err(WcError::with_detail(
+            Code::MEDIATOR_ACK_MISSING,
+            format!(
+                "{} of {} mediator(s) have not confirmed seq {}",
+                report.behind().len(),
+                report.lags.len().max(1),
+                report.target_seq
+            ),
+        ))
+    }
+}
+
 fn mediators_cmd(args: &Args) -> Result<()> {
     let p = paths(args);
     let ts = now();
@@ -2077,9 +2248,8 @@ fn entities(args: &Args) -> Result<()> {
 
 fn show(args: &Args) -> Result<()> {
     let id = EntityId::new(positional_or_flag(args, "id")?)?;
-    let mut store = open_store(args)?;
-    let reg = store.registry(actor(args)?, now());
-    let entity = reg.require(&id)?;
+    let projection = open_projection(args)?;
+    let entity = projection.require_entity(&id)?;
 
     if args.has("json") {
         println!("{}", pretty(&entity_json(entity))?);
@@ -2112,10 +2282,9 @@ fn show(args: &Args) -> Result<()> {
 }
 
 fn posture(args: &Args) -> Result<()> {
-    let mut store = open_store(args)?;
+    let projection = open_projection(args)?;
     let ts = now();
-    let reg = store.registry(actor(args)?, ts);
-    let all = reg.enumerate_for_operator();
+    let all = projection.enumerate_for_operator();
 
     let unattested: Vec<&Entity> = all
         .iter()
@@ -2132,7 +2301,7 @@ fn posture(args: &Args) -> Result<()> {
         .copied()
         .filter(|e| e.posture == Posture::Quarantined)
         .collect();
-    let overdue = reg.reattest_due(ts);
+    let overdue = projection.reattest_due(ts);
 
     if args.has("json") {
         println!(
@@ -2204,7 +2373,7 @@ fn discover_cmd(args: &Args) -> Result<()> {
     let capability = positional_or_flag(args, "capability")?.to_string();
     let asker = EntityId::new(require(args, "as")?)?;
     let policy = load_policy(args)?;
-    let store = open_store(args)?;
+    let projection = open_projection(args)?;
     let ts = now();
 
     let limits = broker::DiscoveryLimits {
@@ -2216,7 +2385,7 @@ fn discover_cmd(args: &Args) -> Result<()> {
     };
     limits.validate()?;
 
-    let standing = standing_state(&store);
+    let standing = standing_state(&projection);
     let query = broker::Query {
         capability: capability.clone(),
         jurisdiction: args.get("jurisdiction").map(str::to_string),
@@ -2233,7 +2402,7 @@ fn discover_cmd(args: &Args) -> Result<()> {
         &asker,
         &mut broker::Throttle::new(),
         &broker::BrokerCtx {
-            projection: &store.projection,
+            projection: &projection,
             policy: &policy,
             standing: &standing,
             limits: &limits,
@@ -2337,14 +2506,14 @@ fn blast_radius_cmd(args: &Args) -> Result<()> {
         .unwrap_or(u64::from(assurance::DEFAULT_BLAST_DEPTH))
         .min(255) as u8;
 
-    let store = open_store(args)?;
-    if !store.projection.entities.contains_key(&subject) {
+    let projection = open_projection(args)?;
+    if !projection.entities.contains_key(&subject) {
         return Err(WcError::with_detail(
             Code::ENTITY_NOT_FOUND,
             format!("{subject} is not registered"),
         ));
     }
-    let report = assurance::blast_radius(&subject, depth, &store.projection);
+    let report = assurance::blast_radius(&subject, depth, &projection);
 
     if args.has("json") {
         let value = serde_json::to_value(&report).map_err(|e| {
@@ -3043,21 +3212,16 @@ fn need_check_cmd(args: &Args) -> Result<()> {
 /// `offer show` — the terms currently held for a provider.
 fn offer_show_cmd(args: &Args) -> Result<()> {
     let asset = EntityId::new(positional_or_flag(args, "asset")?)?;
-    let store = open_store(args)?;
-    let offer = store
-        .projection
-        .offers
-        .get(&asset)
-        .cloned()
-        .ok_or_else(|| {
-            WcError::with_detail(
-                Code::NO_CONTRACT,
-                format!(
+    let projection = open_projection(args)?;
+    let offer = projection.offers.get(&asset).cloned().ok_or_else(|| {
+        WcError::with_detail(
+            Code::NO_CONTRACT,
+            format!(
                 "no offer is held for {asset}. Without one nothing can be contracted against it \
                  — there is no central fallback by design, so provider consent is never implied"
             ),
-            )
-        })?;
+        )
+    })?;
 
     if args.has("json") {
         println!(
@@ -3096,27 +3260,21 @@ fn offer_show_cmd(args: &Args) -> Result<()> {
 fn offer_status_cmd(args: &Args) -> Result<()> {
     let asset = EntityId::new(positional_or_flag(args, "asset")?)?;
     let at = args.number("now").unwrap_or_else(now);
-    let mut store = open_store(args)?;
+    let projection = open_projection(args)?;
 
-    let offer = store
-        .projection
-        .offers
-        .get(&asset)
-        .cloned()
-        .ok_or_else(|| {
-            WcError::with_detail(
-                Code::NO_CONTRACT,
-                format!("no offer is held for {asset}, so there are no terms to judge against"),
-            )
-        })?;
+    let offer = projection.offers.get(&asset).cloned().ok_or_else(|| {
+        WcError::with_detail(
+            Code::NO_CONTRACT,
+            format!("no offer is held for {asset}, so there are no terms to judge against"),
+        )
+    })?;
 
     // The consumer's zone and tier are read from the registry as it stands now, not from the
     // contract, because the question is what the consumer's *next* build would get. A consumer
     // whose tier was raised out of an audience is as affected as one whose item was withdrawn,
     // and `ContractRecord` keeps the caller's zone but not its tier, so the record could not
     // answer it anyway.
-    let records: Vec<wc_core::contract::ContractRecord> = store
-        .projection
+    let records: Vec<wc_core::contract::ContractRecord> = projection
         .contracts
         .values()
         .filter(|c| c.callee == asset && c.is_live(at))
@@ -3126,9 +3284,8 @@ fn offer_status_cmd(args: &Args) -> Result<()> {
     let mut live = Vec::new();
     let mut unknown = Vec::new();
     {
-        let reg = store.registry(actor(args)?, at);
         for r in &records {
-            match reg.get(&r.caller) {
+            match projection.entity(&r.caller) {
                 Some(e) => live.push(wc_control::offer::LiveContract {
                     record: r,
                     consumer_zone: e.zone.as_str(),
@@ -3547,6 +3704,7 @@ fn caep_ingest(args: &Args) -> Result<()> {
 /// Cut a signed bundle for one mediator.
 fn bundle_export(args: &Args) -> Result<()> {
     let mediator = require(args, "mediator")?.to_string();
+    let artifacts_dir = paths(args).artifacts;
     // 5e: the envelope key follows the issuer key's custody, so it goes through the same
     // resolution and honours `--require-external-signing`. It did not before: an estate
     // with the posture set could export a bundle signed by a PEM on this disk, which is
@@ -3563,18 +3721,19 @@ fn bundle_export(args: &Args) -> Result<()> {
         .unwrap_or(7 * 86_400);
 
     let p = paths(args);
-    let store = open_store(args)?;
+    let projection = open_projection(args)?;
     let ts = now();
 
     // Every live contract addressed to this mediator, read from the artifacts the
     // issuer persisted — the same bytes a pulling mediator would receive.
     let mut contracts: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
-    for record in store.projection.contracts.values() {
+    for record in projection.contracts.values() {
         if !record.is_live(ts) || !record.aud.iter().any(|a| a == &mediator) {
             continue;
         }
-        match store.read_artifact(record.cid.as_str(), &mediator) {
+        match wc_control::store::read_artifact_from(&artifacts_dir, record.cid.as_str(), &mediator)
+        {
             Some(jws) => contracts.push(jws),
             // Named, never silently omitted: a bundle short one contract is an
             // agent that stops working in an air-gapped site with no way to ask why.
@@ -6305,10 +6464,9 @@ fn deny_cmd(args: &Args) -> Result<()> {
 }
 
 fn requests_cmd(args: &Args) -> Result<()> {
-    let mut store = open_store(args)?;
+    let projection = open_projection(args)?;
     let show_all = args.has("all");
-    let mut rows: Vec<&PendingRequest> = store
-        .projection
+    let mut rows: Vec<&PendingRequest> = projection
         .requests
         .values()
         .filter(|r| show_all || r.status == RequestStatus::Pending)
@@ -6357,19 +6515,17 @@ fn requests_cmd(args: &Args) -> Result<()> {
             r.surface.items().join(", ")
         );
     }
-    let _ = &mut store;
     Ok(())
 }
 
 fn contracts_cmd(args: &Args) -> Result<()> {
-    let store = open_store(args)?;
+    let projection = open_projection(args)?;
 
     if let Some(cid) = args
         .get("cid")
         .or_else(|| args.verbs.get(1).map(String::as_str))
     {
-        let record = store
-            .projection
+        let record = projection
             .contracts
             .values()
             .find(|c| c.cid.as_str() == cid)
@@ -6414,7 +6570,7 @@ fn contracts_cmd(args: &Args) -> Result<()> {
         return Ok(());
     }
 
-    let mut rows: Vec<_> = store.projection.contracts.values().collect();
+    let mut rows: Vec<_> = projection.contracts.values().collect();
     rows.sort_by(|a, b| a.cid.as_str().cmp(b.cid.as_str()));
     if rows.is_empty() {
         println!("no contracts");
@@ -6575,9 +6731,12 @@ fn serve_cmd(args: &Args) -> Result<()> {
         .to_string();
 
     let transport = transport_policy(args, &listen)?;
+    // The ack ledger is loaded before anything is served, so a restart resumes from what the
+    // estate confirmed rather than from nothing. `connect distribution` reads the same file.
     let mut cp = ControlPlane::new(store, evidence, policy, signer, &iss, now)
         .with_mode(mode(args))
-        .with_transport(transport.clone());
+        .with_transport(transport.clone())
+        .with_ack_ledger(&paths(args).set_acks)?;
 
     if let Some(path) = args.get("jwks") {
         let text = std::fs::read_to_string(path).map_err(|e| {
@@ -6769,11 +6928,11 @@ fn policy_lint(args: &Args) -> Result<()> {
 /// answers "what breaks if I ship this" before it ships.
 fn policy_dry_run(args: &Args) -> Result<()> {
     let policy = load_policy(args)?;
-    let store = open_store(args)?;
+    let projection = open_projection(args)?;
     let ts = args.number("now").unwrap_or_else(now);
 
-    let standing = standing_state(&store);
-    let report = policy.dry_run(&store.projection, &standing, ts);
+    let standing = standing_state(&projection);
+    let report = policy.dry_run(&projection, &standing, ts);
 
     if args.has("json") {
         println!(
@@ -6911,9 +7070,8 @@ fn policy_show(args: &Args) -> Result<()> {
 }
 
 /// Standing-issuance counters as of now, from the projection.
-fn standing_state(store: &Store) -> StandingState {
-    let active: Vec<_> = store
-        .projection
+fn standing_state(projection: &wc_control::store::Projection) -> StandingState {
+    let active: Vec<_> = projection
         .contracts
         .values()
         .filter(|c| c.status == wc_core::contract::ContractStatus::Active)
@@ -7066,6 +7224,24 @@ ESTATE
                   end the affected connections now rather than at their exp.
                   `connect offer status <asset>` lists them.
   mediators       [--mediators FILE] [--revocation-pub PEM --kid KID] [--json]
+  distribution    [--mediators FILE] [--seq N] [--wait] [--timeout 120]
+                  [--interval 5] [--require-clean] [--json]
+                  the DEPLOY GATE: have the mediators picked up the current
+                  contract set? Exit 1 if not, so `set -e` stops the pipeline.
+
+                  Put it between minting and deploying. A pipeline that mints a
+                  contract and deploys immediately races the mediator's next poll,
+                  and loses with WC-4002 on a contract that exists.
+
+                  Compares the state-log SEQUENCE, not the set hash: the expected
+                  hash drifts as contracts lapse, with no state change, so a gate
+                  built on it flaps for reasons invisible from either end. --seq
+                  defaults to the log head, which is what the step before this one
+                  just committed to.
+
+                  An ack means the set was installed, not that every artifact in it
+                  verified — one that does not is omitted and reported. --require-clean
+                  is the stricter question; the default answers the one asked.
   tenants         [--registry tenants.toml] [--json]   what exists on this root
 
 KEYS  (--keyring keys.toml, default: keys.toml)

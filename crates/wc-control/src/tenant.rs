@@ -157,8 +157,15 @@ pub struct TenantPaths {
     pub evidence: PathBuf,
     /// Signed revocation feed.
     pub revocations: PathBuf,
-    /// Mediator acknowledgements.
+    /// Mediator acknowledgements of a revocation, by feed sequence.
     pub acks: PathBuf,
+    /// Mediator acknowledgements of the contract set, by state-log sequence.
+    ///
+    /// A second file rather than a second field in the first: the two answer different questions
+    /// — *did mediators confirm a cut* and *did mediators pick up the new set* — and merging them
+    /// is how the wrong one gets read as a deploy gate, which is a mistake already made here once
+    /// in writing.
+    pub set_acks: PathBuf,
     /// Issued contract artifacts.
     pub artifacts: PathBuf,
 }
@@ -174,6 +181,7 @@ impl TenantPaths {
             evidence: base.join("evidence"),
             revocations: base.join("revocations.jsonl"),
             acks: base.join("acks.json"),
+            set_acks: base.join("set-acks.json"),
             artifacts: base.join("artifacts"),
             base,
         }

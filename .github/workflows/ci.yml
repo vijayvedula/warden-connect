@@ -122,6 +122,13 @@ jobs:
         working-directory: warden-connect
         run: ./scripts/upgrade-drill.sh   # builds the workspace itself
 
+      # Contract-set acks lived in a `HashMap::new()` that was never loaded or saved, so a
+      # restart zeroed them and any deploy gate built on them would block every deploy. This
+      # drill kills and restarts the control plane in the middle to assert exactly that.
+      - name: Distribution drill — the deploy gate, and acks that survive a restart
+        working-directory: warden-connect
+        run: ./scripts/distribution-drill.sh   # builds the workspace itself
+
       # Named separately from the run above even though it is inside it: the §8.15.3
       # conformance vectors are the ground truth a third party implements against, and
       # a green summary line is not the same as knowing they ran.

@@ -89,6 +89,8 @@ The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 | `Term.deprecates`, a published withdrawal date | had **no reader anywhere**; `Offer::deprecated_after` existed to serve it and had no caller either, so a consumer could contract an item for thirty days past the date the provider said it was gone |
 | `Matched.offer_version`, commented "so a later upgrade can find what it affects" | was dropped on the floor at mint time — `ContractRecord` had no field for it, so *who breaks if I remove this?* was unanswerable and a comment in the source said otherwise |
 | `Registry::revoke_contract` and `contain::Revoked::Connection`, both tested | had **no caller outside their own tests**, so the only way to end one contract early was `quarantine` — containing the whole counterparty |
+| contract-set acknowledgements, served at `/v1/mediators/{id}/ack` and rendered at `/metrics` | lived in a `HashMap::new()` that was **never loaded or saved**, so a restart zeroed them and any gate built on them would block every deploy |
+| every read-only CLI verb | took the **single-writer lock**, so `posture`, `discover`, `blast-radius`, `contracts`, `requests` and `show` all failed with `WC-8003` against a control plane that was serving — which in production is a control plane that is always serving |
 
 ### The review checklist
 

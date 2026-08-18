@@ -296,9 +296,45 @@ subsystem.
   contract plane proposed `wc_mediator_unconfirmed` as the deploy gate. It cannot be — wrong
   question, wrong ledger. Closing this needs a durable contract-set ack record.
 
-  The rest of the upgrade path is built — `scripts/upgrade-drill.sh` runs it — so this ACK
-  record is now the only missing piece of it rather than one of several.
-  *(Unbuilt, and it blocks the deploy gate)*
+  **Built.** `wc_control::dist::SetAckLedger` is durable, keyed by state-log sequence rather than
+  revocation feed sequence, and `connect distribution [--wait]` is the gate — exit 1 when a
+  mediator has not confirmed, so `set -e` stops a pipeline. `scripts/distribution-drill.sh`
+  asserts it, including that the ledger survives the control plane being killed and restarted,
+  and that a gate configured with **no** mediators refuses rather than passing vacuously.
+
+  Two properties worth knowing. It compares the log **sequence**, not the set hash: the expected
+  hash is clock-dependent (`contract_set_for` filters on `now < exp`), so a hash-based gate would
+  flap with no state change. And an ack means the set was *installed*, not that every artifact in
+  it verified — `--require-clean` is the stricter question.
+  *(Built; the measurement of how long distribution takes under load still needs the cluster)*
+* **The pipeline verbs cannot run while the control plane is serving.** `connect offer publish`
+  and `connect need apply` write to the state log, which is single-writer by design, and
+  `connect serve` holds that lock for the life of the process. So a consumer's pipeline running
+  `need apply` against a live control plane fails with `WC-8003`.
+
+  This is a **topology constraint, not a defect**, and it forces a choice an estate has to make
+  explicitly:
+
+  * **pipelines are the writer** — run `connect serve` only for distribution, and accept that its
+    write routes (`POST /v1/connections`, `approve`, `quarantine`) are unavailable while a
+    pipeline holds the lock. Nothing currently enforces this split, which is the gap: there is no
+    `serve --read-only` that would make it a configuration rather than a race.
+  * **the control plane is the writer** — pipelines drive it over the API. `POST /v1/connections`
+    and `POST /v1/requests/{id}/approve` exist; there is **no** route for `offer publish` or
+    `need apply`, so the offer/acceptance path is CLI-only today.
+
+  The second is not simply a matter of adding two routes. `need apply` runs an SCM shim, and the
+  party that holds the source-host credentials is the pipeline, not the control plane — a
+  caller-supplied shim command reaching the control plane would be remote code execution. Moving
+  it server-side means the pipeline *asserts* its consent over HTTP instead of the control plane
+  verifying it, which weakens the guarantee W4 and W5 were built for. Which way to go is a design
+  decision, and it is recorded here rather than made quietly.
+
+  What works today: read-only verbs. `posture`, `discover`, `blast-radius`, `contracts`,
+  `requests`, `show`, `offer show|status`, `policy dry-run` and `distribution` all read the state
+  **without** the writer lock now. They took it before, so none of them could be run against a
+  serving control plane — an operator could inspect the estate only by stopping it.
+  *(Constraint, stated; the split is not yet enforceable in configuration)*
 * **A narrowed offer leaves a window, bounded only by the contract's TTL.** A version bump does
   not touch a contract already issued, deliberately: a contract is a signed ceiling with a hard
   expiry, and a publisher who could shorten one remotely would make the artifact a cache of a
