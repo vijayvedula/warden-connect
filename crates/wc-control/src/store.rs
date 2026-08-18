@@ -968,6 +968,51 @@ impl Projection {
         }
     }
 
+    /// Look up one entity.
+    ///
+    /// These four lookups live here rather than only on [`crate::registry::Registry`] because
+    /// `Registry` borrows the store **mutably**, and a mutable borrow is how a reader ends up
+    /// taking the single-writer lock. Every read-only CLI verb did — so `connect posture`,
+    /// `connect discover`, `connect blast-radius` and the rest all failed with `WC-8003` against
+    /// a control plane that was serving, which in production is a control plane that is always
+    /// serving. `Registry` delegates to these, so the behaviour and the error message have one
+    /// home.
+    #[must_use]
+    pub fn entity(&self, id: &wc_core::model::EntityId) -> Option<&wc_core::model::Entity> {
+        self.entities.get(id)
+    }
+
+    /// Look up one entity or fail with [`Code::ENTITY_NOT_FOUND`].
+    pub fn require_entity(&self, id: &wc_core::model::EntityId) -> Result<&wc_core::model::Entity> {
+        self.entity(id).ok_or_else(|| {
+            WcError::with_detail(Code::ENTITY_NOT_FOUND, format!("{id} is not registered"))
+        })
+    }
+
+    /// A bulk read of the estate, for exports, posture reports and the operator portal.
+    ///
+    /// Deliberately not called `list`: this is the enumeration an agent principal must never be
+    /// able to perform, so every caller should be visibly an operator path.
+    #[must_use]
+    pub fn enumerate_for_operator(&self) -> Vec<&wc_core::model::Entity> {
+        let mut out: Vec<&wc_core::model::Entity> = self.entities.values().collect();
+        out.sort_unstable_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+        out
+    }
+
+    /// Entities whose re-attestation interval has lapsed — the assurance loop's work queue.
+    #[must_use]
+    pub fn reattest_due(&self, now: u64) -> Vec<wc_core::model::EntityId> {
+        let mut out: Vec<wc_core::model::EntityId> = self
+            .entities
+            .values()
+            .filter(|e| e.lifecycle == wc_core::model::Lifecycle::Active && e.reattest_overdue(now))
+            .map(|e| e.id.clone())
+            .collect();
+        out.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+        out
+    }
+
     /// Rebuild from the newest snapshot plus the log tail.
     pub fn rebuild(dir: impl AsRef<Path>, name: &str) -> Result<(Projection, RebuildReport)> {
         let dir = dir.as_ref();
@@ -1108,6 +1153,18 @@ pub type StateLog = Log<Event>;
 
 /// The conventional state-log name inside a tenant's `state/` directory.
 pub const STATE_LOG_NAME: &str = "events";
+
+/// Read one issued artifact from an artifacts directory, without opening the store.
+///
+/// A free function because reading an artifact needs a path and nothing else, and routing it
+/// through `Store` meant a reader had to take the single-writer lock — which `connect serve`
+/// holds for the life of the process.
+#[must_use]
+pub fn read_artifact_from(dir: &Path, cid: &str, audience: &str) -> Option<String> {
+    std::fs::read_to_string(dir.join(artifact_name(cid, audience)))
+        .ok()
+        .map(|t| t.trim().to_string())
+}
 
 /// Sorted entity ids — used by exports, which must be deterministic.
 #[must_use]
@@ -1255,9 +1312,7 @@ impl Store {
     /// Read a persisted artifact back.
     #[must_use]
     pub fn read_artifact(&self, cid: &str, audience: &str) -> Option<String> {
-        std::fs::read_to_string(self.artifacts.join(artifact_name(cid, audience)))
-            .ok()
-            .map(|t| t.trim().to_string())
+        read_artifact_from(&self.artifacts, cid, audience)
     }
 
     /// Append an event and apply it to the projection, in that order: if the

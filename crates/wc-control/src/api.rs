@@ -78,21 +78,6 @@ impl Caller {
     }
 }
 
-/// What a mediator last confirmed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MediatorAck {
-    /// Set hash the mediator applied.
-    pub set_hash: String,
-    /// Sequence it applied.
-    pub seq: u64,
-    /// When it acked.
-    pub at: u64,
-    /// Connections it reports as cut.
-    pub revoked: Vec<String>,
-    /// In-flight calls it aborted.
-    pub aborted: u64,
-}
-
 /// Request counters, rendered at `/metrics`.
 #[derive(Debug, Default)]
 pub struct Metrics {
@@ -140,8 +125,17 @@ pub struct ControlPlane {
     pub transport: Transport,
     /// Public JWKS served at `/v1/jwks.json`, as pre-rendered JSON.
     pub jwks: String,
-    /// Mediator acknowledgements.
-    pub acks: Mutex<HashMap<String, MediatorAck>>,
+    /// Mediator acknowledgements of the **contract set**, and where they are persisted.
+    ///
+    /// This used to be a bare `Mutex<HashMap<_, _>>` that was never loaded or saved, so a
+    /// control-plane restart zeroed it — and a deploy gate built on it would have blocked every
+    /// deploy until every mediator happened to refresh. The in-memory copy is still the hot one
+    /// (a mediator acks on every poll), and it is written through so a restart resumes from what
+    /// the estate actually confirmed.
+    pub acks: Mutex<crate::dist::SetAckLedger>,
+    /// Where [`ControlPlane::acks`] is persisted. `None` keeps the old in-memory-only behaviour,
+    /// which is what a test wants and what no deployment should have.
+    pub acks_path: Option<std::path::PathBuf>,
     /// The signed revocation feed, served to mediators at `/v1/revocations`.
     ///
     /// Optional because a control plane can run without one — and when it does,
@@ -195,7 +189,8 @@ impl ControlPlane {
             tokens: HashMap::new(),
             transport: Transport::default(),
             jwks: r#"{"keys":[]}"#.to_string(),
-            acks: Mutex::new(HashMap::new()),
+            acks: Mutex::new(crate::dist::SetAckLedger::default()),
+            acks_path: None,
             metrics: Metrics::default(),
             registry: {
                 let r = wc_core::obs::Registry::new();
@@ -236,6 +231,18 @@ impl ControlPlane {
     pub fn with_mode(mut self, mode: Mode) -> ControlPlane {
         self.mode = mode;
         self
+    }
+
+    /// Persist contract-set acknowledgements at `path`, loading whatever is already there.
+    ///
+    /// Loading is the half that matters. A control plane that only wrote would look durable and
+    /// still start every restart with nothing confirmed, which a deploy gate reads as "no
+    /// mediator has the set" — so the gate would block on every restart rather than resume.
+    pub fn with_ack_ledger(mut self, path: &std::path::Path) -> Result<ControlPlane> {
+        let ledger = crate::dist::SetAckLedger::open(path)?;
+        self.acks = Mutex::new(ledger);
+        self.acks_path = Some(path.to_path_buf());
+        Ok(self)
     }
 
     /// Publish a JWKS document.
@@ -964,7 +971,7 @@ fn metrics(cp: &Arc<ControlPlane>) -> Response {
     );
     drop(store);
 
-    let acks = lock(&cp.acks).len();
+    let acks = lock(&cp.acks).acked.len();
 
     let mut body = r.to_prometheus();
     body.push_str(&format!(
@@ -1507,14 +1514,31 @@ fn contract_set(cp: &Arc<ControlPlane>, mediator: &str, req: &Request) -> Result
 /// Record a mediator's acknowledgement.
 fn record_ack(cp: &Arc<ControlPlane>, mediator: &str, req: &Request) -> Result<Response> {
     let body = body_json(req)?;
-    let ack = MediatorAck {
+    let ack = crate::dist::SetAck {
         set_hash: field(&body, "set_hash")?.to_string(),
         seq: body.get("seq").and_then(Value::as_u64).unwrap_or(0),
         at: (cp.now)(),
         revoked: string_list(&body, "revoked"),
         aborted: body.get("aborted").and_then(Value::as_u64).unwrap_or(0),
+        rejected: body.get("rejected").and_then(Value::as_u64).unwrap_or(0),
     };
-    lock(&cp.acks).insert(mediator.to_string(), ack);
+
+    // Persist while the lock is held, so a concurrent ack cannot write a file that disagrees
+    // with the map. Two mediators acking at once is the ordinary case, not the rare one.
+    let mut ledger = lock(&cp.acks);
+    let moved = ledger.record(mediator, ack);
+    if moved {
+        if let Some(path) = &cp.acks_path {
+            // A failed write is reported and does not fail the ack. The mediator has already
+            // applied the set; refusing here would make it retry a state change it has made,
+            // and the durable record is a convenience for a gate rather than the authority for
+            // what a mediator is enforcing.
+            if let Err(e) = ledger.save(path) {
+                eprintln!("connect: contract-set ack not persisted: {e}");
+            }
+        }
+    }
+    drop(ledger);
     Ok(Response::empty(204))
 }
 
@@ -1578,7 +1602,7 @@ fn mediator_status(cp: &Arc<ControlPlane>) -> Result<Response> {
     let acks = lock(&cp.acks);
     let rows: Vec<Value> = expected
         .iter()
-        .map(|mediator| match acks.get(mediator) {
+        .map(|mediator| match acks.ack_for(mediator) {
             Some(ack) => json!({
                 "mediator": mediator,
                 "confirmed": true,
