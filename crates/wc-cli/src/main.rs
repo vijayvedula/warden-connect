@@ -521,6 +521,8 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "deny" => &["id", "reason", "policy"],
         "serve" => &[
             "listen",
+            "read-only",
+            "refresh-secs",
             "standby",
             "standby-timeout",
             "behind-tls-proxy",
@@ -829,6 +831,21 @@ fn open_projection(args: &Args) -> Result<wc_control::store::Projection> {
 /// signal with no room for a health-check misconfiguration, and it also makes the port
 /// available to the active writer on the same host.
 fn open_store_or_stand_by(args: &Args) -> Result<Store> {
+    if args.has("read-only") {
+        if args.has("standby") {
+            // Standing by is an election for the writer lock. A process that will never write has
+            // nothing to be elected to, and honouring both would leave it waiting for a lock it
+            // then declines to use.
+            return Err(WcError::with_detail(
+                Code::CONFIG_INVALID,
+                "--read-only and --standby contradict each other: standby waits to become the                  writer, and read-only says this process never writes",
+            ));
+        }
+        let p = paths(args);
+        let (store, report) = Store::open_read_only(&p.state)?;
+        warn_if_unclean(&report);
+        return Ok(store);
+    }
     if !args.has("standby") {
         return open_store(args);
     }
@@ -6754,19 +6771,66 @@ fn serve_cmd(args: &Args) -> Result<()> {
         cp = cp.with_token(token, &as_refs);
     }
 
-    let api = Arc::new(Api(Arc::new(cp)));
+    let read_only = args.has("read-only");
+    let mut refresh_note: Option<u64> = None;
+    if read_only {
+        cp = cp.read_only();
+    }
+    let plane = Arc::new(cp);
+
+    // A read-only plane's projection is a snapshot taken at open, so without this it would serve
+    // an ever-staler contract set — which for a mediator pulling contracts means never seeing a
+    // newly minted one. The writing plane needs none of this: its projection is current by
+    // construction, and re-reading would cost a full replay to learn nothing.
+    if read_only {
+        let refresh_secs = args.number("refresh-secs").unwrap_or(5).max(1);
+        let refreshing = Arc::clone(&plane);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(refresh_secs));
+            let mut store = match refreshing.store.lock() {
+                Ok(s) => s,
+                // A poisoned lock means a handler panicked mid-request. Stop refreshing rather
+                // than serving a projection nobody can vouch for; the process is already in a
+                // state an operator needs to know about.
+                Err(_) => {
+                    eprintln!("connect serve: state lock poisoned, refresh loop stopping");
+                    return;
+                }
+            };
+            match store.refresh() {
+                Ok(report) => warn_if_unclean(&report),
+                // Reported and retried. A transient read failure must not take the plane down —
+                // it is still serving the last set it read cleanly, which is the correct
+                // degradation — but it must not be silent either.
+                Err(e) => eprintln!("connect serve: state refresh failed: {e}"),
+            }
+        });
+        refresh_note = Some(refresh_secs);
+    }
+    let api = Arc::new(Api(plane));
     let shutdown = Arc::new(Shutdown::default());
 
-    println!("connect serve  {listen}");
+    println!(
+        "connect serve  {listen}{}",
+        if read_only { "  (READ-ONLY)" } else { "" }
+    );
     println!("  tenant   {}", args.get("tenant").unwrap_or("default"));
     println!("  policy   {}", load_policy(args)?.version);
     println!("  mode     {:?}", mode(args));
     println!("  tokens   {}", tokens.len());
     println!("  transport {}", transport.describe());
+    if let Some(secs) = refresh_note {
+        println!("  writer   elsewhere — this plane holds no lock and refuses state mutations");
+        println!("  refresh  re-reads the state every {secs}s");
+    }
     println!("\n  GET  /healthz /readyz /metrics /v1/jwks.json");
     println!("  GET  /v1/entities /v1/posture /v1/connections /v1/requests /v1/mediators");
-    println!("  POST /v1/connections /v1/requests/<id>/approve|deny /v1/quarantine");
     println!("  GET  /v1/mediators/<id>/contracts    POST /v1/mediators/<id>/ack");
+    if read_only {
+        println!("  409  POST /v1/connections /v1/requests/<id>/approve|deny /v1/quarantine");
+    } else {
+        println!("  POST /v1/connections /v1/requests/<id>/approve|deny /v1/quarantine");
+    }
 
     http::serve(&listen, api, shutdown, |addr| {
         if listen.ends_with(":0") {
@@ -7449,7 +7513,29 @@ SERVE
   serve [--listen 127.0.0.1:8787] --issuer-key PEM --kid KID
         [--behind-tls-proxy [--trusted-proxy ADDR]...] | [--insecure-plaintext]
         [--tokens tokens.toml] [--approvers approvers.toml] [--jwks FILE]
-        [--standby [--standby-timeout 3600]]
+        [--standby [--standby-timeout 3600]] | [--read-only [--refresh-secs 5]]
+
+WHO OWNS THE STATE LOG
+  The log is single-writer, and `serve` holds that lock for the life of the
+  process. So `offer publish` and `need apply` — the pipeline verbs — cannot run
+  while a writing `serve` does. An estate picks one of two shapes.
+
+  --read-only         serve WITHOUT the writer lock. Contract sets are read from
+                      disk and re-read on --refresh-secs; POST /v1/mediators/<id>/ack
+                      still works, because acknowledgements are a separate ledger.
+                      Every state mutation returns 409 with a message naming the
+                      mode rather than a WC-8003 from inside a handler.
+
+                      This is the shape for a pipeline-driven estate: the pipelines
+                      are the writer, and this plane distributes.
+  --refresh-secs N    how often a read-only plane re-reads the state (default 5).
+                      Without it the plane serves the snapshot it opened with, and
+                      a mediator would never see a newly minted contract.
+
+  Omit --read-only and this plane is the writer: the API is the way in, and
+  pipelines must not hold the lock at the same time. --read-only and --standby
+  contradict each other and are refused together — standby waits to *become* the
+  writer.
 
 HIGH AVAILABILITY  (§8.5.2, docs/production-readiness.md P1 #10)
   The state log and the evidence chain are single-writer by construction: two

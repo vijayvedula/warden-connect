@@ -84,7 +84,11 @@ pub struct Log<T> {
     last_seq: u64,
     since_sync: u32,
     segment_bytes: u64,
-    _lock: crate::lock::LockGuard,
+    /// The writer lock, held for the life of the log. `None` means this log was opened for
+    /// reading and **appending is refused** — see [`Log::append`]. Optional rather than a
+    /// separate read-only type because the read path is identical and a second type would be a
+    /// second place for the append guard to be forgotten.
+    _lock: Option<crate::lock::LockGuard>,
     // `fn() -> T` rather than `T` so the log stays `Send`/`Sync` whatever `T` is.
     marker: PhantomData<fn() -> T>,
 }
@@ -118,6 +122,23 @@ where
         dir: impl AsRef<Path>,
         name: &str,
         lock: crate::lock::LockGuard,
+    ) -> Result<Self> {
+        Log::assemble(dir, name, Some(lock))
+    }
+
+    /// Open a log for **reading only**, taking no lock.
+    ///
+    /// For a process that serves state it does not own — a read-only control plane distributing
+    /// contract sets while a pipeline holds the writer lock. `append` refuses, so an unlocked log
+    /// cannot corrupt one somebody else is writing even if a route slips past its own guard.
+    pub fn open_read_only(dir: impl AsRef<Path>, name: &str) -> Result<Self> {
+        Log::assemble(dir, name, None)
+    }
+
+    fn assemble(
+        dir: impl AsRef<Path>,
+        name: &str,
+        lock: Option<crate::lock::LockGuard>,
     ) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         let segments = segments(&dir, name)?;
@@ -175,6 +196,16 @@ where
 
     /// Append a record, returning its sequence number.
     pub fn append(&mut self, rec: &T, now: u64, durability: Durability) -> Result<u64> {
+        // The choke point. Every write to every log goes through here, so a read-only process
+        // that reached this far — a route that forgot its own guard, a future caller — fails
+        // loudly instead of appending to a log another process owns.
+        if self._lock.is_none() {
+            return Err(WcError::with_detail(
+                Code::STORE_LOCKED,
+                "this log was opened read-only and holds no writer lock; a process that does not \
+                 own the log must not append to it",
+            ));
+        }
         let framed = Framed {
             seq: self.last_seq + 1,
             ts: now,
@@ -1259,6 +1290,44 @@ impl Store {
         Ok((store, report, election))
     }
 
+    /// Open the state directory for **reading only**, taking no writer lock.
+    ///
+    /// For `connect serve --read-only`: a control plane that distributes contract sets to
+    /// mediators while a consumer's pipeline holds the writer lock. Without this, `serve` and the
+    /// pipeline verbs (`offer publish`, `need apply`) could not both exist in an estate, because
+    /// the state log is single-writer and `serve` held that lock for the life of the process.
+    ///
+    /// The projection is a snapshot as of this call, so a long-lived reader must
+    /// [`Store::refresh`] or it will serve an ever-staler set — which for a mediator pulling
+    /// contracts means never seeing a newly minted one.
+    pub fn open_read_only(dir: impl AsRef<Path>) -> Result<(Store, RebuildReport)> {
+        let dir = dir.as_ref().to_path_buf();
+        let (projection, report) = Projection::rebuild(&dir, STATE_LOG_NAME)?;
+        let log = StateLog::open_read_only(&dir, STATE_LOG_NAME)?;
+        Ok((
+            Store {
+                projection,
+                log,
+                artifacts: dir.join("contracts"),
+                dir,
+                anomalies: Vec::new(),
+            },
+            report,
+        ))
+    }
+
+    /// Re-read the state from disk, discarding the in-memory projection.
+    ///
+    /// Only meaningful for a store opened with [`Store::open_read_only`]: a writer's projection is
+    /// already current by construction, and re-reading one would throw away uncommitted nothing
+    /// while costing a full replay. Returns the rebuild report so a caller can report a log that
+    /// did not read back cleanly rather than serving from it silently.
+    pub fn refresh(&mut self) -> Result<RebuildReport> {
+        let (projection, report) = Projection::rebuild(&self.dir, STATE_LOG_NAME)?;
+        self.projection = projection;
+        Ok(report)
+    }
+
     fn assemble(dir: PathBuf, lock: crate::lock::LockGuard) -> Result<(Store, RebuildReport)> {
         let (projection, report) = Projection::rebuild(&dir, STATE_LOG_NAME)?;
         let log = StateLog::with_lock(&dir, STATE_LOG_NAME, lock)?;
@@ -1816,6 +1885,72 @@ mod tests {
             let _held = StateLog::open(tmp.path(), STATE_LOG_NAME).unwrap();
         }
         assert!(StateLog::open(tmp.path(), STATE_LOG_NAME).is_ok());
+    }
+
+    #[test]
+    fn a_read_only_store_coexists_with_the_writer_and_refuses_to_append() {
+        // The topology this exists for: `connect serve --read-only` distributing contract sets
+        // while a consumer's pipeline holds the writer lock. Before it, `serve` held that lock for
+        // the life of the process, so `offer publish` and `need apply` — the pipeline verbs the
+        // whole offer/acceptance design is built on — could not run against a live control plane.
+        let tmp = TmpDir::new("read-only");
+        let (mut writer, _) = Store::open(tmp.path()).unwrap();
+        writer
+            .commit(
+                Event::EntityPosture {
+                    id: agent_id(),
+                    posture: Posture::Attested,
+                    score: 90,
+                },
+                1_000,
+                Durability::Batched,
+            )
+            .unwrap();
+
+        // Opens while the writer holds the lock. `Store::open` here would fail with WC-8003.
+        let (mut reader, _) = Store::open_read_only(tmp.path()).unwrap();
+        assert_eq!(reader.projection.seq, writer.projection.seq);
+
+        // And it cannot write, at the choke point every log append goes through — so a route that
+        // forgot its own guard fails loudly instead of appending to a log it does not own.
+        let err = reader
+            .commit(
+                Event::EntityPosture {
+                    id: agent_id(),
+                    posture: Posture::Unattested,
+                    score: 0,
+                },
+                1_100,
+                Durability::Batched,
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), Code::STORE_LOCKED);
+        assert!(
+            err.to_string().contains("read-only"),
+            "the refusal must say why: {err}"
+        );
+
+        // The reader's projection is a snapshot, so it must be refreshed or it serves an
+        // ever-staler set — which for a mediator pulling contracts means never seeing a newly
+        // minted one.
+        let before = reader.projection.seq;
+        writer
+            .commit(
+                Event::EntityPosture {
+                    id: server_id(),
+                    posture: Posture::Attested,
+                    score: 91,
+                },
+                1_200,
+                Durability::Durable,
+            )
+            .unwrap();
+        assert_eq!(
+            reader.projection.seq, before,
+            "a snapshot does not move on its own"
+        );
+        reader.refresh().unwrap();
+        assert_eq!(reader.projection.seq, writer.projection.seq);
     }
 
     #[test]

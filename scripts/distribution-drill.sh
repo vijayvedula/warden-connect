@@ -30,7 +30,9 @@
 #   4  a write advances the log, and the gate refuses again until the mediator polls — the race a
 #      pipeline is trying not to lose;
 #   5  `--wait` blocks and then passes when the mediator catches up, rather than failing fast;
-#   6  a gate with NO mediators configured refuses rather than passing vacuously.
+#   6  a gate with NO mediators configured refuses rather than passing vacuously;
+#   7  `serve --read-only` distributes while a PIPELINE holds the writer lock, and refuses state
+#      mutations with a message naming the mode — the shape a pipeline-driven estate needs.
 #
 # Phase 3 and phase 6 are the point. Everything else would have worked before.
 #
@@ -300,6 +302,70 @@ if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q "NO MEDIATORS EXPECTED"; then
 else
     bad "an empty mediator set read as confirmed distribution (exit $RC)"
     printf '%s\n' "$OUT" | sed 's/^/       /' | head -6
+fi
+
+# --- 7 · read-only serve, so a pipeline can be the writer ---------------------
+bold "7 · serve --read-only, with a pipeline writing underneath it"
+# The constraint this closes: the state log is single-writer and a writing `serve` holds that lock
+# for the life of the process, so `offer publish` and `need apply` — the verbs the whole
+# offer/acceptance design is built on — could not run against a live control plane at all.
+kill "$SERVE_PID" 2>/dev/null; wait "$SERVE_PID" 2>/dev/null; SERVE_PID=""
+"$CONNECT" serve --read-only --refresh-secs 1 --listen "127.0.0.1:$API_PORT" \
+    --issuer-key issuer.pem --kid k1 --tokens tokens.toml --approvers approvers.toml \
+    >> serve-ro.log 2>&1 &
+SERVE_PID=$!
+for _ in $(seq 1 80); do
+    curl -sf -o /dev/null "http://127.0.0.1:$API_PORT/healthz" && break
+    sleep 0.25
+done
+if grep -q "READ-ONLY" serve-ro.log; then
+    ok "started, and says which mode it is in"
+else
+    bad "serve --read-only did not start or did not announce the mode"
+    tail -4 serve-ro.log | sed 's/^/       /'
+fi
+
+cat > terms.toml <<TERMS
+asset = "$SERVER"
+
+[[term]]
+items = ["get_balance"]
+approval = "pre_granted"
+ttl_max = 604800
+to = { zone = "internal.*" }
+TERMS
+PUB="$("$CONNECT" offer publish --surface surface.json --terms terms.toml --kind mcp \
+    --repo drill/payments-mcp --sha aaa --version 1 2>&1)"
+if printf '%s' "$PUB" | grep -q "^published"; then
+    ok "     a pipeline verb wrote to the state log while the plane served"
+else
+    bad "     a pipeline verb still cannot run against a serving control plane"
+    printf '%s\n' "$PUB" | sed 's/^/       /' | head -4
+fi
+
+MUT="$(curl -s -X POST "http://127.0.0.1:$API_PORT/v1/connections" \
+    -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+    -H 'Idempotency-Key: should-be-refused' \
+    -d "{\"from\":\"$AGENT\",\"to\":\"$SERVER\",\"tools\":[\"get_balance\"],
+         \"justification\":\"a mutation a read-only plane must refuse\",
+         \"requester\":\"human:drill@org\",\"mediators\":[\"$MEDIATOR_ID\"]}")"
+if printf '%s' "$MUT" | grep -q "read-only"; then
+    ok "     and a state mutation is refused, naming the mode"
+else
+    bad "     a read-only plane accepted a state mutation"
+    printf '%s' "$MUT" | head -c 200 | sed 's/^/       /'
+fi
+
+# The refresh loop is the half that makes it usable: without it the plane serves the snapshot it
+# opened with, and a mediator would never see a newly minted contract.
+sleep 2
+RO_SEQ="$(curl -s "http://127.0.0.1:$API_PORT/v1/mediators/$(printf '%s' "$MEDIATOR_ID" | sed 's/:/%3A/g')/contracts" \
+    -H "authorization: Bearer $TOKEN" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["seq"])' 2>/dev/null)"
+if [ -n "$RO_SEQ" ] && [ "$RO_SEQ" -gt "$AFTER" ]; then
+    ok "     and it re-read the pipeline's write: serving seq $RO_SEQ (was $AFTER)"
+else
+    bad "     the read-only plane did not pick up the pipeline's write (seq ${RO_SEQ:-none}, was $AFTER)"
 fi
 
 echo
