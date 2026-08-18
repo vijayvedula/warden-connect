@@ -136,6 +136,15 @@ pub struct ControlPlane {
     /// Where [`ControlPlane::acks`] is persisted. `None` keeps the old in-memory-only behaviour,
     /// which is what a test wants and what no deployment should have.
     pub acks_path: Option<std::path::PathBuf>,
+    /// Whether this plane owns the state log.
+    ///
+    /// `true` means it was opened with [`crate::store::Store::open_read_only`] and holds no writer
+    /// lock, because something else does — normally the pipelines that run `offer publish` and
+    /// `need apply`. Every state-mutating route is refused up front, so an operator gets one clear
+    /// answer instead of a `WC-8003` from somewhere deep in a handler. Acknowledging a contract
+    /// set is **not** a state mutation and still works: it writes the ack ledger, which is the
+    /// whole reason a read-only plane is worth running.
+    pub read_only: bool,
     /// The signed revocation feed, served to mediators at `/v1/revocations`.
     ///
     /// Optional because a control plane can run without one — and when it does,
@@ -191,6 +200,7 @@ impl ControlPlane {
             jwks: r#"{"keys":[]}"#.to_string(),
             acks: Mutex::new(crate::dist::SetAckLedger::default()),
             acks_path: None,
+            read_only: false,
             metrics: Metrics::default(),
             registry: {
                 let r = wc_core::obs::Registry::new();
@@ -230,6 +240,13 @@ impl ControlPlane {
     #[must_use]
     pub fn with_mode(mut self, mode: Mode) -> ControlPlane {
         self.mode = mode;
+        self
+    }
+
+    /// Serve without owning the state log.
+    #[must_use]
+    pub fn read_only(mut self) -> ControlPlane {
+        self.read_only = true;
         self
     }
 
@@ -701,6 +718,26 @@ impl http::Handler for Api {
 /// Dispatch an authenticated request.
 fn route(cp: &Arc<ControlPlane>, caller: &Caller, req: &Request) -> Result<Response> {
     let segments = req.segments();
+
+    // A read-only plane refuses every state mutation here, before a handler can reach the log and
+    // fail with `WC-8003` from somewhere an operator cannot map back to a decision. The
+    // acknowledgement route is deliberately exempt: it writes the ack ledger, not the state log,
+    // and it is the reason a read-only plane exists at all.
+    if cp.read_only
+        && matches!(req.method.as_str(), "POST" | "PUT" | "DELETE" | "PATCH")
+        && !matches!(segments.as_slice(), ["v1", "mediators", _, "ack"])
+    {
+        return Ok(error(
+            409,
+            Code::CONFIG_INVALID,
+            "this control plane is read-only: it serves contract sets and records \
+             acknowledgements, and does not own the state log. The writer is whatever \
+             holds the lock — normally the pipelines that run `offer publish` and \
+             `need apply`. Send this to the writing plane, or run one without \
+             --read-only.",
+        ));
+    }
+
     match (req.method.as_str(), segments.as_slice()) {
         // --- registry ---
         ("GET", ["v1", "entities"]) => {

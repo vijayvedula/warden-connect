@@ -315,10 +315,13 @@ subsystem.
   This is a **topology constraint, not a defect**, and it forces a choice an estate has to make
   explicitly:
 
-  * **pipelines are the writer** — run `connect serve` only for distribution, and accept that its
-    write routes (`POST /v1/connections`, `approve`, `quarantine`) are unavailable while a
-    pipeline holds the lock. Nothing currently enforces this split, which is the gap: there is no
-    `serve --read-only` that would make it a configuration rather than a race.
+  * **pipelines are the writer** — `connect serve --read-only`. **Built.** The plane takes no
+    writer lock, re-reads the state on `--refresh-secs` (default 5) so a mediator still sees newly
+    minted contracts, keeps serving `POST /v1/mediators/{id}/ack` because acknowledgements are a
+    separate ledger, and returns 409 with a message naming the mode for every state mutation —
+    rather than a `WC-8003` from inside a handler. `Log::append` refuses when it holds no lock, so
+    a route that forgot its own guard fails loudly instead of appending to a log it does not own.
+    `scripts/distribution-drill.sh` phase 7 runs `offer publish` against a serving plane.
   * **the control plane is the writer** — pipelines drive it over the API. `POST /v1/connections`
     and `POST /v1/requests/{id}/approve` exist; there is **no** route for `offer publish` or
     `need apply`, so the offer/acceptance path is CLI-only today.
@@ -330,11 +333,12 @@ subsystem.
   verifying it, which weakens the guarantee W4 and W5 were built for. Which way to go is a design
   decision, and it is recorded here rather than made quietly.
 
-  What works today: read-only verbs. `posture`, `discover`, `blast-radius`, `contracts`,
+  Read-only verbs work in either shape. `posture`, `discover`, `blast-radius`, `contracts`,
   `requests`, `show`, `offer show|status`, `policy dry-run` and `distribution` all read the state
   **without** the writer lock now. They took it before, so none of them could be run against a
   serving control plane — an operator could inspect the estate only by stopping it.
-  *(Constraint, stated; the split is not yet enforceable in configuration)*
+  *(The pipeline-writer shape is built and enforceable; the API-writer shape is a design decision
+  still open, and it is the one that needs a trust analysis rather than two routes)*
 * **A narrowed offer leaves a window, bounded only by the contract's TTL.** A version bump does
   not touch a contract already issued, deliberately: a contract is a signed ceiling with a hard
   expiry, and a publisher who could shorten one remotely would make the artifact a cache of a
