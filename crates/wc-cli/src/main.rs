@@ -171,6 +171,7 @@ const TWO_WORD: &[&str] = &[
     "offer status",
     "need check",
     "need apply",
+    "proposals apply",
     "scm probe",
 ];
 
@@ -190,6 +191,7 @@ const COMMANDS: &[&str] = &[
     "offer status",
     "need check",
     "need apply",
+    "proposals apply",
     "scm probe",
     "blast-radius",
     "quarantine",
@@ -402,6 +404,20 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "timeout",
             "interval",
             "require-clean",
+        ],
+        "proposals apply" => &[
+            "dir",
+            "git-ref",
+            "repo",
+            "sha",
+            "shim",
+            "shim-label",
+            "mediator",
+            "issuer-key",
+            "signer",
+            "kid",
+            "alg",
+            "out",
         ],
         "inventory" => &[
             "shim",
@@ -678,6 +694,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "mediators" => mediators_cmd(args)?,
         "distribution" => distribution_cmd(args)?,
         "inventory" => inventory_cmd(args)?,
+        "proposals apply" => proposals_apply_cmd(args)?,
         "federate" => federate_cmd(args)?,
         "tenants" => tenants_cmd(args)?,
         "keys list" => keys_list(args)?,
@@ -1978,6 +1995,290 @@ fn print_containment(report: Option<&contain::ContainmentReport>, what: &str) {
 /// This is the command that keeps "never assumed contained" true after the
 /// incident call ends: an order nobody confirmed stays listed until somebody
 /// does, however old it gets.
+/// `proposals apply` — mint the contracts a merged pull request approved (rung 2).
+///
+/// Runs in the **contracts repository's** own pipeline, on merge to the default branch. One repo,
+/// one permission grant, and the approval is a reviewed merge verified against the source host
+/// rather than a click this system asserts happened.
+///
+/// The control that makes it mean anything is the owner check: the merge's approvers must include
+/// the **registered owner of the callee**. Without it, anybody with write access to this repository
+/// could mint a contract against a service they do not own, which is privilege escalation wearing a
+/// review as a disguise.
+///
+/// All or nothing per proposal, and nothing is written until every proposal has been checked — a
+/// directory with one bad file mints none of them, so a half-applied merge cannot leave an estate
+/// in a state nobody proposed.
+fn proposals_apply_cmd(args: &Args) -> Result<()> {
+    let dir = args.get("dir").unwrap_or("warden/contracts");
+    let repo = require(args, "repo")?.to_string();
+    let sha = require(args, "sha")?.to_string();
+    let mediator = require(args, "mediator")?.to_string();
+    let shim_cmd = require(args, "shim")?;
+    let shim_label = args.get("shim-label").unwrap_or("scm");
+
+    // The merge is verified once for the whole directory: one merge carried the pull request, and
+    // asking the host the same question per file would be a slower way to the same answer.
+    let shim = wc_control::scm::ScmShim::parse(shim_label, shim_cmd)?;
+    // `checked_evidence` compares the ref the pipeline asserts against the ref the host reports —
+    // a disagreement about where a commit landed is a false claim, not a weaker one.
+    let asserted = wc_control::pipeline::Asserted {
+        repo: repo.clone(),
+        git_ref: args.get("git-ref").unwrap_or("refs/heads/main").to_string(),
+        sha: sha.clone(),
+    };
+    let evidence = wc_control::scm::checked_evidence(&shim, &asserted)?;
+    println!(
+        "merge      {} on {} approved by {} via {}",
+        evidence.request_id,
+        evidence.git_ref,
+        evidence.approvers.join(", "),
+        shim_label
+    );
+
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| {
+            WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {dir}")).with_source(e)
+        })?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "toml"))
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        println!("no proposals in {dir}");
+        return Ok(());
+    }
+
+    struct Planned {
+        path: String,
+        proposal: wc_control::proposal::Proposal,
+        caller: wc_core::model::Entity,
+        callee: wc_core::model::Entity,
+    }
+
+    let ts = now();
+    let mut plan: Vec<Planned> = Vec::new();
+    let mut noop = 0usize;
+    let mut refusals: Vec<wc_control::proposal::Refusal> = Vec::new();
+
+    {
+        let store = open_store(args)?;
+        for path in &files {
+            let shown = path.display().to_string();
+            let text = std::fs::read_to_string(path).map_err(|e| {
+                WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {shown}"))
+                    .with_source(e)
+            })?;
+            let proposal = match wc_control::proposal::Proposal::parse(&text) {
+                Ok(p) => p,
+                Err(e) => {
+                    refusals.push(wc_control::proposal::Refusal {
+                        path: shown,
+                        why: e.detail().to_string(),
+                    });
+                    continue;
+                }
+            };
+
+            let caller_id = EntityId::new(&proposal.caller)?;
+            let callee_id = EntityId::new(&proposal.callee)?;
+            let (Some(caller), Some(callee)) = (
+                store.projection.entity(&caller_id).cloned(),
+                store.projection.entity(&callee_id).cloned(),
+            ) else {
+                refusals.push(wc_control::proposal::Refusal {
+                    path: shown,
+                    why: format!(
+                        "{} or {} is not registered. A proposal names parties, it does not create \
+                         them — `connect register` first, or promote them from `connect inventory`",
+                        proposal.caller, proposal.callee
+                    ),
+                });
+                continue;
+            };
+
+            // The control. Approval by write access is not consent from the service.
+            if !wc_control::proposal::owner_approved(&evidence.approvers, &callee.owner) {
+                refusals.push(wc_control::proposal::Refusal {
+                    path: shown,
+                    why: wc_control::proposal::why_not_owner_approved(
+                        &evidence.approvers,
+                        &callee.owner,
+                    ),
+                });
+                continue;
+            }
+
+            // Idempotency before anything is written, so a re-run of an unchanged merge appends no
+            // request row either. The identity is derived from the pair and the semantics, exactly
+            // as the bilateral path derives it, so the same proposal is the same contract.
+            let cid = wc_control::need::derive_cid(&caller_id, &callee_id);
+            let jti = wc_control::need::derive_jti(&cid, 0, &proposal.items(), proposal.ttl_secs());
+            if store
+                .projection
+                .contracts
+                .get(&cid)
+                .is_some_and(|c| c.jti == jti)
+            {
+                println!("  already current  {cid} ({jti})  {shown}");
+                noop += 1;
+                continue;
+            }
+
+            plan.push(Planned {
+                path: shown,
+                proposal,
+                caller,
+                callee,
+            });
+        }
+    }
+
+    if !refusals.is_empty() {
+        println!();
+        for r in &refusals {
+            println!("REFUSED  {}", r.path);
+            println!("         {}", r.why);
+        }
+        return Err(WcError::with_detail(
+            Code::POLICY_DENIED,
+            format!("{} proposal(s) were not applied", refusals.len()),
+        ));
+    }
+
+    let mut minted = 0usize;
+    if !plan.is_empty() {
+        // `Human`, not `ReviewedMerge`. There is one repository and one merge here, and
+        // `reviewed_merge` refuses a one-sided consent by design — one side alone is a request. The
+        // true, weaker claim is that a human approved and the merge shows it; the merge travels
+        // with the contract so an auditor sees the pull request rather than this sentence.
+        let consent = wc_core::contract::MergeApproval {
+            side: wc_core::contract::Side::Target,
+            repo: repo.clone(),
+            sha: sha.clone(),
+            request_id: evidence.request_id.clone(),
+            author: evidence.author.clone(),
+            approvers: evidence.approvers.clone(),
+            via: shim_label.to_string(),
+        };
+        with_issuer(args, |issuer| {
+            for p in &plan {
+                let cid = wc_control::need::derive_cid(
+                    &EntityId::new(&p.proposal.caller)?,
+                    &EntityId::new(&p.proposal.callee)?,
+                );
+                let jti = wc_control::need::derive_jti(
+                    &cid,
+                    0,
+                    &p.proposal.items(),
+                    p.proposal.ttl_secs(),
+                );
+                let input = wc_control::issuance::RequestInput {
+                    caller: EntityId::new(&p.proposal.caller)?,
+                    callee: EntityId::new(&p.proposal.callee)?,
+                    surface: wc_core::contract::Surface {
+                        tools: p.proposal.items().into_iter().collect(),
+                        ..Default::default()
+                    },
+                    terms: wc_core::contract::Terms::default(),
+                    ttl_secs: p.proposal.ttl_secs(),
+                    justification: p.proposal.justify.clone(),
+                    requester: requester_of_merge(&evidence)?,
+                    mediators: vec![mediator.clone()],
+                };
+                let pending = match issuer.request(&input)? {
+                    wc_control::issuance::Outcome::Issued(_) => continue,
+                    wc_control::issuance::Outcome::AwaitingApproval(pending) => pending,
+                    other => {
+                        return Err(WcError::with_detail(
+                            Code::POLICY_DENIED,
+                            format!("{}: {other:?}", p.path),
+                        ))
+                    }
+                };
+                let approval = wc_core::contract::ApprovalRef::human_by_merge(
+                    owner_of(&p.callee, &consent.approvers)?,
+                    consent.clone(),
+                    p.proposal.ticket.clone(),
+                );
+                let issued = issuer.mint_with_identity(
+                    &pending,
+                    approval,
+                    &p.caller,
+                    &p.callee,
+                    wc_control::issuance::Derived {
+                        cid,
+                        jti,
+                        offer_version: 0,
+                    },
+                )?;
+                println!();
+                println!("minted     {} ({})", issued.record.cid, issued.record.jti);
+                println!("  from     {}", p.path);
+                println!("  surface  {}", issued.record.surface.items().join(", "));
+                println!("  ttl      {}s", p.proposal.ttl_secs());
+                if let Some(t) = &p.proposal.ticket {
+                    println!("  ticket   {t}");
+                }
+                if let Some(dir) = args.get("out") {
+                    for (name, jws) in &issued.artifacts {
+                        let path = std::path::Path::new(dir).join(name);
+                        std::fs::write(&path, format!("{jws}\n")).map_err(|e| {
+                            WcError::with_detail(
+                                Code::EXPORT_FAILED,
+                                format!("cannot write {}", path.display()),
+                            )
+                            .with_source(e)
+                        })?;
+                        println!("  artifact {}", path.display());
+                    }
+                }
+                minted += 1;
+            }
+            Ok(())
+        })?;
+    }
+
+    println!();
+    println!("{minted} minted · {noop} already current");
+    let _ = ts;
+    Ok(())
+}
+
+/// The owner, as the approver the source host actually named.
+///
+/// The registry holds `human:priya@bank.com` and a host reports the login or address it knows, so
+/// the record names the form that was verified rather than the form that was configured. Falls back
+/// to the registered owner when the two are spelled identically.
+fn owner_of(callee: &wc_core::model::Entity, approvers: &[String]) -> Result<HumanRef> {
+    let want = callee.owner.as_str().trim_start_matches("human:");
+    let matched = approvers
+        .iter()
+        .map(|a| a.trim().trim_start_matches("human:"))
+        .find(|a| a.eq_ignore_ascii_case(want))
+        .unwrap_or(want);
+    HumanRef::new(format!("human:{matched}"))
+}
+
+/// The accountable human on a merge-approved contract.
+///
+/// The change's **author**, not the pipeline and not the approver: a justification is written by a
+/// person and the record should name the one who wrote it. Falls back to an approver when a host
+/// reports no author, because a request with no accountable human is worse than an imprecise one.
+fn requester_of_merge(evidence: &wc_control::scm::MergeEvidence) -> Result<HumanRef> {
+    let who = if evidence.author.trim().is_empty() {
+        evidence
+            .approvers
+            .iter()
+            .find(|a| !a.trim().is_empty())
+            .map(String::as_str)
+            .unwrap_or("unknown")
+    } else {
+        evidence.author.as_str()
+    };
+    HumanRef::new(format!("human:{}", who.trim_start_matches("human:")))
+}
+
 /// `inventory` — what MCP servers does this organisation actually have?
 ///
 /// The first question anybody asks, and until now nothing answered it. Deliberately the **only**
@@ -7645,6 +7946,32 @@ ESTATE
                   end the affected connections now rather than at their exp.
                   `connect offer status <asset>` lists them.
   mediators       [--mediators FILE] [--revocation-pub PEM --kid KID] [--json]
+  proposals apply --repo NAME --sha SHA --mediator ID [--dir warden/contracts]
+                  [--git-ref refs/heads/main] --shim COMMAND [--shim-label NAME]
+                  (--issuer-key PEM | --signer COMMAND) --kid KID [--out DIR]
+                  mint the contracts a merged pull request approved. Runs in the
+                  CONTRACTS repository's own pipeline, on merge.
+
+                  One repo, one merge, one permission grant. The consent is a
+                  reviewed merge verified against the source host — not a click
+                  this system asserts happened — and git log is the audit trail.
+
+                  THE OWNER CHECK IS THE CONTROL. The merge's approvers must
+                  include the registered owner of the callee. Without it, anybody
+                  with write access to this repository could mint a contract
+                  against a service they do not own.
+
+                  Recorded as approval mode `human` with the merge as evidence,
+                  NOT as `reviewed_merge`: there is one merge here, and claiming
+                  both parties consented in their own repositories would overstate
+                  it. The merge travels with the contract, so an auditor reads the
+                  pull request rather than that sentence.
+
+                  All or nothing. A directory with one bad proposal mints none of
+                  them, so a half-applied merge cannot leave an estate in a state
+                  nobody proposed. Idempotent: an unchanged re-run writes nothing,
+                  not even a request row.
+
   inventory       --shim COMMAND [--shim-label NAME] --org NAME
                   [--paths a,b] [--out FILE] [--json] [--quiet]
                   what MCP servers this organisation actually has, read from its
