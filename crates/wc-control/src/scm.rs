@@ -104,12 +104,22 @@ impl MergeEvidence {
     /// decision wearing two hats.
     #[must_use]
     pub fn is_reviewed_merge(&self) -> bool {
+        // A **named** author. An empty one is not "nobody wrote this", it is "the host did not say"
+        // — and treating it as nobody makes the third condition vacuous: any approver differs from
+        // the empty string, so a self-approved merge would read as reviewed.
+        //
+        // Found against a live GitHub repository. The wrapper parsed the pull-request JSON with
+        // `sed` and a real object carries three `"user":{` occurrences, so greedy matching returned
+        // nothing and `author` came back empty. The probe passed, because the merge genuinely had
+        // been reviewed by somebody else — the check had stopped checking and the answer was right
+        // by luck. The shim is fixed; this is the half that does not depend on the shim being right.
         self.merged
             && self.protected
+            && !self.author.trim().is_empty()
             && self
                 .approvers
                 .iter()
-                .any(|a| !a.is_empty() && a != &self.author)
+                .any(|a| !a.trim().is_empty() && a.trim() != self.author.trim())
     }
 
     /// Why it is not evidence, for a refusal an operator can act on.
@@ -117,6 +127,12 @@ impl MergeEvidence {
     pub fn why_not_reviewed(&self) -> String {
         if !self.merged {
             return "the commit did not reach that ref through a merge".to_string();
+        }
+        if self.author.trim().is_empty() {
+            return "the host did not name the change's author, so \"an approver who is not the \
+                    author\" cannot be checked at all. An unnamed author is unknown, not nobody — \
+                    probe the shim with `connect scm probe` and confirm it reports one"
+                .to_string();
         }
         if !self.protected {
             return format!(
@@ -621,6 +637,49 @@ mod tests {
         );
         let err = verify_binding(&shim, &asserted()).unwrap_err();
         assert!(err.detail().contains("two hats"), "{}", err.detail());
+    }
+
+    #[test]
+    fn a_merge_whose_author_the_host_did_not_name_is_refused() {
+        // Found against a live GitHub repository, and it is the reason this test exists rather than
+        // the reason it was added afterwards. The wrapper parsed pull-request JSON with `sed`; a
+        // real object carries three `"user":{` occurrences, greedy matching took the last, and
+        // `author` came back empty.
+        //
+        // An empty author is not "nobody wrote this", it is "the host did not say" — and treating it
+        // as nobody makes the separation-of-duties rule vacuous, because every approver differs from
+        // the empty string. A self-approved merge would then read as reviewed. The probe passed at
+        // the time only because that particular merge genuinely had been reviewed by someone else:
+        // the check had stopped checking and the answer was right by luck.
+        let (_d, shim) = answering(
+            "noauthor",
+            r#"{"merged":true,"ref":"refs/heads/main","protected":true,"author":"","approvers":["b.singh"]}"#,
+        );
+        let err = verify_binding(&shim, &asserted()).unwrap_err();
+        assert!(
+            err.detail().contains("did not name"),
+            "the refusal must say the host named no author: {}",
+            err.detail()
+        );
+
+        // Whitespace counts as unnamed. A host that answers `" "` has said nothing either, and a
+        // check defeated by a space is a check defeated.
+        let (_d2, shim2) = answering(
+            "blankauthor",
+            r#"{"merged":true,"ref":"refs/heads/main","protected":true,"author":"  ","approvers":["b.singh"]}"#,
+        );
+        assert!(verify_binding(&shim2, &asserted()).is_err());
+    }
+
+    #[test]
+    fn an_approver_differing_from_the_author_only_by_whitespace_is_not_a_second_person() {
+        // `" a.khan"` and `"a.khan"` are one person however a host spells them, and trimming on one
+        // side only would let padding buy a second signature.
+        let (_d, shim) = answering(
+            "paddedself",
+            r#"{"merged":true,"ref":"refs/heads/main","protected":true,"author":"a.khan","approvers":[" a.khan "]}"#,
+        );
+        assert!(verify_binding(&shim, &asserted()).is_err());
     }
 
     #[test]

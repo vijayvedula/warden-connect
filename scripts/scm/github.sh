@@ -38,20 +38,50 @@ file)
   fi
   ;;
 merge_evidence)
+  # Fields come out with jq, not sed. The first version parsed this JSON with
+  #   sed -n 's/.*"user":{[^}]*"login":"\([^"]*\)".*/\1/p'
+  # and a real pull-request object contains **three** `"user":{` occurrences (the PR's own, plus
+  # head.user and base.user). Greedy `.*` matched the last one, which yields nothing — so `author`
+  # came back EMPTY against a live repository.
+  #
+  # That is not a cosmetic bug. `is_reviewed_merge` requires an approver who is not the author, and
+  # an empty author makes any approver satisfy it — including a self-approval. The separation-of-duties
+  # check was vacuous, and it passed the probe because the answer happened to be right for a merge
+  # that genuinely was reviewed by somebody else. `MergeEvidence` now refuses an unnamed author, and
+  # this stops producing one.
+  #
+  # `merged_at` is converted by jq too, which removes the `date -u -d` GNU dependency that silently
+  # yielded 0 on macOS.
   pr=$(gh api "repos/$repo/commits/$sha/pulls" \
         -H "Accept: application/vnd.github+json" \
-        -q '[.[] | select(.merged_at != null)][0]' 2>/dev/null)
-  [ -n "$pr" ] && [ "$pr" != "null" ] || { printf '{"merged":false,"ref":"","protected":false}\n'; exit 0; }
-  num=$(printf '%s' "$pr" | sed -n 's/.*"number":\([0-9]*\).*/\1/p')
-  base=$(printf '%s' "$pr" | sed -n 's/.*"base":{[^}]*"ref":"\([^"]*\)".*/\1/p')
-  author=$(printf '%s' "$pr" | sed -n 's/.*"user":{[^}]*"login":"\([^"]*\)".*/\1/p')
-  merged_at=$(printf '%s' "$pr" | sed -n 's/.*"merged_at":"\([^"]*\)".*/\1/p')
+        -q '[.[] | select(.merged_at != null)][0]
+            | [ (.number|tostring),
+                .base.ref,
+                (.user.login // ""),
+                ((.merged_at // "") | if . == "" then 0 else fromdateiso8601 end | tostring)
+              ] | @tsv' 2>/dev/null) || pr=""
+  if [ -z "$pr" ]; then
+    printf '{"merged":false,"ref":"","protected":false}\n'
+    exit 0
+  fi
+  num=$(printf '%s' "$pr" | cut -f1)
+  base=$(printf '%s' "$pr" | cut -f2)
+  author=$(printf '%s' "$pr" | cut -f3)
+  ts=$(printf '%s' "$pr" | cut -f4)
+
+  # Approvers as a JSON array straight from jq, so an empty result is `[]` and not `[""]`. The old
+  # `join` produced a single empty string, which `is_reviewed_merge` had to defend against.
   approvers=$(gh api "repos/$repo/pulls/$num/reviews" \
-        -q '[.[] | select(.state=="APPROVED") | .user.login] | unique | join("\",\"")' 2>/dev/null || true)
-  # A protected base branch is what makes the merge evidence of review.
+        -q '[.[] | select(.state=="APPROVED") | .user.login] | unique' 2>/dev/null) || approvers="[]"
+  [ -n "$approvers" ] || approvers="[]"
+  approvers=$(printf '%s' "$approvers" | tr -d ' \n')
+
+  # A protected base branch is what makes the merge evidence of review. Needs ADMIN on the repo: a
+  # repo:read token gets 404 here and this reports false, which fails closed and reads as a policy
+  # problem rather than a token scope.
   if gh api "repos/$repo/branches/$base/protection" >/dev/null 2>&1; then prot=true; else prot=false; fi
-  ts=$(date -u -d "$merged_at" +%s 2>/dev/null || printf '0')
-  printf '{"merged":true,"ref":"refs/heads/%s","protected":%s,"request_id":"%s","author":"%s","approvers":["%s"],"merged_at":%s}\n' \
+
+  printf '{"merged":true,"ref":"refs/heads/%s","protected":%s,"request_id":"%s","author":"%s","approvers":%s,"merged_at":%s}\n' \
     "$base" "$prot" "$num" "$author" "$approvers" "$ts"
   ;;
 repos)

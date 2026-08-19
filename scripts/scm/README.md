@@ -42,11 +42,38 @@ rather than merely unused.
 Branch protection requiring a review is what enforces it. An estate that has not set it will find
 `connect proposals apply` refusing the very merge this produced — which is the right way round.
 
-## These are UNVERIFIED
+## Verification status, per script and per op
 
-They are written from each vendor's API documentation and **have never been run against a real
-tenant**. That is precisely the position `docs/limitations.md` records for anything not backed by
-an executed script — and the class the four wrong SPIRE commands came from.
+| Script | `merge_evidence` | `file` | `repos` | `open_pr` |
+|---|---|---|---|---|
+| `github.sh` | **verified** against a live repo | **verified** | **verified** | UNVERIFIED |
+| `gitlab.sh` | UNVERIFIED | UNVERIFIED | not implemented | not implemented |
+| `azure-repos.sh` | UNVERIFIED | UNVERIFIED | not implemented | not implemented |
+| `bitbucket.sh` | UNVERIFIED | UNVERIFIED | not implemented | not implemented |
+
+**Verifying `github.sh` found a bug the whole design rests on.** The first version parsed
+pull-request JSON with
+
+```sh
+sed -n 's/.*"user":{[^}]*"login":"\([^"]*\)".*/\1/p'
+```
+
+and a real pull-request object carries **three** `"user":{` occurrences — the PR's own, plus
+`head.user` and `base.user`. Greedy `.*` matched the last, which yields nothing, so `author` came
+back **empty** against a live repository.
+
+That is not cosmetic. `is_reviewed_merge` requires an approver who is not the author, and an empty
+author makes every approver satisfy it — a self-approved merge would have read as reviewed. The
+probe *passed*, because the merge it was pointed at genuinely had been reviewed by somebody else:
+the check had stopped checking and the answer was right by luck.
+
+Two fixes, and both were needed. Fields now come out through `jq` rather than `sed`, which also
+removed a `date -u -d` GNU dependency that silently yielded `merged_at: 0` on macOS. And
+`MergeEvidence::is_reviewed_merge` refuses an **unnamed** author outright, because an empty author is
+*unknown*, not *nobody* — that half does not depend on any shim being right.
+
+The lesson for the three unverified scripts: **do not parse JSON with `sed`.** Two of the three still
+do.
 
 `connect scm probe` exists for this. Run it against a commit you already know the answer for,
 before trusting a shim with anything:
