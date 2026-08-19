@@ -46,10 +46,14 @@ Branch protection requiring a review is what enforces it. An estate that has not
 
 | Script | `merge_evidence` | `file` | `repos` | `open_pr` |
 |---|---|---|---|---|
-| `github.sh` | **verified** against a live repo | **verified** | **verified** | UNVERIFIED |
+| `github.sh` | **verified** against a live repo | **verified** | **verified** | **verified** |
 | `gitlab.sh` | UNVERIFIED | UNVERIFIED | not implemented | not implemented |
 | `azure-repos.sh` | UNVERIFIED | UNVERIFIED | not implemented | not implemented |
 | `bitbucket.sh` | UNVERIFIED | UNVERIFIED | not implemented | not implemented |
+
+All four `github.sh` ops have now been run against a live repository, including the write:
+`open_pr` opened a real pull request, and `merge_evidence` read that merge back. Idempotency and the
+owner refusal are the two claims still to be checked there rather than against a stub.
 
 **Verifying `github.sh` found a bug the whole design rests on.** The first version parsed
 pull-request JSON with
