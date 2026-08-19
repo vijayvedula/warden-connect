@@ -1,6 +1,6 @@
 # Source-host shims
 
-Each script answers the two-verb protocol in `crates/wc-control/src/scm.rs`:
+Each script answers the protocol in `crates/wc-control/src/scm.rs`. Three reads and one write:
 
 ```
 stdin   {"op":"merge_evidence","repo":"…","sha":"…"}
@@ -9,7 +9,38 @@ stdout  {"merged":true,"ref":"refs/heads/main","protected":true,
 
 stdin   {"op":"file","repo":"…","sha":"…","path":"warden/offer.toml"}
 stdout  {"content_b64":"…"}          # STANDARD base64, not base64url
+stdout  {"absent":true}              # not there — an ANSWER, not a failure
+
+stdin   {"op":"repos","org":"bank"}
+stdout  {"repos":["bank/recon-bot","bank/payments-mcp"]}
+
+stdin   {"op":"open_pr","repo":"…","base":"main","branch":"warden/propose-…",
+         "title":"…","body":"…","files":[{"path":"…","content_b64":"…"}]}
+stdout  {"request_id":"412","url":"https://…/pull/412","created":true}
 ```
+
+## `absent` is an answer, and it matters
+
+A missing file is `{"absent":true}`, never an error and never a confident wrong answer. The first
+GitHub wrapper piped `gh api` straight into `awk`, so a 404 body was wrapped as `content_b64` and
+the shim exited 0 — it failed safely only by luck, because error text is not valid base64. The same
+bug in the `repos` op wrapped a 404 as a repository *name*.
+
+That distinction is load-bearing above this layer: `file_if_present` propagates every failure except
+an explicit absence, because a scan with an expired token must report a failure rather than an estate
+with no MCP servers in it. "I looked and found nothing" and "I could not look" must never render the
+same.
+
+## There is no merge op, deliberately
+
+`open_pr` is the only write, and the token it needs is `contents:write` +
+`pull-requests:write` on **one** repository with **no merge rights**. A human merges, in the tool
+they already use, and that merge is the consent `merge_evidence` later reads back. A system that
+could merge its own proposals would be approving on somebody's behalf, so the capability is absent
+rather than merely unused.
+
+Branch protection requiring a review is what enforces it. An estate that has not set it will find
+`connect proposals apply` refusing the very merge this produced — which is the right way round.
 
 ## These are UNVERIFIED
 

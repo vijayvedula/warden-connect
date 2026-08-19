@@ -7,6 +7,9 @@
 #                   fails closed, but reads as a policy problem rather than a token scope.
 #   file            repo:read.
 #   repos           read:org for private repos.
+#   open_pr         contents:write + pull-requests:write on ONE repo, and NO merge rights. There is
+#                   no merge op here on purpose: a human merges, and a token that could merge its own
+#                   proposals would be approving on their behalf.
 #
 # `date -u -d` below is GNU-only; on macOS it silently yields merged_at 0. Run this on Linux.
 #
@@ -74,6 +77,60 @@ repos)
     BEGIN { printf "{\"repos\":[" ; n = 0 }
     /^[A-Za-z0-9._\/-]+$/ { printf "%s\"%s\"", (n++ ? "," : ""), $0 }
     END { print "]}" }'
+  ;;
+open_pr)
+  # The ONE write. There is deliberately no merge op: a human merges, in GitHub, and a system that
+  # could merge its own proposals would be approving on somebody's behalf.
+  #
+  # Needs `contents:write` and `pull-requests:write` on THIS repository only, and must not be able
+  # to merge. Branch protection requiring a review is what enforces that — and it is the same
+  # protection `merge_evidence` reads back, so an estate that has not set it will find
+  # `proposals apply` refusing the merge this produced.
+  #
+  # Idempotent: the branch name is derived from the content by the caller, so a button clicked twice
+  # finds the open pull request rather than opening a second one. A reviewer facing forty identical
+  # PRs stops reading all of them.
+  base=$(printf '%s' "$q" | python3 -c 'import json,sys; print(json.load(sys.stdin)["base"])')
+  branch=$(printf '%s' "$q" | python3 -c 'import json,sys; print(json.load(sys.stdin)["branch"])')
+  title=$(printf '%s' "$q" | python3 -c 'import json,sys; print(json.load(sys.stdin)["title"])')
+  body=$(printf '%s' "$q" | python3 -c 'import json,sys; print(json.load(sys.stdin)["body"])')
+
+  base_sha=$(gh api "repos/$repo/git/ref/heads/$base" -q .object.sha 2>/dev/null) || base_sha=""
+  [ -n "$base_sha" ] || { echo "cannot read $base on $repo" >&2; exit 1; }
+
+  # Create the branch. Already existing is not an error: this is the second click.
+  gh api "repos/$repo/git/refs" -X POST -f "ref=refs/heads/$branch" -f "sha=$base_sha" \
+    >/dev/null 2>&1 || true
+
+  # One PUT per file. An existing file needs its blob sha, or the contents API rejects the update —
+  # and a proposal amended on a second run is the ordinary case, not an error.
+  printf '%s' "$q" | python3 -c '
+import json, sys
+for f in json.load(sys.stdin)["files"]:
+    print(f["path"] + "\t" + f["content_b64"])' | while IFS="$(printf "\t")" read -r path content; do
+    existing=$(gh api "repos/$repo/contents/$path?ref=$branch" -q .sha 2>/dev/null) || existing=""
+    if [ -n "$existing" ]; then
+      gh api "repos/$repo/contents/$path" -X PUT -f "message=$title" -f "content=$content" \
+        -f "branch=$branch" -f "sha=$existing" >/dev/null || exit 1
+    else
+      gh api "repos/$repo/contents/$path" -X PUT -f "message=$title" -f "content=$content" \
+        -f "branch=$branch" >/dev/null || exit 1
+    fi
+  done || { echo "cannot write files to $branch" >&2; exit 1; }
+
+  # Open it, or find the one already open for this head.
+  num=$(gh api "repos/$repo/pulls" -X POST -f "title=$title" -f "body=$body" \
+        -f "head=$branch" -f "base=$base" -q .number 2>/dev/null) || num=""
+  created=true
+  if [ -z "$num" ]; then
+    created=false
+    owner=${repo%%/*}
+    num=$(gh api "repos/$repo/pulls?state=open&head=$owner:$branch" -q '.[0].number' 2>/dev/null) \
+      || num=""
+  fi
+  [ -n "$num" ] && [ "$num" != "null" ] || { echo "no pull request for $branch" >&2; exit 1; }
+  printf '{"request_id":"%s","url":"https://github.com/%s/pull/%s","created":%s}\n' \
+    "$num" "$repo" "$num" "$created"
   ;;
 *) echo "unknown op: $op" >&2; exit 2 ;;
 esac
