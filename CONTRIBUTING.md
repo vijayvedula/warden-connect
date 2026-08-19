@@ -80,6 +80,7 @@ read as working was not, and reading the code had not found it.
 ./scripts/custody-drill.sh         # an external issuer key, and two planes that stay separate
 ./scripts/upgrade-drill.sh         # a provider changes terms; everyone finds out in time
 ./scripts/distribution-drill.sh    # the deploy gate, durable acks, last-use  (binds a port)
+./scripts/inventory-drill.sh       # MCP servers found from repo config, with nothing provisioned
 ```
 
 Two are **not** in CI, because they measure rather than assert:

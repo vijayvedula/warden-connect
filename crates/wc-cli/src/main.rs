@@ -197,6 +197,7 @@ const COMMANDS: &[&str] = &[
     "unquarantine",
     "mediators",
     "distribution",
+    "inventory",
     "federate",
     "keys list",
     "keys new",
@@ -401,6 +402,15 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "timeout",
             "interval",
             "require-clean",
+        ],
+        "inventory" => &[
+            "shim",
+            "shim-label",
+            "org",
+            "paths",
+            "out",
+            "timeout",
+            "quiet",
         ],
         "federate" => &["anchors", "chain", "now", "leeway"],
         "tenants" => &["registry"],
@@ -667,6 +677,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "unquarantine" => unquarantine(args)?,
         "mediators" => mediators_cmd(args)?,
         "distribution" => distribution_cmd(args)?,
+        "inventory" => inventory_cmd(args)?,
         "federate" => federate_cmd(args)?,
         "tenants" => tenants_cmd(args)?,
         "keys list" => keys_list(args)?,
@@ -1967,6 +1978,124 @@ fn print_containment(report: Option<&contain::ContainmentReport>, what: &str) {
 /// This is the command that keeps "never assumed contained" true after the
 /// incident call ends: an order nobody confirmed stays listed until somebody
 /// does, however old it gets.
+/// `inventory` — what MCP servers does this organisation actually have?
+///
+/// The first question anybody asks, and until now nothing answered it. Deliberately the **only**
+/// command in this binary that touches no state: no store, no lock, no key, no evidence chain. It
+/// reads repositories through a source-host shim and prints what it found, which means it can be
+/// pointed at an organisation before that organisation has agreed to run anything.
+///
+/// That is the whole design intent. Every other verb here needs something provisioned first, and a
+/// product whose first useful act requires a durable volume and a signing key does not get adopted.
+fn inventory_cmd(args: &Args) -> Result<()> {
+    let command = require(args, "shim")?;
+    let label = args.get("shim-label").unwrap_or("scm");
+    let org = require(args, "org")?;
+
+    let mut shim = wc_control::scm::ScmShim::parse(label, command)?;
+    if let Some(secs) = args.number("timeout") {
+        shim = shim.with_timeout(std::time::Duration::from_secs(secs));
+    }
+    let paths: Option<Vec<String>> = args
+        .get("paths")
+        .map(|p| p.split(',').map(|s| s.trim().to_string()).collect());
+
+    let quiet = args.has("quiet") || args.has("json");
+    if !quiet {
+        eprintln!("scanning {org} through {label}…");
+    }
+    let inv = wc_control::inventory::scan(&shim, org, paths.as_deref(), |repo, i| {
+        // Progress on stderr, so `--json` on stdout stays machine-readable and a scan of 400
+        // repositories does not look like a hang. A silent minute is indistinguishable from a
+        // broken shim.
+        if !quiet && i % 25 == 0 {
+            eprintln!("  {i} repos… {repo}");
+        }
+    })?;
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&serde_json::to_value(&inv).unwrap_or_default())?
+        );
+        return Ok(());
+    }
+
+    // The three numbers that decide whether this report means anything, before any list.
+    println!();
+    println!("{org}");
+    println!(
+        "  scanned    {} repo(s) · {} carried MCP config · {} config file(s) read",
+        inv.repos_scanned, inv.repos_with_config, inv.configs_read
+    );
+    if inv.repos_scanned == 0 {
+        println!();
+        println!("  NOTHING TO SCAN. The shim returned no repositories, which is not the same as");
+        println!(
+            "  finding none: a token scoped to a single repo, or one without read:org, sees an"
+        );
+        println!("  empty organisation. Check the shim with `connect scm probe` before believing");
+        println!("  this report.");
+        return Ok(());
+    }
+    println!(
+        "  found      {} distinct server(s), {} of them stdio",
+        inv.server_count(),
+        inv.stdio_count()
+    );
+    if inv.findings.is_empty() {
+        println!();
+        println!("  No MCP client configuration in any repository scanned. Either this estate has");
+        println!("  no agents yet, or they declare servers somewhere these paths do not cover —");
+        println!("  `--paths` takes a comma-separated list.");
+        return Ok(());
+    }
+
+    // stdio first, because that is the number that justifies reading repositories at all: a server
+    // spawned as a command has no port, so no network scan could ever have found it.
+    println!();
+    println!("{:<52} {:<7} CONSUMERS", "SERVER", "VIA");
+    for (target, findings) in inv.by_server() {
+        let repos: std::collections::BTreeSet<&str> =
+            findings.iter().map(|f| f.repo.as_str()).collect();
+        let transport = findings
+            .first()
+            .map_or("?", |f| f.declaration.transport.as_str());
+        println!(
+            "{:<52} {:<7} {}",
+            truncate(target, 52),
+            transport,
+            repos.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+
+    let shared = inv.shared();
+    if !shared.is_empty() {
+        println!();
+        println!("Declared by more than one repository — where a contract is worth most:");
+        for (target, n) in &shared {
+            println!("  {n} consumers  {}", truncate(target, 60));
+        }
+    }
+
+    println!();
+    println!(
+        "  A declaration is evidence somebody wrote it down — not that the server exists, runs"
+    );
+    println!(
+        "  or is reachable. Nothing here was probed: reading a config is passive, and speaking"
+    );
+    println!("  MCP to somebody else's service is not.");
+    if let Some(path) = args.get("out") {
+        let json = serde_json::to_string_pretty(&inv).unwrap_or_default();
+        std::fs::write(path, json).map_err(|e| {
+            WcError::with_detail(Code::EXPORT_FAILED, format!("cannot write {path}")).with_source(e)
+        })?;
+        println!("  written    {path}");
+    }
+    Ok(())
+}
+
 /// `distribution` — have the mediators picked up the current contract set? (W6b)
 ///
 /// The deploy gate. A pipeline that has just minted a contract needs to know the mediator is
@@ -7516,6 +7645,30 @@ ESTATE
                   end the affected connections now rather than at their exp.
                   `connect offer status <asset>` lists them.
   mediators       [--mediators FILE] [--revocation-pub PEM --kid KID] [--json]
+  inventory       --shim COMMAND [--shim-label NAME] --org NAME
+                  [--paths a,b] [--out FILE] [--json] [--quiet]
+                  what MCP servers this organisation actually has, read from its
+                  repositories. The FIRST question anybody asks, and the only
+                  command here that needs NOTHING provisioned: no control plane,
+                  no state log, no key, no volume, no lock, and nothing asked of
+                  any other team.
+
+                  Repositories rather than the network, because a stdio MCP server
+                  is a command a client spawns and has no port at all — a network
+                  scan sees the HTTP ones and misses the majority. Config also
+                  gives the consumer for free: the repo that declares a server is
+                  the repo that uses it, which is the pair a contract needs.
+
+                  NOTHING IS PROBED. Reading a config is passive; speaking MCP to
+                  somebody else's service is not. A finding is evidence somebody
+                  wrote a server down, not that it exists, runs or is reachable.
+
+                  An unreadable host is reported as a failure, never as an estate
+                  with no servers in it, and no repositories reads as NOTHING TO
+                  SCAN rather than as nothing found. `scripts/inventory-drill.sh`
+                  asserts both, because a clean bill of health manufactured from an
+                  expired token is worse than no report.
+
   distribution    [--mediators FILE] [--seq N] [--wait] [--timeout 120]
                   [--interval 5] [--require-clean] [--json]
                   the DEPLOY GATE: have the mediators picked up the current
