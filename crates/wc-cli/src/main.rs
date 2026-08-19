@@ -2396,6 +2396,37 @@ fn raise_proposal_pr(
     }
     let branch = format!("warden/propose-{}", &wc_core::util::sha256_hex(&seed)[..12]);
 
+    // Already merged? Then there is nothing to propose, and opening a pull request from the same
+    // branch would produce an EMPTY one — GitHub allows a new PR from a branch whose previous PR was
+    // merged, so branch-name idempotency alone does not cover this. Seen against a live host: the
+    // branch name was byte-identical on the re-run and a new pull request opened anyway, with no diff
+    // in it. A nightly scan would do that every night.
+    //
+    // Checked against `base` with the read op that already exists. If every file we would write is
+    // byte-identical to what is on the base branch, the proposal has been through review and landed.
+    // The polarity is deliberate. The shim's read op answers `{"absent":true}` for *every* failure —
+    // missing file, missing repo, expired token, network — so an error here reads as "not on base" and
+    // the pull request gets raised. A redundant PR is the safe mistake; silently skipping one because
+    // a token expired is not. This check can only ever suppress a PR on a positive content match.
+    //
+    // Raw bytes, not base64: the bodies are here already and encoding them for a comparison would
+    // need a base64 dependency in this crate for one line, which §8.3's ceilings exist to prevent.
+    let mut all_present = !written.is_empty();
+    for (repo_path, body) in written {
+        let on_base = shim.file_if_present(&repo, &base, repo_path)?;
+        if on_base.as_deref() != Some(body.as_bytes()) {
+            all_present = false;
+            break;
+        }
+    }
+    if all_present {
+        println!();
+        println!("  already merged into {base} — every file this would propose is byte-identical");
+        println!("  on that branch. No branch touched, no pull request opened.");
+        println!("  `connect proposals apply` is what turns that merge into contracts.");
+        return Ok(());
+    }
+
     let title = format!("contract proposal: {}", short(server_id));
     let body = format!(
         "Raised by `connect inventory promote` from a repository scan.\n\n         **Discovered server** `{target}`\n         **Registered as** `{server_id}`\n         **Approval** merging this is the consent. It must be approved by the callee's registered          owner, **{owner}** — approval by anyone else is refused at mint, because write access to          this repository is not consent from a service you do not own.\n\n         Ids here are *derived*, not authenticated, so both parties are `Unattested` and enforce          mode would refuse them. That is correct for a catalogue and is the work before          enforcement.\n\n         No signed artifact is committed: a contract in a repository is a bearer grant valid until          its expiry no matter what the registry says, and git cannot express \"withdrawn\".\n"

@@ -279,6 +279,37 @@ else
     bad "     a second run left $NPR pull request(s) — a reviewer facing duplicates reads none"
     printf '%s\n' "$PR2" | sed 's/^/       /' | head -6
 fi
+
+# Clicked again *after the merge landed*. This is not the same case as the one above, and a live run
+# proved it: branch-name idempotency held perfectly — the derived branch was byte-identical — and
+# GitHub still opened a second, EMPTY pull request, because it allows a new PR from a branch whose
+# previous PR was merged. A reviewer gets a diff with nothing in it, from a nightly scan, forever.
+#
+# The fix reads `base` before proposing. Simulated here the only way a stub can: put the proposal
+# files where the shim's `file` op will find them on main.
+python3 - <<'PY'
+import base64, json, os
+q = json.load(open("pr-401.json"))
+for f in q["files"]:
+    dest = os.path.join("estate", "bank-warden-contracts", f["path"])
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    b = f["content_b64"]
+    open(dest, "wb").write(base64.b64decode(b + "=" * (-len(b) % 4)))
+PY
+PR3="$("$CONNECT" inventory promote --from inventory.json --target "$TARGET" \
+    --owner "$OWNER" --zone internal.discovered --by "$OWNER" --activate \
+    --surface surface.json --proposals warden/contracts --tools get_balance \
+    --justify "APAC reconciliation needs end-of-day balances" --ticket CHG-4471 \
+    "${SHIM_ARG[@]}" \
+    --raise-pr --contracts-repo bank/warden-contracts --base main 2>&1)"
+NPR3="$(ls pr-*.json 2>/dev/null | wc -l | tr -d ' ')"
+if printf '%s' "$PR3" | grep -q "already merged into main" && [ "$NPR3" = "1" ]; then
+    ok "     once merged, a further run proposes nothing at all"
+else
+    bad "     after the merge it raised again — $NPR3 pull request(s), and an empty diff to review"
+    printf '%s\n' "$PR3" | tail -6 | sed 's/^/       /'
+fi
+
 # And nothing in the protocol can merge.
 if grep -q '"op": *"merge"' "$REPO"/crates/wc-control/src/scm.rs 2>/dev/null; then
     bad "     the shim protocol has a merge op — approval would not be the human's"
