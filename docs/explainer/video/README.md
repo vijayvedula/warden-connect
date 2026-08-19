@@ -3,12 +3,35 @@
 ## The film, vertical — for phones
 
 [`warden-connect-mobile.mp4`](warden-connect-mobile.mp4) · 1080×1920 · 9:16 ·
-30 fps · **6:55** · no audio track. Poster:
+30 fps · **6:45** · no audio track. Poster:
 [`warden-connect-mobile-poster.jpg`](warden-connect-mobile-poster.jpg).
 
-The web presentation *"Why agent connections need a control plane"* as a video a
-phone can actually show. Same script, same palette, same figures — three things
-change, and all three are about how it is *seen* rather than what it says:
+The case for warden-connect as a video a phone can actually show. Same palette and
+typography as the explainer pages; the script is the repository's own argument, in
+the order the repository now makes it.
+
+**Re-cut for the current design.** The first version of this film spent its middle
+on a problem story — a credential copied from a wiki page, four hundred connections
+nobody wrote down, an approval gate engineers walked around — and then presented five
+capabilities. That is no longer what the code argues. `connect inventory` is *rung 1
+of the adoption ladder* and needs nothing provisioned; a contract proposal is
+*reviewed as a pull request into one repository* and the merge is the consent. So the
+two middle chapters are now those two rungs, in the order an estate climbs them, and
+the film's spine is **cost of entry** rather than a feature list. The chapters:
+
+| # | Chapter | What it has to land |
+|---|---|---|
+| 0 | Four Questions With No Owner | four questions about the viewer's own estate, and the empty slot where each answer should be |
+| 1 | The Two Layers | the action boundary, the relationship boundary — and that the second runs without the first |
+| 2 | What You Actually Have | rung 1: repositories rather than the network, nothing probed, and an unreadable host reported as a failure |
+| 3 | Consent Is a Merge | rung 2: a proposal is a file, the callee's registered owner merges it, and that merge is the consent |
+| 4 | The Ceiling | what the merge mints, and why every layer can only narrow |
+| 5 | On the Path | nine tools offered, two shown, and the pin that catches a silent change |
+| 6 | When It Goes Wrong | containment with per-node proof, and the contract nobody ever called through |
+| 7 | Five Readings | the same object, read by five roles |
+| 8 | Plainly | the ladder, the failure mode that matters most, and the one command that costs nothing |
+
+Three things about how it is *seen* rather than what it says:
 
 **Re-composed, not letterboxed.** The web stage is 1200×560, a 2.14:1 strip. Fitted
 into 9:16 that is a 1080×504 band with 70% of the frame empty and labels eight pixels
@@ -108,25 +131,26 @@ accept it.
 The first attempt moved the web version's figures around and some of them never
 fitted. A forty-node network and a thirteen-lane array are **wide** ideas; a 936 px
 stage gives them 78 px of separation, which is a smudge on a phone. So the second
-attempt threw the compositions away and built five motifs for a tall frame instead —
-each used more than once, so the film has a vocabulary rather than a scene-by-scene
+attempt threw the compositions away and built motifs for a tall frame instead — each
+used more than once, so the film has a vocabulary rather than a scene-by-scene
 scramble.
 
 | Motif | Replaces | Why it suits a tall frame |
 |---|---|---|
 | **plane** — a boundary seen almost edge-on | two columns side by side | The layers can be *stacked*, which is what they are, with one call descending through both. It is the only composition that makes "neither can widen the other" self-evident |
-| **threads** — cables running down the frame | the node graph | A tall frame has depth rather than breadth, so the mess is expressed as *crossing*. Forty-four cables that drift laterally read as a tangle at any size |
-| **wall** — a barrier with one door | nine lanes bending sideways | You can see the whole width of the wall and the single door in it, and the traffic that bows out to the margins to get past |
-| **document** — the contract as a page | a card of bullet points | A signed document is already a portrait shape. It carries three scenes: the idea, the ceiling, and all five readings |
+| **document** — the contract as a page | a card of bullet points | A signed document is already a portrait shape. It carries the whole of *The Ceiling*: the artifact, then the lintel it collapses into |
 | **readout** — a vertical status list | thirteen ticks in a row | Thirteen ticks across 936 px is thirteen specks. Thirteen rows down a tall frame is the status page an operator actually reads at 03:00 |
+| **card** — a full-width block with a verdict on it | a two-column comparison | Two or three stacked cards is how the film puts a right answer next to a wrong one: the honest report against the manufactured one, the owner against the merely-authorised approver, `never` against `unreported` |
 
-Two of these do double duty as an argument. The cables appear twice — red and
-crossing in *The Connection*, then the same forty-four green and parallel in *On the
-Path*. Nothing about the number changed, only whether anybody knows what they are,
-and that is the whole pitch in one cut. And the five role readings are now **one
-document with a different field group lit each time**, rather than five cards: the
-section's claim is *the same artifact, read five ways*, so it should be visibly the
-same artifact.
+`threads` (forty-four cables crossing) and `wall` (a barrier with one door) used to
+be in this table. Both belonged to the problem story the middle of the film used to
+tell, and both were deleted with it rather than left in the source unused — `git log`
+has them if that story ever comes back.
+
+The **card** is the motif the re-cut leant on hardest, and the reason is that the
+repository's most distinctive claim is comparative. Three separate chapters end on
+the same shape: *this is what a system that rounds up reports, and this is what this
+one reports.* A stacked pair says that without a word of narration.
 
 ### The five readings are five pictures
 
@@ -142,14 +166,9 @@ role it is for.**
 |---|---|---|
 | **Group Chief Architect** | Three systems stacked with **no line between them**, and one artifact in its own column that all three read | The message is an *absence*. Drawing the missing connectors is what "not a shared library, cluster or release train" looks like |
 | **AI / Agent Architect** | The same tool description on **Tuesday and Friday**, one clause different, two different digests | Nine-into-two is the headline everyone quotes; the hash is the part only this role cares about, and it needs the one image nothing else in the film uses |
-| **CTO** | **Twenty-one day-marks against one**, and `MANIFESTS CHANGED 0` | The asymmetry *is* the argument. Nothing has to be read for it to land |
+| **CTO** | **Twenty-one day-marks against one**, and `NEW TOOLS 0` | The asymmetry *is* the argument. It used to be about latency — three weeks for a ticket against seconds for a decision. It is now about *adoption*, which is what rung 2 actually claims: standing up a portal is a programme, merging a pull request is Tuesday |
 | **CIO** | Three columns of acknowledgements, one stopping early, with a **measurement bracket around the empty space** | The idea is that a missed update is a number, not an absence — so the picture has to show the absence with a measurement on it |
 | **CISO** | The blast radius as an actual radius — agent, three services, nine downstream — then **one red line cutting every edge at once** | Blast radius and the kill switch are the same picture, which is the point: you see the cost before you pay it |
-
-Two of the chapter motifs do the same double duty. The cables appear twice — red and
-crossing in *The Connection*, then the same forty-four green and parallel in *On the
-Path*. Nothing about the number changed, only whether anybody knows what they are,
-and that is the whole pitch in one cut.
 
 ### What the frames taught, which is the useful part
 
@@ -205,6 +224,43 @@ defects in the Rust this week.
 - **The same number twice is one number wasted.** The CISO slide showed
   `12 / 13 confirmed` in both the figure and the tagline; the figure now carries the
   half people do not expect — *nothing is assumed successful*.
+
+The re-cut for the current design added five more, and four of them are the same
+defect wearing different clothes: **two consecutive slides that render the same
+frame.** Ten seconds is a long time to show a picture the viewer has already read.
+
+- **Dimming twice is not a change of state.** *The Two Layers* dims the lower plane
+  in beat 2 to point at the upper one, and beat 3 removes it. Both were drawn as "the
+  same plane, fainter", so the two slides were one slide with a new label. Beat 3 now
+  drops the plane's type as well as its brightness and puts the thing that survives —
+  a solid `connect-mediate` box — on the stage in its place.
+- **A beat driven by its own progress re-animates what the previous beat finished.**
+  *The Ceiling*'s three apertures completed during beat 2, then beat 3 rebuilt them
+  from zero. Identical at every sampled instant. Beat 3 now holds them static and
+  adds only its own conclusion.
+- **A conclusion shown a beat early is a payoff spent twice.** The same scene drew
+  `EACH LAYER ONLY NARROWS` in both beats, though only the second beat's narration
+  says it.
+- **The reveal has to be held back to be a reveal.** *When It Goes Wrong* drew all
+  thirteen mediators in beat 0, so beat 1 — whose entire sentence is about the
+  thirteenth — added two captions to a finished picture. Beat 0 now shows the twelve
+  that answered.
+- **Prose on the stage that repeats the caption is a wasted frame.** Two beats of
+  *Consent Is a Merge* set the caption's own sentence in the middle of the picture.
+  Both are figures now: `SELF-ATTESTED` as a label, and the shim protocol as a
+  four-row list whose last row is `merge — NOT IN THE PROTOCOL`. The second is
+  strictly better than the sentence it replaced, because it shows the *absence* the
+  sentence could only assert.
+- **Longer strings found an overlap that short ones hid.** The closing ladder set a
+  42 px serif at `yy - 20` and its cost line at `yy + 26` — four pixels apart, which
+  the old five-word costs got away with and `NOTHING PROVISIONED` did not. Same slide,
+  same bug as the wrapped-text one above: `centred()` returns the y after the last
+  line, and the closing pair ignored it and overprinted.
+- **The font guard was covering the furniture and missing the prose.** Every caption
+  lived inside `build()`, where the check could not see it — so the guard verified
+  labels and skipped the 56 px serif narration that carries the film. `build()` now
+  appends to `SCRIPT_TEXT` and runs *before* the check rather than after it, which is
+  safe because it only assembles closures; nothing is drawn until `render()`.
 
 ## Journey videos
 
