@@ -2213,7 +2213,28 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
     // The proposals a pull request will carry. Written, never committed: raising the PR is the
     // operator's or the portal's act, and a command that pushed to a repository on its own would be
     // a command nobody could safely give an inventory job.
-    let dir = args.get("proposals").unwrap_or("warden/contracts");
+    // Where the proposals are written, and it matters more than it looks.
+    //
+    // With `--raise-pr` the files' home is the **branch**, not this working tree: `open_pr` commits
+    // them through the API. Writing them here as well leaves an untracked copy at the same path, and
+    // then the operator's `git pull` after the merge aborts with
+    //
+    //     error: The following untracked working tree files would be overwritten by merge
+    //
+    // which is a confusing end to a command that succeeded. Seen in a live run. So a raised pull
+    // request stages its files in a temporary directory unless a path was asked for explicitly — an
+    // explicit `--proposals` is honoured, with the conflict called out rather than sprung.
+    let staged;
+    let dir = match (args.get("proposals"), args.has("raise-pr")) {
+        (Some(explicit), _) => explicit,
+        (None, true) => {
+            staged = std::env::temp_dir().join(format!("wc-proposals-{}", std::process::id()));
+            staged.to_str().ok_or_else(|| {
+                WcError::with_detail(Code::CONFIG_INVALID, "the temporary path is not UTF-8")
+            })?
+        }
+        (None, false) => "warden/contracts",
+    };
     let tools: Vec<String> = args
         .get("tools")
         .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
@@ -2276,6 +2297,19 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
 
     if args.has("raise-pr") {
         raise_proposal_pr(args, &written, target, &server_id, &owner)?;
+        if args.get("proposals").is_some() {
+            println!();
+            println!(
+                "  NOTE     these files are now on the branch AND in your working tree at the"
+            );
+            println!(
+                "           same paths. After the merge, `git pull` will refuse to overwrite the"
+            );
+            println!(
+                "           untracked copies — move them aside first, or omit --proposals and"
+            );
+            println!("           let the pull request be the only copy.");
+        }
     }
     println!();
     println!(
@@ -8384,6 +8418,10 @@ ESTATE
 
                   [--raise-pr --contracts-repo NAME [--base main]
                    --shim COMMAND [--shim-label NAME]]
+                  With --raise-pr the files' home is the BRANCH, so --proposals is
+                  not needed and is better omitted: writing them into your working
+                  tree as well leaves untracked copies at the same paths, and a
+                  `git pull` after the merge then refuses to overwrite them.
                   RAISE THE PULL REQUEST, rather than only writing the files. This
                   is the trust anchor: a human reads a diff in GitHub and merges it.
 
