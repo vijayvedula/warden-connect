@@ -304,6 +304,138 @@ else
     printf '%s\n' "$C" | sed 's/^/       /' | head -10
 fi
 
+# --- 7b · the same approval, with no provider key at all --------------------
+bold "7b · the provider approves by merging, holding no key"
+# Why this matters more than it reads. The signed path above needs every provider team to be issued
+# a keypair, get its public half into approvers.toml, and keep the private half safe — per team,
+# forever. This path needs them to merge a pull request in a repository they already own, and the
+# source host authenticates them. For adoption that is the whole difference.
+#
+# A separate policy, because `owner_merge_approves` must be DECLARED. Silence stays closed: a merge
+# cannot satisfy `approver_role` by default, which is the hole this drill's sibling commit closed.
+cat > merge-policy.toml <<POLICY
+default = "require_approval"
+version = "catalogue-drill@v3"
+
+[[zone]]
+id = "internal.drill"
+trust = "internal"
+
+[standing]
+reviewed_at = 0
+
+[[rules]]
+caller_zone = "internal.*"
+callee_zone = "internal.*"
+decision = "require_approval"
+approver_role = "drill.operator"
+owner_merge_approves = true
+ttl_max = "30d"
+terms = { evidence_sink = "ocsf://siem", evidence_delivery = "fail-safe" }
+reason = "the registered owner approving a merge is the consent here"
+POLICY
+cat > needs-keyless.toml <<NEEDS
+asset = "$CONSUMER"
+
+[[need]]
+to = "$PROVIDER"
+tools = ["transfer_funds"]
+justify = "settled by a merge, with no approver key in sight"
+ttl = 2400
+NEEDS
+K="$("$CONNECT" need apply --manifest needs-keyless.toml --repo drill/recon-bot --sha eee1 \
+    --mediator "$MEDIATOR" "${SHIM_ARGS[@]}" --issuer-key issuer.pem --kid k1 \
+    --policy merge-policy.toml 2>&1)"
+KREQ="$(printf '%s' "$K" | grep -oE 'req_[a-f0-9]+' | head -1)"
+if [ -n "$KREQ" ]; then
+    ok "opened $KREQ under the merge-consent policy"
+else
+    bad "no request was opened for the keyless path"
+    printf '%s\n' "$K" | tail -6 | sed 's/^/       /'
+fi
+
+mkdir -p emitted
+EM="$("$CONNECT" approve "$KREQ" --emit emitted 2>&1)"
+if [ -f "emitted/$KREQ.toml" ] && printf '%s' "$EM" | grep -q "no key is needed"; then
+    ok "     emitted the file the provider commits"
+else
+    bad "     no approval file was emitted"
+    printf '%s\n' "$EM" | tail -4 | sed 's/^/       /'
+fi
+# The reviewer has to be able to see what they are approving without decoding a hash.
+if grep -q 'items    = \["transfer_funds"\]' "emitted/$KREQ.toml" \
+   && grep -q "^digest" "emitted/$KREQ.toml"; then
+    ok "     and it states the items in words as well as binding them by digest"
+else
+    bad "     the file does not show a reviewer what they are approving"
+    sed 's/^/       /' "emitted/$KREQ.toml" 2>/dev/null | head -8
+fi
+
+# A stub whose approver IS the callee's registered owner. The shared stub answers `s.iyer`, which
+# is right for the publish/apply merges — those only need *a* reviewer who is not the author — and
+# wrong here, where the whole question is whether that particular person owns the service. The first
+# version of this phase used the shared stub and failed with WC-3024, which was the control working.
+cat > owner-approves.py <<'OWNER'
+#!/usr/bin/env python3
+import base64, json, sys
+q = json.loads(sys.stdin.read())
+if q.get("op") == "merge_evidence":
+    print(json.dumps({"merged": True, "ref": "refs/heads/main", "protected": True,
+                      "request_id": "88", "approvers": ["payments-owner@org"],
+                      "author": "r.mehta"}))
+elif q.get("op") == "file":
+    print(json.dumps({"content_b64": base64.b64encode(open(q["path"], "rb").read()).decode()}))
+else:
+    sys.exit(1)
+OWNER
+KOUT="$("$CONNECT" approve "$KREQ" --merge-repo bank/payments-mcp --sha fff1 \
+    --approval-file "emitted/$KREQ.toml" \
+    --shim "python3 $WORK/owner-approves.py" --shim-label gh \
+    --issuer-key issuer.pem --kid k1 --policy merge-policy.toml 2>&1)"
+if printf '%s' "$KOUT" | grep -qE "^issued conn_[a-f0-9]+"; then
+    ok "     minted from the merge, with no approver registry and no provider key"
+    printf '%s' "$KOUT" | grep -E "^issued|approval |approved " | sed 's/^/       /'
+else
+    bad "     the merge did not settle the request"
+    printf '%s\n' "$KOUT" | tail -8 | sed 's/^/       /'
+fi
+# And the negative direction, which is what makes the positive mean anything.
+cat > wrong-owner.py <<'WRONG'
+#!/usr/bin/env python3
+import base64, json, sys
+q = json.loads(sys.stdin.read())
+if q.get("op") == "merge_evidence":
+    print(json.dumps({"merged": True, "ref": "refs/heads/main", "protected": True,
+                      "request_id": "99", "approvers": ["someone-else"], "author": "r.mehta"}))
+elif q.get("op") == "file":
+    print(json.dumps({"content_b64": base64.b64encode(open(q["path"], "rb").read()).decode()}))
+else:
+    sys.exit(1)
+WRONG
+cat > needs-keyless2.toml <<NEEDS
+asset = "$CONSUMER"
+
+[[need]]
+to = "$PROVIDER"
+tools = ["transfer_funds"]
+justify = "the negative direction for the keyless path"
+ttl = 2100
+NEEDS
+K2="$("$CONNECT" need apply --manifest needs-keyless2.toml --repo drill/recon-bot --sha eee2 \
+    --mediator "$MEDIATOR" "${SHIM_ARGS[@]}" --issuer-key issuer.pem --kid k1 \
+    --policy merge-policy.toml 2>&1)"
+K2REQ="$(printf '%s' "$K2" | grep -oE 'req_[a-f0-9]+' | head -1)"
+"$CONNECT" approve "$K2REQ" --emit emitted >/dev/null 2>&1
+WOUT="$("$CONNECT" approve "$K2REQ" --merge-repo bank/payments-mcp --sha fff2 \
+    --approval-file "emitted/$K2REQ.toml" --shim "python3 $WORK/wrong-owner.py" --shim-label gh \
+    --issuer-key issuer.pem --kid k1 --policy merge-policy.toml 2>&1)"
+if printf '%s' "$WOUT" | grep -q "WC-3024"; then
+    ok "     a merge approved by anyone else refuses WC-3024 — write access is not consent"
+else
+    bad "     a merge by a non-owner settled the request"
+    printf '%s\n' "$WOUT" | tail -5 | sed 's/^/       /'
+fi
+
 # --- 8 · the standing-policy guard, and why this drill cannot prove it -------
 bold "8 · standing policy and a gated term — what this drill can and cannot show"
 # Read this before trusting the phase. The first version of it asserted "escalated to a request even

@@ -111,6 +111,121 @@ pub struct PendingRequest {
     pub status: RequestStatus,
 }
 
+/// The file a provider commits to approve exactly one request.
+///
+/// Two jobs, and it must do both or the mechanism is theatre. It **binds** — the request id and
+/// digest make a reviewed merge consent to this request and no other. And it **informs** — the
+/// parties, the items and the lifetime are in the diff, in words, so the reviewer can see what
+/// they are agreeing to without decoding a hash.
+///
+/// Every field is verified against the live request by [`ApprovalFile::check`], including the
+/// human-readable ones. That is deliberate: a file whose prose said `get_balance` while its digest
+/// covered `transfer_funds` would be a lie shown to the one person whose judgement this whole path
+/// rests on.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalFile {
+    /// The request this approves, `req_…`.
+    pub request: String,
+    /// [`PendingRequest::digest`] — what the approver is agreeing to, exactly.
+    pub digest: String,
+    /// The calling party, in full.
+    pub caller: String,
+    /// The called party — the one whose owner must approve.
+    pub callee: String,
+    /// The items being granted.
+    pub items: Vec<String>,
+    /// The lifetime, in seconds.
+    pub ttl_secs: u64,
+}
+
+impl ApprovalFile {
+    /// Render the file a provider should commit.
+    #[must_use]
+    pub fn render(pending: &PendingRequest) -> String {
+        let mut items = pending.surface.items();
+        items.sort_unstable();
+        let quoted: Vec<String> = items.iter().map(|i| format!("\"{i}\"")).collect();
+        format!(
+            "# warden-connect approval\n\
+             #\n\
+             # Merging this pull request approves the connection below. It is consent from the\n\
+             # registered owner of {callee} — nobody else's approval settles it, and no key is\n\
+             # needed: the source host authenticates you.\n\
+             #\n\
+             # `digest` covers the parties, the items, the terms and the lifetime. If any of them\n\
+             # changes, this file stops matching and the approval no longer applies.\n\
+             \n\
+             request  = \"{req}\"\n\
+             digest   = \"{digest}\"\n\
+             caller   = \"{caller}\"\n\
+             callee   = \"{callee}\"\n\
+             items    = [{items}]\n\
+             ttl_secs = {ttl}\n",
+            req = pending.id,
+            digest = pending.digest(),
+            caller = pending.caller.as_str(),
+            callee = pending.callee.as_str(),
+            items = quoted.join(", "),
+            ttl = pending.ttl_secs,
+        )
+    }
+
+    /// Parse one, refusing anything it does not understand.
+    pub fn parse(text: &str) -> Result<ApprovalFile> {
+        toml::from_str(text).map_err(|e| {
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!("approval file is not the expected shape: {e}"),
+            )
+        })
+    }
+
+    /// Check this file is about `pending`, and says what `pending` says.
+    pub fn check(&self, pending: &PendingRequest) -> Result<()> {
+        if self.request != pending.id {
+            return Err(WcError::with_detail(
+                Code::APPROVAL_SIGNATURE_INVALID,
+                format!(
+                    "this approval names request {}, not {}. A reviewed merge of one request is \
+                     not approval of another",
+                    self.request, pending.id
+                ),
+            ));
+        }
+        let live = pending.digest();
+        if self.digest != live {
+            return Err(WcError::with_detail(
+                Code::APPROVAL_SIGNATURE_INVALID,
+                format!(
+                    "this approval covers {} and the request is now {live}. Something changed \
+                     after it was reviewed, so the approval does not apply — re-emit the file and \
+                     have it reviewed again",
+                    self.digest
+                ),
+            ));
+        }
+        // The prose, too. It is what the human actually read.
+        let mut items = pending.surface.items();
+        items.sort_unstable();
+        let mut mine = self.items.clone();
+        mine.sort_unstable();
+        if self.caller != pending.caller.as_str()
+            || self.callee != pending.callee.as_str()
+            || mine != items
+            || self.ttl_secs != pending.ttl_secs
+        {
+            return Err(WcError::with_detail(
+                Code::APPROVAL_SIGNATURE_INVALID,
+                "the approval file's own description disagrees with the request it names. The \
+                 digest is the binding, but the words are what a reviewer read, and the two must \
+                 not be able to differ",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl PendingRequest {
     /// The digest an approver signs.
     ///
@@ -653,6 +768,118 @@ impl<'a> Issuer<'a> {
                 Ok(Outcome::Issued(issued))
             }
         }
+    }
+
+    /// Settle a pending request from a reviewed merge in the **provider's** repository.
+    ///
+    /// The keyless half of approval. `approve` needs the owner to hold a signing key registered in
+    /// an approver registry; this needs them to approve a pull request in a repository they already
+    /// own, and the source host authenticates them. For a bank that is the difference between
+    /// issuing and rotating a keypair per provider team, forever, and adding a repository.
+    ///
+    /// What makes it consent to *this* request rather than to a merge in general is
+    /// [`ApprovalFile`]: the provider commits a file naming the request and carrying its digest,
+    /// and every field in it is checked against the live request. A reviewed merge of some other
+    /// change cannot settle anything, and the diff a reviewer reads cannot misrepresent what they
+    /// are approving.
+    ///
+    /// `consent` must already be a **verified** reviewed merge — `crate::authority` binds the file
+    /// at that commit to the bytes acted on. This function does not re-verify the host's answer; it
+    /// checks that the answer is about this request and comes from the right person.
+    pub fn approve_by_merge(
+        &mut self,
+        request_id: &str,
+        file: &ApprovalFile,
+        consent: wc_core::contract::MergeApproval,
+    ) -> Result<Issued> {
+        let pending = self.pending(request_id)?;
+        if pending.status != RequestStatus::Pending {
+            return Err(WcError::with_detail(
+                Code::CONTRACT_ALREADY_ENDED,
+                format!("request {request_id} is {:?}", pending.status),
+            ));
+        }
+        if pending.has_lapsed(self.now) {
+            self.lapse(&pending)?;
+            return Err(WcError::with_detail(
+                Code::APPROVAL_STALE,
+                format!(
+                    "request {request_id} lapsed at {} and must be re-requested",
+                    pending.expires_at
+                ),
+            ));
+        }
+
+        // The file must be about this request, and must say what the request says.
+        file.check(&pending)?;
+
+        // Read now, not captured: the person who holds the service today is who can approve for it.
+        // Same rule as the key-signed path, same reason.
+        let owner = self
+            .store
+            .projection
+            .entity(&pending.callee)
+            .map(|e| e.owner.clone())
+            .ok_or_else(|| {
+                WcError::with_detail(
+                    Code::OWNER_APPROVAL_MISSING,
+                    format!(
+                        "{} is not in the registry, so its owner cannot be established",
+                        pending.callee
+                    ),
+                )
+            })?;
+
+        // Write access to a repository is not consent from a service you do not own. The same
+        // comparison the pull-request path uses, and deliberately the same function: two
+        // implementations of "is this the owner" would eventually disagree.
+        if !crate::proposal::owner_approved(&consent.approvers, &owner) {
+            return Err(WcError::with_detail(
+                Code::OWNER_APPROVAL_MISSING,
+                format!(
+                    "the merge on {}@{} was approved by [{}], and none of them is {owner}, the \
+                     registered owner of {}. {}",
+                    consent.repo,
+                    consent.sha,
+                    consent.approvers.join(", "),
+                    pending.callee,
+                    crate::proposal::why_not_owner_approved(&consent.approvers, &owner)
+                ),
+            ));
+        }
+
+        let caller = self.entity(&pending.caller)?;
+        let callee = self.entity(&pending.callee)?;
+        let approval = ApprovalRef::human_by_merge(owner.clone(), consent, None);
+
+        self.store.commit(
+            Event::ContractApprove {
+                request: pending.id.clone(),
+                approvers: vec![owner.clone()],
+                policy_version: self.policy.version.clone(),
+                actor: self.actor.clone(),
+            },
+            self.now,
+            Durability::Durable,
+        )?;
+        self.evidence.record(
+            &LifecycleEvent::new(EventKind::Approve, actor_id(&self.actor))
+                .with_entities([pending.caller.as_str(), pending.callee.as_str()])
+                .with_reason(format!("approved by {owner} via a reviewed merge"))
+                .with_policy_version(self.policy.version.clone())
+                .with_detail(serde_json::json!({
+                    "request": pending.id,
+                    "approvers": [owner.as_str()],
+                    "digest": pending.digest(),
+                    "settled_by": "reviewed_merge",
+                })),
+            self.now,
+        )?;
+
+        // Through the same gate as every other merge-based mint: if connect-policy demanded a role
+        // or two approvers and the matched rule did not opt into merge consent, this refuses.
+        Self::merge_evidence_cannot_stand_in_for(&pending, &approval)?;
+        self.mint(&pending, approval, &caller, &callee)
     }
 
     /// Approve a pending request and mint it.
@@ -2389,6 +2616,252 @@ reason = "a role holder must sign, and no merge may stand in for one"
             NOW - 86_400
         ))
         .unwrap()
+    }
+
+    fn merge_by(approver: &str) -> wc_core::contract::MergeApproval {
+        wc_core::contract::MergeApproval {
+            side: wc_core::contract::Side::Target,
+            repo: "bank/payments-mcp".to_string(),
+            sha: "abc".to_string(),
+            request_id: "412".to_string(),
+            author: "r.mehta".to_string(),
+            approvers: vec![approver.to_string()],
+            via: "gh".to_string(),
+        }
+    }
+
+    /// A policy where an owner-approved merge is declared to be the consent.
+    fn policy_owner_merge() -> ConnectPolicy {
+        ConnectPolicy::parse(&format!(
+            r#"
+default = "require_approval"
+version = "connect-policy@v9"
+
+[[zone]]
+id = "internal.apac-ops"
+trust = "internal"
+[[zone]]
+id = "internal.payments"
+trust = "internal"
+
+[standing]
+enabled = false
+reviewed_at = {}
+
+[[rules]]
+decision = "require_approval"
+approver_role = "service.owner"
+owner_merge_approves = true
+reason = "the registered owner approving a merge is the consent"
+"#,
+            NOW - 86_400
+        ))
+        .unwrap()
+    }
+
+    fn gated_issuer<'a>(
+        store: &'a mut Store,
+        evidence: &'a mut Evidence,
+        pol: &'a ConnectPolicy,
+        key: &'a IssuerKey,
+    ) -> Issuer<'a> {
+        Issuer::new(
+            store,
+            evidence,
+            pol,
+            key,
+            "https://connect.internal",
+            NOW,
+            Actor::Human { id: priya() },
+        )
+    }
+
+    #[test]
+    fn a_provider_settles_a_request_by_merge_with_no_key_at_all() {
+        // The keyless half. `seeded` registers `server_id()` owned by priya, and no approver
+        // registry is loaded anywhere in this test — that is the property under test.
+        let tmp = TmpDir::new("bymerge");
+        let pol = policy_owner_merge();
+        let mut store = seeded(&tmp, Tier::ONE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let mut issuer = gated_issuer(&mut store, &mut evidence, &pol, &key);
+
+        let pending = match issuer.request(&gated_input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let file = ApprovalFile::parse(&ApprovalFile::render(&pending)).unwrap();
+        let issued = issuer
+            .approve_by_merge(&pending.id, &file, merge_by("priya@org"))
+            .expect("the registered owner approving the merge is the consent");
+        assert_eq!(issued.record.callee, server_id());
+        assert!(
+            !issued.record.approval.merges.is_empty(),
+            "the merge must travel with the contract as the evidence"
+        );
+    }
+
+    #[test]
+    fn a_merge_approved_by_anyone_else_settles_nothing() {
+        let tmp = TmpDir::new("notowner");
+        let pol = policy_owner_merge();
+        let mut store = seeded(&tmp, Tier::ONE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let mut issuer = gated_issuer(&mut store, &mut evidence, &pol, &key);
+        let pending = match issuer.request(&gated_input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let file = ApprovalFile::parse(&ApprovalFile::render(&pending)).unwrap();
+        let err = issuer
+            .approve_by_merge(&pending.id, &file, merge_by("dana@org"))
+            .expect_err("write access is not consent from a service you do not own");
+        assert_eq!(err.code(), Code::OWNER_APPROVAL_MISSING, "{err}");
+    }
+
+    #[test]
+    fn an_approval_file_is_consent_to_one_request_and_not_to_merges_in_general() {
+        // Without this the mechanism is theatre: any reviewed merge in the provider's repository
+        // would settle any open request against them.
+        let tmp = TmpDir::new("otherreq");
+        let pol = policy_owner_merge();
+        let mut store = seeded(&tmp, Tier::ONE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let mut issuer = gated_issuer(&mut store, &mut evidence, &pol, &key);
+
+        let a = match issuer.request(&gated_input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let b = match issuer
+            .request(&gated_input(&["get_balance", "list_transactions"]))
+            .unwrap()
+        {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let file_for_b = ApprovalFile::parse(&ApprovalFile::render(&b)).unwrap();
+        let err = issuer
+            .approve_by_merge(&a.id, &file_for_b, merge_by("priya@org"))
+            .expect_err("a file for one request must not settle another");
+        assert_eq!(err.code(), Code::APPROVAL_SIGNATURE_INVALID, "{err}");
+        assert!(err.detail().contains(&b.id), "{}", err.detail());
+    }
+
+    #[test]
+    fn the_files_own_words_cannot_disagree_with_its_digest() {
+        // The digest is the binding, but the prose is what a reviewer read. A file claiming
+        // `get_balance` while its digest covered a transfer would be a lie shown to the one person
+        // this whole path rests on.
+        let tmp = TmpDir::new("lies");
+        let pol = policy_owner_merge();
+        let mut store = seeded(&tmp, Tier::ONE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let mut issuer = gated_issuer(&mut store, &mut evidence, &pol, &key);
+        let pending = match issuer.request(&gated_input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let mut file = ApprovalFile::parse(&ApprovalFile::render(&pending)).unwrap();
+        file.items = vec!["something_else".to_string()];
+        let err = issuer
+            .approve_by_merge(&pending.id, &file, merge_by("priya@org"))
+            .expect_err("the words and the digest must not be able to differ");
+        assert_eq!(err.code(), Code::APPROVAL_SIGNATURE_INVALID, "{err}");
+    }
+
+    #[test]
+    fn a_digest_that_no_longer_matches_the_request_settles_nothing() {
+        // The property that makes this an approval rather than a rubber stamp: if anything about
+        // the request moved after the file was reviewed, the approval stops applying.
+        //
+        // Isolated from the prose checks deliberately. The first version of these tests only ever
+        // changed `items`, which the prose check catches first — so deleting the digest comparison
+        // left every test green. Mutation testing is how that was found.
+        let tmp = TmpDir::new("staledigest");
+        let pol = policy_owner_merge();
+        let mut store = seeded(&tmp, Tier::ONE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let mut issuer = gated_issuer(&mut store, &mut evidence, &pol, &key);
+        let pending = match issuer.request(&gated_input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let mut file = ApprovalFile::parse(&ApprovalFile::render(&pending)).unwrap();
+        // Only the digest. Every human-readable field still agrees with the request.
+        file.digest = format!("sha256:{}", "0".repeat(64));
+        let err = issuer
+            .approve_by_merge(&pending.id, &file, merge_by("priya@org"))
+            .expect_err("a stale digest must not settle");
+        assert_eq!(err.code(), Code::APPROVAL_SIGNATURE_INVALID, "{err}");
+        assert!(
+            err.detail().contains("after it was reviewed"),
+            "the message must say why: {}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn a_lifetime_the_reviewer_did_not_read_settles_nothing() {
+        // Every field in the file is checked, not just the interesting-looking ones. A file saying
+        // one hour against a request for thirty days is the same species of lie as the wrong items,
+        // and the ttl comparison had no test until mutation testing removed it and nothing failed.
+        let tmp = TmpDir::new("badttl");
+        let pol = policy_owner_merge();
+        let mut store = seeded(&tmp, Tier::ONE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let mut issuer = gated_issuer(&mut store, &mut evidence, &pol, &key);
+        let pending = match issuer.request(&gated_input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let mut file = ApprovalFile::parse(&ApprovalFile::render(&pending)).unwrap();
+        file.ttl_secs = pending.ttl_secs + 1;
+        let err = issuer
+            .approve_by_merge(&pending.id, &file, merge_by("priya@org"))
+            .expect_err("the lifetime is part of what was approved");
+        assert_eq!(err.code(), Code::APPROVAL_SIGNATURE_INVALID, "{err}");
+    }
+
+    #[test]
+    fn the_parties_in_the_file_must_be_the_parties_in_the_request() {
+        // The sharpest version of the prose attack. `digest` covers the parties, so a file whose
+        // displayed caller differs while its digest still verifies can only come from hand-editing
+        // the display — which is precisely an attempt to have a reviewer approve one thing while
+        // reading another. Each party gets its own assertion: mutation testing showed that
+        // disabling the first clause of the condition left the rest live, so a single test here
+        // would have covered only one of them.
+        let tmp = TmpDir::new("wrongparties");
+        let pol = policy_owner_merge();
+        let mut store = seeded(&tmp, Tier::ONE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let mut issuer = gated_issuer(&mut store, &mut evidence, &pol, &key);
+        let pending = match issuer.request(&gated_input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let good = ApprovalFile::parse(&ApprovalFile::render(&pending)).unwrap();
+
+        let mut wrong_caller = good.clone();
+        wrong_caller.caller = "urn:acme:repo:somebody-else".to_string();
+        let err = issuer
+            .approve_by_merge(&pending.id, &wrong_caller, merge_by("priya@org"))
+            .expect_err("the displayed caller must match");
+        assert_eq!(err.code(), Code::APPROVAL_SIGNATURE_INVALID, "{err}");
+
+        let mut wrong_callee = good;
+        wrong_callee.callee = "urn:acme:mcp:somebody-else".to_string();
+        let err = issuer
+            .approve_by_merge(&pending.id, &wrong_callee, merge_by("priya@org"))
+            .expect_err("the displayed callee must match");
+        assert_eq!(err.code(), Code::APPROVAL_SIGNATURE_INVALID, "{err}");
     }
 
     #[test]

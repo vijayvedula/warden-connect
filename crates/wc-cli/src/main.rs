@@ -559,6 +559,13 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "approve" => &[
             "enforce",
             "id",
+            "emit",
+            "merge-repo",
+            "approval-file",
+            "sha",
+            "git-ref",
+            "shim",
+            "shim-label",
             "approvers",
             "approver-key",
             "approver-signer",
@@ -3796,6 +3803,95 @@ fn offer_publish_cmd(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// `connect approve <req> --emit <dir>` — write the file the provider commits.
+///
+/// Emitted rather than hand-written, because every field is verified against the live request on
+/// the way back in. A provider who typed it themselves would get a refusal for a typo, and the one
+/// field they cannot type at all is the digest.
+fn emit_approval_file(args: &Args, request_id: &str, dir: &str) -> Result<()> {
+    let projection = open_projection(args)?;
+    let pending = projection.requests.get(request_id).ok_or_else(|| {
+        WcError::with_detail(
+            Code::CONTRACT_NOT_FOUND,
+            format!("no request {request_id} is held here"),
+        )
+    })?;
+    let body = wc_control::issuance::ApprovalFile::render(pending);
+    let name = format!("{request_id}.toml");
+    let path = std::path::Path::new(dir).join(&name);
+    std::fs::write(&path, &body).map_err(|e| {
+        WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!("cannot write {}", path.display()),
+        )
+        .with_source(e)
+    })?;
+
+    let owner = projection
+        .entity(&pending.callee)
+        .map(|e| e.owner.as_str().to_string())
+        .unwrap_or_else(|| "an owner this registry does not know".to_string());
+
+    println!("approval file  {}", path.display());
+    println!("  request      {request_id}");
+    println!("  grants       {}", pending.surface.items().join(", "));
+    println!("  to           {}", pending.caller);
+    println!("  from         {}", pending.callee);
+    println!("  approver     {owner} — merging this is their consent, and no key is needed");
+    println!();
+    println!("  Commit it in the provider's own repository, have it reviewed, and merge. Then:");
+    println!("    connect approve {request_id} --merge-repo <repo> --sha <merge-sha> \\");
+    println!("      --approval-file <path-in-repo> --shim <cmd> --shim-label <label>");
+    Ok(())
+}
+
+/// `connect approve <req> --merge-repo … --sha … --approval-file …` — settle from a merge.
+fn approve_by_merge_cmd(args: &Args, request_id: &str) -> Result<()> {
+    let repo = require(args, "merge-repo")?.to_string();
+    let sha = require(args, "sha")?.to_string();
+    let file_path = require(args, "approval-file")?.to_string();
+    let git_ref = args.get("git-ref").unwrap_or("refs/heads/main").to_string();
+    let command = require(args, "shim")?;
+    let label = args.get("shim-label").unwrap_or("scm");
+    let shim = wc_control::scm::ScmShim::parse(label, command)?;
+
+    // Read from disk, then bound to the same path in the repository at that commit. The local copy
+    // is what we act on; the reviewed copy is what makes it consent. `authority` refuses if the two
+    // digests differ — a reviewed merge of a different file is not approval of this one.
+    let text = std::fs::read_to_string(&file_path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {file_path}"))
+            .with_source(e)
+    })?;
+    let file = wc_control::issuance::ApprovalFile::parse(&text)?;
+
+    let authority = wc_control::authority::ScmMerge { shim: &shim };
+    let asserted = wc_control::pipeline::Asserted {
+        repo: repo.clone(),
+        git_ref,
+        sha: sha.clone(),
+    };
+    let consent = wc_control::authority::ApprovalAuthority::consent(
+        &authority,
+        wc_core::contract::Side::Target,
+        &asserted,
+        &wc_control::authority::ManifestBinding::of(&file_path, &text),
+    )?;
+    println!(
+        "merge      {} on {}@{} approved by {} via {}",
+        consent.request_id,
+        repo,
+        sha,
+        consent.approvers.join(", "),
+        consent.via
+    );
+
+    let issued = with_issuer(args, move |issuer| {
+        issuer.approve_by_merge(request_id, &file, consent.clone())
+    })?;
+    let paths = write_artifacts(args, &issued)?;
+    print_issued(args, &issued, &paths)
+}
+
 /// `scm probe` — exercise a source-host shim and say exactly what it returned (W4).
 ///
 /// The counterpart to the advice `signer.rs` gives about signing wrappers ("verify any wrapper
@@ -4011,6 +4107,28 @@ fn need_apply_cmd(args: &Args) -> Result<()> {
                         "  needs the provider's approval  {}",
                         gated.items.join(", ")
                     );
+                    // Idempotency for the gated half. The mint path checks the projection for an
+                    // existing contract; a gated need has none yet, so without this a nightly
+                    // pipeline opens a fresh request every run and buries the provider in
+                    // duplicates of one question. `request_id` folds the clock and the log
+                    // sequence, so it cannot be relied on — the digest can: it covers the parties,
+                    // the items, the terms and the lifetime, so two identical asks are one ask.
+                    if let Some(open) = store.projection.requests.values().find(|r| {
+                        r.status == wc_control::issuance::RequestStatus::Pending
+                            && !r.has_lapsed(ts)
+                            && r.caller == need.consumer
+                            && r.callee == need.provider
+                            && r.surface.items()
+                                == gated.requested.iter().cloned().collect::<Vec<_>>()
+                            && r.ttl_secs == gated.ttl
+                    }) {
+                        println!(
+                            "  already asked   {} (awaiting {})",
+                            open.id, provider.owner
+                        );
+                        noop += 1;
+                        continue;
+                    }
                     asks.push(Asked {
                         input: wc_control::issuance::RequestInput {
                             caller: need.consumer.clone(),
@@ -7658,6 +7776,18 @@ fn request_cmd(args: &Args) -> Result<()> {
 /// the same verification runs either way.
 fn approve_cmd(args: &Args) -> Result<()> {
     let request_id = positional_or_flag(args, "id")?.to_string();
+
+    // Two ways to settle a request, and they are alternatives rather than variations. `--emit`
+    // writes the file a provider commits; `--merge-repo` settles from the merge of it. Neither
+    // touches an approver key, which is the point: a provider approves in a repository they
+    // already own and the source host authenticates them.
+    if let Some(dir) = args.get("emit") {
+        return emit_approval_file(args, &request_id, dir);
+    }
+    if args.get("merge-repo").is_some() {
+        return approve_by_merge_cmd(args, &request_id);
+    }
+
     let registry = load_approvers(args)?;
 
     let approver = HumanRef::new(require(args, "by")?)?;
@@ -9013,6 +9143,30 @@ TOOLS
                 scheduled for withdrawal. A consumer's own pipeline is the one
                 place that reads the provider's terms, so it is the only place a
                 withdrawal date reaches them before their build breaks.
+
+  approve <req> --emit <dir>
+                write the file the provider commits to approve one request.
+
+                The keyless half of approval. `approve --by --approver-key`
+                needs the owner to hold a signing key in an approver registry;
+                this needs them to merge a pull request in a repository they
+                already own, and the source host authenticates them. For an
+                estate that is the difference between issuing and rotating a
+                keypair per provider team, forever, and adding a repository.
+
+                The file binds by digest AND states the parties, items and
+                lifetime in words. Every field is checked on the way back in, so
+                the diff a reviewer reads cannot misrepresent what they approve.
+
+  approve <req> --merge-repo REPO --sha SHA --approval-file PATH
+                --shim CMD [--shim-label L] [--git-ref REF]
+                settle that request from the reviewed merge of that file.
+
+                Refuses unless the merge was approved by the callee's REGISTERED
+                owner: write access to a repository is not consent from a service
+                you do not own. Also refuses if connect-policy demands a role or
+                two approvers and the matched rule did not say
+                `owner_merge_approves = true` — silence stays closed.
 
   offer list --as <consumer>
                 the catalogue, as that consumer sees it — every row is something
