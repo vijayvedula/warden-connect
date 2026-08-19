@@ -166,6 +166,14 @@ PROMO="$("$CONNECT" inventory promote --from inventory.json --target "$TARGET" \
 if printf '%s' "$PROMO" | grep -q "urn:wc:mcp:"; then
     ok "registered the server and both consumers, and wrote the proposals"
     printf '%s' "$PROMO" | grep -E "server|consumer|proposal|surface" | sed 's/^/     /' | head -7
+    # The by-hand path. Its advice is now one of three branches rather than an unconditional print,
+    # so it can go missing without any other phase noticing — this phase is the only one that runs
+    # `promote` without --raise-pr.
+    if printf '%s' "$PROMO" | grep -q "Raise a pull request with these"; then
+        ok "     and with no --raise-pr, says to raise one by hand"
+    else
+        bad "     the by-hand advice to raise a pull request went missing"
+    fi
 else
     bad "promotion did not register the discovered server"
     printf '%s\n' "$PROMO" | sed 's/^/       /' | head -12
@@ -305,6 +313,14 @@ PR3="$("$CONNECT" inventory promote --from inventory.json --target "$TARGET" \
 NPR3="$(ls pr-*.json 2>/dev/null | wc -l | tr -d ' ')"
 if printf '%s' "$PR3" | grep -q "already merged into main" && [ "$NPR3" = "1" ]; then
     ok "     once merged, a further run proposes nothing at all"
+    # The closing advice used to print unconditionally, so this run told the operator to "raise a
+    # pull request with these" two lines after reporting that none was opened because the work is
+    # already merged. Contradictory guidance in the one command a bank operator runs by hand.
+    if printf '%s' "$PR3" | grep -q "Raise a pull request with these"; then
+        bad "     and then told them to raise one anyway — the advice contradicts the finding"
+    else
+        ok "     and does not then advise raising one"
+    fi
 else
     bad "     after the merge it raised again — $NPR3 pull request(s), and an empty diff to review"
     printf '%s\n' "$PR3" | tail -6 | sed 's/^/       /'
