@@ -2321,9 +2321,12 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
         written.push((repo_path, body));
     }
 
-    if args.has("raise-pr") {
-        raise_proposal_pr(args, &written, target, &server_id, &owner)?;
-        if args.get("proposals").is_some() {
+    // What the closing advice says depends on what just happened. Printed unconditionally, it told
+    // an operator to "raise a pull request with these" immediately after reporting that none was
+    // opened because the work is already merged — advice that contradicts the line above it.
+    let raised = if args.has("raise-pr") {
+        let outcome = raise_proposal_pr(args, &written, target, &server_id, &owner)?;
+        if args.get("proposals").is_some() && outcome != Proposed::AlreadyMerged {
             println!();
             println!(
                 "  NOTE     these files are now on the branch AND in your working tree at the"
@@ -2336,12 +2339,27 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
             );
             println!("           let the pull request be the only copy.");
         }
+        outcome
+    } else {
+        Proposed::NotRaised
+    };
+    match raised {
+        Proposed::NotRaised => {
+            println!();
+            println!(
+                "  Raise a pull request with these. The callee's registered owner ({owner}) approving"
+            );
+            println!("  that merge is the consent; `connect proposals apply` mints on merge.");
+        }
+        Proposed::Raised => {
+            println!();
+            println!("  Next: {owner} reviews that pull request. Merging it is the consent, and");
+            println!("  `connect proposals apply` mints from the merge.");
+        }
+        // Said already, in the words of the branch that found it. Repeating it here is how the
+        // contradiction got in.
+        Proposed::AlreadyMerged => {}
     }
-    println!();
-    println!(
-        "  Raise a pull request with these. The callee's registered owner ({owner}) approving"
-    );
-    println!("  that merge is the consent; `connect proposals apply` mints on merge.");
     if !args.has("activate") {
         println!();
         println!(
@@ -2355,6 +2373,17 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// What `--raise-pr` did, because the closing advice differs for each.
+#[derive(Debug, PartialEq, Eq)]
+enum Proposed {
+    /// `--raise-pr` was not asked for.
+    NotRaised,
+    /// A pull request is open — newly, or found from an earlier run.
+    Raised,
+    /// Every file is already on `base`, so nothing was proposed.
+    AlreadyMerged,
 }
 
 /// Open one pull request carrying the proposals just written.
@@ -2373,7 +2402,7 @@ fn raise_proposal_pr(
     target: &str,
     server_id: &EntityId,
     owner: &HumanRef,
-) -> Result<()> {
+) -> Result<Proposed> {
     let repo = require(args, "contracts-repo")?.to_string();
     let base = args.get("base").unwrap_or("main").to_string();
     let command = require(args, "shim")?;
@@ -2424,7 +2453,7 @@ fn raise_proposal_pr(
         println!("  already merged into {base} — every file this would propose is byte-identical");
         println!("  on that branch. No branch touched, no pull request opened.");
         println!("  `connect proposals apply` is what turns that merge into contracts.");
-        return Ok(());
+        return Ok(Proposed::AlreadyMerged);
     }
 
     let title = format!("contract proposal: {}", short(server_id));
@@ -2454,7 +2483,7 @@ fn raise_proposal_pr(
     }
     println!("  branch   {branch} (derived from the proposals, so a re-run reuses it)");
     println!("  merge    {owner} approving that merge is the consent; nothing here can merge it");
-    Ok(())
+    Ok(Proposed::Raised)
 }
 
 /// Move a promoted party to `Active`, when the operator asked for it.
