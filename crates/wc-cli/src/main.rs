@@ -863,8 +863,10 @@ fn open_store(args: &Args) -> Result<Store> {
 ///
 /// Every read-only verb used `open_store`, which acquires the single-writer lock. That lock is
 /// right for a writer and wrong here: in production `connect serve` holds it permanently, so
-/// `connect posture`, `discover`, `blast-radius`, `contracts`, `requests`, `offer show|status`
-/// and `policy dry-run` all failed with `WC-8003` against a live control plane. An operator could
+/// `connect posture`, `discover`, `blast-radius`, `contracts`, `requests`, `offer show|status`,
+/// `entities`, `need check` and `policy dry-run` all failed with `WC-8003` against a live control
+/// plane — the last two found only on the second sweep, which is why
+/// `no_read_only_verb_takes_the_writer_lock` now guards it. An operator could
 /// inspect the estate only by stopping it.
 ///
 /// `Projection::rebuild` reads the newest snapshot plus the log tail and takes nothing. A reader
@@ -3208,9 +3210,12 @@ fn entity_json(e: &Entity) -> Value {
 }
 
 fn entities(args: &Args) -> Result<()> {
-    let mut store = open_store(args)?;
-    let reg = store.registry(actor(args)?, now());
-    let all = reg.enumerate_for_operator();
+    // `open_projection`, not `open_store`: this only lists. Taking the single-writer lock to read
+    // made `connect entities` fail with WC-8003 against a control plane that was serving — which in
+    // production is a control plane that is always serving. Same defect the four verbs in
+    // `open_projection`'s own note carried; this one and `need check` were missed by that sweep.
+    let projection = open_projection(args)?;
+    let all = projection.enumerate_for_operator();
 
     if args.has("json") {
         let rows = Value::Array(all.iter().map(|e| entity_json(e)).collect());
@@ -4238,7 +4243,9 @@ fn need_check_cmd(args: &Args) -> Result<()> {
     })?;
     let manifest = wc_control::need::NeedManifest::parse(&text)?;
 
-    let mut store = open_store(args)?;
+    // Read-only, so no writer lock. This is the verb most likely to meet a serving control plane:
+    // it is designed to run in a consumer's own pipeline, which has no reason to be the writer.
+    let projection = open_projection(args)?;
     let ts = now();
     let mut refused = 0usize;
     let mut gated = 0usize;
@@ -4249,12 +4256,18 @@ fn need_check_cmd(args: &Args) -> Result<()> {
 
         // The consumer's zone and tier come from the registry, never from the manifest: a party
         // that could assert its own zone could write itself into any provider's audience.
-        let consumer = {
-            let reg = store.registry(actor(args)?, ts);
-            reg.require(&need.consumer)?.clone()
+        let Some(consumer) = projection.entity(&need.consumer).cloned() else {
+            refused += 1;
+            println!("REFUSED  {} -> {}", need.consumer, need.provider);
+            println!(
+                "  {} is not registered, so it has no zone or tier and no provider's audience can \
+                 admit it",
+                need.consumer
+            );
+            continue;
         };
 
-        let Some(offer) = store.projection.offers.get(&need.provider).cloned() else {
+        let Some(offer) = projection.offers.get(&need.provider).cloned() else {
             println!("REFUSED  {} -> {}", need.consumer, need.provider);
             println!(
                 "  no offer is held for {}. There is no central fallback by design, so provider \
@@ -9593,6 +9606,69 @@ mod tests {
     ///
     /// Checked by reading the source rather than by remembering, because this was the second
     /// instance and the third would have been found the same way — by somebody using it.
+    /// No read-only verb may take the single-writer lock.
+    ///
+    /// The lock belongs to whoever writes the log, and `connect serve` holds it permanently — so a
+    /// read-only verb that calls `open_store` fails with `WC-8003` against any control plane that is
+    /// actually serving. That defect has now been found twice: once across seven verbs, and again in
+    /// `entities` and `need check`, which the first sweep missed. Grepping by hand found it both
+    /// times, which is why this is a test.
+    ///
+    /// The allowlist is every function that genuinely writes. Adding a name to it is a claim that it
+    /// commits to the log; if it does not, use `open_projection`.
+    #[test]
+    fn no_read_only_verb_takes_the_writer_lock() {
+        const WRITERS: &[&str] = &[
+            "open_store_or_stand_by",
+            "estate_names", // inside `register`, which writes; an empty index is its own fallback
+            "admit_and_record",
+            "activate",
+            "unquarantine",
+            "revoke",
+            "quarantine",
+            "inventory_promote_cmd",
+            "activate_if_asked",
+            "proposals_apply_cmd",
+            "offer_publish_cmd",
+            "need_apply_cmd",
+            "materialise_estate",
+            "with_issuer",
+        ];
+        // Assembled at runtime so the needle never appears literally in this file. Spelled out, the
+        // test matched its own source line and blamed whatever top-level `fn` preceded it — which is
+        // a checker reporting a finding about itself, the one kind of bug a checker must not have.
+        let needle = ["open_store", "(args)"].concat();
+        let src = include_str!("main.rs");
+        let mut current = "";
+        let mut offenders: Vec<&str> = Vec::new();
+        for line in src.lines() {
+            if let Some(rest) = line.strip_prefix("fn ") {
+                // Generics stripped: `with_issuer<T>` is `with_issuer` on the allowlist.
+                current = rest
+                    .split('(')
+                    .next()
+                    .unwrap_or("")
+                    .split('<')
+                    .next()
+                    .unwrap_or("");
+            }
+            if line.contains(&needle)
+                && !line.contains("fn open_store")
+                && !current.is_empty()
+                && !WRITERS.contains(&current)
+                && !offenders.contains(&current)
+            {
+                offenders.push(current);
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these take the writer lock and are not on the writer allowlist — if they only read, \
+             use `open_projection`, or they will fail with WC-8003 against a serving control \
+             plane: {offenders:?}"
+        );
+    }
+
     #[test]
     fn every_verb_that_loads_policy_accepts_the_policy_flag() {
         let src = include_str!("main.rs");
