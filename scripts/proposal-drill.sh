@@ -78,6 +78,11 @@ caller_zone = "internal.*"
 callee_zone = "internal.*"
 decision = "require_approval"
 approver_role = "service.owner"
+# The consent on this path is the registered owner approving a merge, and the role above
+# names exactly that. Declared, because it is not inferable: `approver_role` is matched
+# against an approver registry, a merge names source-host logins, and without this the
+# requirement was silently unenforced on every merge-based mint.
+owner_merge_approves = true
 ttl_max = "7d"
 terms = { evidence_sink = "ocsf://siem", evidence_delivery = "fail-safe" }
 reason = "the merge is the approval; policy still sets the ceiling"

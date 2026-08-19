@@ -668,6 +668,21 @@ pub struct ConnRule {
     /// Role an approver must hold.
     #[serde(default)]
     pub approver_role: Option<String>,
+    /// Whether a reviewed merge approved by the **callee's registered owner** satisfies this
+    /// rule's approval requirement.
+    ///
+    /// Off by default, and the default is the whole point. `approver_role` is a key-signed
+    /// concept: it is matched against roles in an approver registry, and a merge names
+    /// source-host logins, which are not in it. Both merge-based paths — `proposals apply` and
+    /// `need apply` — reach a contract without going through `Issuer::approve`, so a rule reading
+    /// `approver_role = "security.architect"` was **silently unenforced** on them: measured, with
+    /// that exact policy, minting with no role holder anywhere and no registry loaded at all.
+    ///
+    /// Refusing outright was too blunt — a policy naming the role `service.owner` means exactly
+    /// what an owner-approved merge shows, and this system cannot read intent out of an opaque
+    /// string. So the operator declares it here, once, per rule. Silence stays closed.
+    #[serde(default)]
+    pub owner_merge_approves: bool,
     /// Approval floor this rule imposes, which may only be **stricter** than the
     /// zone bar's — never looser.
     ///
@@ -930,6 +945,8 @@ pub struct ConnEval {
     pub approver_role: Option<String>,
     /// Whether two distinct approvers are needed.
     pub dual_control: bool,
+    /// Whether an owner-approved reviewed merge satisfies the approval requirement.
+    pub owner_merge_approves: bool,
     /// The bar the zone pair set.
     pub bar: AssuranceBar,
 }
@@ -1158,6 +1175,8 @@ impl ConnectPolicy {
                 ttl_secs: 0,
                 terms: req.terms.clone(),
                 approver_role: None,
+                // A denial. Nothing is approved, so nothing may be satisfied by a merge.
+                owner_merge_approves: false,
                 dual_control: false,
                 bar: self.bar_for_pair(&caller.zone, &callee.zone),
             });
@@ -1193,6 +1212,8 @@ impl ConnectPolicy {
         let mut reason = format!("default {}", self.default.as_str());
         let mut approver_role = None;
         let mut rule_approval = None;
+        // Only ever set by a matched rule. The estate default is never "a merge will do".
+        let mut owner_merge_approves = false;
 
         for (index, rule) in self.rules.iter().enumerate() {
             if !rule.matches(req, caller, callee, &facts) {
@@ -1206,6 +1227,7 @@ impl ConnectPolicy {
                 .unwrap_or_else(|| format!("rule[{index}] {}", rule.decision.as_str()));
             approver_role = rule.approver_role.clone();
             rule_approval = rule.approval;
+            owner_merge_approves = rule.owner_merge_approves;
 
             if let Some(rule_ttl) = rule.ttl_max.as_deref().and_then(parse_duration) {
                 ttl = ttl.min(rule_ttl);
@@ -1314,6 +1336,8 @@ impl ConnectPolicy {
                 ttl_secs: 0,
                 terms,
                 approver_role: None,
+                // A denial. Nothing is approved, so nothing may be satisfied by a merge.
+                owner_merge_approves: false,
                 dual_control: false,
                 bar,
             });
@@ -1336,6 +1360,7 @@ impl ConnectPolicy {
             terms,
             approver_role,
             dual_control,
+            owner_merge_approves,
             bar,
         })
     }

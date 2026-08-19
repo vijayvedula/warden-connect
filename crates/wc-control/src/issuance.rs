@@ -81,6 +81,14 @@ pub struct PendingRequest {
     pub approver_role: Option<String>,
     /// Whether two distinct approvers are needed.
     pub dual_control: bool,
+    /// Whether an owner-approved reviewed merge satisfies this request's approval requirement.
+    ///
+    /// Carried on the request rather than re-read from policy at mint time, for the same reason
+    /// `approver_role` is: the decision an approver acted under must not move under them.
+    /// `#[serde(default)]` so a log written before the field existed replays as `false` — closed,
+    /// which is the state those requests were actually created under.
+    #[serde(default)]
+    pub owner_merge_approves: bool,
     /// Whether the callee's registered owner must be among the approvers.
     ///
     /// `#[serde(default)]` because this struct is serialised inside `contract.request` events: a
@@ -1014,6 +1022,8 @@ impl<'a> Issuer<'a> {
             mediators: input.mediators.clone(),
             approver_role: None,
             dual_control: true,
+            // Break-glass is key-signed and dual-controlled; it never settles by merge.
+            owner_merge_approves: false,
             // Break-glass deliberately does **not** require the callee's owner.
             //
             // It is the override, and its guards are its own: two distinct approvers, a named
@@ -1169,6 +1179,7 @@ impl<'a> Issuer<'a> {
             mediators: input.mediators.clone(),
             approver_role: eval.approver_role.clone(),
             dual_control: eval.dual_control,
+            owner_merge_approves: eval.owner_merge_approves,
             owner_must_approve: input.owner_must_approve,
             policy_version: self.policy.version.clone(),
             policy_reason: eval.reason.clone(),
@@ -1236,9 +1247,65 @@ impl<'a> Issuer<'a> {
         callee: &Entity,
         derived: Derived,
     ) -> Result<Issued> {
+        Self::merge_evidence_cannot_stand_in_for(pending, &approval)?;
         caller.assert_connectable(self.mode)?;
         callee.assert_connectable(self.mode)?;
         self.mint_unchecked(pending, approval, caller, callee, Some(derived))
+    }
+
+    /// A reviewed merge is a consent, but it is not *every* consent.
+    ///
+    /// `Issuer::approve` is where `approver_role` and `dual_control` are enforced, and both
+    /// merge-based paths — `proposals apply` and `need apply` — reach a contract through
+    /// [`Issuer::mint_with_identity`] instead, which never went near those checks. A policy rule
+    /// reading `approver_role = "security.architect"` therefore minted with **no role holder
+    /// anywhere and no approver registry loaded at all**. Measured, not inferred: that exact policy
+    /// and that exact outcome.
+    ///
+    /// The two consents are separate and neither substitutes for the other. A merge between two
+    /// teams is not a security architect signing, and an estate that asked for one has not got it.
+    /// So this refuses rather than minting, which puts the choice in front of an operator: drop the
+    /// requirement for these zones deliberately, or route these connections through
+    /// `connect request` + `connect approve`, where a role holder signs.
+    ///
+    /// Keyed on `merges` being non-empty rather than on a flag: a key-signed approval records no
+    /// merge evidence (the signature *is* the evidence), so the two are already distinguishable
+    /// without adding a parameter that could be passed wrongly.
+    fn merge_evidence_cannot_stand_in_for(
+        pending: &PendingRequest,
+        approval: &ApprovalRef,
+    ) -> Result<()> {
+        if approval.merges.is_empty() {
+            return Ok(());
+        }
+        // The operator said, on the rule that matched, that an owner-approved merge is the consent
+        // they intend here. Dual control is still refused below: a merge carries one owner's
+        // approval, and "two distinct humans" is not something this can show.
+        if pending.owner_merge_approves && !pending.dual_control {
+            return Ok(());
+        }
+        if let Some(role) = &pending.approver_role {
+            return Err(WcError::with_detail(
+                Code::APPROVER_ROLE_MISSING,
+                format!(
+                    "connect-policy requires an approver holding {role:?} for this connection, and \
+                     a reviewed merge cannot show that — a merge names source-host logins, which \
+                     are not in an approver registry. If an owner-approved merge IS the consent you \
+                     intend here, say so on the rule that matched: `owner_merge_approves = true`. \
+                     Otherwise route this through `connect request` and `connect approve`, where a \
+                     role holder signs"
+                ),
+            ));
+        }
+        if pending.dual_control {
+            return Err(WcError::with_detail(
+                Code::DUAL_CONTROL_MISSING,
+                "connect-policy requires two distinct approvers for this connection, and the \
+                 reviewed merge offered here is one consent. Route it through `connect approve` \
+                 with two signatures, or drop `dual_control` from the rule that matched",
+            ));
+        }
+        Ok(())
     }
 
     /// Mint without the connectability assertion.
@@ -2294,6 +2361,128 @@ reason = "a sensitive callee needs a security architect"
             )
             .expect("both consents present");
         assert_eq!(issued.record.callee, server_id());
+    }
+
+    /// A policy naming a role, and a rule that has NOT opted into merge consent.
+    fn policy_role_no_merge() -> ConnectPolicy {
+        ConnectPolicy::parse(&format!(
+            r#"
+default = "require_approval"
+version = "connect-policy@v9"
+
+[[zone]]
+id = "internal.apac-ops"
+trust = "internal"
+[[zone]]
+id = "internal.payments"
+trust = "internal"
+
+[standing]
+enabled = false
+reviewed_at = {}
+
+[[rules]]
+decision = "require_approval"
+approver_role = "security.architect"
+reason = "a role holder must sign, and no merge may stand in for one"
+"#,
+            NOW - 86_400
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_reviewed_merge_cannot_silently_satisfy_a_required_role() {
+        // Measured before it was fixed: this exact policy minted a contract through
+        // `mint_with_identity` with no role holder anywhere and no approver registry loaded at all,
+        // because both merge-based paths reach a contract without going through `approve`.
+        let tmp = TmpDir::new("mergerole");
+        let pol = policy_role_no_merge();
+        let mut store = seeded(&tmp, Tier::ONE);
+        // Cloned before the issuer borrows the store mutably.
+        let caller = store.projection.entity(&agent_id()).unwrap().clone();
+        let callee = store.projection.entity(&server_id()).unwrap().clone();
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let mut issuer = Issuer::new(
+            &mut store,
+            &mut evidence,
+            &pol,
+            &key,
+            "https://connect.internal",
+            NOW,
+            Actor::Human { id: priya() },
+        );
+        let pending = match issuer.request(&input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            !pending.owner_merge_approves,
+            "the rule did not opt in, so this must be closed"
+        );
+
+        let merge = wc_core::contract::MergeApproval {
+            side: wc_core::contract::Side::Target,
+            repo: "bank/payments-mcp".to_string(),
+            sha: "abc".to_string(),
+            request_id: "412".to_string(),
+            author: "r.mehta".to_string(),
+            approvers: vec!["priya@bank.com".to_string()],
+            via: "gh".to_string(),
+        };
+        let err = issuer
+            .mint_with_identity(
+                &pending,
+                ApprovalRef::human_by_merge(priya(), merge, None),
+                &caller,
+                &callee,
+                Derived {
+                    cid: Cid::new("conn_abcdef12").unwrap(),
+                    jti: Jti::new("cx_abcdef1234567890").unwrap(),
+                    offer_version: 1,
+                },
+            )
+            .expect_err("a merge must not stand in for a required role");
+        assert_eq!(err.code(), Code::APPROVER_ROLE_MISSING, "{err}");
+        assert!(
+            err.detail().contains("owner_merge_approves = true"),
+            "the refusal must name the opt-in that would make this legal: {}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn a_key_signed_approval_is_unaffected_by_the_merge_gate() {
+        // The gate keys on merge evidence being present. A key-signed approval records none — the
+        // signature is the evidence — so this path must be untouched, or the fix would break the
+        // one route that genuinely does show a role holder.
+        let tmp = TmpDir::new("keysigned");
+        let pol = policy_role_no_merge();
+        let mut store = seeded(&tmp, Tier::ONE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let registry = approvers();
+        let mut issuer = Issuer::new(
+            &mut store,
+            &mut evidence,
+            &pol,
+            &key,
+            "https://connect.internal",
+            NOW,
+            Actor::Human { id: priya() },
+        );
+        let pending = match issuer.request(&input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let proof = ApprovalProof {
+            by: cecil(),
+            jws: sign_approval(&pending, &approver_key(cecil().as_str()), None, NOW).unwrap(),
+        };
+        issuer
+            .approve(&pending.id, &[proof], &registry)
+            .expect("a role holder signing is still the way through");
     }
 
     #[test]
