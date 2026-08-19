@@ -167,6 +167,7 @@ const TWO_WORD: &[&str] = &[
     "attest verify",
     "attest surface",
     "offer publish",
+    "offer list",
     "offer show",
     "offer status",
     "need check",
@@ -188,6 +189,7 @@ const COMMANDS: &[&str] = &[
     "attest verify",
     "attest surface",
     "offer publish",
+    "offer list",
     "offer show",
     "offer status",
     "need check",
@@ -328,6 +330,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "shim-label",
             "git-ref",
         ],
+        "offer list" => &["as", "json"],
         "offer show" => &["asset"],
         "offer status" => &["asset", "now"],
         "need check" => &["manifest", "repo", "sha"],
@@ -737,6 +740,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "attest verify" => attest_verify_cmd(args)?,
         "attest surface" => attest_surface_cmd(args)?,
         "offer publish" => offer_publish_cmd(args)?,
+        "offer list" => offer_list_cmd(args)?,
         "offer show" => offer_show_cmd(args)?,
         "offer status" => offer_status_cmd(args)?,
         "need check" => need_check_cmd(args)?,
@@ -2710,6 +2714,11 @@ fn proposals_apply_cmd(args: &Args) -> Result<()> {
                 let input = wc_control::issuance::RequestInput {
                     caller: EntityId::new(&p.proposal.caller)?,
                     callee: EntityId::new(&p.proposal.callee)?,
+                    // The pull-request path has its own owner check, against the merge:
+                    // `proposal::owner_approved` already refuses a merge the callee's owner did
+                    // not approve. Setting this too would demand a second, signed approval for a
+                    // consent that has already been given and evidenced.
+                    owner_must_approve: false,
                     surface: wc_core::contract::Surface {
                         tools: p.proposal.items().into_iter().collect(),
                         ..Default::default()
@@ -3765,6 +3774,18 @@ fn offer_publish_cmd(args: &Args) -> Result<()> {
                     a.cid, a.consumer
                 );
             }
+            // Reported, and worded as the different thing it is. Moving an item behind
+            // per-consumer approval used to be indistinguishable from removing it, so the provider
+            // was told a contract was broken when in fact they had just asked to be consulted. The
+            // consumer's next build becomes a request, not a failure — and the provider is the one
+            // who has to answer it, which is exactly what they need telling.
+            for item in &a.needs_approval {
+                println!(
+                    "  AFFECTED {} {} — {item} now needs your approval per consumer; their next \
+                     build opens a request for you",
+                    a.cid, a.consumer
+                );
+            }
         }
     }
     Ok(())
@@ -3914,7 +3935,18 @@ fn need_apply_cmd(args: &Args) -> Result<()> {
         provider: wc_core::model::Entity,
         input: wc_control::issuance::RequestInput,
     }
+    /// A need the provider gated behind their own per-consumer approval.
+    ///
+    /// Kept apart from [`Planned`] rather than given an `Option<Matched>`: there is no match here.
+    /// Nothing is derived, nothing is minted, and the only thing this produces is a request with
+    /// the provider's owner named on it.
+    struct Asked {
+        gated: wc_control::need::Gated,
+        provider_owner: wc_core::model::HumanRef,
+        input: wc_control::issuance::RequestInput,
+    }
     let mut plan: Vec<Planned> = Vec::new();
+    let mut asks: Vec<Asked> = Vec::new();
     let mut noop = 0usize;
 
     {
@@ -3952,17 +3984,50 @@ fn need_apply_cmd(args: &Args) -> Result<()> {
                 )
             };
 
-            let matched = wc_control::need::match_need(
+            let disposition = wc_control::need::match_need(
                 &need,
                 &offer,
                 consumer.zone.as_str(),
                 consumer.tier,
                 ts,
-            )
-            .map_err(|refusals| wc_control::need::refusal_error(&need, &refusals))?;
+            );
 
             println!();
             println!("{} -> {}", need.consumer, need.provider);
+
+            let matched = match disposition {
+                wc_control::need::Disposition::Refused(refusals) => {
+                    return Err(wc_control::need::refusal_error(&need, &refusals))
+                }
+                // The provider offers these items but decides each consumer themselves. Nothing is
+                // minted; this becomes a request only their registered owner can approve.
+                wc_control::need::Disposition::NeedsApproval(gated) => {
+                    println!(
+                        "  needs the provider's approval  {}",
+                        gated.items.join(", ")
+                    );
+                    asks.push(Asked {
+                        input: wc_control::issuance::RequestInput {
+                            caller: need.consumer.clone(),
+                            callee: need.provider.clone(),
+                            surface: wc_core::contract::Surface {
+                                tools: gated.requested.iter().cloned().collect(),
+                                ..Default::default()
+                            },
+                            terms: wc_core::contract::Terms::default(),
+                            ttl_secs: gated.ttl,
+                            justification: need.justify.clone(),
+                            requester: requester_of(&consumer_consent)?,
+                            mediators: vec![mediator.clone()],
+                            owner_must_approve: true,
+                        },
+                        provider_owner: provider.owner.clone(),
+                        gated: *gated,
+                    });
+                    continue;
+                }
+                wc_control::need::Disposition::Grant(m) => *m,
+            };
 
             // Idempotency before anything is written, so an unchanged re-run appends no request
             // row either: "no duplicate contract" and "no duplicate audit noise" are both part of
@@ -3994,6 +4059,10 @@ fn need_apply_cmd(args: &Args) -> Result<()> {
                 justification: need.justify.clone(),
                 requester: requester_of(&consumer_consent)?,
                 mediators: vec![mediator.clone()],
+                // Pre-granted throughout: the offer itself is the provider's consent, and asking
+                // their owner again for something they published as pre-granted would make the
+                // distinction between the two approval modes meaningless.
+                owner_must_approve: false,
             };
             plan.push(Planned {
                 matched,
@@ -4072,8 +4141,68 @@ fn need_apply_cmd(args: &Args) -> Result<()> {
         })?;
     }
 
+    // The gated needs. These open a request and stop — deliberately, because the only thing that
+    // turns one into a contract is the provider's registered owner signing for it.
+    let mut opened = 0usize;
+    if !asks.is_empty() {
+        with_issuer(args, |issuer| {
+            for a in &asks {
+                match issuer.request(&a.input)? {
+                    Outcome::Denied { reason, .. } => {
+                        return Err(WcError::with_detail(
+                            Code::POLICY_DENIED,
+                            format!("connection policy refused this need: {reason}"),
+                        ))
+                    }
+                    // Cannot happen: `Issuer::request` escalates rather than minting when
+                    // `owner_must_approve` is set. Refused loudly rather than ignored, because if
+                    // it ever *did* happen it would mean a contract was minted for a guarded item
+                    // with no provider consent, which is the one outcome this whole path exists to
+                    // prevent.
+                    Outcome::Issued(issued) => {
+                        return Err(WcError::with_detail(
+                            Code::MINT_PRECONDITION_FAILED,
+                            format!(
+                                "{} was minted without the provider's approval for a term that \
+                                 requires it — this is a bug in the issuance path, not a \
+                                 configuration problem",
+                                issued.record.cid
+                            ),
+                        ))
+                    }
+                    Outcome::AwaitingApproval(pending) => {
+                        println!();
+                        println!("  request    {}", pending.id);
+                        println!("  gated      {}", a.gated.items.join(", "));
+                        println!(
+                            "  approver   {} — the provider's registered owner",
+                            a.provider_owner
+                        );
+                        if let Some(role) = &pending.approver_role {
+                            println!(
+                                "  also       an approver holding {role:?}, which connect-policy \
+                                 requires separately"
+                            );
+                        }
+                        println!(
+                            "  expires    {}",
+                            wc_control::export::iso8601(pending.expires_at)
+                        );
+                        opened += 1;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+    }
+
     println!();
-    println!("{minted} minted · {noop} already current");
+    println!("{minted} minted · {opened} awaiting the provider · {noop} already current");
+    if opened > 0 {
+        println!();
+        println!("  The provider decides these. Nothing here can approve on their behalf — the");
+        println!("  owner named above must sign, and connect-policy's own approver is separate.");
+    }
     Ok(())
 }
 
@@ -4112,6 +4241,7 @@ fn need_check_cmd(args: &Args) -> Result<()> {
     let mut store = open_store(args)?;
     let ts = now();
     let mut refused = 0usize;
+    let mut gated = 0usize;
     let mut ok = 0usize;
 
     for entry in &manifest.needs {
@@ -4137,7 +4267,7 @@ fn need_check_cmd(args: &Args) -> Result<()> {
 
         match wc_control::need::match_need(&need, &offer, consumer.zone.as_str(), consumer.tier, ts)
         {
-            Ok(m) => {
+            wc_control::need::Disposition::Grant(m) => {
                 ok += 1;
                 println!("OK       {} -> {}", need.consumer, need.provider);
                 println!("  cid    {}", m.cid);
@@ -4167,7 +4297,23 @@ fn need_check_cmd(args: &Args) -> Result<()> {
                     );
                 }
             }
-            Err(refusals) => {
+            // Not a refusal. The provider offers these items and decides each consumer for
+            // themselves, so this is a question waiting on a person — reported apart from
+            // "no term covers this", because the two need different things done about them.
+            wc_control::need::Disposition::NeedsApproval(g) => {
+                gated += 1;
+                println!("PENDING  {} -> {}", need.consumer, need.provider);
+                println!("  items  {}", g.items.join(", "));
+                println!(
+                    "  ttl    {}s (the guarded term's ceiling, if approved)",
+                    g.ttl
+                );
+                println!(
+                    "  next   `connect need apply` opens the request; the provider's registered \
+                     owner approves it"
+                );
+            }
+            wc_control::need::Disposition::Refused(refusals) => {
                 refused += 1;
                 println!("REFUSED  {} -> {}", need.consumer, need.provider);
                 for r in &refusals {
@@ -4182,7 +4328,20 @@ fn need_check_cmd(args: &Args) -> Result<()> {
     }
 
     println!();
-    println!("{ok} contractable · {refused} refused");
+    println!("{ok} contractable · {gated} awaiting the provider · {refused} refused");
+    // Both non-zero, and deliberately different. A consumer whose need is gated cannot build
+    // either — they have no contract yet — but "your provider has to say yes" and "nobody offers
+    // you this" are not the same message, and a pipeline that printed one for the other would send
+    // the team to the wrong people.
+    if gated > 0 && refused == 0 {
+        return Err(WcError::with_detail(
+            Code::OWNER_APPROVAL_MISSING,
+            format!(
+                "{gated} need(s) are offered to you but need the provider's own sign-off; run \
+                 `connect need apply` to open the request"
+            ),
+        ));
+    }
     if refused > 0 {
         // Non-zero, so a consumer's pipeline fails on a need no provider offers. A check that
         // reported a refusal and exited 0 would be a check nobody notices.
@@ -4191,6 +4350,105 @@ fn need_check_cmd(args: &Args) -> Result<()> {
             format!("{refused} need(s) are not permitted by the offers currently held"),
         ));
     }
+    Ok(())
+}
+
+/// `offer list` — the catalogue, as one consumer sees it.
+///
+/// The consumer's entry point. Every row is something a provider already consented to expose to
+/// this consumer's audience, so browsing it reveals nothing they were not offered.
+///
+/// **Not a public catalogue.** `--as` names the asker, who must be registered and active — the
+/// same bar `connect discover` sets, and for the same reason: a freely readable directory of the
+/// whole estate is an enumeration surface. What makes a browsable view safe here is the filter,
+/// not a rate limit. Zone and tier come from the registry, never from a flag, because a party that
+/// could assert its own zone could read itself into any audience.
+fn offer_list_cmd(args: &Args) -> Result<()> {
+    let asker = EntityId::new(require(args, "as")?)?;
+    let projection = open_projection(args)?;
+    let ts = now();
+
+    let me = projection.entity(&asker).ok_or_else(|| {
+        WcError::with_detail(
+            Code::ENTITY_NOT_FOUND,
+            format!(
+                "{asker} is not registered, so there is no zone or tier to filter the catalogue \
+                 by — and an unregistered asker is exactly who must not be handed one"
+            ),
+        )
+    })?;
+    if me.lifecycle != Lifecycle::Active {
+        return Err(WcError::with_detail(
+            Code::ILLEGAL_TRANSITION,
+            format!(
+                "{asker} is {:?}, not active. A mediated directory answers active parties only",
+                me.lifecycle
+            ),
+        ));
+    }
+
+    let mut rows: Vec<wc_control::offer::CatalogueEntry> = projection
+        .offers
+        .values()
+        .filter_map(|o| o.as_seen_by(me.zone.as_str(), me.tier, ts))
+        .collect();
+    rows.sort_by(|a, b| a.asset.as_str().cmp(b.asset.as_str()));
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&serde_json::to_value(&rows).unwrap_or_default())?
+        );
+        return Ok(());
+    }
+
+    println!("catalogue for {asker}");
+    println!("  zone     {} · tier {}", me.zone, me.tier);
+    if rows.is_empty() {
+        println!();
+        println!("  Nothing is offered to this zone and tier.");
+        println!();
+        println!("  That is an answer, not an error. It does not mean no providers exist — only");
+        println!("  that none has published terms covering you, which is a conversation with them");
+        println!("  about their audience.");
+        return Ok(());
+    }
+    for r in &rows {
+        println!();
+        println!("{}", r.asset);
+        println!(
+            "  version  {} · surface {} ({})",
+            r.version,
+            r.surface_digest,
+            r.surface_kind.as_str()
+        );
+        if !r.pre_granted.is_empty() {
+            println!("  now      {}", r.pre_granted.join(", "));
+        }
+        if !r.needs_approval.is_empty() {
+            println!("  on ask   {}", r.needs_approval.join(", "));
+        }
+        for (item, after) in &r.withdrawing {
+            println!(
+                "  NOTICE   {item} is withdrawn on {}",
+                wc_control::export::iso8601(*after)
+            );
+        }
+        if !r.consented {
+            // Not a trust hint — a functional one. `need apply` refuses an offer whose publishing
+            // merge was never verified, so a row without this cannot be contracted at all.
+            println!(
+                "  UNSIGNED this offer carries no verified publishing merge, so nothing here can"
+            );
+            println!(
+                "           be contracted until the provider republishes with `offer publish \
+                 --shim`"
+            );
+        }
+    }
+    println!();
+    println!("  `now` is contractable today. `on ask` needs the provider's owner to approve you,");
+    println!("  which `connect need apply` opens as a request.");
     Ok(())
 }
 
@@ -4299,6 +4557,7 @@ fn offer_status_cmd(args: &Args) -> Result<()> {
                         "minted_under": a.minted_under,
                         "exp": a.exp,
                         "gone": a.gone,
+                        "needs_approval": a.needs_approval,
                         "withdrawn": a.withdrawn.iter().map(|(i, t)| json!([i, t])).collect::<Vec<_>>(),
                         "withdrawing": a.withdrawing.iter().map(|(i, t)| json!([i, t])).collect::<Vec<_>>(),
                     })).collect::<Vec<_>>(),
@@ -4334,6 +4593,11 @@ fn offer_status_cmd(args: &Args) -> Result<()> {
             for item in &a.gone {
                 println!(
                     "    GONE       {item} — the current terms do not offer it to this consumer"
+                );
+            }
+            for item in &a.needs_approval {
+                println!(
+                    "    ON ASK     {item} — still offered, but now decided by you per consumer"
                 );
             }
             for (item, t) in &a.withdrawn {
@@ -7284,6 +7548,9 @@ fn with_issuer<T>(args: &Args, f: impl FnOnce(&mut Issuer<'_>) -> Result<T>) -> 
 
 fn request_cmd(args: &Args) -> Result<()> {
     let input = RequestInput {
+        // No offer is consulted on this path, so there is no provider term to honour. What governs
+        // here is connect-policy alone.
+        owner_must_approve: false,
         caller: EntityId::new(require(args, "from")?)?,
         callee: EntityId::new(require(args, "to")?)?,
         surface: Surface {
@@ -8733,6 +9000,18 @@ TOOLS
                 scheduled for withdrawal. A consumer's own pipeline is the one
                 place that reads the provider's terms, so it is the only place a
                 withdrawal date reaches them before their build breaks.
+
+  offer list --as <consumer>
+                the catalogue, as that consumer sees it — every row is something
+                a provider already agreed to expose to their audience.
+
+                `now` is contractable today. `on ask` is offered to them but
+                decided per consumer by the provider's registered owner, which
+                `need apply` opens as a request.
+
+                Filtered, not paginated: an asset offering this consumer nothing
+                is absent entirely, so browsing reveals no more than asking would.
+                Zone and tier come from the registry, never from a flag.
 
   offer show <asset>
                 the terms currently held for a provider, and where they came

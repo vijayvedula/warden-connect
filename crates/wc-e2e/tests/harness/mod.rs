@@ -471,6 +471,8 @@ impl Estate {
             justification: "e2e scenario".to_string(),
             requester: priya(),
             mediators: vec![MEDIATOR.to_string()],
+            // The harness drives the direct-request path, which consults no offer.
+            owner_must_approve: false,
         };
         // The issuer borrows the store and the chain, so it is built and dropped
         // per call rather than held.

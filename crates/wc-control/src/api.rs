@@ -757,6 +757,12 @@ fn route(cp: &Arc<ControlPlane>, caller: &Caller, req: &Request) -> Result<Respo
             posture(cp, req)
         }
 
+        // --- the catalogue ---
+        ("GET", ["v1", "offers"]) => {
+            require_role(cp, caller, roles::READ)?;
+            offers(cp, req)
+        }
+
         // --- connections ---
         ("POST", ["v1", "connections"]) => {
             require_role(cp, caller, roles::REQUEST)?;
@@ -1072,6 +1078,51 @@ fn get_entity(cp: &Arc<ControlPlane>, id: &str) -> Result<Response> {
     }
 }
 
+/// `GET /v1/offers?as=<consumer>` — the catalogue as one consumer sees it.
+///
+/// `as` is required and is not optional-with-a-default. A default would have to be either "every
+/// offer" — the enumerable catalogue this design refuses to publish — or "nothing", which reads as
+/// a bug. Making the caller name the consumer keeps the filter the only way through.
+///
+/// The token's `read` role is not enough on its own to see any particular row: the row still has to
+/// be inside the audience the *provider* named. Two independent gates, and the second one belongs
+/// to somebody the platform team does not speak for.
+fn offers(cp: &Arc<ControlPlane>, req: &Request) -> Result<Response> {
+    let now = req.param_u64("now").unwrap_or_else(|| (cp.now)());
+    let asker = req.param("as").ok_or_else(|| {
+        WcError::with_detail(
+            Code::CONFIG_INVALID,
+            "`as` names the consumer to filter for and is required; there is no unfiltered form of \
+             this endpoint",
+        )
+    })?;
+    let asker = EntityId::new(asker)?;
+    let store = lock(&cp.store);
+    let me = store.projection.entity(&asker).ok_or_else(|| {
+        WcError::with_detail(
+            Code::ENTITY_NOT_FOUND,
+            format!("{asker} is not registered, so it has no audience to filter by"),
+        )
+    })?;
+    if me.lifecycle != Lifecycle::Active {
+        return Err(WcError::with_detail(
+            Code::ILLEGAL_TRANSITION,
+            format!("{asker} is {:?}, not active", me.lifecycle),
+        ));
+    }
+    let mut rows: Vec<crate::offer::CatalogueEntry> = store
+        .projection
+        .offers
+        .values()
+        .filter_map(|o| o.as_seen_by(me.zone.as_str(), me.tier, now))
+        .collect();
+    rows.sort_by(|a, b| a.asset.as_str().cmp(b.asset.as_str()));
+    Ok(Response::json(
+        200,
+        json!({ "consumer": asker.as_str(), "zone": me.zone.as_str(), "offers": rows }).to_string(),
+    ))
+}
+
 fn posture(cp: &Arc<ControlPlane>, req: &Request) -> Result<Response> {
     let now = req.param_u64("now").unwrap_or_else(|| (cp.now)());
     let store = lock(&cp.store);
@@ -1307,6 +1358,9 @@ fn create_connection(cp: &Arc<ControlPlane>, caller: &Caller, req: &Request) -> 
         justification: field(&body, "justification")?.to_string(),
         requester: HumanRef::new(field(&body, "requester")?)?,
         mediators: string_list(&body, "mediators"),
+        // A direct human request carries no offer, so the provider-owner gate does not apply;
+        // this path is governed by connect-policy alone.
+        owner_must_approve: false,
     };
 
     let outcome = with_issuer(cp, caller, |issuer| issuer.request(&input))?;

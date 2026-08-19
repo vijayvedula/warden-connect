@@ -870,7 +870,7 @@ Built on core's `http.rs` threaded server. Authn is a Warden session token
 | `GET /v1/entities/{id}` | `connect.read` | — | 200 | 2001 |
 | `POST /v1/discover` | agent SVID or `connect.read` | — | 200 `DiscoverResult` | 2020 (throttled) |
 | `POST /v1/connections` | `connect.request` | yes | 202 `ConnRequest` \| 201 contract (standing) | 3010–3015 |
-| `POST /v1/connections/{cid}/approve` \| `/deny` | rule's `approver_role` | yes | 200 | 3020–3023 |
+| `POST /v1/connections/{cid}/approve` \| `/deny` | rule's `approver_role`, plus the callee's owner when the offer gated the item | yes | 200 | 3020–3024 |
 | `GET /v1/connections/{cid}` | `connect.read` | — | 200 | 3001 |
 | `POST /v1/connections/{cid}/renew` \| `/revoke` | `connect.request` / `connect.admin` | yes | 200 | 3030–3032 |
 | `POST /v1/quarantine` | `connect.secops` (dual control at tier 1) | yes | 202 `QuarantineReport` | 6001–6004 |
@@ -2086,6 +2086,7 @@ so they are additive-only — never renumbered, never reused.
 | WC-3021 | Approval stale (policy version moved) | closed | 409 |
 | WC-3022 | Dual control not satisfied | closed | 403 |
 | WC-3023 | Approval signature invalid | closed | 401 |
+| WC-3024 | Callee's registered owner did not approve | closed | 403 |
 | WC-3030 | Renewal blocked: posture degraded | closed | 409 |
 | WC-3031 | Renewal blocked: re-attestation failed | closed | 409 |
 | WC-3032 | Contract already revoked/expired | — | 410 |

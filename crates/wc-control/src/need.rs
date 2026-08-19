@@ -224,11 +224,11 @@ pub fn match_need(
     consumer_zone: &str,
     consumer_tier: Tier,
     now: u64,
-) -> std::result::Result<Matched, Vec<ItemRefusal>> {
+) -> Disposition {
     // The offer must be the provider's. Checked rather than assumed, because a caller holding
     // the wrong offer would otherwise contract against terms nobody published for this party.
     if offer.asset != need.provider {
-        return Err(vec![ItemRefusal {
+        return Disposition::Refused(vec![ItemRefusal {
             item: String::new(),
             why: format!(
                 "the offer belongs to {} and this need is for {}",
@@ -240,16 +240,17 @@ pub fn match_need(
     let mut refusals = Vec::new();
     let mut ceiling = need.ttl_requested;
     let mut deprecating = Vec::new();
+    let mut gated: Vec<String> = Vec::new();
 
     for item in &need.items {
         match offer.permits(item, consumer_zone, consumer_tier) {
             TermOutcome::PreGranted { ttl_max } => ceiling = ceiling.min(ttl_max),
-            TermOutcome::NeedsNamedApproval => refusals.push(ItemRefusal {
-                item: item.clone(),
-                why: "the provider requires per-consumer approval for this item, which is not \
-                      wired yet; ask the provider's owner to add you, or drop it from the need"
-                    .to_string(),
-            }),
+            // Gated, not refused — and its ceiling still applies, because the term that gated it
+            // is the term that will bound the contract if the provider says yes.
+            TermOutcome::NeedsNamedApproval { ttl_max } => {
+                ceiling = ceiling.min(ttl_max);
+                gated.push(item.clone());
+            }
             TermOutcome::NotOffered { item_exists: true } => refusals.push(ItemRefusal {
                 item: item.clone(),
                 why: format!(
@@ -311,20 +312,104 @@ pub fn match_need(
     }
 
     // All or nothing. A partial contract is one the consumer did not ask for.
+    //
+    // Refusals outrank gating: asking a provider to sign off a set containing an item no term of
+    // theirs covers is asking them to consent to something their offer cannot express.
     if !refusals.is_empty() {
-        return Err(refusals);
+        return Disposition::Refused(refusals);
+    }
+
+    // The same all-or-nothing rule, applied to the gate. One guarded item holds the whole need,
+    // rather than minting the pre-granted remainder now and the rest later: `jti` folds the item
+    // set, so a partial mint followed by an approved one is two artifacts for one request, and
+    // the consumer's first build would quietly succeed without the tool they asked for. Silently
+    // shipping a narrower contract than was requested is the failure mode this codebase keeps
+    // finding, so the whole set waits.
+    if !gated.is_empty() {
+        return Disposition::NeedsApproval(Box::new(Gated {
+            items: gated,
+            requested: need.items.clone(),
+            ttl: ceiling,
+            offer_version: offer.version,
+        }));
     }
 
     let cid = derive_cid(&need.consumer, &need.provider);
     let jti = derive_jti(&cid, offer.version, &need.items, ceiling);
-    Ok(Matched {
+    Disposition::Grant(Box::new(Matched {
         cid,
         jti,
         items: need.items.clone(),
         ttl: ceiling,
         offer_version: offer.version,
         deprecating,
-    })
+    }))
+}
+
+/// What evaluating a need against an offer came to.
+///
+/// Three outcomes, not two. The second one is the whole point of this type existing: a term
+/// asking for the provider's per-consumer sign-off used to be pushed onto the refusal list with
+/// the words "not wired yet", which made the provider's *most* guarded terms the ones that could
+/// not be used at all. An offer, in this module's own words, "only ever permits the asking" — so
+/// a gated item has to become a question somebody can answer, not a dead end.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Disposition {
+    /// Every item is pre-granted. Contractable now, on the provider's published consent.
+    Grant(Box<Matched>),
+    /// At least one item is gated behind the provider's per-consumer approval.
+    ///
+    /// **Nothing is minted.** This becomes a request the callee's registered owner decides, and
+    /// the whole need waits on it — see the all-or-nothing note in [`match_need`].
+    NeedsApproval(Box<Gated>),
+    /// Refused. No amount of approval helps: no term covers these items for this consumer.
+    Refused(Vec<ItemRefusal>),
+}
+
+impl Disposition {
+    /// The match, when the need was contractable now.
+    ///
+    /// Consuming, like [`Result::ok`]: `match_need(..).granted()` is the ordinary shape and a
+    /// borrowing accessor would hand out a reference into a temporary.
+    #[must_use]
+    pub fn granted(self) -> Option<Matched> {
+        match self {
+            Disposition::Grant(m) => Some(*m),
+            _ => None,
+        }
+    }
+
+    /// The refusals, when there were any.
+    #[must_use]
+    pub fn refusals(self) -> Option<Vec<ItemRefusal>> {
+        match self {
+            Disposition::Refused(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// What the provider must sign off, when that is what stands in the way.
+    #[must_use]
+    pub fn gated(self) -> Option<Gated> {
+        match self {
+            Disposition::NeedsApproval(g) => Some(*g),
+            _ => None,
+        }
+    }
+}
+
+/// A need waiting on the provider's per-consumer decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Gated {
+    /// The items the provider put behind named approval.
+    pub items: Vec<String>,
+    /// Every item the need asked for, because the request is for the whole set.
+    pub requested: BTreeSet<String>,
+    /// The TTL ceiling that applies if the provider approves — the smallest across every term
+    /// that covered an item, gated or not.
+    pub ttl: u64,
+    /// The offer version that gated it, so an approval can be traced to the terms in force.
+    pub offer_version: u64,
 }
 
 /// A refusal list as one error, for a caller that just needs to fail a pipeline.
@@ -444,7 +529,8 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
-        .unwrap_err();
+        .refusals()
+        .unwrap();
         assert_eq!(refusals.len(), 1);
         assert_eq!(refusals[0].item, "get_balance");
         assert!(refusals[0].why.contains("withdrew"), "{}", refusals[0].why);
@@ -465,7 +551,8 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
-        .unwrap_err();
+        .refusals()
+        .unwrap();
         assert_eq!(refusals.len(), 1);
         assert!(refusals[0].why.contains("3600s"), "{}", refusals[0].why);
 
@@ -478,6 +565,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .expect("a contract that expires before the withdrawal is fine");
         assert_eq!(m.ttl, 1_800);
         assert_eq!(m.deprecating, vec![("get_balance".to_string(), after)]);
@@ -491,6 +579,7 @@ ttl_max = 3600
             tier(2),
             NOW + 600,
         )
+        .granted()
         .expect("still inside the window");
         assert_eq!(later.jti, m.jti, "the derived jti moved with the clock");
     }
@@ -504,6 +593,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .expect("permitted");
         assert!(m.deprecating.is_empty());
     }
@@ -517,6 +607,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .expect("permitted");
         assert_eq!(m.offer_version, 7);
         assert!(m.cid.as_str().starts_with("conn_"));
@@ -534,6 +625,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .unwrap();
         assert_eq!(m.ttl, 604_800);
     }
@@ -547,6 +639,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .unwrap();
         assert_eq!(m.ttl, 3_600, "ttl_max is a ceiling, not a target");
     }
@@ -562,6 +655,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .unwrap();
         let b = match_need(
             &need_of(&["list_transactions", "get_balance"], None),
@@ -570,6 +664,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .unwrap();
         assert_eq!(a.jti, b.jti);
         assert_eq!(a.cid, b.cid);
@@ -584,6 +679,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .unwrap();
         let again = match_need(
             &need_of(&["get_balance"], None),
@@ -592,6 +688,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .unwrap();
         assert_eq!(
             first.jti, again.jti,
@@ -610,6 +707,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .unwrap();
         let new = match_need(
             &need_of(&["get_balance"], None),
@@ -618,6 +716,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .unwrap();
         assert_eq!(
             old.cid, new.cid,
@@ -635,6 +734,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .unwrap();
         let wide = match_need(
             &need_of(&["get_balance", "list_transactions"], None),
@@ -643,42 +743,69 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .unwrap();
         assert_eq!(narrow.cid, wide.cid);
         assert_ne!(narrow.jti, wide.jti);
     }
 
     #[test]
-    fn a_named_consumer_item_refuses_the_whole_need_rather_than_issuing_the_rest() {
-        // Partial issuance would hand back a contract the consumer did not ask for, and the
-        // gap would surface at runtime instead of in the pipeline.
-        let refusals = match_need(
+    fn a_named_consumer_item_gates_the_whole_need_rather_than_issuing_the_rest() {
+        // Partial issuance would hand back a contract the consumer did not ask for, and the gap
+        // would surface at runtime instead of in the pipeline. So one guarded item holds the set —
+        // including the pre-granted `get_balance` alongside it.
+        let gated = match_need(
             &need_of(&["get_balance", "transfer_funds"], None),
             &offer(1),
             "internal.apac",
             tier(2),
             NOW,
         )
-        .expect_err("must refuse");
-        assert_eq!(refusals.len(), 1);
-        assert_eq!(refusals[0].item, "transfer_funds");
-        assert!(
-            refusals[0].why.contains("per-consumer approval"),
-            "{:?}",
-            refusals[0]
+        .gated()
+        .expect("must be gated, not refused and not granted");
+        assert_eq!(gated.items, vec!["transfer_funds".to_string()]);
+        assert_eq!(
+            gated.requested.len(),
+            2,
+            "the request is for the whole set, not just the guarded item"
         );
+        // The guarded term's 3600, not the lenient term's 604800: a gate that inherited the
+        // permissive ceiling would make the sensitive item the longest-lived one.
+        assert_eq!(gated.ttl, 3600);
+        assert_eq!(gated.offer_version, 1);
     }
 
     #[test]
-    fn every_failing_item_is_reported_at_once_not_one_per_pipeline_run() {
-        let refusals = match_need(
+    fn a_refusal_outranks_a_gate_so_the_provider_is_never_asked_for_the_impossible() {
+        // One item guarded, one covered by no term at all. Asking the provider to sign off the set
+        // would be asking them to consent to something their own offer cannot express, so this
+        // refuses rather than opening a request that could never be satisfied.
+        let d = match_need(
             &need_of(&["transfer_funds", "nonexistent"], None),
             &offer(1),
             "internal.apac",
             tier(2),
             NOW,
+        );
+        let refusals = d.refusals().expect("refusal outranks the gate");
+        assert_eq!(refusals.len(), 1, "{refusals:?}");
+        assert_eq!(refusals[0].item, "nonexistent");
+    }
+
+    #[test]
+    fn every_failing_item_is_reported_at_once_not_one_per_pipeline_run() {
+        // Two items no term covers. Previously this paired a guarded item with an unknown one,
+        // which no longer produces two refusals — a gate is not a refusal — so the property is
+        // tested with two genuine refusals instead of by accident.
+        let refusals = match_need(
+            &need_of(&["nonexistent", "also_missing"], None),
+            &offer(1),
+            "internal.apac",
+            tier(2),
+            NOW,
         )
-        .expect_err("must refuse");
+        .refusals()
+        .expect("must refuse");
         assert_eq!(refusals.len(), 2, "{refusals:?}");
     }
 
@@ -692,7 +819,8 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
-        .expect_err("must refuse");
+        .refusals()
+        .expect("must refuse");
         assert!(refusals[0].why.contains("audience"), "{:?}", refusals[0]);
 
         let unknown = match_need(
@@ -702,7 +830,8 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
-        .expect_err("must refuse");
+        .refusals()
+        .expect("must refuse");
         assert!(unknown[0].why.contains("at all"), "{:?}", unknown[0]);
     }
 
@@ -719,7 +848,8 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
-        .expect_err("must refuse");
+        .refusals()
+        .expect("must refuse");
         assert!(refusals[0].why.contains("belongs to"), "{:?}", refusals[0]);
     }
 
@@ -754,6 +884,7 @@ ttl_max = 3600
             tier(2),
             NOW,
         )
+        .granted()
         .unwrap();
         assert_eq!(m.ttl, DEFAULT_TTL);
 
@@ -776,10 +907,12 @@ ttl_max = 3600
 
     #[test]
     fn a_refusal_renders_as_one_error_a_pipeline_can_fail_on() {
-        let need = need_of(&["transfer_funds"], None);
-        let refusals = match_need(&need, &offer(1), "internal.apac", tier(2), NOW).unwrap_err();
+        let need = need_of(&["nonexistent"], None);
+        let refusals = match_need(&need, &offer(1), "internal.apac", tier(2), NOW)
+            .refusals()
+            .unwrap();
         let err = refusal_error(&need, &refusals);
         assert_eq!(err.code(), Code::POLICY_DENIED);
-        assert!(err.detail().contains("transfer_funds"), "{}", err.detail());
+        assert!(err.detail().contains("nonexistent"), "{}", err.detail());
     }
 }

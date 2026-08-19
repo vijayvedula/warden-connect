@@ -208,7 +208,12 @@ approval = "named_consumer"
 ttl_max = 3600
 TERMS
 PUB2="$(publish offer-v2.toml 2 ccc)"
-if printf '%s' "$PUB2" | grep -q "AFFECTED.*list_transactions is no longer offered"; then
+# v2 moves `list_transactions` to `named_consumer`, so the affected line says the item now needs the
+# provider's per-consumer approval — not that it is gone. It used to say gone, and that was accurate
+# only while named approval routed nowhere: the item really was unreachable. Now the consumer's next
+# build opens a request, and telling the provider their consumer is broken would send them to fix a
+# term that is doing exactly what they asked.
+if printf '%s' "$PUB2" | grep -q "AFFECTED.*list_transactions now needs your approval"; then
     ok "the publish itself named the contract it affects"
     printf '%s' "$PUB2" | grep "AFFECTED" | head -1 | cut -c1-108 | sed 's/^/       /'
 else
@@ -222,22 +227,38 @@ STATUS2="$("$CONNECT" offer status "$PROVIDER" 2>&1)"
 printf '%s' "$STATUS2" | grep -q "1 minted under an earlier version" \
     && ok "the contract is counted as behind (minted under v1, current is v2)" \
     || bad "a contract minted under v1 was not counted as behind"
+# Four cases now, not three. `ON ASK` is separated from `GONE` because the actions differ: gone means
+# the provider and the contract have diverged with no path back, on-ask means there is a person who
+# can restore it and that person is the provider themselves.
+printf '%s' "$STATUS2" | grep -q "ON ASK     list_transactions" \
+    && ok "     list_transactions: ON ASK — still offered, now decided per consumer" \
+    || bad "     list_transactions was not reported as needing per-consumer approval"
 printf '%s' "$STATUS2" | grep -q "GONE       list_transactions" \
-    && ok "     list_transactions: GONE — the current terms do not offer it to this consumer" \
-    || bad "     list_transactions was not reported as gone"
+    && bad "     it was reported as GONE, which is the pre-routing meaning and now wrong" \
+    || ok "     and not as GONE, which would send the provider to fix a working term"
 printf '%s' "$STATUS2" | grep -q "SCHEDULED  get_balance" \
     && ok "     get_balance: SCHEDULED — a withdrawal date the consumer can plan around" \
     || bad "     get_balance's withdrawal date was not reported"
 
 # --- 4 · the consumer's unchanged build starts refusing ----------------------
 bold "4 · the consumer's unchanged manifest"
+# The property under test is unchanged: a narrowing must reach the consumer through their own
+# pipeline, as a non-zero exit, without anybody sending them an email. What changed is *which*
+# non-zero: `list_transactions` moved behind the provider's approval rather than out of the offer, so
+# the honest answer is PENDING and the exit code is WC-3024 rather than WC-3011.
 CHECK="$("$CONNECT" need check --manifest needs.toml 2>&1)"
-if printf '%s' "$CHECK" | grep -q "REFUSED"; then
-    ok "refused — the notice arrives as a red build, in the consumer's own pipeline"
+CHECK_RC=$?
+if printf '%s' "$CHECK" | grep -q "PENDING" && [ "$CHECK_RC" -ne 0 ]; then
+    ok "still a red build in the consumer's own pipeline — now PENDING, not REFUSED"
+    printf '%s' "$CHECK" | grep -E "PENDING|awaiting" | sed 's/^/     /'
 else
-    bad "an unchanged manifest still passed against narrowed terms"
+    bad "an unchanged manifest still passed against narrowed terms (rc=$CHECK_RC)"
     printf '%s\n' "$CHECK" | sed 's/^/       /' | head -6
 fi
+# And it must not read as a refusal, or the consumer chases a provider who removed nothing.
+printf '%s' "$CHECK" | grep -q "REFUSED" \
+    && bad "     it also said REFUSED, which is the wrong conversation to start" \
+    || ok "     and not REFUSED — the item is offered, the provider just decides who gets it"
 
 # --- 5 · a contract that would outlive the withdrawal ------------------------
 bold "5 · a TTL that would outlive the withdrawal date"
