@@ -32,6 +32,7 @@ pub mod evidence;
 pub mod export;
 pub mod federate;
 pub mod http;
+pub mod inventory;
 pub mod issuance;
 pub mod keys;
 pub mod lock;

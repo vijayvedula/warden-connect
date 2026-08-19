@@ -269,8 +269,19 @@ impl ScmShim {
     }
 
     /// A file's bytes at a commit.
+    ///
+    /// A shim may answer `{"absent": true}` for a path that simply is not there. That is a
+    /// different answer from a failure, and keeping them apart is what lets a scan report an empty
+    /// estate honestly instead of reporting one for an expired token.
     pub fn file(&self, repo: &str, sha: &str, path: &str) -> Result<Vec<u8>> {
         let answer = self.ask(&json!({ "op": "file", "repo": repo, "sha": sha, "path": path }))?;
+        if answer
+            .get("absent")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Err(self.fail(format!("{path} is not present in {repo} at {sha}")));
+        }
         let b64 = answer
             .get("content_b64")
             .and_then(serde_json::Value::as_str)
@@ -278,6 +289,60 @@ impl ScmShim {
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD
             .decode(b64)
+            .map_err(|e| {
+                self.fail("`content_b64` is not standard base64")
+                    .with_source(e)
+            })
+    }
+}
+
+impl ScmShim {
+    /// Every repository the shim can see, for a whole organisation.
+    ///
+    /// The inventory's entry point. Deliberately a *list of opaque ids* and nothing else: what a
+    /// repository is called differs per host, and the inventory only ever passes these straight
+    /// back to [`ScmShim::file`].
+    ///
+    /// A host that cannot enumerate — a token scoped to one repository, a shim that declines — says
+    /// so by returning an empty list, and the caller reports "nothing to scan" rather than "nothing
+    /// found". Those are different answers and an inventory that conflates them is an inventory
+    /// that reports a clean estate for a permissions problem.
+    pub fn repos(&self, org: &str) -> Result<Vec<String>> {
+        let answer = self.ask(&json!({ "op": "repos", "org": org }))?;
+        let list = answer
+            .get("repos")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| self.fail("answer carries no `repos` array"))?;
+        Ok(list
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect())
+    }
+
+    /// A file at a revision, or `None` when the host says it is not there.
+    ///
+    /// **Absence only.** Any other failure propagates, and that distinction is the whole point: an
+    /// earlier version swallowed every error, so a scan with an expired token, a broken shim or a
+    /// rate limit would have reported an estate with no MCP servers in it. "I looked and found
+    /// nothing" and "I could not look" must never render the same, and this is the layer where they
+    /// would have been merged.
+    pub fn file_if_present(&self, repo: &str, sha: &str, path: &str) -> Result<Option<Vec<u8>>> {
+        let answer = self.ask(&json!({ "op": "file", "repo": repo, "sha": sha, "path": path }))?;
+        if answer
+            .get("absent")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(None);
+        }
+        let b64 = answer
+            .get("content_b64")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| self.fail("answer carries neither `content_b64` nor `absent`"))?;
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map(Some)
             .map_err(|e| {
                 self.fail("`content_b64` is not standard base64")
                     .with_source(e)
