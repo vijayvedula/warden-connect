@@ -465,6 +465,30 @@ impl ApprovalRef {
         self.merges.iter().find(|m| m.side == side)
     }
 
+    /// A named human approved, with a reviewed merge as the evidence.
+    ///
+    /// The rung-2 shape, and deliberately [`ApprovalMode::Human`] rather than
+    /// [`ApprovalMode::ReviewedMerge`]. `ReviewedMerge` means *both parties consented in their own
+    /// repositories* and [`ApprovalRef::reviewed_merge`] refuses a one-sided set for exactly that
+    /// reason — one side alone is a request. Here there is one repository and one merge, so the
+    /// claim being made is the weaker and true one: **a human approved, and here is the merge that
+    /// shows it.**
+    ///
+    /// Recording it as `ReviewedMerge` would overstate what happened, and a mediator reading the
+    /// mode is entitled to take it literally. The merge still travels in `merges` so an auditor can
+    /// see the pull request, the approver and the commit without trusting this sentence.
+    #[must_use]
+    pub fn human_by_merge(by: HumanRef, consent: MergeApproval, ticket: Option<String>) -> Self {
+        ApprovalRef {
+            by: Some(by),
+            jti: None,
+            ticket,
+            mode: ApprovalMode::Human,
+            second: None,
+            merges: vec![consent],
+        }
+    }
+
     /// Standing-policy issuance: no human, by design.
     #[must_use]
     pub fn standing() -> Self {
