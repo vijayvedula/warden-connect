@@ -52,8 +52,19 @@ Branch protection requiring a review is what enforces it. An estate that has not
 | `bitbucket.sh` | UNVERIFIED | UNVERIFIED | not implemented | not implemented |
 
 All four `github.sh` ops have now been run against a live repository, including the write:
-`open_pr` opened a real pull request, and `merge_evidence` read that merge back. Idempotency and the
-owner refusal are the two claims still to be checked there rather than against a stub.
+`open_pr` opened a real pull request, and `merge_evidence` read that merge back.
+
+**The owner refusal is verified against that same real merge**, which is the strongest form the test
+takes: one merge, approved by `anupari14`, minted a contract when the callee's registered owner was
+`anupari14` and was **refused** when the owner was `vijayvedula`. Same host, same shim, same
+approver, same commit — only the registered owner differed, so the refusal can only have come from
+the owner check.
+
+Two claims about `merge_evidence` remain stub-only for GitHub, and both because branch protection
+prevents producing the input: an **unreviewed** merge, and a **self-approved** one. GitHub will not
+let an author approve their own pull request, so the self-approval case is unreachable there by
+construction — which is why `is_reviewed_merge` refuses an unnamed author regardless of what the
+shim reports, and why hosts that *do* permit self-approval need their wrappers probed before use.
 
 **Verifying `github.sh` found a bug the whole design rests on.** The first version parsed
 pull-request JSON with
