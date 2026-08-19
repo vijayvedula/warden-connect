@@ -246,10 +246,17 @@ FILES="$(python3 -c '
 import glob, json
 f = sorted(glob.glob("pr-*.json"))[0]
 q = json.load(open(f))
-print(len(q["files"]), q["base"], q["branch"].startswith("warden/propose-"))' 2>/dev/null)"
+rel = all(not x["path"].startswith("/") and x["path"].startswith("warden/contracts/")
+          for x in q["files"])
+print(len(q["files"]), q["base"], q["branch"].startswith("warden/propose-"), rel)' 2>/dev/null)"
 set -- $FILES
 [ "${1:-0}" = "2" ] && ok "     the PR carries 2 files, one per consumer" \
                     || bad "     the PR carries ${1:-0} files, expected 2"
+# The path INSIDE the repository, never where the file was staged locally. Staging moved to a temp
+# directory and the absolute path went into the pull request, which GitHub refused with
+# `path cannot start with a slash (HTTP 422)`.
+[ "${4:-}" = "True" ] && ok "     and their paths are repo-relative, not staging paths" \
+                      || bad "     a PR file path is absolute or not under warden/contracts/"
 [ "${2:-}" = "main" ] && ok "     against main" || bad "     base is ${2:-none}"
 [ "${3:-}" = "True" ] && ok "     on a derived branch name" || bad "     branch is not derived"
 
@@ -263,6 +270,11 @@ PR2="$("$CONNECT" inventory promote --from inventory.json --target "$TARGET" \
 NPR="$(ls pr-*.json 2>/dev/null | wc -l | tr -d ' ')"
 if printf '%s' "$PR2" | grep -q "already open" && [ "$NPR" = "1" ]; then
     ok "     a second run found the same pull request, and opened no other"
+    if printf '%s' "$PR2" | grep -q "surface    unchanged"; then
+        ok "     and reported the surface unchanged rather than re-pinning it"
+    else
+        bad "     it re-pinned an identical surface, which reports live contracts as affected"
+    fi
 else
     bad "     a second run left $NPR pull request(s) — a reviewer facing duplicates reads none"
     printf '%s\n' "$PR2" | sed 's/^/       /' | head -6
