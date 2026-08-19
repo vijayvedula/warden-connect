@@ -213,6 +213,24 @@ impl ScmShim {
         )
     }
 
+    /// The shim could not be run at all — a configuration error, not an identity verdict.
+    ///
+    /// `fail` reports `WC-1001 workload identity unverifiable`, which is right when the host was
+    /// asked and its answer did not establish consent. It is wrong, and actively misleading, when
+    /// the shim never ran: a mistyped path exits 127, and "workload identity unverifiable" sends an
+    /// operator to look at attestation instead of at the flag they got wrong. Seen live — a `~` in a
+    /// quoted shell variable, reported as an identity problem.
+    fn misconfigured(&self, detail: impl std::fmt::Display) -> WcError {
+        WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!(
+                "scm shim {}: {detail}. Nothing was asked of the source host, so this says nothing \
+                 about the commit — fix the shim command and re-run",
+                self.program.display()
+            ),
+        )
+    }
+
     fn fail(&self, detail: impl std::fmt::Display) -> WcError {
         WcError::with_detail(
             Code::IDENTITY_UNVERIFIABLE,
@@ -228,7 +246,10 @@ impl ScmShim {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|e| self.fail("cannot spawn").with_source(e))?;
+            .map_err(|e| {
+                self.misconfigured("cannot be started (is the path right, and executable?)")
+                    .with_source(e)
+            })?;
 
         {
             let Some(mut stdin) = child.stdin.take() else {
@@ -275,6 +296,14 @@ impl ScmShim {
             .wait()
             .map_err(|e| self.fail("cannot reap").with_source(e))?;
         if !status.success() {
+            // 127 is "command not found" and 126 is "found but not executable". Both mean the shim
+            // never ran, so neither is an answer about the commit — reported as configuration.
+            // Every other non-zero exit is the shim itself refusing, which is a real verdict.
+            if matches!(status.code(), Some(126 | 127)) {
+                return Err(self.misconfigured(format!(
+                    "exited {status}, which means the command was not found or is not executable"
+                )));
+            }
             // Status before output: a shim that failed and still printed something must not have
             // that treated as an answer.
             return Err(self.fail(format!("exited {status}")));
@@ -589,6 +618,57 @@ mod tests {
             git_ref: "refs/heads/main".into(),
             sha: "05e9bde".into(),
         }
+    }
+
+    #[test]
+    fn a_shim_that_cannot_run_is_a_config_error_not_an_identity_verdict() {
+        // The distinction an operator acts on. A mistyped path used to report `WC-1001 workload
+        // identity unverifiable`, which reads as "the host said no" and sends them to attestation.
+        // Nothing was asked of the host at all.
+        let shim = ScmShim::parse("gh", "/nonexistent/definitely-not-here.sh").unwrap();
+        let err = shim
+            .merge_evidence("acme/repo", "deadbeef")
+            .expect_err("a missing shim cannot answer");
+        assert_eq!(
+            err.code(),
+            Code::CONFIG_INVALID,
+            "a shim that never ran must not produce an identity verdict: {err}"
+        );
+        assert!(
+            err.detail().contains("says nothing about the commit"),
+            "the message must say the host was never asked: {}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn a_shim_that_spawns_and_exits_127_is_also_a_config_error() {
+        // The case that actually happened. `bash ~/path/to/shim.sh` with a tilde inside quotes:
+        // bash starts perfectly, cannot find the file, exits 127. The spawn succeeded, so the test
+        // above does not cover this at all — it fails at spawn and never reaches the exit check.
+        // Confirmed by mutation: with the 126/127 branch forced false, that test still passed.
+        let d = Dir::new("notfound");
+        let shim = ScmShim::parse("gh", &d.shim("exit 127\n")).unwrap();
+        let err = shim
+            .merge_evidence("acme/repo", "deadbeef")
+            .expect_err("127 means the command was never found");
+        assert_eq!(err.code(), Code::CONFIG_INVALID, "{err}");
+    }
+
+    #[test]
+    fn a_shim_that_runs_and_refuses_is_still_an_identity_verdict() {
+        // The other half, or the fix above would swallow real refusals. A deliberate non-zero exit
+        // that is not 126/127 is the shim itself saying no, which is a verdict about the commit.
+        //
+        // Written as a script rather than `sh -c 'exit 1'`: `ScmShim::parse` splits on whitespace,
+        // so the quoted form arrives as two mangled arguments and exits with a shell syntax error
+        // instead of the code intended. It passed, for the wrong reason.
+        let d = Dir::new("refuses");
+        let shim = ScmShim::parse("gh", &d.shim("exit 1\n")).unwrap();
+        let err = shim
+            .merge_evidence("acme/repo", "deadbeef")
+            .expect_err("exit 1 is a refusal");
+        assert_eq!(err.code(), Code::IDENTITY_UNVERIFIABLE, "{err}");
     }
 
     const GOOD: &str = r#"{"merged":true,"ref":"refs/heads/main","protected":true,"request_id":"214","author":"r.mehta","approvers":["s.iyer"],"merged_at":1786449873}"#;
