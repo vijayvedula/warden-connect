@@ -91,6 +91,7 @@ The full list is in [CHANGELOG.md](../CHANGELOG.md); here is the shape:
 | `Registry::revoke_contract` and `contain::Revoked::Connection`, both tested | had **no caller outside their own tests**, so the only way to end one contract early was `quarantine` — containing the whole counterparty |
 | contract-set acknowledgements, served at `/v1/mediators/{id}/ack` and rendered at `/metrics` | lived in a `HashMap::new()` that was **never loaded or saved**, so a restart zeroed them and any gate built on them would block every deploy |
 | every read-only CLI verb | took the **single-writer lock**, so `posture`, `discover`, `blast-radius`, `contracts`, `requests` and `show` all failed with `WC-8003` against a control plane that was serving — which in production is a control plane that is always serving |
+| `Registry::repin`, built and tested since admission existed | had **no caller outside its own tests**, so a catalogue row registered without a surface could never be given one — `register` refuses a live party as drift and nothing else re-pinned |
 | a two-branch `assert!` in `caep.rs` | the first branch looked for a literal newline escape and a run of spaces, which a Rust line continuation can never produce — so it could never match, and the `or` kept the test green. An assertion that cannot be true is not a weaker check, it is none |
 
 ### The review checklist

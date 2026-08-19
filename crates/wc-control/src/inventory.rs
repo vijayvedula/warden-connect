@@ -34,6 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use wc_core::error::Result;
+use wc_core::model::EntityId;
 
 /// The client-configuration paths a scan looks for, in the order it tries them.
 ///
@@ -240,6 +241,71 @@ impl Inventory {
     }
 }
 
+/// A readable, stable label for a target.
+///
+/// The identifying half of the string plus eight hex of its digest. Readable, because an operator
+/// reading `urn:wc:mcp:acme-mcp-payments-4f2a91c8` in an audit log can tell what it is; hashed,
+/// because two servers can share a readable half and an id that collides silently merges two
+/// services into one row.
+fn slug(target: &str) -> String {
+    let digest = &wc_core::util::sha256_hex(target)[..8];
+    // The last meaningful token: the package for `npx -y @acme/mcp-payments`, the host for a URL.
+    let label = target
+        .split(['/', ' ', ':', '@'])
+        .rfind(|p| !p.is_empty() && *p != "https" && *p != "http" && *p != "-y")
+        .unwrap_or("server");
+    let cleaned: String = label
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches('-');
+    if cleaned.is_empty() {
+        digest.to_string()
+    } else {
+        format!("{}-{digest}", &cleaned[..cleaned.len().min(40)])
+    }
+}
+
+/// The registry id for a discovered server.
+///
+/// Derived, never asserted — and `urn:` rather than `spiffe://` on purpose. A `spiffe://` id is a
+/// claim that a workload identity exists and can be authenticated; nothing here has authenticated
+/// anything, and inventing one would make a discovered row indistinguishable from an attested party.
+///
+/// The consequence, stated because it matters later: a `urn:wc:` id can never appear as a JWT-SVID
+/// `sub`, so a promoted server can never satisfy stage 1 and stays `Unattested`. That is correct for
+/// a catalogue. An estate that wants to *enforce* against it re-registers with the workload's real
+/// SPIFFE id.
+pub fn derive_server_id(target: &str) -> Result<EntityId> {
+    EntityId::new(format!("urn:wc:mcp:{}", slug(target)))
+}
+
+/// The registry id for a repository that consumes a server.
+///
+/// The honest identity of a consumer this scan knows about: *the thing in this repository that uses
+/// that server*. A repository is not a workload, so this is a placeholder an operator replaces with
+/// the agent's real identity when they know it — and it is traceable in the meantime, which is
+/// better than leaving the consumer side of every finding blank.
+pub fn derive_consumer_id(repo: &str) -> Result<EntityId> {
+    let cleaned: String = repo
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    EntityId::new(format!("urn:wc:repo:{}", cleaned.trim_matches('-')))
+}
+
 /// Scan an organisation's repositories for MCP client configuration.
 ///
 /// `shim` is the same source-host adapter the contract path uses, so an estate that has verified
@@ -302,6 +368,52 @@ pub fn scan(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn a_derived_id_is_readable_and_unique() {
+        let a = derive_server_id("npx -y @acme/mcp-payments").unwrap();
+        let b = derive_server_id("npx -y @acme/mcp-ledger").unwrap();
+        assert!(a.as_str().starts_with("urn:wc:mcp:mcp-payments-"), "{a}");
+        assert_ne!(a, b);
+        // Stable: the same target always derives the same id, or every scan would create a new row
+        // for a server that has not changed.
+        assert_eq!(a, derive_server_id("npx -y @acme/mcp-payments").unwrap());
+
+        // A URL takes its host, not its path, because the path is usually `/mcp` on every one.
+        let u = derive_server_id("https://fx.treasury.internal/mcp").unwrap();
+        assert!(u.as_str().starts_with("urn:wc:mcp:mcp-"), "{u}");
+    }
+
+    #[test]
+    fn two_servers_sharing_a_readable_half_do_not_collide() {
+        // The reason the digest is there. Both end in `mcp`, and an id that collided would merge
+        // two services into one catalogue row and one contract.
+        let a = derive_server_id("https://payments.internal/mcp").unwrap();
+        let b = derive_server_id("https://ledger.internal/mcp").unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_consumer_id_names_the_repository_that_uses_it() {
+        let c = derive_consumer_id("bank/recon-bot").unwrap();
+        assert_eq!(c.as_str(), "urn:wc:repo:bank-recon-bot");
+    }
+
+    #[test]
+    fn a_derived_id_is_never_a_spiffe_id() {
+        // A `spiffe://` id claims an authenticated workload identity exists. Nothing here has
+        // authenticated anything, and inventing one would make a discovered row indistinguishable
+        // from an attested party — so a promoted server stays Unattested by construction.
+        for t in [
+            "npx -y @acme/mcp-payments",
+            "https://fx.internal/mcp",
+            "!!!",
+            "",
+        ] {
+            let id = derive_server_id(t).unwrap();
+            assert!(id.as_str().starts_with("urn:wc:mcp:"), "{id}");
+        }
+    }
 
     #[test]
     fn the_claude_and_cursor_shape_is_read() {
