@@ -424,6 +424,11 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "inventory promote" => &[
             "from",
             "activate",
+            "raise-pr",
+            "contracts-repo",
+            "base",
+            "shim",
+            "shim-label",
             "target",
             "owner",
             "zone",
@@ -2227,6 +2232,7 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
         .get("justify")
         .unwrap_or("discovered by inventory; replace this with why the consumer needs these tools");
     println!();
+    let mut written: Vec<(String, String)> = Vec::new();
     for repo in &consumers {
         let consumer_id = wc_control::inventory::derive_consumer_id(repo)?;
         let slug = repo.replace('/', "--");
@@ -2257,7 +2263,7 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
         if let Some(ticket) = args.get("ticket") {
             body.push_str(&format!("ticket  = \"{ticket}\"\n"));
         }
-        std::fs::write(&path, body).map_err(|e| {
+        std::fs::write(&path, &body).map_err(|e| {
             WcError::with_detail(
                 Code::EXPORT_FAILED,
                 format!("cannot write {}", path.display()),
@@ -2265,6 +2271,11 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
             .with_source(e)
         })?;
         println!("  proposal {}", path.display());
+        written.push((path.to_string_lossy().to_string(), body));
+    }
+
+    if args.has("raise-pr") {
+        raise_proposal_pr(args, &written, target, &server_id, &owner)?;
     }
     println!();
     println!(
@@ -2283,6 +2294,75 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
             "  refuses with WC-2003, so pass --activate or run `connect activate <id>` for each."
         );
     }
+    Ok(())
+}
+
+/// Open one pull request carrying the proposals just written.
+///
+/// The trust anchor of the whole arrangement, and the reason it is worth the one write this system
+/// performs: a human reads a diff in GitHub and merges it. Nothing here can merge — there is no
+/// merge op in the shim protocol — so the approval is theirs and the record is the merge.
+///
+/// **The branch name is derived from the proposals' content**, so raising the same set twice finds
+/// the pull request already open instead of opening a second one. A nightly scan or a portal button
+/// clicked twice would otherwise queue duplicates for one decision, and a reviewer facing forty
+/// identical pull requests stops reading all of them.
+fn raise_proposal_pr(
+    args: &Args,
+    written: &[(String, String)],
+    target: &str,
+    server_id: &EntityId,
+    owner: &HumanRef,
+) -> Result<()> {
+    let repo = require(args, "contracts-repo")?.to_string();
+    let base = args.get("base").unwrap_or("main").to_string();
+    let command = require(args, "shim")?;
+    let label = args.get("shim-label").unwrap_or("scm");
+    let shim = wc_control::scm::ScmShim::parse(label, command)?;
+
+    let files: Vec<wc_control::scm::PrFile> = written
+        .iter()
+        .map(|(path, body)| wc_control::scm::PrFile::new(path.clone(), body.as_bytes()))
+        .collect();
+
+    // Derived from every path and byte that will land, so an amended proposal gets its own branch
+    // and an unchanged one reuses the branch it already has.
+    let mut seed = String::new();
+    for f in &files {
+        seed.push_str(&f.path);
+        seed.push('\n');
+        seed.push_str(&f.content_b64);
+        seed.push('\n');
+    }
+    let branch = format!("warden/propose-{}", &wc_core::util::sha256_hex(&seed)[..12]);
+
+    let title = format!("contract proposal: {}", short(server_id));
+    let body = format!(
+        "Raised by `connect inventory promote` from a repository scan.\n\n         **Discovered server** `{target}`\n         **Registered as** `{server_id}`\n         **Approval** merging this is the consent. It must be approved by the callee's registered          owner, **{owner}** — approval by anyone else is refused at mint, because write access to          this repository is not consent from a service you do not own.\n\n         Ids here are *derived*, not authenticated, so both parties are `Unattested` and enforce          mode would refuse them. That is correct for a catalogue and is the work before          enforcement.\n\n         No signed artifact is committed: a contract in a repository is a bearer grant valid until          its expiry no matter what the registry says, and git cannot express \"withdrawn\".\n"
+    );
+
+    let outcome = shim.open_pr(&wc_control::scm::PrRequest {
+        repo: repo.clone(),
+        base,
+        branch: branch.clone(),
+        title,
+        body,
+        files,
+    })?;
+
+    println!();
+    if outcome.created {
+        println!("  pull req {} opened  {}", outcome.request_id, outcome.url);
+    } else {
+        // Said plainly. An operator who clicked twice needs to know the second click changed
+        // nothing, not to go looking for a second pull request that does not exist.
+        println!(
+            "  pull req {} already open for this proposal  {}",
+            outcome.request_id, outcome.url
+        );
+    }
+    println!("  branch   {branch} (derived from the proposals, so a re-run reuses it)");
+    println!("  merge    {owner} approving that merge is the consent; nothing here can merge it");
     Ok(())
 }
 
@@ -8301,6 +8381,21 @@ ESTATE
                   than re-registers, because `register` refuses a live party as
                   drift — right for a server whose behaviour moved, wrong for a row
                   being given the surface it never had.
+
+                  [--raise-pr --contracts-repo NAME [--base main]
+                   --shim COMMAND [--shim-label NAME]]
+                  RAISE THE PULL REQUEST, rather than only writing the files. This
+                  is the trust anchor: a human reads a diff in GitHub and merges it.
+
+                  Idempotent by construction — the branch name is derived from the
+                  proposals' content, so a nightly scan or a button pressed twice
+                  finds the pull request already open instead of queueing a
+                  duplicate. A reviewer facing forty identical PRs reads none.
+
+                  The token needs contents:write and pull-requests:write on THAT ONE
+                  repository, and must NOT be able to merge. There is no merge op in
+                  the shim protocol and there never should be: a system that could
+                  merge its own proposals would be approving on somebody's behalf.
 
                   --activate accepts the party into the catalogue. Off by default,
                   since registration always leaves a party pending here; but a

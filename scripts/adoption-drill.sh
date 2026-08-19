@@ -24,7 +24,10 @@
 #      evidence. The refusal names WC-3010;
 #   4  supply the surface and the same merge mints — so the refusal was about missing evidence, not
 #      a broken path;
-#   5  the contract records the derived ids and the merge, and the ids are `urn:` not `spiffe://`,
+#   5  the pull request is raised by this system and is IDEMPOTENT — a second run finds the one
+#      already open rather than queueing a duplicate, and the protocol has no merge op at all, so
+#      the approval can only ever be the human's;
+#   6  the contract records the derived ids and the merge, and the ids are `urn:` not `spiffe://`,
 #      so a discovered row can never masquerade as an attested party.
 #
 # Phase 3 is the one worth having. A tool that promoted a discovered server straight into a
@@ -113,6 +116,25 @@ elif op == "file":
             print(json.dumps({"content_b64": base64.b64encode(fh.read()).decode()}))
     else:
         print(json.dumps({"absent": True}))
+elif op == "open_pr":
+    # Records the request and answers idempotently, keyed by branch — the property that matters.
+    state = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prs.json")
+    try:
+        prs = json.load(open(state))
+    except Exception:
+        prs = {}
+    branch = q["branch"]
+    if branch in prs:
+        print(json.dumps({"request_id": prs[branch], "url": f"https://stub/pull/{prs[branch]}",
+                          "created": False}))
+    else:
+        num = str(400 + len(prs) + 1)
+        prs[branch] = num
+        json.dump(prs, open(state, "w"))
+        with open(os.path.join(os.path.dirname(state), f"pr-{num}.json"), "w") as fh:
+            json.dump(q, fh, indent=2)
+        print(json.dumps({"request_id": num, "url": f"https://stub/pull/{num}",
+                          "created": True}))
 elif op == "merge_evidence":
     print(json.dumps({"merged": True, "ref": "refs/heads/main", "protected": True,
                       "request_id": "77", "author": "dev@bank.com",
@@ -202,8 +224,58 @@ else
     printf '%s\n' "$APPLY2" | sed 's/^/       /' | head -12
 fi
 
-# --- 5 · what the contract says ----------------------------------------------
-bold "5 · the record"
+# --- 5 · the pull request ----------------------------------------------------
+bold "5 · raising the pull request"
+# The trust anchor: a human reads a diff in GitHub. Nothing here can merge — there is no merge op in
+# the shim protocol — so the approval is theirs.
+rm -f warden/contracts/*.toml prs.json pr-*.json
+PR1="$("$CONNECT" inventory promote --from inventory.json --target "$TARGET" \
+    --owner "$OWNER" --zone internal.discovered --by "$OWNER" --activate \
+    --surface surface.json --proposals warden/contracts --tools get_balance \
+    --justify "APAC reconciliation needs end-of-day balances" --ticket CHG-4471 \
+    "${SHIM_ARG[@]}" \
+    --raise-pr --contracts-repo bank/warden-contracts --base main 2>&1)"
+if printf '%s' "$PR1" | grep -q "pull req 401 opened"; then
+    ok "opened one pull request carrying both proposals"
+    printf '%s' "$PR1" | grep -E "pull req|branch|merge " | sed 's/^/     /'
+else
+    bad "no pull request was raised"
+    printf '%s\n' "$PR1" | tail -6 | sed 's/^/       /'
+fi
+FILES="$(python3 -c '
+import glob, json
+f = sorted(glob.glob("pr-*.json"))[0]
+q = json.load(open(f))
+print(len(q["files"]), q["base"], q["branch"].startswith("warden/propose-"))' 2>/dev/null)"
+set -- $FILES
+[ "${1:-0}" = "2" ] && ok "     the PR carries 2 files, one per consumer" \
+                    || bad "     the PR carries ${1:-0} files, expected 2"
+[ "${2:-}" = "main" ] && ok "     against main" || bad "     base is ${2:-none}"
+[ "${3:-}" = "True" ] && ok "     on a derived branch name" || bad "     branch is not derived"
+
+# Clicked twice. A nightly scan or a second button press must not queue a duplicate.
+PR2="$("$CONNECT" inventory promote --from inventory.json --target "$TARGET" \
+    --owner "$OWNER" --zone internal.discovered --by "$OWNER" --activate \
+    --surface surface.json --proposals warden/contracts --tools get_balance \
+    --justify "APAC reconciliation needs end-of-day balances" --ticket CHG-4471 \
+    "${SHIM_ARG[@]}" \
+    --raise-pr --contracts-repo bank/warden-contracts --base main 2>&1)"
+NPR="$(ls pr-*.json 2>/dev/null | wc -l | tr -d ' ')"
+if printf '%s' "$PR2" | grep -q "already open" && [ "$NPR" = "1" ]; then
+    ok "     a second run found the same pull request, and opened no other"
+else
+    bad "     a second run left $NPR pull request(s) — a reviewer facing duplicates reads none"
+    printf '%s\n' "$PR2" | sed 's/^/       /' | head -6
+fi
+# And nothing in the protocol can merge.
+if grep -q '"op": *"merge"' "$REPO"/crates/wc-control/src/scm.rs 2>/dev/null; then
+    bad "     the shim protocol has a merge op — approval would not be the human's"
+else
+    ok "     and the shim protocol has no merge op, so it cannot approve its own proposal"
+fi
+
+# --- 6 · what the contract says ----------------------------------------------
+bold "6 · the record"
 ART="$(ls "$WARDEN_CONNECT_ROOT"/tenants/default/state/contracts/*.jws 2>/dev/null | head -1)"
 if [ -n "$ART" ]; then
     python3 - "$ART" <<'PY' > rec.txt

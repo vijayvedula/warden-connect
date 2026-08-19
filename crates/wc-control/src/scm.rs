@@ -296,7 +296,102 @@ impl ScmShim {
     }
 }
 
+/// A file to place on a branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PrFile {
+    /// Path in the repository.
+    pub path: String,
+    /// Contents, standard base64.
+    pub content_b64: String,
+}
+
+impl PrFile {
+    /// A file from its path and its bytes.
+    ///
+    /// The base64 lives here rather than at the call site because the encoding is this protocol's
+    /// business — and because a caller that had to do it would need a base64 dependency of its own
+    /// for one line, which §8.3's ceilings exist to prevent.
+    #[must_use]
+    pub fn new(path: impl Into<String>, bytes: &[u8]) -> PrFile {
+        use base64::Engine as _;
+        PrFile {
+            path: path.into(),
+            content_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
+    }
+}
+
+/// A pull request to open.
+///
+/// `branch` is **derived from the content by the caller**, not generated randomly, and that is what
+/// makes raising the same proposal twice idempotent. A portal button clicked twice, or a scan run
+/// nightly, must not leave a queue of duplicate pull requests for one decision — a reviewer facing
+/// forty identical PRs stops reading all of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PrRequest {
+    /// Opaque repository id — the one contracts repository.
+    pub repo: String,
+    /// Branch to merge into.
+    pub base: String,
+    /// Branch to create, derived from the content.
+    pub branch: String,
+    /// Pull request title.
+    pub title: String,
+    /// Pull request body.
+    pub body: String,
+    /// Files to place on the branch.
+    pub files: Vec<PrFile>,
+}
+
+/// What opening a pull request produced.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PrOutcome {
+    /// The review unit's id, as a string.
+    #[serde(default)]
+    pub request_id: String,
+    /// A link a human can open.
+    #[serde(default)]
+    pub url: String,
+    /// Whether this call created it, or found one already open for the same branch.
+    #[serde(default)]
+    pub created: bool,
+}
+
 impl ScmShim {
+    /// Open a pull request carrying these files.
+    ///
+    /// **The only write this system performs against a source host, and it is deliberately the
+    /// weakest one available.** There is no merge op and there never should be: the whole value of
+    /// this arrangement is that a human merges, in a tool they already use, and a system that could
+    /// merge its own proposals would be approving on their behalf.
+    ///
+    /// So the token this shim carries needs `contents:write` and `pull-requests:write` on **one**
+    /// repository, and must not be able to merge. Branch protection requiring a review is what
+    /// enforces that, and it is the same protection `merge_evidence` later reads back — so an estate
+    /// that has not set it will find `proposals apply` refusing the merge it produced.
+    pub fn open_pr(&self, request: &PrRequest) -> Result<PrOutcome> {
+        let mut payload = serde_json::to_value(request)
+            .map_err(|e| self.fail("cannot encode the pull request").with_source(e))?;
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("op".to_string(), json!("open_pr"));
+        }
+        let answer = self.ask(&payload)?;
+        let outcome: PrOutcome = serde_json::from_value(answer).map_err(|e| {
+            self.fail("answer is not a pull-request outcome")
+                .with_source(e)
+        })?;
+        if outcome.request_id.trim().is_empty() {
+            // A shim that opened a pull request and could not say which one has produced something
+            // nobody can find, review or merge. Refused rather than reported as success, because
+            // the caller is about to tell an operator to go and get it approved.
+            return Err(self.fail(
+                "the answer names no pull request, so nothing can be reviewed or merged. A write \
+                 that cannot be pointed at is not a write worth reporting",
+            ));
+        }
+        Ok(outcome)
+    }
+
     /// Every repository the shim can see, for a whole organisation.
     ///
     /// The inventory's entry point. Deliberately a *list of opaque ids* and nothing else: what a
