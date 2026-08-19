@@ -172,6 +172,7 @@ const TWO_WORD: &[&str] = &[
     "need check",
     "need apply",
     "proposals apply",
+    "inventory promote",
     "scm probe",
 ];
 
@@ -192,6 +193,7 @@ const COMMANDS: &[&str] = &[
     "need check",
     "need apply",
     "proposals apply",
+    "inventory promote",
     "scm probe",
     "blast-radius",
     "quarantine",
@@ -418,6 +420,20 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "kid",
             "alg",
             "out",
+        ],
+        "inventory promote" => &[
+            "from",
+            "activate",
+            "target",
+            "owner",
+            "zone",
+            "surface",
+            "endpoint",
+            "proposals",
+            "tools",
+            "justify",
+            "ttl",
+            "ticket",
         ],
         "inventory" => &[
             "shim",
@@ -694,6 +710,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "mediators" => mediators_cmd(args)?,
         "distribution" => distribution_cmd(args)?,
         "inventory" => inventory_cmd(args)?,
+        "inventory promote" => inventory_promote_cmd(args)?,
         "proposals apply" => proposals_apply_cmd(args)?,
         "federate" => federate_cmd(args)?,
         "tenants" => tenants_cmd(args)?,
@@ -1995,6 +2012,323 @@ fn print_containment(report: Option<&contain::ContainmentReport>, what: &str) {
 /// This is the command that keeps "never assumed contained" true after the
 /// incident call ends: an order nobody confirmed stays listed until somebody
 /// does, however old it gets.
+/// `inventory promote` — turn a discovered server into a catalogue entry and a proposal.
+///
+/// The step that joins rung 1 to rung 2. A scan finds a server and the repositories that consume it;
+/// this registers both sides and writes the proposal files a pull request will carry. What used to
+/// be "now go and register forty things by hand" is one command per server.
+///
+/// Two honest limits, both visible in what it writes.
+///
+/// **Ids are derived, not asserted.** A promoted server gets `urn:wc:mcp:<slug>` and a consuming
+/// repository gets `urn:wc:repo:<repo>`. Neither is a `spiffe://` id, because nothing here has
+/// authenticated anything and inventing one would make a discovered row indistinguishable from an
+/// attested party. The consequence is that a promoted party can never satisfy stage 1 and stays
+/// `Unattested` — correct for a catalogue, and the thing to fix before enforcing.
+///
+/// **A surface is not invented.** Nothing was probed, so nothing knows which tools the server has.
+/// Without `--surface` the entry is a catalogue row and a proposal against it will refuse at mint
+/// with `WC-3010`, naming the reason. That refusal is the design: the alternative is trusting a
+/// consumer's list of the tools it would like to exist.
+fn inventory_promote_cmd(args: &Args) -> Result<()> {
+    let from = require(args, "from")?;
+    let target = require(args, "target")?;
+    let owner = HumanRef::new(require(args, "owner")?)?;
+    let zone = ZoneId::new(require(args, "zone")?)?;
+
+    let text = std::fs::read_to_string(from).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {from}")).with_source(e)
+    })?;
+    let inv: wc_control::inventory::Inventory = serde_json::from_str(&text).map_err(|e| {
+        WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!("{from} is not an inventory — `connect inventory --out FILE` writes one"),
+        )
+        .with_source(e)
+    })?;
+
+    let matching: Vec<&wc_control::inventory::Finding> = inv
+        .findings
+        .iter()
+        .filter(|f| f.declaration.target == target)
+        .collect();
+    if matching.is_empty() {
+        return Err(WcError::with_detail(
+            Code::ENTITY_NOT_FOUND,
+            format!(
+                "no finding in {from} has target {target:?}. `connect inventory` prints the targets \
+                 it found, and they are matched exactly — a target is a command line or a URL, not \
+                 the name a team gave it"
+            ),
+        ));
+    }
+
+    let server_id = wc_control::inventory::derive_server_id(target)?;
+    let consumers: std::collections::BTreeSet<String> =
+        matching.iter().map(|f| f.repo.clone()).collect();
+
+    println!("promoting  {target}");
+    println!("  server   {server_id}");
+    println!("  from     {} repo(s)", consumers.len());
+
+    // Registration goes through `admit_and_record`, the same path `register server` uses. A second
+    // implementation here would be a second place for the admission stages to drift, and this
+    // command's whole job is to save an operator forty invocations of that one.
+    //
+    // The surface, when the operator has one. **Without `--surface` the declared surface is
+    // empty**, deliberately: nothing was probed, so nothing knows what tools exist, and a proposal
+    // asking for one then refuses at mint with `WC-3010`. The alternative is trusting a consumer's
+    // list of the tools it would like to exist, which is not evidence of anything.
+    let surface_json = match args.get("surface") {
+        Some(path) => read_json(path)?,
+        None => serde_json::json!({ "tools": [] }),
+    };
+    let declared_tools = surface_json
+        .get("tools")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+
+    let endpoint = args.get("endpoint").map_or_else(
+        // Verbatim and marked as declared rather than reachable: the target is what a client config
+        // says, and this system has not spoken to it.
+        || format!("declared://{target}"),
+        str::to_string,
+    );
+
+    let server_request = AdmissionRequest {
+        kind: Kind::McpServer,
+        id: Some(server_id.clone()),
+        card: None,
+        endpoint: Some(endpoint),
+        attestation: Vec::new(),
+        owner: owner.clone(),
+        zone: zone.clone(),
+        declared: declared(args)?,
+        mode: mode(args),
+    };
+    // A promoted server that already exists is the ordinary case, not the exception: an operator
+    // promotes forty rows from a scan and then collects surfaces from their owners over the
+    // following weeks. `admit_and_record` refuses a live party with `WC-2002` — *a changed surface
+    // on a live party is drift, not an update* — which is right for a real server whose behaviour
+    // moved, and wrong for a catalogue row being given the surface it never had.
+    //
+    // So an existing party is **re-pinned** rather than re-registered. `Registry::repin` has existed
+    // and been tested since admission was built and had no caller outside its own tests, which is
+    // why supplying a surface later was a dead end: `register` refused it and nothing else could do
+    // it. Affected contracts are reported rather than hidden — that is what `repin` returns them
+    // for, and a re-pin that silently suspended somebody's contract would be the worse failure.
+    let already = {
+        let store = open_store(args)?;
+        store.projection.entity(&server_id).cloned()
+    };
+    match already {
+        Some(_) if args.get("surface").is_some() => {
+            let raw = surface_json.clone();
+            let pin = wc_core::canon::pin(
+                SurfaceKind::McpTools,
+                &server_id,
+                &raw,
+                &wc_core::canon::Limits::default(),
+                now(),
+            )?;
+            let mut store = open_store(args)?;
+            let affected = store.registry(actor(args)?, now()).repin(
+                &server_id,
+                pin,
+                wc_control::store::RepinCause::Admission,
+            )?;
+            println!("  re-pinned  {server_id} (it was already registered)");
+            if affected.is_empty() {
+                println!("  affected   no live contract referenced the previous surface");
+            } else {
+                println!(
+                    "  affected   {} contract(s) referenced the previous surface: {}",
+                    affected.len(),
+                    affected
+                        .iter()
+                        .map(|c| c.as_str().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
+        Some(_) => {
+            println!("  server     already registered; no --surface given, so nothing changed");
+        }
+        None => {
+            let server_surface = InlineSurface::new(SurfaceKind::McpTools, surface_json.clone());
+            admit_and_record(args, &server_request, &server_surface)?;
+        }
+    }
+    activate_if_asked(args, &server_id)?;
+    if declared_tools == 0 {
+        println!(
+            "  surface  NONE — a catalogue row; a proposal against it refuses at mint (WC-3010)"
+        );
+    } else {
+        println!("  surface  {declared_tools} item(s) declared from --surface");
+    }
+
+    for repo in &consumers {
+        let consumer_id = wc_control::inventory::derive_consumer_id(repo)?;
+        // A minimal card naming the repository. A repository is not a workload, so this is a
+        // placeholder an operator replaces with the agent's real identity — traceable in the
+        // meantime, which beats leaving the consumer side of every finding blank.
+        let card = serde_json::json!({
+            "name": repo,
+            "description": format!("Discovered consumer: the agent in {repo} that declares MCP servers."),
+            "version": "0.0.0",
+            "skills": [],
+        });
+        let consumer_request = AdmissionRequest {
+            kind: Kind::Agent,
+            id: Some(consumer_id.clone()),
+            card: Some(card.clone()),
+            endpoint: None,
+            attestation: Vec::new(),
+            owner: owner.clone(),
+            zone: zone.clone(),
+            declared: declared(args)?,
+            mode: mode(args),
+        };
+        // A consumer's card is synthetic and never changes, so re-promotion is a no-op rather than
+        // a re-pin. Registering it twice would fail as a duplicate on the second scan.
+        let exists = {
+            let store = open_store(args)?;
+            store.projection.entity(&consumer_id).is_some()
+        };
+        if !exists {
+            let consumer_surface = InlineSurface::new(SurfaceKind::A2aCard, card);
+            admit_and_record(args, &consumer_request, &consumer_surface)?;
+        }
+        activate_if_asked(args, &consumer_id)?;
+        println!("  consumer {consumer_id}  ({repo})");
+    }
+
+    // The proposals a pull request will carry. Written, never committed: raising the PR is the
+    // operator's or the portal's act, and a command that pushed to a repository on its own would be
+    // a command nobody could safely give an inventory job.
+    let dir = args.get("proposals").unwrap_or("warden/contracts");
+    let tools: Vec<String> = args
+        .get("tools")
+        .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
+    if tools.is_empty() {
+        println!();
+        println!("  no --tools given, so no proposal was written. A proposal names the tools a");
+        println!("  consumer needs; an empty list reads as asking for nothing.");
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(dir).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot create {dir}")).with_source(e)
+    })?;
+    let justify = args
+        .get("justify")
+        .unwrap_or("discovered by inventory; replace this with why the consumer needs these tools");
+    println!();
+    for repo in &consumers {
+        let consumer_id = wc_control::inventory::derive_consumer_id(repo)?;
+        let slug = repo.replace('/', "--");
+        let path = std::path::Path::new(dir).join(format!("{slug}--{}.toml", short(&server_id)));
+        let mut body = String::new();
+        body.push_str(&format!(
+            "# Discovered by `connect inventory` in {} at {}\n",
+            repo, matching[0].path
+        ));
+        body.push_str(
+            "# Ids are DERIVED, not authenticated: replace them with the workload's real\n",
+        );
+        body.push_str("# spiffe:// identity before enforcing against this contract.\n");
+        body.push_str(&format!("caller  = \"{consumer_id}\"\n"));
+        body.push_str(&format!("callee  = \"{server_id}\"\n"));
+        body.push_str(&format!(
+            "tools   = [{}]\n",
+            tools
+                .iter()
+                .map(|t| format!("\"{t}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        body.push_str(&format!("justify = \"{justify}\"\n"));
+        if let Some(ttl) = args.number("ttl") {
+            body.push_str(&format!("ttl     = {ttl}\n"));
+        }
+        if let Some(ticket) = args.get("ticket") {
+            body.push_str(&format!("ticket  = \"{ticket}\"\n"));
+        }
+        std::fs::write(&path, body).map_err(|e| {
+            WcError::with_detail(
+                Code::EXPORT_FAILED,
+                format!("cannot write {}", path.display()),
+            )
+            .with_source(e)
+        })?;
+        println!("  proposal {}", path.display());
+    }
+    println!();
+    println!(
+        "  Raise a pull request with these. The callee's registered owner ({owner}) approving"
+    );
+    println!("  that merge is the consent; `connect proposals apply` mints on merge.");
+    if !args.has("activate") {
+        println!();
+        println!(
+            "  Both parties are PENDING. Registration always leaves a party pending here, and"
+        );
+        println!(
+            "  activation is a separate deliberate act — but a proposal against a pending party"
+        );
+        println!(
+            "  refuses with WC-2003, so pass --activate or run `connect activate <id>` for each."
+        );
+    }
+    Ok(())
+}
+
+/// Move a promoted party to `Active`, when the operator asked for it.
+///
+/// Off by default, because registration leaving a party `Pending` is how this system works
+/// everywhere and a command that silently differed would be the surprise. But a discovered party
+/// will **never** satisfy the admission stages — its id is derived and nothing attested it — so its
+/// `Pending` state is permanent unless somebody decides to accept it into the catalogue. That
+/// decision is what `--activate` records, and without it every proposal refuses with `WC-2003`.
+fn activate_if_asked(args: &Args, id: &EntityId) -> Result<()> {
+    if !args.has("activate") {
+        return Ok(());
+    }
+    {
+        // Already active is not an error here. `--activate` on a re-promotion is the ordinary case,
+        // and `transition` refuses Active→Active as an illegal transition, which is correct for a
+        // deliberate lifecycle command and wrong for an idempotent one.
+        let store = open_store(args)?;
+        if store
+            .projection
+            .entity(id)
+            .is_some_and(|e| e.lifecycle == Lifecycle::Active)
+        {
+            return Ok(());
+        }
+    }
+    let ts = now();
+    let mut store = open_store(args)?;
+    store.registry(actor(args)?, ts).transition(
+        id,
+        Lifecycle::Active,
+        "accepted into the catalogue by `inventory promote --activate`",
+    )?;
+    Ok(())
+}
+
+/// A short, log-friendly form of a derived id.
+fn short(id: &EntityId) -> String {
+    id.as_str()
+        .rsplit(':')
+        .next()
+        .unwrap_or(id.as_str())
+        .to_string()
+}
+
 /// `proposals apply` — mint the contracts a merged pull request approved (rung 2).
 ///
 /// Runs in the **contracts repository's** own pipeline, on merge to the default branch. One repo,
@@ -7946,6 +8280,33 @@ ESTATE
                   end the affected connections now rather than at their exp.
                   `connect offer status <asset>` lists them.
   mediators       [--mediators FILE] [--revocation-pub PEM --kid KID] [--json]
+  inventory promote --from inventory.json --target TARGET --owner human:x
+                  --zone internal.y [--surface FILE] [--activate] [--endpoint URL]
+                  [--proposals DIR] [--tools a,b] [--justify TEXT] [--ttl N]
+                  [--ticket REF]
+                  turn a discovered server into a catalogue entry and the proposals
+                  a pull request will carry. One command instead of forty by hand.
+
+                  Ids are DERIVED, never asserted: urn:wc:mcp:<slug> for the server
+                  and urn:wc:repo:<repo> for each consumer. Not spiffe://, because
+                  nothing here authenticated anything and inventing one would make a
+                  discovered row indistinguishable from an attested party. The
+                  consequence is that a promoted party stays Unattested and enforce
+                  mode refuses it — correct for a catalogue, and the work to do
+                  before enforcing.
+
+                  A SURFACE IS NOT INVENTED. Nothing was probed, so without
+                  --surface the entry is a catalogue row and a proposal against it
+                  refuses at mint with WC-3010. Supplying one later RE-PINS rather
+                  than re-registers, because `register` refuses a live party as
+                  drift — right for a server whose behaviour moved, wrong for a row
+                  being given the surface it never had.
+
+                  --activate accepts the party into the catalogue. Off by default,
+                  since registration always leaves a party pending here; but a
+                  discovered party can never satisfy the admission stages, so its
+                  pending state is permanent until somebody decides.
+
   proposals apply --repo NAME --sha SHA --mediator ID [--dir warden/contracts]
                   [--git-ref refs/heads/main] --shim COMMAND [--shim-label NAME]
                   (--issuer-key PEM | --signer COMMAND) --kid KID [--out DIR]

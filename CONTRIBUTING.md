@@ -82,6 +82,7 @@ read as working was not, and reading the code had not found it.
 ./scripts/distribution-drill.sh    # the deploy gate, durable acks, last-use  (binds a port)
 ./scripts/inventory-drill.sh       # MCP servers found from repo config, with nothing provisioned
 ./scripts/proposal-drill.sh        # one repo, one merge, and the owner check that makes it consent
+./scripts/adoption-drill.sh        # the whole path: scan -> promote -> merge -> signed contract
 ```
 
 Two are **not** in CI, because they measure rather than assert:
