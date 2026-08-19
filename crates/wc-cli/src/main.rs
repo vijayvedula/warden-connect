@@ -426,6 +426,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "inventory promote" => &[
             "from",
             "activate",
+            "repo-dir",
             "raise-pr",
             "contracts-repo",
             "base",
@@ -2129,41 +2130,51 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
         let store = open_store(args)?;
         store.projection.entity(&server_id).cloned()
     };
-    match already {
-        Some(_) if args.get("surface").is_some() => {
-            let raw = surface_json.clone();
+    match (already, args.get("surface")) {
+        (Some(existing), Some(_)) => {
             let pin = wc_core::canon::pin(
                 SurfaceKind::McpTools,
                 &server_id,
-                &raw,
+                &surface_json,
                 &wc_core::canon::Limits::default(),
                 now(),
             )?;
-            let mut store = open_store(args)?;
-            let affected = store.registry(actor(args)?, now()).repin(
-                &server_id,
-                pin,
-                wc_control::store::RepinCause::Admission,
-            )?;
-            println!("  re-pinned  {server_id} (it was already registered)");
-            if affected.is_empty() {
-                println!("  affected   no live contract referenced the previous surface");
-            } else {
+            // An identical surface is not a change. Re-pinning to the same manifest reported
+            // "affected 1 contract(s)" on every re-promotion — which reads as *a live contract was
+            // touched* when nothing about it moved. On an idempotent command that is the ordinary
+            // case, so the noise would teach an operator to skip the one line that matters.
+            if existing.pin.manifest == pin.manifest {
                 println!(
-                    "  affected   {} contract(s) referenced the previous surface: {}",
-                    affected.len(),
-                    affected
-                        .iter()
-                        .map(|c| c.as_str().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    "  surface    unchanged, nothing re-pinned ({})",
+                    pin.manifest
                 );
+            } else {
+                let mut store = open_store(args)?;
+                let affected = store.registry(actor(args)?, now()).repin(
+                    &server_id,
+                    pin,
+                    wc_control::store::RepinCause::Admission,
+                )?;
+                println!("  re-pinned  {server_id} (it was already registered)");
+                if affected.is_empty() {
+                    println!("  affected   no live contract referenced the previous surface");
+                } else {
+                    println!(
+                        "  affected   {} contract(s) referenced the previous surface: {}",
+                        affected.len(),
+                        affected
+                            .iter()
+                            .map(|c| c.as_str().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
             }
         }
-        Some(_) => {
+        (Some(_), None) => {
             println!("  server     already registered; no --surface given, so nothing changed");
         }
-        None => {
+        (None, _) => {
             let server_surface = InlineSurface::new(SurfaceKind::McpTools, surface_json.clone());
             admit_and_record(args, &server_request, &server_surface)?;
         }
@@ -2260,7 +2271,19 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
     for repo in &consumers {
         let consumer_id = wc_control::inventory::derive_consumer_id(repo)?;
         let slug = repo.replace('/', "--");
-        let path = std::path::Path::new(dir).join(format!("{slug}--{}.toml", short(&server_id)));
+        // Two paths, and conflating them was a bug. `path` is where the file is *staged locally*;
+        // `repo_path` is where it lands *inside the repository*. Once `--raise-pr` began staging in
+        // a temp directory, the absolute staging path went into the pull request as the file's repo
+        // path and GitHub refused it with `path cannot start with a slash (HTTP 422)`. A staging
+        // location is a local detail and must never travel.
+        let file_name = format!("{slug}--{}.toml", short(&server_id));
+        let path = std::path::Path::new(dir).join(&file_name);
+        let repo_path = format!(
+            "{}/{file_name}",
+            args.get("repo-dir")
+                .unwrap_or("warden/contracts")
+                .trim_end_matches('/')
+        );
         let mut body = String::new();
         body.push_str(&format!(
             "# Discovered by `connect inventory` in {} at {}\n",
@@ -2295,7 +2318,7 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
             .with_source(e)
         })?;
         println!("  proposal {}", path.display());
-        written.push((path.to_string_lossy().to_string(), body));
+        written.push((repo_path, body));
     }
 
     if args.has("raise-pr") {
