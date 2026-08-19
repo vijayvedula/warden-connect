@@ -431,6 +431,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "now",
         ],
         "bench" => &[
+            "materialise",
             "iterations",
             "gate",
             "signing-key",
@@ -3942,6 +3943,13 @@ fn bench_cmd(args: &Args) -> Result<()> {
 
     let iterations = args.number("iterations").unwrap_or(500).min(100_000) as usize;
     let scale = args.number("scale").unwrap_or(100_000).min(1_000_000) as usize;
+
+    // `--materialise` writes the estate to disk instead of measuring against an in-memory one.
+    // Separate from the gates on purpose: the gates must not pay for a disk write per iteration,
+    // and an operator wanting a log to practise on does not want 500 iterations of anything.
+    if args.has("materialise") {
+        return materialise_estate(args, scale);
+    }
     let only = args.get("gate");
     let wanted = |name: &str| only.is_none_or(|g| name.contains(g));
 
@@ -4497,6 +4505,68 @@ fn bench_estate(contracts: usize) -> Result<wc_control::store::Projection> {
         projection.contracts.insert(cid, record);
     }
     Ok(projection)
+}
+
+/// Write a synthetic estate to a real state log, so it can be *operated* rather than measured.
+///
+/// `bench_estate` builds a `Projection` in memory, which is right for the latency gates: they
+/// measure a code path, and a disk write between iterations would measure the disk. But it means
+/// `--scale 100000` produced no log, no chain and no artifacts — so
+/// `docs/proving-ground.md` item 2.5's question, *what is it like to operate an estate that
+/// size*, could not be answered by the thing that appeared to answer it. `scripts/scale-drill.sh`
+/// found this by timing `audit verify` at "10⁵" and getting 0.02s against nothing.
+///
+/// Committed in batches with `Durability::Batched`, because the interesting cost at this scale is
+/// the replay and the chain, not one `fsync` per contract — an estate is not built one contract
+/// per second by an operator watching.
+fn materialise_estate(args: &Args, contracts: usize) -> Result<()> {
+    let projection = bench_estate(contracts)?;
+    let mut store = open_store(args)?;
+    let actor = actor(args)?;
+    let ts = now();
+
+    let entities = projection.entities.len();
+    for entity in projection.entities.into_values() {
+        store.commit(
+            wc_control::store::Event::EntityPut {
+                entity: Box::new(entity),
+                actor: actor.clone(),
+            },
+            ts,
+            wc_control::store::Durability::Batched,
+        )?;
+    }
+    // The evidence chain too, one Mint row per contract. Without it `audit verify` has nothing to
+    // verify and `retention --retire` nothing to retire — which is how the first version of
+    // `scripts/scale-drill.sh` timed `audit verify` at 0.02s against a "10⁵" estate and reported
+    // it as instant. The chain is a separate append-only structure written by `Evidence`, not a
+    // projection of the state log, so materialising one does not materialise the other.
+    let mut evidence = open_evidence(args)?;
+    let minted = projection.contracts.len();
+    let mut rows = 0usize;
+    for record in projection.contracts.into_values() {
+        let event = wc_control::evidence::LifecycleEvent::new(
+            wc_control::evidence::EventKind::Mint,
+            actor_id(args),
+        )
+        .with_cid(record.cid.as_str())
+        .with_contract_jti(record.jti.as_str())
+        .with_entities([record.caller.as_str(), record.callee.as_str()])
+        .with_reason("synthetic estate for scale measurement".to_string())
+        .with_policy_version(record.policy_version.clone());
+        evidence.record(&event, ts)?;
+        rows += 1;
+        store.commit(
+            wc_control::store::Event::ContractMint {
+                record: Box::new(record),
+            },
+            ts,
+            wc_control::store::Durability::Batched,
+        )?;
+    }
+    store.log.sync()?;
+    println!("materialised {entities} entities, {minted} contracts and {rows} evidence rows");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -8156,7 +8226,11 @@ mod tests {
                     if !candidate.starts_with("scripts/") {
                         continue;
                     }
-                    if candidate.contains('*') || candidate.contains('<') {
+                    // A glob, a placeholder, or a shell variable is not a claim that a path
+                    // exists — `scripts/$d-drill.sh` inside a `for d in ...` loop is a pattern,
+                    // and reading it as a path makes this guard fail on correct documentation.
+                    if candidate.contains('*') || candidate.contains('<') || candidate.contains('$')
+                    {
                         continue;
                     }
                     checked += 1;

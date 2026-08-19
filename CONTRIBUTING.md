@@ -65,8 +65,32 @@ cargo deny check                            # advisories, licences, bans, source
 ```
 
 CI additionally runs the MSRV job, the §8.10.3 latency gates (`connect bench`), the
-conformance vectors, the screening calibration, and regenerates the attestation fixtures
-with `scripts/gen-attest-fixtures.py` (Python 3.9-compatible; it needs `cryptography`).
+conformance vectors, the screening calibration, six drills, and regenerates the attestation
+fixtures with `scripts/gen-attest-fixtures.py` (Python 3.9-compatible; it needs `cryptography`).
+
+### The drills — run one when you touch what it covers
+
+Each executes the shipped binaries end to end. Every one of them exists because something that
+read as working was not, and reading the code had not found it.
+
+```sh
+./scripts/attest-drill.sh          # a party reaches Attested; enforce mode admits it
+./scripts/rotation-drill.sh        # issuer-key rotation, and containment reaching a live session
+./scripts/containment-drill.sh     # the quarterly break-glass rehearsal
+./scripts/custody-drill.sh         # an external issuer key, and two planes that stay separate
+./scripts/upgrade-drill.sh         # a provider changes terms; everyone finds out in time
+./scripts/distribution-drill.sh    # the deploy gate, durable acks, last-use  (binds a port)
+```
+
+Two are **not** in CI, because they measure rather than assert:
+
+```sh
+./scripts/scale-drill.sh           # operate a 10⁵ estate; ~10 min, prints timings, gates nothing
+./scripts/fuzz.sh 600              # a real campaign; needs nightly + cargo-fuzz
+```
+
+`scale-drill.sh` deliberately sets no thresholds: a number from one laptop fails on a smaller CI
+runner and passes on a bigger one, which this project got wrong twice with latency assertions.
 
 `cargo fmt --all` does not reach `fuzz/`, which is deliberately outside the workspace.
 
