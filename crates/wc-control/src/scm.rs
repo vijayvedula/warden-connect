@@ -199,6 +199,20 @@ impl ScmShim {
         &self.label
     }
 
+    /// A failure on the write op.
+    ///
+    /// `Code::IDENTITY_UNVERIFIABLE` is right for the read ops — a shim that cannot answer about a
+    /// merge has left a binding unverifiable. It is wrong here and actively misleading: opening a
+    /// pull request is not an identity question, and a mistyped repository name reported as
+    /// *workload identity unverifiable* sends an operator to look at SPIFFE and tokens. Seen exactly
+    /// that way in a live run, where the real cause was a placeholder left in a command.
+    fn fail_write(&self, detail: impl std::fmt::Display) -> WcError {
+        WcError::with_detail(
+            Code::EXPORT_FAILED,
+            format!("{} could not open the pull request: {detail}", self.label()),
+        )
+    }
+
     fn fail(&self, detail: impl std::fmt::Display) -> WcError {
         WcError::with_detail(
             Code::IDENTITY_UNVERIFIABLE,
@@ -387,13 +401,18 @@ impl ScmShim {
     /// that has not set it will find `proposals apply` refusing the merge it produced.
     pub fn open_pr(&self, request: &PrRequest) -> Result<PrOutcome> {
         let mut payload = serde_json::to_value(request)
-            .map_err(|e| self.fail("cannot encode the pull request").with_source(e))?;
+            .map_err(|e| self.fail_write("cannot encode it").with_source(e))?;
         if let Some(obj) = payload.as_object_mut() {
             obj.insert("op".to_string(), json!("open_pr"));
         }
-        let answer = self.ask(&payload)?;
+        // Mapped rather than propagated, so the shim's own stderr survives while the code stops
+        // claiming an identity problem. The detail is what an operator reads; the code is what they
+        // route on.
+        let answer = self
+            .ask(&payload)
+            .map_err(|e| self.fail_write(e.detail().to_string()))?;
         let outcome: PrOutcome = serde_json::from_value(answer).map_err(|e| {
-            self.fail("answer is not a pull-request outcome")
+            self.fail_write("the answer is not an outcome")
                 .with_source(e)
         })?;
         if outcome.request_id.trim().is_empty() {
