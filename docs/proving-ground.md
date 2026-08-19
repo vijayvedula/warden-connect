@@ -182,21 +182,41 @@ control that reads as configured and does nothing.
 
 ### 2.5 · A 10⁵-contract estate, operated
 
-Benchmarked, never operated. `--scale` accepts up to 1,000,000 and the gates *measure*; nobody
-has lived with a log that size.
+**Now measurable locally, and measured — `scripts/scale-drill.sh`.**
 
-**Minimum:** one control plane with a 10⁵-contract state log on the SSD above, then run the
-**operator** commands — `audit verify`, `retention --retire`, `chain` verification, `lint` — and
-time each.
-**Pass:** every command completes in a time an operator would tolerate, and `audit verify` over
-10⁵ entries is not an overnight job. Also measure the **disk footprint** and the memory high
-water mark; a control plane that needs 8 GB to verify its own chain is a constraint that belongs
-in the docs.
+The gap was sharper than "never operated". `connect bench --scale` builds its estate **in
+memory**, which is correct for a latency gate: a gate that wrote to disk per iteration would
+measure the disk. But it means there was no log, no chain and no artifacts, so the question *what
+is it like to operate an estate that size* could not be answered by the command that appeared to
+answer it. The drill found this by timing `audit verify` at "10⁵" and getting **0.02 s against
+nothing**.
+
+`connect bench --materialise --scale N` writes the estate to a real state log **and** an evidence
+chain, so the operator commands have something to read. Two details cost a run each and are worth
+knowing before you re-measure:
+
+* materialising the state log alone leaves `audit verify` with nothing to verify — the chain is a
+  separate append-only structure, not a projection of the log;
+* without `--anchor-key`, the chain gets no checkpoints, and then `audit verify` reports
+  *COMPLETENESS UNVERIFIED* (links intact, truncation unprovable) while `retention --retire`
+  correctly refuses to move rows the anchor never attested. Both commands appear to run and do
+  nothing.
+
+**What is still the cluster's job:** these numbers come from one laptop, and a threshold set from
+one machine fails on a smaller CI runner and passes on a bigger one — a mistake already made twice
+here with latency assertions. The drill deliberately **does not gate**. What the cluster adds is
+fixed hardware, a real SSD, and an estate that grew rather than being generated.
+
+**One caveat in the drill's own output:** the synthetic estate's contracts carry `exp: u64::MAX`,
+so nothing is ever *ended* and `retention --retire` has nothing to move. The timing is the cost of
+deciding that, not of retiring 10⁵ rows. The retire path itself is covered by
+`cargo test -p warden-connect-control --lib retention`.
 
 ### 2.6 · Fuzzing at depth
 
-One minute per target is smoke. The nightly workflow turns that into hours per week and **has
-not run yet**.
+One minute per target is smoke. **A 10-minute-per-target campaign has now been run locally** —
+see the campaign note below for what it found — and the nightly workflow turns that into hours per
+week.
 
 **Minimum:** honestly, GitHub Actions already covers this — just enable the nightly and let it
 accumulate. If you want depth sooner, one **Spot** 8-vCPU VM (`Standard_D8as_v5` / `n2-standard-8`)
@@ -252,6 +272,8 @@ identity, with no join token anywhere, and `connect` verifies it. This is the di
 | — | Provider upgrade path, deprecation | **closed** — `scripts/upgrade-drill.sh` | local |
 | — | Deploy gate, durable acks across restart | **closed** — `scripts/distribution-drill.sh` | local |
 | — | Last-use per contract, re-certification view | **closed** — `scripts/distribution-drill.sh` phase 7 | local |
+| — | Gated p99, every gate at 10⁵ | **measured** — table in `docs/limitations.md`; still not gated, deliberately | local |
+| — | 10⁵ estate *operated* (item 2.5's local half) | **closed** — `scripts/scale-drill.sh` | local |
 
 So: **one KMS key, one Kubernetes cluster, one weekend spot VM.** Held for a week and destroyed,
 on either cloud, this is small money — well under a hundred dollars. The expensive items on the

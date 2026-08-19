@@ -421,7 +421,30 @@ subsystem.
   constant-factor regression this gate exists for — a stray clone, measured at 4.7× — still
   trips it. What is not covered is **tail behaviour**, and §7.10's p99 claim is therefore
   currently asserted nowhere. It needs hardware we choose;
-  [proving-ground.md](proving-ground.md) is where that is scheduled. *(Unproven: the p99 half)*
+  [proving-ground.md](proving-ground.md) is where that is scheduled.
+
+  **Every gate's p99 is now measured and reported**, on a quiet machine, at 10⁵ scale
+  (Darwin arm64, 10 cores, 2000 iterations):
+
+  | Gate | p50 | p99 | ceiling |
+  |---|---|---|---|
+  | `contract::mint` | 242.8 µs | 293.7 µs | 20 ms |
+  | `contract::mint` overhead | 1.6 µs | 1.8 µs | 50 µs |
+  | `gate::verify` warm | 148.4 µs | 187.8 µs | 1.5 ms |
+  | `gate::verify` cold | 149.8 µs | 171.5 µs | 3 ms |
+  | `filter_tools_list` (256 tools) | 32.6 µs | 44.0 µs | 100 µs |
+  | `canon::wcs1` (256 tools) | 1.34 ms | 1.45 ms | 10 ms |
+  | `screen` (256 tools) | 2.46 ms | 2.70 ms | 50 ms |
+  | `export::dora` | 89.8 ms | 96.1 ms | 500 ms |
+  | `assurance::blast_radius` | 27.1 ms | 29.9 ms | 160 ms |
+  | `store::rebuild` | 297 ms | 298 ms | 2 s |
+  | `registry::register` (10⁵) | 39.6 s | 39.6 s | 120 s |
+
+  Every p99 sits inside its ceiling with margin, the tightest being `filter_tools_list` at 44%
+  of 100 µs. That is a *measurement on one quiet machine*, which is exactly why it is a table here
+  and not a gate: the numbers say the tail is not close to the ceiling on hardware nobody else
+  shares, and they say nothing about a runner somebody else is also using.
+  *(Measured on chosen hardware; still not gated, deliberately)*
 * **Propagation has never been timed.** §7.10 promises under 60 s estate-wide;
   `wc_mediator_ack_lag_seconds` has a bucket at 60 so the claim is measurable, and nobody has
   measured it on a real estate. *(Unproven)*
@@ -715,12 +738,43 @@ subsystem.
   did 5,027 executions and found **329 inputs reaching coverage the seeds did not** — so the
   corpus was shallower than anyone thought, which is the finding underneath the plumbing.
 
-  Still *Unproven* at depth: one green run at 30 seconds is not hours per week, and the corpus
-  cache has only just started accumulating. But it now fuzzes, which it did not before.
-  *(Unproven at depth; the plumbing is fixed and measured)*
-* **No 10⁵-contract estate has been operated**, only benchmarked. The scale gates measure
-  `rebuild`, `blast_radius` and a DORA export at that size; nobody has run a control plane
-  holding it. *(Unproven)*
+  **A real campaign has now been run: 10 minutes per target, five targets, no crashes.** The last
+  target alone did 21,867,699 runs in 601 seconds, and 2,324 generated inputs reached coverage the
+  curated seeds did not.
+
+  That campaign is worth less than it sounds, and `scripts/fuzz-mutation-check.sh` is why. Run
+  against deliberately broken code, `parse_contract` **did not fail** — and the cause was two
+  independent bugs, either of which alone made every assertion past the signature check dead:
+  its trusted key was registered under `wc-e2e-es256` while every corpus file names
+  `wc-test-es256`, and it did not `trim()` the input, so each seed's trailing newline invalidated
+  the base64url signature segment. Every real caller trims. So `verify_artifact` returned early for
+  all 23 seeds, and the target's stated ceiling — *no contract verifies unless it is internally
+  consistent* — had never executed. Both fixed; it detects now.
+  *(Campaign run; hours-per-week depth still Unproven, and the mutation check is now the thing to
+  run before spending CPU)*
+* **A 10⁵-contract estate has now been operated** — `scripts/scale-drill.sh`, on Darwin arm64 with
+  10 cores. Numbers, so the constraint is a fact rather than a worry:
+
+  | | |
+  |---|---|
+  | materialise 100k contracts + 100k chain rows | 389 s, 327 MB peak |
+  | state log · evidence chain · whole root | 81.5 MB · 45.0 MB · 126.5 MB |
+  | reopen (log replay) | 0.52 s |
+  | `audit verify --anchor-pub` (100 anchors) | 0.51 s, 76 MB — *complete to seq 100000* |
+  | `posture`, `contracts`, `blast-radius` | 0.36–0.51 s, ~449 MB |
+  | `policy dry-run` | 0.87 s, 450 MB |
+  | `retention --retire` | 0.08 s, 75 MB |
+
+  **~450 MB resident for a 100k estate**, and `audit verify` needs only 76 MB because it streams
+  the chain rather than holding the projection. That answers the question
+  [proving-ground.md](proving-ground.md) item 2.5 asked — a control plane that needed 8 GB to
+  verify its own chain would be a constraint belonging in the docs, and this is not that.
+
+  Finding that cost two runs: `bench --scale` builds its estate **in memory**, so `--scale 100000`
+  produced no log, no chain and no artifacts. Timing `audit verify` at "10⁵" gave 0.02 s against
+  nothing. `--materialise` writes it for real; without `--anchor-key` the chain gets no checkpoints
+  and both `audit verify` and `retention --retire` then run and do nothing.
+  *(Operated locally; the same table on hardware nobody chose still wants the cluster)*
 * **§8.10.3's published latency figures are reference-hardware figures.** The table names the
   machine now. Two capacity gates enforce a ceiling ~2× the slowest hardware we run on, which
   means a 2× regression in `blast_radius` or `rebuild` would slip through; it is not tighter

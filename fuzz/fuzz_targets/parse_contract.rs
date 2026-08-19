@@ -19,7 +19,7 @@ static KEYS: OnceLock<IssuerKeys> = OnceLock::new();
 fn keys() -> &'static IssuerKeys {
     KEYS.get_or_init(|| {
         let mut k = IssuerKeys::new();
-        let _ = k.add_ec_pem("wc-e2e-es256", PUB, Algorithm::ES256);
+        let _ = k.add_ec_pem("wc-test-es256", PUB, Algorithm::ES256);
         k
     })
 }
@@ -28,6 +28,13 @@ fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
+    // Trimmed, because **every real caller trims**: `connect verify` reads the file and trims,
+    // and `store::read_artifact_from` trims what it reads off disk. Without it a corpus file's
+    // trailing newline invalidates the base64url signature segment, `verify_artifact` returns
+    // early, and every assertion below is dead code — which is precisely what had happened. Two
+    // bugs had to be fixed for this target's stated ceiling to run at all: this, and a trusted
+    // key registered under `wc-e2e-es256` while every corpus file names `wc-test-es256`.
+    let text = text.trim();
     let opts = VerifyOpts::new(keys(), MEDIATOR, NOW);
     let Ok(verified) = contract::verify_artifact(text, &opts) else {
         return;
