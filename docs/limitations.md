@@ -794,12 +794,25 @@ subsystem.
   The per-side consents are an additive, defaulted field, which older binaries ignore safely
   because the mediator never re-checks an approval. *(By design; ordering is documented)*
 
-* **The four source-host shims have never been run against a real tenant.** `scripts/scm/`
+* **`github.sh` has been run against a real tenant; the other three have not.** `scripts/scm/`
   contains wrappers for GitHub, GitLab, Azure Repos and Bitbucket, written from each vendor's API
-  documentation. The protocol, the client, the timeout and refusal behaviour, and the
-  raise-to-`Verified` logic are all tested against shims this repository controls — but the vendor
-  invocations themselves are unexecuted prose, which is exactly the class that produced four wrong
-  SPIRE commands here.
+  documentation.
+
+  **GitHub: all four ops verified against a live repository**, and the whole rung-2 loop with them —
+  a scan found a server from repository config, `inventory promote --raise-pr` opened a real pull
+  request, a second human approved and merged it, and `proposals apply` read that merge back and
+  minted a contract recording `approved by human:anupari14`.
+
+  Verifying it found the bug the design rests on. The wrapper parsed pull-request JSON with `sed`,
+  a real object carries three `"user":{` occurrences, greedy matching took the last, and `author`
+  came back **empty** — which made "an approver who is not the author" vacuous, because every
+  approver differs from the empty string. The probe *passed*: the check had stopped checking and the
+  answer was right by luck. Fields now come out through `jq`, and `is_reviewed_merge` refuses an
+  unnamed author regardless of what any shim says.
+
+  **GitLab, Azure Repos and Bitbucket remain unexecuted prose** — the class that produced four wrong
+  SPIRE commands here, and two of them still parse JSON with `sed`, which is the specific mistake
+  GitHub's did.
 
   `connect scm probe` exists for that: it runs a shim against a commit whose answer you already
   know and turns the result into assertions. **A shim nobody has probed is a shim nobody has run**,
