@@ -81,6 +81,14 @@ pub struct PendingRequest {
     pub approver_role: Option<String>,
     /// Whether two distinct approvers are needed.
     pub dual_control: bool,
+    /// Whether the callee's registered owner must be among the approvers.
+    ///
+    /// `#[serde(default)]` because this struct is serialised inside `contract.request` events: a
+    /// log written before the field existed must still replay, and it replays as `false` — which
+    /// is the behaviour those requests were created under, so replay reproduces history rather
+    /// than retro-applying a rule nobody was subject to.
+    #[serde(default)]
+    pub owner_must_approve: bool,
     /// Policy version the decision was made under.
     pub policy_version: String,
     /// Why policy routed it here.
@@ -294,6 +302,13 @@ pub struct RequestInput {
     pub requester: HumanRef,
     /// Mediators the contract must be addressed to. One artifact per mediator.
     pub mediators: Vec<String>,
+    /// Whether the **callee's registered owner** must be among the approvers.
+    ///
+    /// Set when the provider's offer put an item behind per-consumer approval. It is a property
+    /// of the provider's terms, not of connect-policy, which is why it arrives on the input rather
+    /// than being derived from a policy rule: policy governs the estate's appetite, the offer
+    /// governs the provider's, and neither can waive the other.
+    pub owner_must_approve: bool,
 }
 
 /// A break-glass request.
@@ -609,6 +624,20 @@ impl<'a> Issuer<'a> {
                 })
             }
             ConnDecision::RequireApproval => Ok(Outcome::AwaitingApproval(pending)),
+            // A term the provider put behind per-consumer approval is never satisfied by the
+            // estate's standing policy, whatever that policy says.
+            //
+            // Without this, an `allow` rule broad enough to cover the pair would mint the contract
+            // with `ApprovalRef::standing()` — no human, and specifically not the provider's owner
+            // — and the provider's most guarded term would become the one requiring the least
+            // consent. That is the exact shape this codebase keeps finding: a control that reads as
+            // configured and is answered by a default somewhere else.
+            //
+            // Escalated rather than denied. The consumer asked for something the provider does
+            // offer; the answer is "a person has to say yes", not "no".
+            ConnDecision::Allow if input.owner_must_approve => {
+                Ok(Outcome::AwaitingApproval(pending))
+            }
             ConnDecision::Allow => {
                 // Standing policy: no human, but the approval record says so
                 // explicitly rather than leaving the field empty.
@@ -662,6 +691,61 @@ impl<'a> Issuer<'a> {
                 return Err(WcError::with_detail(
                     Code::APPROVER_ROLE_MISSING,
                     format!("this request needs an approver holding {role:?}"),
+                ));
+            }
+        }
+
+        // The provider's own consent, when their offer asked for it per consumer.
+        //
+        // Read from the registry **now** rather than captured when the request was made. An owner
+        // who has since handed the service over cannot approve for it any more, and the person who
+        // holds it today can — capturing the name at request time would let a departed owner keep
+        // signing, and would deadlock every open request the moment a service changed hands.
+        //
+        // This is an addition to the role check, never a substitute. Estate policy and provider
+        // consent are separate consents and neither waives the other: a role holder approving is
+        // not the provider agreeing, and the provider agreeing is not the estate's rules being met.
+        if pending.owner_must_approve {
+            let owner = self
+                .store
+                .projection
+                .entity(&pending.callee)
+                .map(|e| e.owner.clone())
+                .ok_or_else(|| {
+                    WcError::with_detail(
+                        Code::OWNER_APPROVAL_MISSING,
+                        format!(
+                            "{} is not in the registry, so its owner cannot be established and \
+                             their consent cannot be checked",
+                            pending.callee
+                        ),
+                    )
+                })?;
+            // Same comparison as the pull-request path: trim, drop the `human:` prefix on **both**
+            // sides, and compare case-insensitively. One-sided trimming was a real defect there.
+            let want = owner.as_str().trim().trim_start_matches("human:");
+            let signed = verified.iter().any(|(by, _)| {
+                let a = by.as_str().trim().trim_start_matches("human:");
+                !a.is_empty() && a.eq_ignore_ascii_case(want)
+            });
+            if !signed {
+                return Err(WcError::with_detail(
+                    Code::OWNER_APPROVAL_MISSING,
+                    format!(
+                        "the provider's offer puts this behind per-consumer approval, so {owner} — \
+                         the registered owner of {} — must be among the approvers. Approvals seen: \
+                         {}",
+                        pending.callee,
+                        if verified.is_empty() {
+                            "none".to_string()
+                        } else {
+                            verified
+                                .iter()
+                                .map(|(by, _)| by.as_str().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }
+                    ),
                 ));
             }
         }
@@ -930,6 +1014,14 @@ impl<'a> Issuer<'a> {
             mediators: input.mediators.clone(),
             approver_role: None,
             dual_control: true,
+            // Break-glass deliberately does **not** require the callee's owner.
+            //
+            // It is the override, and its guards are its own: two distinct approvers, a named
+            // incident, a hard rate limit and separately-evidenced issuance. Adding "and the
+            // provider's owner must be reachable" would make the emergency path depend on the one
+            // person an emergency most often cannot reach — which does not make the estate safer,
+            // it makes the override unusable at 3am and pushes operators to something worse.
+            owner_must_approve: false,
             policy_version: self.policy.version.clone(),
             policy_reason: format!("break-glass: {}", input.incident),
             policy_trace: "break-glass — policy not evaluated".to_string(),
@@ -1077,6 +1169,7 @@ impl<'a> Issuer<'a> {
             mediators: input.mediators.clone(),
             approver_role: eval.approver_role.clone(),
             dual_control: eval.dual_control,
+            owner_must_approve: input.owner_must_approve,
             policy_version: self.policy.version.clone(),
             policy_reason: eval.reason.clone(),
             policy_trace: eval.trace.clone(),
@@ -1565,6 +1658,7 @@ reason = "a sensitive callee needs a security architect"
             justification: "APAC daily reconciliation".to_string(),
             requester: priya(),
             mediators: vec![MEDIATOR.to_string()],
+            owner_must_approve: false,
         }
     }
 
@@ -2109,6 +2203,187 @@ reason = "a sensitive callee needs a security architect"
             .unwrap_err();
         assert_eq!(err.code(), Code::APPROVER_ROLE_MISSING);
         assert!(err.detail().contains("security.architect"));
+    }
+
+    /// The approver registry, plus priya — who owns `server_id()` in [`seeded`] but holds no role.
+    ///
+    /// Separate from [`approvers`] so the existing tests keep asserting against a registry where
+    /// the owner cannot sign at all, which is the situation before an offer gates anything.
+    fn approvers_with_owner() -> ApproverRegistry {
+        let mut r = approvers();
+        r.add_ec(&priya(), APPROVER_PUB, Algorithm::ES256, &[])
+            .unwrap();
+        r
+    }
+
+    /// A request the provider's offer put behind per-consumer approval.
+    fn gated_input(tools: &[&str]) -> RequestInput {
+        RequestInput {
+            owner_must_approve: true,
+            ..input(tools)
+        }
+    }
+
+    #[test]
+    fn estate_policy_and_provider_consent_neither_waives_the_other() {
+        // The whole point of WC-3024 existing alongside WC-3020. `cecil` satisfies the estate's
+        // rule (`security.architect`); `priya` owns the callee. Approving with either alone leaves
+        // one of the two consents missing, and the error names *which* one — because the two send
+        // an operator to different people.
+        let tmp = TmpDir::new("ownergate");
+        let pol = policy();
+        let mut store = seeded(&tmp, Tier::ONE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let registry = approvers_with_owner();
+        let mut issuer = Issuer::new(
+            &mut store,
+            &mut evidence,
+            &pol,
+            &key,
+            "https://connect.internal",
+            NOW,
+            Actor::Human { id: priya() },
+        );
+
+        let proof_for = |p: &PendingRequest, who: HumanRef| ApprovalProof {
+            jws: sign_approval(p, &approver_key(who.as_str()), None, NOW).unwrap(),
+            by: who,
+        };
+
+        // 1 · the role holder alone: the estate is satisfied, the provider is not.
+        let a = match issuer.request(&gated_input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let err = issuer
+            .approve(&a.id, &[proof_for(&a, cecil())], &registry)
+            .unwrap_err();
+        assert_eq!(err.code(), Code::OWNER_APPROVAL_MISSING);
+        assert!(
+            err.detail().contains("priya@org") && err.detail().contains("cecil@org"),
+            "the error must name the owner who must sign and who actually did: {}",
+            err.detail()
+        );
+
+        // 2 · the owner alone: the provider is satisfied, the estate is not. The role check runs
+        //     first, so this is WC-3020 — and that ordering is what stops a provider's consent from
+        //     being read as an exemption from the estate's own rules.
+        let b = match issuer
+            .request(&gated_input(&["list_transactions"]))
+            .unwrap()
+        {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let err = issuer
+            .approve(&b.id, &[proof_for(&b, priya())], &registry)
+            .unwrap_err();
+        assert_eq!(err.code(), Code::APPROVER_ROLE_MISSING);
+
+        // 3 · both.
+        let c = match issuer.request(&gated_input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let issued = issuer
+            .approve(
+                &c.id,
+                &[proof_for(&c, cecil()), proof_for(&c, priya())],
+                &registry,
+            )
+            .expect("both consents present");
+        assert_eq!(issued.record.callee, server_id());
+    }
+
+    #[test]
+    fn standing_policy_cannot_satisfy_a_term_the_provider_gated() {
+        // `seeded(.., Tier::THREE)` puts the callee above the sensitive-callee rule, so the broad
+        // `allow` rule applies and an ordinary request is minted with no human at all. A gated one
+        // must escalate instead — otherwise the provider's most guarded term is the one needing the
+        // least consent, satisfied by an estate default they never saw.
+        let tmp = TmpDir::new("standing-gate");
+        let pol = policy();
+        let mut store = seeded(&tmp, Tier::THREE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let mut issuer = Issuer::new(
+            &mut store,
+            &mut evidence,
+            &pol,
+            &key,
+            "https://connect.internal",
+            NOW,
+            Actor::Human { id: priya() },
+        );
+
+        // The control case: standing policy really does mint this pair without a human.
+        match issuer.request(&input(&["get_balance"])).unwrap() {
+            Outcome::Issued(_) => {}
+            other => panic!("the fixture must reach the standing-policy path, got {other:?}"),
+        }
+
+        // The same pair, gated by the provider's offer.
+        match issuer.request(&gated_input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => assert!(p.owner_must_approve),
+            other => panic!("a gated need must not be minted by standing policy: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_ungated_request_does_not_need_the_owner() {
+        // The gate must not leak onto every request. A direct human request carries no offer, so
+        // the role holder alone is enough — as it was before any of this existed.
+        let tmp = TmpDir::new("ungated");
+        let pol = policy();
+        let mut store = seeded(&tmp, Tier::ONE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let registry = approvers_with_owner();
+        let mut issuer = Issuer::new(
+            &mut store,
+            &mut evidence,
+            &pol,
+            &key,
+            "https://connect.internal",
+            NOW,
+            Actor::Human { id: priya() },
+        );
+        let p = match issuer.request(&input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        assert!(!p.owner_must_approve);
+        let proof = ApprovalProof {
+            by: cecil(),
+            jws: sign_approval(&p, &approver_key(cecil().as_str()), None, NOW).unwrap(),
+        };
+        issuer
+            .approve(&p.id, &[proof], &registry)
+            .expect("no owner consent is required here");
+    }
+
+    #[test]
+    fn a_log_written_before_the_owner_gate_existed_still_replays() {
+        // `owner_must_approve` is serialised inside `contract.request`. A request recorded before
+        // the field existed must replay as `false` — the behaviour it was created under — rather
+        // than failing to parse or retro-applying a rule nobody was subject to.
+        let json = r#"{
+            "id": "req_old", "caller": "spiffe://bank/ns/apac/sa/recon-bot",
+            "callee": "spiffe://bank/ns/payments/sa/payments-mcp",
+            "surface": {"tools": ["get_balance"], "skills": [], "resources": []},
+            "terms": {"data_classes": [], "jurisdictions": []},
+            "ttl_secs": 3600, "justification": "historic", "requester": "human:priya@org",
+            "mediators": ["med-1"], "approver_role": null, "dual_control": false,
+            "policy_version": "connect-policy@v1", "policy_reason": "r", "policy_trace": "t",
+            "created_at": 1, "expires_at": 2, "status": "pending"
+        }"#;
+        let old: PendingRequest =
+            serde_json::from_str(json).expect("an older row must still parse");
+        assert!(
+            !old.owner_must_approve,
+            "replay must reproduce history, not rewrite it"
+        );
     }
 
     #[test]

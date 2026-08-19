@@ -144,6 +144,34 @@ pub struct OfferSource {
     pub manifest_digest: String,
 }
 
+/// One provider's offer, reduced to what a single consumer may see.
+///
+/// Built only by [`Offer::as_seen_by`], which is what guarantees nothing in here was visible to
+/// somebody outside the audience the provider named.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CatalogueEntry {
+    /// The provider.
+    pub asset: EntityId,
+    /// The offer version this view was taken from.
+    pub version: u64,
+    /// What kind of surface the items are.
+    pub surface_kind: SurfaceKind,
+    /// The surface the provider pinned, so a consumer can see it matches what they were told.
+    pub surface_digest: String,
+    /// Items contractable now: the offer itself is the provider's consent.
+    pub pre_granted: Vec<String>,
+    /// Items this consumer may **ask** for, decided per consumer by the provider's owner.
+    pub needs_approval: Vec<String>,
+    /// Visible items with a withdrawal date still ahead.
+    pub withdrawing: Vec<(String, u64)>,
+    /// Whether the publishing merge was verified against the source host.
+    ///
+    /// Shown because it changes what a consumer can do with the row, not merely how much to trust
+    /// it: a need cannot be minted against an offer carrying no verified consent, so a catalogue
+    /// that hid this would advertise items that refuse at the last step.
+    pub consented: bool,
+}
+
 /// A provider's published terms of availability.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Offer {
@@ -179,7 +207,14 @@ pub enum TermOutcome {
         ttl_max: u64,
     },
     /// Covered, but needs the provider's per-consumer sign-off.
-    NeedsNamedApproval,
+    ///
+    /// Carries the ceiling because the eventual contract is bound by the same term that gated
+    /// it. Without the TTL here the approval path would have to re-find the term, and a second
+    /// lookup that disagreed with the first is exactly the drift `strictness` exists to prevent.
+    NeedsNamedApproval {
+        /// The TTL ceiling that applies if the provider approves.
+        ttl_max: u64,
+    },
     /// No term covers this item for this consumer.
     NotOffered {
         /// Whether some term covers the item but not this audience, which is a different
@@ -220,10 +255,72 @@ impl Offer {
         match best {
             Some(t) => match t.approval {
                 TermApproval::PreGranted => TermOutcome::PreGranted { ttl_max: t.ttl_max },
-                TermApproval::NamedConsumer => TermOutcome::NeedsNamedApproval,
+                TermApproval::NamedConsumer => {
+                    TermOutcome::NeedsNamedApproval { ttl_max: t.ttl_max }
+                }
             },
             None => TermOutcome::NotOffered { item_exists },
         }
+    }
+
+    /// This offer as one consumer sees it, or `None` if they see nothing.
+    ///
+    /// `None` rather than an entry with empty lists, and that is the whole security property. A
+    /// consumer who is in no term's audience learns **nothing** — not that the asset exists, not
+    /// that it offers something to somebody else. `connect discover` exists because a freely
+    /// readable catalogue lets any registered party map the estate; this keeps that property while
+    /// giving a consumer a browsable view, because everything it shows them is something the
+    /// provider already consented to expose *to their audience*.
+    ///
+    /// `zone` and `tier` must come from the consumer's registry record, never from anything the
+    /// consumer asserts — a party that could state its own zone could read itself into any
+    /// audience. Same rule as [`crate::need::match_need`], same reason.
+    #[must_use]
+    pub fn as_seen_by(&self, zone: &str, tier: Tier, now: u64) -> Option<CatalogueEntry> {
+        let mut pre_granted = Vec::new();
+        let mut needs_approval = Vec::new();
+        let mut withdrawing = Vec::new();
+
+        // Deduplicated: an item may appear in several terms, and `permits` already resolves which
+        // one governs. Listing it twice would suggest two different answers.
+        let mut items: Vec<&str> = self
+            .terms
+            .iter()
+            .flat_map(|t| t.items.iter().map(String::as_str))
+            .collect();
+        items.sort_unstable();
+        items.dedup();
+
+        for item in items {
+            match self.permits(item, zone, tier) {
+                TermOutcome::PreGranted { .. } => pre_granted.push(item.to_string()),
+                TermOutcome::NeedsNamedApproval { .. } => needs_approval.push(item.to_string()),
+                // Not shown at all, including `item_exists: true`. That an item is offered to some
+                // other audience is not this consumer's business.
+                TermOutcome::NotOffered { .. } => continue,
+            }
+            // Only for items they can see, and only dates still ahead: a date already passed means
+            // the item is gone, and advertising it would invite a request `match_need` refuses.
+            if let Some(after) = self.deprecated_after(item) {
+                if after > now {
+                    withdrawing.push((item.to_string(), after));
+                }
+            }
+        }
+
+        if pre_granted.is_empty() && needs_approval.is_empty() {
+            return None;
+        }
+        Some(CatalogueEntry {
+            asset: self.asset.clone(),
+            version: self.version,
+            surface_kind: self.surface_kind,
+            surface_digest: self.surface_digest.clone(),
+            pre_granted,
+            needs_approval,
+            withdrawing,
+            consented: self.consent.is_some(),
+        })
     }
 
     /// When an item is due to be withdrawn, if any term says so.
@@ -437,6 +534,15 @@ pub struct Affected {
     /// serious row: the provider's intent and the contract have diverged with no schedule
     /// between them.
     pub gone: Vec<String>,
+    /// Contracted items the provider has moved behind per-consumer approval.
+    ///
+    /// Kept apart from [`Affected::gone`] deliberately. Before named approval was routed
+    /// anywhere, a term that asked for it was unusable and reporting the item as gone was
+    /// accurate. It is not accurate now: the consumer's next build becomes a request this
+    /// provider decides, not a divergence with no path back. Same detection, different severity
+    /// and a different action — and a report that conflates them tells a provider to go and fix
+    /// something that is working as they configured it.
+    pub needs_approval: Vec<String>,
     /// Contracted items past their published withdrawal date.
     pub withdrawn: Vec<(String, u64)>,
     /// Contracted items with a withdrawal date still ahead.
@@ -447,7 +553,10 @@ impl Affected {
     /// Whether this contract has anything the provider needs to know about.
     #[must_use]
     pub fn is_clean(&self) -> bool {
-        self.gone.is_empty() && self.withdrawn.is_empty() && self.withdrawing.is_empty()
+        self.gone.is_empty()
+            && self.needs_approval.is_empty()
+            && self.withdrawn.is_empty()
+            && self.withdrawing.is_empty()
     }
 }
 
@@ -506,14 +615,14 @@ pub fn impact(offer: &Offer, live: &[LiveContract<'_>], now: u64) -> Impact {
             minted_under: c.record.offer_version,
             exp: c.record.exp,
             gone: Vec::new(),
+            needs_approval: Vec::new(),
             withdrawn: Vec::new(),
             withdrawing: Vec::new(),
         };
         for item in c.record.surface.items() {
             match offer.permits(&item, c.consumer_zone, c.consumer_tier) {
-                TermOutcome::NotOffered { .. } | TermOutcome::NeedsNamedApproval => {
-                    row.gone.push(item);
-                }
+                TermOutcome::NotOffered { .. } => row.gone.push(item),
+                TermOutcome::NeedsNamedApproval { .. } => row.needs_approval.push(item),
                 TermOutcome::PreGranted { .. } => match offer.deprecated_after(&item) {
                     Some(after) if now >= after => row.withdrawn.push((item, after)),
                     Some(after) => row.withdrawing.push((item, after)),
@@ -529,9 +638,22 @@ pub fn impact(offer: &Offer, live: &[LiveContract<'_>], now: u64) -> Impact {
     // Worst first: contracts holding something already gone, then something past its date, then
     // something scheduled. An operator reading a long list needs the top of it to be the part
     // that cannot wait.
+    // Worst first, and `needs_approval` sits deliberately between `withdrawn` and `withdrawing`:
+    // it blocks the consumer's next build, which a future withdrawal date does not, but there is a
+    // person who can unblock it, which a passed date has not.
     affected.sort_by(|a, b| {
-        (b.gone.len(), b.withdrawn.len(), b.withdrawing.len())
-            .cmp(&(a.gone.len(), a.withdrawn.len(), a.withdrawing.len()))
+        (
+            b.gone.len(),
+            b.withdrawn.len(),
+            b.needs_approval.len(),
+            b.withdrawing.len(),
+        )
+            .cmp(&(
+                a.gone.len(),
+                a.withdrawn.len(),
+                a.needs_approval.len(),
+                a.withdrawing.len(),
+            ))
             .then_with(|| a.cid.cmp(&b.cid))
     });
 
@@ -604,13 +726,15 @@ ttl_max = 86400
     }
 
     #[test]
-    fn a_named_consumer_item_is_refused_rather_than_treated_as_pre_granted() {
-        // The whole point: the most sensitive term must not become the most permissive one
-        // because the approval routing it asks for is not built yet.
+    fn a_named_consumer_item_is_gated_rather_than_treated_as_pre_granted() {
+        // The most sensitive term must never collapse into the most permissive one. It used to be
+        // refused outright, which was honest while nothing could route an approval; now it carries
+        // the term's own ceiling into a request. What must not change is that it is *not*
+        // pre-granted, and that the ceiling is the guarded term's rather than the lenient one's.
         let offer = offer_from(TWO_TERMS).unwrap();
         assert_eq!(
             offer.permits("transfer_funds", "internal.apac-ops", tier(2)),
-            TermOutcome::NeedsNamedApproval
+            TermOutcome::NeedsNamedApproval { ttl_max: 86_400 }
         );
     }
 
@@ -672,7 +796,7 @@ ttl_max = 3600
                 offer_from(text)
                     .unwrap()
                     .permits("transfer_funds", "internal.x", tier(1)),
-                TermOutcome::NeedsNamedApproval,
+                TermOutcome::NeedsNamedApproval { ttl_max: 3600 },
                 "term order must not decide the outcome"
             );
         }
@@ -785,6 +909,71 @@ deprecates = [{ item = "get_balance", after = 1000 }]
     }
 
     #[test]
+    fn the_catalogue_shows_a_consumer_only_what_they_may_ask_for() {
+        let offer = offer_from(TWO_TERMS).unwrap();
+        let seen = offer
+            .as_seen_by("internal.apac-ops", tier(2), NOW)
+            .expect("in the audience of the pre-granted term");
+        // Split by what the consumer can do next, which is the only distinction that changes their
+        // behaviour: contract it, or ask for it.
+        assert_eq!(
+            seen.pre_granted,
+            vec!["get_balance".to_string(), "list_transactions".to_string()]
+        );
+        assert_eq!(seen.needs_approval, vec!["transfer_funds".to_string()]);
+    }
+
+    #[test]
+    fn a_consumer_outside_every_audience_is_told_nothing_at_all() {
+        // The property that makes a browsable catalogue safe. `TWO_TERMS`'s pre-granted term admits
+        // `internal.*` below tier 3; the named-consumer term has no audience clause, so it admits
+        // anyone — which is why this test uses a fixture where every term is scoped.
+        let scoped = offer_from(
+            r#"
+asset = "spiffe://bank/ns/svc/sa/payments-mcp"
+
+[[term]]
+items = ["get_balance"]
+approval = "pre_granted"
+ttl_max = 3600
+to = { zone = "internal.payments-only" }
+
+[[term]]
+items = ["transfer_funds"]
+approval = "named_consumer"
+ttl_max = 3600
+to = { zone = "internal.payments-only" }
+"#,
+        )
+        .unwrap();
+        assert!(
+            scoped.as_seen_by("partner.acme", tier(1), NOW).is_none(),
+            "an out-of-audience consumer must not learn the asset exists, and an entry with empty \
+             lists would tell them exactly that"
+        );
+        assert!(scoped
+            .as_seen_by("internal.payments-only", tier(1), NOW)
+            .is_some());
+    }
+
+    #[test]
+    fn the_catalogue_does_not_advertise_an_item_already_withdrawn() {
+        // A date in the past means the item is gone; `match_need` refuses it. Listing it would
+        // invite a request that cannot succeed, which is worse than not listing it.
+        let mut offer = offer_from(TWO_TERMS).unwrap();
+        offer.terms[0].deprecates = vec![Deprecation {
+            item: "get_balance".to_string(),
+            after: NOW - 1,
+        }];
+        let seen = offer.as_seen_by("internal.apac-ops", tier(2), NOW).unwrap();
+        assert!(
+            !seen.withdrawing.iter().any(|(i, _)| i == "get_balance"),
+            "a passed date is not a schedule: {:?}",
+            seen.withdrawing
+        );
+    }
+
+    #[test]
     fn impact_finds_the_contracts_a_removal_would_break() {
         let mut offer = offer_from(TWO_TERMS).unwrap();
         offer.version = 9;
@@ -831,10 +1020,16 @@ deprecates = [{ item = "get_balance", after = 1000 }]
         // a report they stop reading.
         assert_eq!(i.affected.len(), 2);
 
-        // Worst first. `transfer_funds` needs named approval under the current terms, which for
-        // this purpose is the same as gone — the consumer could not get it today.
+        // Worst first. `transfer_funds` needs named approval under the current terms — reported
+        // apart from `gone`, because the consumer *can* get it today by asking the provider. While
+        // named approval routed nowhere these were the same row; conflating them now would tell a
+        // provider to fix a term that is behaving exactly as they configured it.
         assert_eq!(i.affected[0].cid, "conn_2222222222222222");
-        assert_eq!(i.affected[0].gone, vec!["transfer_funds".to_string()]);
+        assert!(i.affected[0].gone.is_empty(), "not gone — gated");
+        assert_eq!(
+            i.affected[0].needs_approval,
+            vec!["transfer_funds".to_string()]
+        );
         assert_eq!(i.affected[0].minted_under, Some(9));
 
         assert_eq!(i.affected[1].cid, "conn_3333333333333333");

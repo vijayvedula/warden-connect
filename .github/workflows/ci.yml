@@ -122,6 +122,15 @@ jobs:
         working-directory: warden-connect
         run: ./scripts/upgrade-drill.sh   # builds the workspace itself
 
+      # `named_consumer` — the approval mode a provider can actually write on day one, before any
+      # consumer exists — returned `NeedsNamedApproval`, and `match_need` pushed it onto the
+      # **refusal** list with the words "not wired yet". So the provider's most guarded terms were
+      # the only ones that could not be used, and the most permissive were the only ones that
+      # worked. This drill runs browse -> ask -> the provider decides.
+      - name: Catalogue drill — a consumer browses, asks, and the provider approves
+        working-directory: warden-connect
+        run: ./scripts/catalogue-drill.sh   # builds the workspace itself
+
       # Contract-set acks lived in a `HashMap::new()` that was never loaded or saved, so a
       # restart zeroed them and any deploy gate built on them would block every deploy. This
       # drill kills and restarts the control plane in the middle to assert exactly that.

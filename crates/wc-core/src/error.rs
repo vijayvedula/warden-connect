@@ -103,6 +103,12 @@ impl Code {
     pub const APPROVAL_STALE: Code = Code(3021);
     /// Dual control not satisfied.
     pub const DUAL_CONTROL_MISSING: Code = Code(3022);
+    /// The callee's registered owner did not approve.
+    ///
+    /// Distinct from [`Code::APPROVER_ROLE_MISSING`] on purpose. A missing role means the estate's
+    /// approval rules were not met; this means the **provider's own** consent is absent. They send
+    /// an operator to different people, and collapsing them would hide which consent is missing.
+    pub const OWNER_APPROVAL_MISSING: Code = Code(3024);
     /// Approval signature invalid.
     pub const APPROVAL_SIGNATURE_INVALID: Code = Code(3023);
     /// Renewal blocked: posture degraded.
@@ -459,6 +465,7 @@ pub static CODES: &[CodeSpec] = &[
     spec(3021, Closed, Some(409), None, "approval stale, policy version moved"),
     spec(3022, Closed, Some(403), None, "dual control not satisfied"),
     spec(3023, Closed, Some(401), None, "approval signature invalid"),
+    spec(3024, Closed, Some(403), None, "callee's registered owner did not approve"),
     spec(3030, Closed, Some(409), None, "renewal blocked, posture degraded"),
     spec(3031, Closed, Some(409), None, "renewal blocked, re-attestation failed"),
     spec(3032, Report, Some(410), None, "contract already revoked or expired"),
@@ -647,7 +654,7 @@ mod tests {
             );
             prev = s.code;
         }
-        assert_eq!(CODES.len(), 77, "the LLD §8.11 table has 77 codes");
+        assert_eq!(CODES.len(), 78, "the LLD §8.11 table has 78 codes");
     }
 
     #[test]
