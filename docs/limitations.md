@@ -810,6 +810,19 @@ subsystem.
   answer was right by luck. Fields now come out through `jq`, and `is_reviewed_merge` refuses an
   unnamed author regardless of what any shim says.
 
+  **The owner check is verified against that same merge.** One real merge approved by `anupari14`
+  minted a contract when the callee's registered owner was `anupari14`, and was refused with
+  `WC-3011` when the registered owner was `vijayvedula` — same host, same shim, same approver, same
+  commit, so the refusal came from the owner check and nothing else. That is the
+  privilege-escalation path this arrangement exists to close: write access to the contracts
+  repository is not consent from a service you do not own.
+
+  What stays stub-only for GitHub, because branch protection prevents producing the input: an
+  **unreviewed** merge, and a **self-approved** one. GitHub does not let an author approve their own
+  pull request, so self-approval is unreachable there — which is why `is_reviewed_merge` refuses an
+  unnamed author independently of the shim, and why a host that *does* permit self-approval must be
+  probed before it is trusted.
+
   **GitLab, Azure Repos and Bitbucket remain unexecuted prose** — the class that produced four wrong
   SPIRE commands here, and two of them still parse JSON with `sed`, which is the specific mistake
   GitHub's did.
