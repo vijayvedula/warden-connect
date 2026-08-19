@@ -333,6 +333,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "need check" => &["manifest", "repo", "sha"],
         "need apply" => &[
             "manifest",
+            "policy",
             "repo",
             "sha",
             "git-ref",
@@ -409,6 +410,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         ],
         "proposals apply" => &[
             "dir",
+            "policy",
             "git-ref",
             "repo",
             "sha",
@@ -591,6 +593,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "enforce",
         ],
         "breakglass" => &[
+            "policy",
             "from",
             "to",
             "tools",
@@ -9216,6 +9219,53 @@ mod tests {
             }
         }
         assert!(checked >= 5, "only {checked} script references found");
+        assert!(missing.is_empty(), "{}", missing.join("\n  "));
+    }
+
+    /// A verb that loads the connection policy must let an operator say where it is.
+    ///
+    /// Two verbs shipped without `--policy` while calling `load_policy`, so the file had to sit in
+    /// the current directory — and `proposals apply` is *designed* to run from inside a contracts
+    /// repository, where it does not. That failed in a live run with `WC-8001 cannot read
+    /// connect-policy.toml`, which reads as a broken policy rather than a missing flag.
+    ///
+    /// Checked by reading the source rather than by remembering, because this was the second
+    /// instance and the third would have been found the same way — by somebody using it.
+    #[test]
+    fn every_verb_that_loads_policy_accepts_the_policy_flag() {
+        let src = include_str!("main.rs");
+        let table = &src[src
+            .find("fn accepted_flags")
+            .expect("the flag table must exist")..];
+
+        // The verb each policy-loading function serves. Named explicitly: deriving it from the
+        // dispatch arm would be cleverer and would silently pass when a name stopped matching.
+        let policy_verbs = [
+            ("request", "request"),
+            ("approve", "approve"),
+            ("breakglass", "breakglass"),
+            ("serve", "serve"),
+            ("need apply", "need_apply_cmd"),
+            ("proposals apply", "proposals_apply_cmd"),
+            ("policy dry-run", "policy_dry_run"),
+        ];
+        let mut missing = Vec::new();
+        for (verb, _fn_name) in policy_verbs {
+            let needle = format!("\"{verb}\" => &[");
+            let Some(start) = table.find(&needle) else {
+                // An alternation arm (`"a" | "b" => &[..]`) or a renamed verb. Reported rather than
+                // skipped: a guard that quietly matches nothing is not a guard.
+                missing.push(format!("{verb}: no flag list found under that exact name"));
+                continue;
+            };
+            let block = &table[start..];
+            let end = block.find(']').unwrap_or(block.len());
+            if !block[..end].contains("\"policy\"") {
+                missing.push(format!(
+                    "{verb}: loads the policy and does not accept --policy"
+                ));
+            }
+        }
         assert!(missing.is_empty(), "{}", missing.join("\n  "));
     }
 
