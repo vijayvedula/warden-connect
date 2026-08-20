@@ -1241,6 +1241,30 @@ fn portal_page(cp: &Arc<ControlPlane>, req: &Request) -> Result<Response> {
     }
     impacts.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
 
+    // One connection's trail, when asked for. The chain is read from disk here rather than held in
+    // the projection: it is append-only evidence, not state, and a page that served it from memory
+    // would be showing a cached copy of the thing an auditor came to check.
+    let chain_entries: Vec<crate::chain::Entry> = match req.param("cid") {
+        // Read only when asked. A page that read the whole chain on every request would make the
+        // dashboard cost grow with the estate's history.
+        Some(_) => {
+            let dir = lock(&cp.evidence).dir().to_path_buf();
+            crate::evidence::Evidence::entries(dir).unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    let lookup = req.param("cid").map(|cid| {
+        let record = wc_core::model::Cid::new(cid)
+            .ok()
+            .and_then(|c| p.contracts.get(&c));
+        let mut rows: Vec<&crate::chain::Entry> = chain_entries
+            .iter()
+            .filter(|e| e.cid.as_deref() == Some(cid))
+            .collect();
+        rows.sort_by_key(|e| e.seq);
+        (cid.to_string(), record, rows)
+    });
+
     let entities: Vec<&Entity> = p.entities.values().collect();
     let pending = crate::portal::open_requests(&p.requests, |id| p.entity(id), now);
 
@@ -1253,6 +1277,7 @@ fn portal_page(cp: &Arc<ControlPlane>, req: &Request) -> Result<Response> {
         inventory_error,
         known_targets,
         impacts,
+        lookup,
         contracts: p.contracts.len(),
         iss: &cp.iss,
     };

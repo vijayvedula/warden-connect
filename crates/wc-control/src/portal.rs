@@ -34,9 +34,11 @@
 
 use std::collections::BTreeMap;
 
+use crate::chain;
 use crate::inventory::{Inventory, NEEDS_PATH};
 use crate::issuance::{PendingRequest, RequestStatus};
 use crate::offer::CatalogueEntry;
+use wc_core::contract::ContractRecord;
 use wc_core::model::{Entity, EntityId, Lifecycle, Posture};
 
 /// Escape text for HTML.
@@ -93,6 +95,12 @@ pub struct View<'a> {
     /// `offer status` uses. Two implementations of "who does this affect" would eventually
     /// disagree, and the one on the page is the one a provider would act on.
     pub impacts: Vec<(EntityId, crate::offer::Impact)>,
+    /// A connection being looked up, with its record and its evidence rows.
+    ///
+    /// `Some((cid, None, rows))` is a cid that is not in the register — reported as such rather than
+    /// as an empty result, because "no such connection" and "a connection with no evidence" are
+    /// different answers and only one of them is alarming.
+    pub lookup: Option<(String, Option<&'a ContractRecord>, Vec<&'a chain::Entry>)>,
     /// Live contract count, for the header.
     pub contracts: usize,
     /// The issuer this plane mints as.
@@ -177,6 +185,7 @@ pub fn render(v: &View<'_>) -> String {
     generator_section(&mut h, v);
     pending_section(&mut h, v);
     impact_section(&mut h, v);
+    evidence_section(&mut h, v);
 
     h.push_str("<h2>Why there are no buttons here</h2>");
     h.push_str(
@@ -434,6 +443,120 @@ fn generator_section(h: &mut String, v: &View<'_>) {
     h.push_str("tools();draw();})();</script>");
 }
 
+/// One connection, and the trail behind it.
+///
+/// The question an audit asks: *show me why this connection exists.* Answerable today only by
+/// somebody who can run `connect show` and read a chain file — so it is answerable by the platform
+/// team and by nobody else, which is the wrong shape for evidence.
+///
+/// Rows come from the evidence chain, filtered by `cid`, which is the correlation root stamped on
+/// every action for exactly this purpose.
+fn evidence_section(h: &mut String, v: &View<'_>) {
+    h.push_str("<h2>Why does this connection exist</h2>");
+    let Some((cid, record, rows)) = &v.lookup else {
+        h.push_str(
+            "<p class=\"lede\">Add <code>?cid=conn_…</code> to see one connection: what it grants, \
+             who approved it, and every recorded action behind it.</p>",
+        );
+        return;
+    };
+    let Some(rec) = record else {
+        // Not the same as a connection with no trail. One means you asked about something that does
+        // not exist; the other would mean the register holds a contract nothing recorded.
+        h.push_str(&format!(
+            "<div class=\"card\"><span class=\"pill dn\">no such connection</span> \
+             <p class=\"lede\">Nothing in the register has the id <code>{}</code>. That is \
+             different from a connection with no evidence, which would be alarming.</p></div>",
+            esc(cid)
+        ));
+        return;
+    };
+
+    h.push_str(&format!(
+        "<div class=\"card\"><p class=\"lede\"><code>{}</code> &rarr; <code>{}</code><br>\
+         grants <code>{}</code><br>expires {} &middot; policy <code>{}</code></p></div>",
+        esc(rec.caller.as_str()),
+        esc(rec.callee.as_str()),
+        esc(&rec.surface.items().join(", ")),
+        esc(&crate::export::iso8601(rec.exp)),
+        esc(&rec.policy_version)
+    ));
+
+    // The consent, and where it happened. A merge pointer is more useful than the approval record
+    // itself: it is where somebody can go and read what was agreed.
+    h.push_str("<div class=\"tw\"><table><tr><th>Consent</th><th>Detail</th></tr>");
+    h.push_str(&format!(
+        "<tr><td>mode</td><td class=\"mono\">{:?}</td></tr>",
+        rec.approval.mode
+    ));
+    if let Some(by) = &rec.approval.by {
+        h.push_str(&format!(
+            "<tr><td>approved by</td><td class=\"mono\">{}</td></tr>",
+            esc(by.as_str())
+        ));
+    }
+    if let Some(second) = &rec.approval.second {
+        h.push_str(&format!(
+            "<tr><td>second approver</td><td class=\"mono\">{}</td></tr>",
+            esc(second.as_str())
+        ));
+    }
+    for m in &rec.approval.merges {
+        h.push_str(&format!(
+            "<tr><td>merge ({:?})</td><td class=\"mono\">{}@{}<br>request {} &middot; author {} \
+             &middot; approved by {}</td></tr>",
+            m.side,
+            esc(&m.repo),
+            esc(&m.sha),
+            esc(&m.request_id),
+            esc(&m.author),
+            esc(&m.approvers.join(", "))
+        ));
+    }
+    h.push_str("</table></div>");
+
+    if rows.is_empty() {
+        // Worth saying loudly. A contract in the register with nothing recorded behind it is either
+        // a chain that was truncated or a mint that skipped its own evidence write.
+        h.push_str(
+            "<div class=\"card\"><span class=\"pill dn\">no evidence rows</span> \
+             <p class=\"lede\">This connection is in the register and the chain has nothing for \
+             it. That should not happen: either the chain was truncated, or something minted \
+             without recording it. Run <code>connect audit verify --anchor-pub</code>.</p></div>",
+        );
+        return;
+    }
+    h.push_str(
+        "<div class=\"tw\"><table><tr><th>Seq</th><th>When</th><th>Event</th><th>Actor</th>\
+         <th>Decision</th><th>Why</th></tr>",
+    );
+    for e in rows {
+        let pill = match e.decision.as_str() {
+            "deny" => "dn",
+            "hold" => "wn",
+            _ => "ok",
+        };
+        h.push_str(&format!(
+            "<tr><td class=\"mono\">{}</td><td class=\"mono\">{}</td><td class=\"mono\">{}</td>\
+             <td class=\"mono\">{}</td><td><span class=\"pill {pill}\">{}</span></td>\
+             <td>{}</td></tr>",
+            e.seq,
+            esc(&crate::export::iso8601(e.ts)),
+            esc(&e.kind),
+            esc(&e.actor),
+            esc(&e.decision),
+            esc(&e.reason)
+        ));
+    }
+    h.push_str("</table></div>");
+    h.push_str(&format!(
+        "<p class=\"lede\">{} row(s), oldest first. This page shows the chain's contents, not its \
+         integrity — whether it has been tampered with is what <code>connect audit verify \
+         --anchor-pub</code> answers, and no page can answer it by displaying itself.</p>",
+        rows.len()
+    ));
+}
+
 /// What a provider needs before removing anything.
 ///
 /// The provider-facing half of the page. `offer status` answers this on a terminal; a provider
@@ -596,6 +719,7 @@ mod tests {
             inventory_error: None,
             known_targets: BTreeMap::new(),
             impacts: Vec::new(),
+            lookup: None,
             contracts: 0,
             iss: "https://connect.internal",
         }
@@ -717,6 +841,117 @@ mod tests {
             html.contains(r"<\/script>"),
             "the escape did not happen: {html}"
         );
+    }
+
+    #[test]
+    fn an_unknown_cid_is_not_the_same_as_a_connection_with_no_trail() {
+        // Two answers a lookup must not merge. "You asked about something that does not exist" is
+        // ordinary; "the register holds a contract and the chain has nothing for it" means the chain
+        // was truncated or a mint skipped its own evidence write, and only one of those is alarming.
+        let mut v = view(None, Vec::new());
+        v.lookup = Some(("conn_deadbeef".to_string(), None, Vec::new()));
+        let html = render(&v);
+        assert!(html.contains("no such connection"), "{html}");
+        assert!(
+            !html.contains("no evidence rows"),
+            "an unknown cid must not read as a missing trail"
+        );
+    }
+
+    #[test]
+    fn a_known_cid_with_an_empty_chain_says_so_loudly() {
+        let rec = contract_record();
+        let mut v = view(None, Vec::new());
+        v.lookup = Some(("conn_abcdef12".to_string(), Some(&rec), Vec::new()));
+        let html = render(&v);
+        assert!(html.contains("no evidence rows"), "{html}");
+        assert!(html.contains("audit verify"), "it must say what to run");
+        assert!(!html.contains("no such connection"), "the record exists");
+    }
+
+    #[test]
+    fn a_lookup_names_the_merge_the_consent_came_from() {
+        // The point of the view. An auditor wants the pull request, not a rendering of the approval
+        // record — the merge is where they can go and read what was agreed.
+        let rec = contract_record();
+        let rows = [chain_entry(1, "contract.mint", "allow", "minted")];
+        let refs: Vec<&chain::Entry> = rows.iter().collect();
+        let mut v = view(None, Vec::new());
+        v.lookup = Some(("conn_abcdef12".to_string(), Some(&rec), refs));
+        let html = render(&v);
+        assert!(html.contains("bank/payments-mcp"), "no merge repo: {html}");
+        assert!(html.contains("request 412"), "no request id");
+        assert!(html.contains("contract.mint"), "no evidence row");
+        // The page shows contents, not integrity. Claiming otherwise would be the worst possible
+        // thing for it to imply.
+        assert!(
+            html.contains("not its integrity"),
+            "the page must not imply it verified the chain"
+        );
+    }
+
+    fn contract_record() -> ContractRecord {
+        use wc_core::contract::{ApprovalMode, ApprovalRef, MergeApproval, Side, Surface, Terms};
+        ContractRecord {
+            cid: wc_core::model::Cid::new("conn_abcdef12").unwrap(),
+            jti: wc_core::model::Jti::new("cx_abcdef1234567890").unwrap(),
+            caller: EntityId::new("urn:acme:repo:recon").unwrap(),
+            callee: EntityId::new("urn:acme:mcp:pay").unwrap(),
+            caller_zone: wc_core::model::ZoneId::new("internal.apac").unwrap(),
+            callee_zone: wc_core::model::ZoneId::new("internal.payments").unwrap(),
+            callee_tier: wc_core::model::Tier::TWO,
+            callee_manifest: "sha256:m1".to_string(),
+            surface_digest: "sha256:sd".to_string(),
+            surface: Surface {
+                tools: vec!["get_balance".to_string()],
+                skills: Vec::new(),
+                resources: Vec::new(),
+            },
+            terms: Terms::default(),
+            aud: vec!["m:1".to_string()],
+            jws_sha256: "sha256:j".to_string(),
+            status: wc_core::contract::ContractStatus::Active,
+            approval: ApprovalRef {
+                by: Some(wc_core::model::HumanRef::new("human:owner@bank").unwrap()),
+                jti: None,
+                ticket: None,
+                mode: ApprovalMode::Human,
+                second: None,
+                merges: vec![MergeApproval {
+                    side: Side::Target,
+                    repo: "bank/payments-mcp".to_string(),
+                    sha: "abc".to_string(),
+                    request_id: "412".to_string(),
+                    author: "dev@bank".to_string(),
+                    approvers: vec!["owner@bank".to_string()],
+                    via: "gh".to_string(),
+                }],
+            },
+            policy_version: "live@v1".to_string(),
+            iat: 1_787_000_000,
+            exp: 1_787_003_600,
+            offer_version: Some(1),
+            schema: 1,
+        }
+    }
+
+    fn chain_entry(seq: u64, kind: &str, decision: &str, reason: &str) -> chain::Entry {
+        chain::Entry {
+            seq,
+            ts: 1_787_000_000,
+            kind: kind.to_string(),
+            cid: Some("conn_abcdef12".to_string()),
+            contract_jti: None,
+            entities: Vec::new(),
+            actor: "human:me@x".to_string(),
+            decision: decision.to_string(),
+            reason: reason.to_string(),
+            policy_version: "live@v1".to_string(),
+            detail: serde_json::Value::Null,
+            prev_hash: String::new(),
+            row_hash: String::new(),
+            schema: 1,
+        }
     }
 
     #[test]
