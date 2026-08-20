@@ -40,6 +40,7 @@ pub mod need;
 pub mod obs;
 pub mod offer;
 pub mod pipeline;
+pub mod portal;
 pub mod proposal;
 pub mod registry;
 pub mod rekor;

@@ -623,6 +623,79 @@ else
     bad "     the sweep does not say which route answered"
 fi
 
+# --- 11 · the read-only portal ------------------------------------------------
+bold "11 · the portal serves, and offers no way to write"
+if ! command -v curl >/dev/null 2>&1; then
+    step "curl not present — portal phase skipped, and SKIPPED IS NOT PASSED"
+else
+openssl ec -in issuer.pem -pubout -out issuer.pub.pem 2>/dev/null
+cat > tokens.toml <<'TOKENS'
+[[client]]
+token = "drill-read"
+roles = ["connect.read"]
+TOKENS
+# `--read-only`, because a portal is a reader. Without it `serve` takes the single-writer lock, and
+# a page nobody writes through has no business holding it.
+"$CONNECT" serve --listen 127.0.0.1:8971 --read-only --portal \
+    --issuer-key issuer.pem --kid k1 --jwks issuer.pub.pem --tokens tokens.toml \
+    --insecure-plaintext --policy connect-policy.toml > portal.log 2>&1 &
+PORTAL_PID=$!
+trap 'kill "$PORTAL_PID" 2>/dev/null' EXIT
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    curl -sf -o /dev/null -H "Authorization: Bearer drill-read" \
+        "http://127.0.0.1:8971/portal" 2>/dev/null && break
+    sleep 1
+done
+CODE="$(curl -s -o portal.html -w '%{http_code}' -H "Authorization: Bearer drill-read" \
+    "http://127.0.0.1:8971/portal?as=$CONSUMER" 2>/dev/null)"
+if [ "$CODE" = "200" ]; then
+    ok "served the page to a caller holding connect.read"
+else
+    bad "the portal answered $CODE"
+    tail -4 portal.log | sed 's/^/       /'
+fi
+UNAUTH="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8971/portal" 2>/dev/null)"
+[ "$UNAUTH" = "401" ] && ok "     and refuses an unauthenticated request (401)" \
+                      || bad "     an unauthenticated request got $UNAUTH, not 401"
+# The design claim. A button here would be a second consent path for a decision that already has
+# one, needing its own authorization model to say who may press it.
+if grep -qE "<form|<button|method=\"post\"" portal.html 2>/dev/null; then
+    bad "     the page offers a way to write"
+else
+    ok "     and the page contains no form, button or POST"
+fi
+# A GET with the headers dumped, not `curl -I`. HEAD is a different method and the route matches
+# GET, so `-I` asks a question the portal never answers and the first version of this check read the
+# 404's headers instead of the page's.
+curl -s -o /dev/null -D portal.hdr -H "Authorization: Bearer drill-read" \
+    "http://127.0.0.1:8971/portal" 2>/dev/null
+CSP="$(tr -d '\r' < portal.hdr | grep -i '^content-security-policy:')"
+if printf '%s' "$CSP" | grep -q "default-src 'none'"; then
+    ok "     and ships default-src 'none' — a future edit reaching for a CDN fails in the browser"
+else
+    bad "     no restrictive CSP on the response"
+fi
+# The catalogue must be the consumer's own, and the generator must produce the reserved path.
+if grep -q "transfer_funds" portal.html && grep -q "warden/needs.toml" portal.html; then
+    ok "     the catalogue is rendered for $CONSUMER, and the generator writes the reserved path"
+else
+    bad "     the page did not render this consumer's catalogue and command"
+fi
+# With no consumer named there must be no rows at all — a catalogue is always somebody's.
+curl -s -o unfiltered.html -H "Authorization: Bearer drill-read" \
+    "http://127.0.0.1:8971/portal" 2>/dev/null
+if grep -q "choose a consumer" unfiltered.html && ! grep -q "verified merge" unfiltered.html; then
+    ok "     and with no consumer named it shows a picker, not an unfiltered catalogue"
+else
+    bad "     an unfiltered catalogue was rendered"
+fi
+# Silenced: bash prints "Terminated" to the drill's stderr when a job it started is killed, which
+# reads as a failure at the end of a passing run.
+kill "$PORTAL_PID" 2>/dev/null
+wait "$PORTAL_PID" 2>/dev/null || true
+trap - EXIT
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     bold "DRILL PASSED — browse, ask, and the provider decides"

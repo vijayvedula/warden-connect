@@ -587,6 +587,8 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "deny" => &["id", "reason", "policy"],
         "serve" => &[
             "listen",
+            "portal",
+            "inventory",
             "read-only",
             "refresh-secs",
             "standby",
@@ -8484,6 +8486,9 @@ fn serve_cmd(args: &Args) -> Result<()> {
     if read_only {
         cp = cp.read_only();
     }
+    if args.has("portal") {
+        cp = cp.with_portal(args.get("inventory").map(std::path::PathBuf::from));
+    }
     let plane = Arc::new(cp);
 
     // A read-only plane's projection is a snapshot taken at open, so without this it would serve
@@ -9287,6 +9292,31 @@ TOOLS
                 you do not own. Also refuses if connect-policy demands a role or
                 two approvers and the matched rule did not say
                 `owner_merge_approves = true` — silence stays closed.
+
+  serve --portal [--inventory FILE] [--read-only] ...
+                serve a read-only page at GET /portal, gated by connect.read
+                like every other route.
+
+                READ-ONLY, deliberately. Every change here is a reviewed merge in
+                a repository somebody owns; a button that minted or approved would
+                be a second consent path for the same decision, with an
+                authorization model of its own to decide who may press it. The
+                page explains, the CLI executes, the merge approves.
+
+                Rendered server-side, so no credential reaches the browser. Put
+                it behind whatever already authenticates your operators.
+
+                Shows: servers used but never registered (from --inventory, the
+                output of `connect inventory --out`), the catalogue for a named
+                consumer (?as=ID), what is awaiting a decision, and a generator
+                that writes the needs manifest and the command to run.
+
+                Pair with --read-only. A page nobody writes through has no
+                business holding the single-writer lock.
+
+                ?as= chooses whose catalogue is shown, so this is a platform
+                operator's tool. In front of consumers directly, bind `as` to
+                their authenticated identity at the proxy, not in a query string.
 
   inventory --declared --org ORG --shim CMD [--shim-label L] [--json]
                 who declares an offer or a need, from the paths warden-connect
