@@ -666,15 +666,18 @@ pub const ACCEPTED_ALG_NAMES: &[&str] = &["ES256", "ES384", "EdDSA", "PS256", "R
 /// Algorithms a **contract** may carry.
 ///
 /// Narrower, because we mint contracts and therefore choose. Dropping RSA from this
-/// set costs nothing — [`IssuerKeys`] has only `add_ec_pem` and `add_ed_pem`, so an
-/// RSA contract could never have resolved a key anyway — and it buys two things:
+/// set costs nothing — nothing here mints RSA, and `add_jwks` loads RSA only for
+/// verifying somebody else's tokens (GitHub Actions OIDC is RSA-only) — and it buys
+/// two things:
 ///
-/// * The list stops advertising two algorithms the key loader cannot satisfy. An
-///   `RS256` contract used to pass the algorithm check and then fail at key
-///   resolution, which reports the wrong reason for the right refusal.
-/// * It puts the `rsa` crate outside the contract path entirely. That crate carries
-///   RUSTSEC-2023-0071, the Marvin timing attack, with no patch available — see
-///   `deny.toml` for why it is still in the tree and why it does not apply to us.
+/// * The list stops advertising algorithms nothing here can mint. An `RS256` contract
+///   used to pass the algorithm check and then fail at key resolution, which reports
+///   the wrong reason for the right refusal.
+/// * It keeps the `rsa` crate out of the **minting** path. `add_jwks` does now load
+///   RSA public keys, because GitHub Actions publishes an RSA-only JWKS — but that is
+///   verification, and `IssuerKey` still has no RSA constructor. RUSTSEC-2023-0071,
+///   the Marvin attack, is a private-key timing channel: there is no RSA private key
+///   here to leak. `deny.toml` carries the re-read.
 pub const CONTRACT_ALG_NAMES: &[&str] = &["ES256", "ES384", "EdDSA"];
 
 /// Signature algorithms a contract may carry.
@@ -1242,25 +1245,56 @@ impl IssuerKeys {
                         continue;
                     }
                 },
-                // RSA is accepted on third-party tokens (`ACCEPTED_ALG_NAMES`) but
-                // `IssuerKeys` has no RSA loader, so it cannot be trusted from here.
-                // Skipped rather than refused: an issuer publishing RS256 beside ES256
-                // is ordinary and the ES256 key is still wanted.
+                // RSA, loaded from the JWK's own `n` and `e`. No new dependency: `rust_crypto`
+                // already pulls in `rsa`, so the cost was paid before this branch existed.
+                //
+                // This is what makes GitHub Actions OIDC usable at all. Its JWKS is RSA-only, so
+                // while this arm skipped, `--oidc-token` against GitHub could resolve no key and
+                // the whole path was unreachable — a flag that existed and could not work for the
+                // one issuer most estates would point it at.
+                //
+                // **The declared `alg` is required, not defaulted.** RS256 and PS256 are different
+                // padding schemes over the same key, and choosing one for an issuer that did not
+                // say would be guessing at a verification parameter. Refused per key, so a JWKS
+                // with one unlabelled RSA key still yields its labelled ones.
+                // Yields an algorithm and falls through to the shared tail, which builds the key
+                // and records it. An earlier version staged the key here and `continue`d, which
+                // skipped `report.added.push(kid)` — so the key was loaded and reported as neither
+                // added nor skipped, and `add_jwks` then refused the whole document as having no
+                // usable key in it. A branch that bypasses the bookkeeping is worse than one that
+                // fails.
                 AlgorithmParameters::RSA(_) => {
-                    report.skipped.push(format!("{kid}: RSA"));
-                    continue;
+                    let Some(declared) = jwk.common.key_algorithm else {
+                        report
+                            .skipped
+                            .push(format!("{kid}: RSA with no `alg`; RS256 and PS256 differ"));
+                        continue;
+                    };
+                    let name = format!("{declared:?}");
+                    if name.eq_ignore_ascii_case("RS256") {
+                        Algorithm::RS256
+                    } else if name.eq_ignore_ascii_case("PS256") {
+                        Algorithm::PS256
+                    } else {
+                        report
+                            .skipped
+                            .push(format!("{kid}: RSA alg {name} is not accepted here"));
+                        continue;
+                    }
                 }
                 AlgorithmParameters::OctetKey(_) => unreachable!("refused above"),
             };
 
-            // If the JWK declares an `alg`, it has to agree with what the curve says.
-            // A P-256 key labelled `ES384` is a document nobody should guess about.
+            // If the JWK declares an `alg`, it has to agree with what the key material says.
+            // A P-256 key labelled `ES384` is a document nobody should guess about. For RSA the
+            // declared value is the only source, so this comparison is trivially satisfied there —
+            // the refusal for an unlabelled RSA key happens in its own arm, above.
             if let Some(declared) = jwk.common.key_algorithm {
                 let name = format!("{declared:?}");
                 if !name.eq_ignore_ascii_case(&format!("{alg:?}")) {
                     report
                         .skipped
-                        .push(format!("{kid}: alg {name} disagrees with the curve"));
+                        .push(format!("{kid}: alg {name} disagrees with the key material"));
                     continue;
                 }
             }
@@ -3823,10 +3857,12 @@ mod jwks_ingest {
     }
 
     #[test]
-    fn rsa_is_skipped_and_the_usable_key_beside_it_survives() {
-        // The case that decides skip-versus-refuse. An OIDC issuer publishing RS256
-        // alongside ES256 is ordinary; refusing the document would refuse the EC key
-        // with it, and the operator would read "invalid JWKS" about a valid one.
+    fn an_rsa_key_with_no_declared_alg_is_skipped_and_its_neighbour_survives() {
+        // RS256 and PS256 are different padding schemes over the same key material, so an
+        // unlabelled RSA JWK would need this code to GUESS a verification parameter. Skipped
+        // per key rather than refusing the document: an issuer publishing an unusable key
+        // beside a usable one is ordinary, and refusing the set would refuse the good key
+        // with it — the operator would read "invalid JWKS" about a valid one.
         let mut keys = IssuerKeys::default();
         let report = keys
             .add_jwks(&set(vec![
@@ -3835,8 +3871,56 @@ mod jwks_ingest {
             ]))
             .unwrap();
         assert_eq!(report.added, vec!["ec-1".to_string()]);
-        assert_eq!(report.skipped, vec!["rsa-1: RSA".to_string()]);
+        assert_eq!(
+            report.skipped,
+            vec!["rsa-1: RSA with no `alg`; RS256 and PS256 differ".to_string()]
+        );
         assert!(!report.is_complete(), "the caller has to be able to see it");
+    }
+
+    #[test]
+    fn a_labelled_rsa_key_is_loaded_because_github_actions_publishes_only_those() {
+        // The reason this arm exists. GitHub's OIDC JWKS is RSA-only, so while RSA was
+        // skipped, `register --oidc-token` against GitHub could resolve no key and the flag
+        // was unreachable for the issuer most estates would point it at.
+        //
+        // Verification only. `IssuerKey` still has no RSA constructor, so nothing here can
+        // mint or decrypt with RSA — which is what keeps RUSTSEC-2023-0071 inapplicable.
+        let mut keys = IssuerKeys::default();
+        let report = keys
+            .add_jwks(&set(vec![json!({
+                "kty": "RSA",
+                "n": "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw",
+                "e": "AQAB",
+                "kid": "gh-1",
+                "alg": "RS256",
+                "use": "sig"
+            })]))
+            .unwrap();
+        assert_eq!(report.added, vec!["gh-1".to_string()]);
+        assert!(report.is_complete(), "{report:?}");
+    }
+
+    #[test]
+    fn an_rsa_key_labelled_with_an_algorithm_we_do_not_accept_is_skipped() {
+        // A document where NOTHING is usable is an error, not a report — a trust bundle that
+        // trusts nothing would otherwise present as working configuration until the first token
+        // arrived. So the refusal is checked on the error, and the reason must name the algorithm.
+        let mut keys = IssuerKeys::default();
+        let err = keys
+            .add_jwks(&set(vec![json!({
+                "kty": "RSA", "n": "0vx7ag", "e": "AQAB", "kid": "rsa-512", "alg": "RS512"
+            })]))
+            .expect_err("no usable key means no trust bundle");
+        // The accept-list is the control here, and the message says so. The declared-alg
+        // agreement check in the shared tail would also catch this — mutation testing showed a
+        // broadened accept-list still refusing the key, one layer further down — so asserting the
+        // specific reason is what pins WHICH control is doing the work.
+        assert!(
+            err.detail().contains("RS512") && err.detail().contains("not accepted here"),
+            "the accept-list must be the thing that refused it: {}",
+            err.detail()
+        );
     }
 
     #[test]
@@ -3878,7 +3962,7 @@ mod jwks_ingest {
         let err = keys.add_jwks(&set(vec![lying])).unwrap_err();
         assert_eq!(err.code(), Code::CONFIG_INVALID);
         assert!(
-            format!("{err}").contains("disagrees with the curve"),
+            format!("{err}").contains("disagrees with the key material"),
             "the reason has to survive into the message: {err}"
         );
 

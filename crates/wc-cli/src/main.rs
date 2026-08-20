@@ -260,6 +260,7 @@ const GLOBAL_FLAGS: &[&str] = &[
 fn accepted_flags(command: &str) -> &'static [&'static str] {
     match command {
         "register server" => &[
+            "trust-jwks",
             "endpoint",
             "surface",
             "id",
@@ -290,6 +291,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "oidc-subject-claim",
         ],
         "register agent" => &[
+            "trust-jwks",
             "card",
             "endpoint",
             "id",
@@ -1273,6 +1275,31 @@ fn key_set(args: &Args, flag: &str) -> Result<IssuerKeys> {
                     format!("{other:?} is not an accepted algorithm"),
                 ))
             }
+        }
+    }
+
+    // A whole JWKS document, for an issuer that publishes one. `--trust-key` takes a PEM per key
+    // and handles EC and Ed25519 only; GitHub Actions publishes an RSA-only JWKS, so without this
+    // `--oidc-token` against GitHub could resolve no key and the flag was unreachable for the
+    // issuer most estates would point it at.
+    //
+    // Fetched out of band on purpose — nothing here reaches the network. GitHub rotates these, so
+    // whatever refreshes the file is what keeps this working; a stale file fails closed at
+    // verification rather than silently trusting something else.
+    for path in args.list("trust-jwks") {
+        let doc = std::fs::read_to_string(&path).map_err(|e| {
+            WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+        })?;
+        let report = keys.add_jwks(&doc)?;
+        // Printed, never swallowed. A JWKS where half the keys were skipped is a working
+        // configuration for half its issuer's tokens, and the operator has to be able to see which
+        // half — the same reason `add_jwks` returns a report rather than a bool.
+        if !report.is_complete() {
+            eprintln!(
+                "trust-jwks {path}: loaded {}, skipped {}",
+                report.added.join(", "),
+                report.skipped.join("; ")
+            );
         }
     }
     Ok(keys)
@@ -9145,6 +9172,22 @@ REGISTER
     token, IRSA, Azure workload identity, a GCP service account or a Vault
     identity token — all JWTs with a published JWKS and a subject that is not
     a spiffe:// URI, which --svid cannot accept:
+    --trust-jwks FILE   a whole JWKS document, for an issuer that publishes one.
+      GitHub Actions publishes an RSA-only JWKS, so --trust-key (one PEM per key,
+      EC and Ed25519 only) cannot express it. Fetched out of band — nothing here
+      reaches the network — so whatever refreshes the file is what keeps this
+      working when the issuer rotates. A stale file fails closed at verification.
+
+      An RSA JWK must declare its `alg`: RS256 and PS256 are different padding
+      schemes over the same key, and choosing one for an issuer that did not say
+      would be guessing at a verification parameter. Keys are skipped
+      individually, so one unlabelled key does not cost you the labelled ones.
+
+      This loads PUBLIC keys for verification only. Nothing here mints RSA —
+      contracts carry ES256, ES384 or EdDSA — which is what keeps
+      RUSTSEC-2023-0071 (a private-key timing channel) inapplicable. deny.toml
+      carries the reasoning and the date it was re-read.
+
     --oidc-token FILE --oidc-issuer URL --oidc-label NAME
       [--oidc-subject-claim sub] --trust-key KID=PEM --aud NAME
       The entity id is DERIVED, not asserted:

@@ -40,11 +40,23 @@ ignore = [
     # code is not an exposure.
     #
     # What would change this: adding an RSA signing path, or `IssuerKeys` gaining an
-    # `add_rsa_pem` for third-party verification — verification alone is still fine,
-    # but it would be the moment to re-read this rather than assume it.
+    # RSA loader for third-party verification — verification alone is still fine, but
+    # it would be the moment to re-read this rather than assume it.
     #
-    # Reviewed 2026-08-07. Re-check when jsonwebtoken splits the feature or `rsa`
-    # ships a constant-time release.
+    # THAT MOMENT ARRIVED, and this was re-read rather than assumed. `add_jwks` now
+    # loads RSA keys from a JWKS, because GitHub Actions publishes an RSA-only JWKS and
+    # `--oidc-token` against GitHub could otherwise resolve no key at all — a flag that
+    # existed and could not work for the issuer most estates would point it at.
+    #
+    # The conclusion is unchanged, for the reason the note already gave: this loads a
+    # PUBLIC key and performs verification only. Marvin is a timing channel in private-key
+    # decryption and signing, where the secret is the thing leaking. There is no RSA
+    # private key in this tree to leak, and `IssuerKey` still has no RSA constructor —
+    # `every_contract_algorithm_has_a_key_loader` keeps that true, and contracts still
+    # carry only ES256, ES384 and EdDSA.
+    #
+    # Reviewed 2026-08-07. Re-read 2026-08-20 when the RSA JWKS loader was added.
+    # Re-check when jsonwebtoken splits the feature or `rsa` ships a constant-time release.
     { id = "RUSTSEC-2023-0071", reason = "no RSA private-key operation exists in this tree; see the note above" },
 ]
 
