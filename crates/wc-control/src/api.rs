@@ -145,6 +145,18 @@ pub struct ControlPlane {
     /// set is **not** a state mutation and still works: it writes the ack ledger, which is the
     /// whole reason a read-only plane is worth running.
     pub read_only: bool,
+    /// Serve the read-only portal at `GET /portal`.
+    ///
+    /// Off by default. A page is a different exposure from a JSON API even when it carries the same
+    /// data behind the same role, because a browser is a much easier thing to point at a host than
+    /// curl is — so it is opted into.
+    pub portal: bool,
+    /// The discovery sweep the portal's shadow-usage view reads, if one was supplied.
+    ///
+    /// A file rather than a live scan: scanning needs a source-host shim and a token, and a serving
+    /// control plane should not hold either. The sweep runs on its own schedule and leaves its
+    /// answer here.
+    pub inventory_path: Option<std::path::PathBuf>,
     /// The signed revocation feed, served to mediators at `/v1/revocations`.
     ///
     /// Optional because a control plane can run without one — and when it does,
@@ -199,6 +211,9 @@ impl ControlPlane {
             transport: Transport::default(),
             jwks: r#"{"keys":[]}"#.to_string(),
             acks: Mutex::new(crate::dist::SetAckLedger::default()),
+            // Off unless asked for. A page is easier to point a browser at than an API is.
+            portal: false,
+            inventory_path: None,
             acks_path: None,
             read_only: false,
             metrics: Metrics::default(),
@@ -247,6 +262,17 @@ impl ControlPlane {
     #[must_use]
     pub fn read_only(mut self) -> ControlPlane {
         self.read_only = true;
+        self
+    }
+
+    /// Serve the read-only portal, optionally with a discovery sweep for the shadow-usage view.
+    ///
+    /// The sweep is read from disk on each request rather than cached, so replacing the file is how
+    /// you refresh it — no restart, and no scan inside a serving process.
+    #[must_use]
+    pub fn with_portal(mut self, inventory: Option<std::path::PathBuf>) -> ControlPlane {
+        self.portal = true;
+        self.inventory_path = inventory;
         self
     }
 
@@ -752,6 +778,19 @@ fn route(cp: &Arc<ControlPlane>, caller: &Caller, req: &Request) -> Result<Respo
             require_role(cp, caller, roles::REGISTER)?;
             idempotent(cp, req, |cp| activate_entity(cp, caller, id))
         }
+        // --- the portal ---
+        ("GET", ["portal"]) => {
+            require_role(cp, caller, roles::READ)?;
+            if !cp.portal {
+                return Ok(error(
+                    404,
+                    Code::CONTRACT_NOT_FOUND,
+                    "the portal is not enabled on this control plane; start `serve --portal`",
+                ));
+            }
+            portal_page(cp, req)
+        }
+
         ("GET", ["v1", "posture"]) => {
             require_role(cp, caller, roles::READ)?;
             posture(cp, req)
@@ -1121,6 +1160,77 @@ fn offers(cp: &Arc<ControlPlane>, req: &Request) -> Result<Response> {
         200,
         json!({ "consumer": asker.as_str(), "zone": me.zone.as_str(), "offers": rows }).to_string(),
     ))
+}
+
+/// `GET /portal[?as=<consumer>]` — the read-only page.
+///
+/// Rendered server-side, so no credential ever reaches the browser. Everything it shows is
+/// obtainable from the JSON API by the same caller with the same role; the page adds legibility, not
+/// access.
+fn portal_page(cp: &Arc<ControlPlane>, req: &Request) -> Result<Response> {
+    let now = req.param_u64("now").unwrap_or_else(|| (cp.now)());
+    let store = lock(&cp.store);
+    let p = &store.projection;
+
+    // Named consumer, if any. An unknown or inactive one is not an error — the page falls back to
+    // the picker and says nothing about which ids exist beyond what `entities` already shows.
+    let as_consumer = req
+        .param("as")
+        .and_then(|s| EntityId::new(s).ok())
+        .and_then(|id| p.entity(&id))
+        .filter(|e| e.lifecycle == Lifecycle::Active);
+
+    let catalogue = as_consumer.map_or_else(Vec::new, |me| {
+        let mut rows: Vec<crate::offer::CatalogueEntry> = p
+            .offers
+            .values()
+            .filter_map(|o| o.as_seen_by(me.zone.as_str(), me.tier, now))
+            .collect();
+        rows.sort_by(|a, b| a.asset.as_str().cmp(b.asset.as_str()));
+        rows
+    });
+
+    // A scanned target counts as registered when some entity's endpoint or id accounts for it. The
+    // comparison is by target rather than by the name a team chose, because a local label is a local
+    // decision and two teams naming one server differently is still one server.
+    let mut known_targets = std::collections::BTreeMap::new();
+    for e in p.entities.values() {
+        if let Some(ep) = &e.endpoint {
+            known_targets.insert(ep.clone(), e.id.clone());
+        }
+    }
+
+    // Read, parsed, and the failure kept. `.ok()` on both steps was the first version, and it made
+    // an unreadable file indistinguishable from no file — see `View::inventory_error`.
+    let mut inventory = None;
+    let mut inventory_error = None;
+    if let Some(path) = cp.inventory_path.as_ref() {
+        match std::fs::read_to_string(path) {
+            Err(e) => inventory_error = Some(format!("cannot read {}: {e}", path.display())),
+            Ok(text) => match serde_json::from_str::<crate::inventory::Inventory>(&text) {
+                Err(e) => {
+                    inventory_error = Some(format!("{} is not an inventory: {e}", path.display()));
+                }
+                Ok(inv) => inventory = Some(inv),
+            },
+        }
+    }
+
+    let entities: Vec<&Entity> = p.entities.values().collect();
+    let pending = crate::portal::open_requests(&p.requests, |id| p.entity(id), now);
+
+    let view = crate::portal::View {
+        as_consumer,
+        catalogue,
+        entities,
+        pending,
+        inventory: inventory.as_ref(),
+        inventory_error,
+        known_targets,
+        contracts: p.contracts.len(),
+        iss: &cp.iss,
+    };
+    Ok(Response::html(200, crate::portal::render(&view)))
 }
 
 fn posture(cp: &Arc<ControlPlane>, req: &Request) -> Result<Response> {

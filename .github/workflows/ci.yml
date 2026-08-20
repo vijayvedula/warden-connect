@@ -122,6 +122,11 @@ jobs:
         working-directory: warden-connect
         run: ./scripts/upgrade-drill.sh   # builds the workspace itself
 
+      # The catalogue drill now also covers the read-only portal: that it serves behind the read
+      # role, refuses an unauthenticated request, ships `default-src 'none'`, and contains no form,
+      # button or POST. That last one is a design claim, and a claim nobody asserts is a claim that
+      # quietly stops being true.
+
       # `merge_evidence` decides who authored a merge and who approved it, and both the
       # separation-of-duties check and the keyless approval path rest on those two fields. Three
       # wrappers parsed that JSON with `sed`; Azure's greedy match could swap author and approver

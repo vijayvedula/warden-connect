@@ -120,6 +120,31 @@ impl Response {
         }
     }
 
+    /// An HTML response, for the portal.
+    ///
+    /// The CSP is a header rather than a `<meta>` tag: a meta CSP does not apply to anything earlier
+    /// in the document, and it cannot set `frame-ancestors` at all. The portal embeds its own data
+    /// and loads nothing from anywhere, so `default-src 'none'` is the whole policy — inline style
+    /// and script are allowed because that is what "one self-contained file, no dependencies" means.
+    #[must_use]
+    pub fn html(status: u16, body: impl Into<String>) -> Response {
+        Response {
+            status,
+            content_type: "text/html; charset=utf-8".to_string(),
+            headers: vec![
+                ("X-Content-Type-Options".to_string(), "nosniff".to_string()),
+                ("Referrer-Policy".to_string(), "no-referrer".to_string()),
+                (
+                    "Content-Security-Policy".to_string(),
+                    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; \
+                     img-src data:; form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
+                        .to_string(),
+                ),
+            ],
+            body: body.into().into_bytes(),
+        }
+    }
+
     /// A plain-text response.
     #[must_use]
     pub fn text(status: u16, body: impl Into<String>) -> Response {
