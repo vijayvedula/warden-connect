@@ -467,15 +467,54 @@ impl ScmShim {
     /// found". Those are different answers and an inventory that conflates them is an inventory
     /// that reports a clean estate for a permissions problem.
     pub fn repos(&self, org: &str) -> Result<Vec<String>> {
+        Ok(self
+            .repos_with_cursor(org)?
+            .into_iter()
+            .map(|r| r.name)
+            .collect())
+    }
+
+    /// Repositories with their last-push time, where the host reports one.
+    ///
+    /// Accepts **both** shapes, so an existing shim keeps working:
+    ///
+    /// ```text
+    /// {"repos": ["bank/a", "bank/b"]}                        // no cursor
+    /// {"repos": [{"name": "bank/a", "pushed_at": 1787000000}]}
+    /// ```
+    ///
+    /// `pushed_at` is what makes a sweep incremental. A full crawl re-reads every repository to
+    /// learn nothing about the ~99% that did not change; with a cursor it reads only the ones that
+    /// did. The listing already carries the timestamp on every host worth supporting, so the cheap
+    /// version costs one extra field rather than a new call.
+    ///
+    /// `None` means the host did not say — **not** "never pushed". A missing timestamp must make a
+    /// repository *included*, never skipped: a sweep that silently drops the repositories it cannot
+    /// date would under-report, and would do it invisibly.
+    pub fn repos_with_cursor(&self, org: &str) -> Result<Vec<RepoRef>> {
         let answer = self.ask(&json!({ "op": "repos", "org": org }))?;
         let list = answer
             .get("repos")
             .and_then(serde_json::Value::as_array)
             .ok_or_else(|| self.fail("answer carries no `repos` array"))?;
-        Ok(list
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect())
+        let mut out = Vec::with_capacity(list.len());
+        for v in list {
+            if let Some(name) = v.as_str() {
+                out.push(RepoRef {
+                    name: name.to_string(),
+                    pushed_at: None,
+                });
+                continue;
+            }
+            let Some(name) = v.get("name").and_then(serde_json::Value::as_str) else {
+                return Err(self.fail("a repo entry is neither a string nor an object with `name`"));
+            };
+            out.push(RepoRef {
+                name: name.to_string(),
+                pushed_at: v.get("pushed_at").and_then(serde_json::Value::as_u64),
+            });
+        }
+        Ok(out)
     }
 
     /// Repositories in `org` that contain `path`, when the host can answer that cheaply.
@@ -542,6 +581,32 @@ impl ScmShim {
                 self.fail("`content_b64` is not standard base64")
                     .with_source(e)
             })
+    }
+}
+
+/// A repository and, where the host says so, when it was last pushed to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoRef {
+    /// Full name, opaque. Never parsed — Azure Repos is `org/project/repo` and GitLab nests
+    /// arbitrarily, so any structure assumed here is wrong on some host.
+    pub name: String,
+    /// Last push, Unix seconds. `None` means the host did not report one.
+    pub pushed_at: Option<u64>,
+}
+
+impl RepoRef {
+    /// Whether this repository needs re-reading given a watermark.
+    ///
+    /// Undated repositories are always included. The alternative — skipping what cannot be dated —
+    /// makes a sweep quietly incomplete, and a discovery tool that under-reports without saying so
+    /// is worse than one that costs more.
+    #[must_use]
+    pub fn changed_since(&self, since: Option<u64>) -> bool {
+        match (since, self.pushed_at) {
+            (None, _) => true,
+            (Some(_), None) => true,
+            (Some(w), Some(p)) => p > w,
+        }
     }
 }
 

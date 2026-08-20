@@ -214,6 +214,16 @@ pub struct Inventory {
     pub repos_with_config: usize,
     /// Config files read.
     pub configs_read: usize,
+    /// Repositories skipped because they had not been pushed to since the watermark.
+    #[serde(default)]
+    pub repos_skipped: usize,
+    /// The highest `pushed_at` this sweep saw, to pass as `--since` next time.
+    ///
+    /// Taken from the listing rather than from the clock. A wall-clock watermark would skip a push
+    /// that landed between the listing and the read, and skipping is the one direction a discovery
+    /// cursor must never be wrong in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watermark: Option<u64>,
 }
 
 impl Inventory {
@@ -332,6 +342,175 @@ pub fn derive_consumer_id(repo: &str) -> Result<EntityId> {
     EntityId::new(format!("urn:wc:repo:{}", cleaned.trim_matches('-')))
 }
 
+/// Repository-to-zone mapping, generated from whatever owns that truth in your estate.
+///
+/// # Why this is a file and not a field in a repository
+///
+/// A zone decides which audiences a consumer matches, so a wrong zone is a wrong answer to "may
+/// this party contract that item". The mapping therefore has to come from wherever the organisation
+/// already tracks which service a repository belongs to — a CMDB or an ITAM system — and not from
+/// the repository itself. A repository that could assert its own zone could read itself into any
+/// provider's audience, which is the same defect `match_need` avoids by taking zone from the
+/// registry rather than from a manifest.
+///
+/// It is also why the mapping is not an ITAM id carried per repository: 4,000 teams maintaining a
+/// field is 4,000 chances for it to rot, and the repository name is something you already have.
+/// Generate this file from the CMDB; do not ask anyone to write it by hand.
+///
+/// ```toml
+/// [[repo]]
+/// name    = "bank/estate-recon-bot"
+/// zone    = "internal.apac"
+/// service = "ITAM-9902"          # optional, recorded on the entity
+/// ```
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneMap {
+    /// One row per repository.
+    #[serde(default, rename = "repo")]
+    pub repos: Vec<ZoneRow>,
+}
+
+/// One repository's zone, and the service it belongs to.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneRow {
+    /// Full repository name, exactly as the source host reports it.
+    pub name: String,
+    /// The trust zone that repository's party belongs in.
+    pub zone: String,
+    /// The service reference, recorded on the entity for later reconciliation.
+    #[serde(default)]
+    pub service: Option<String>,
+}
+
+impl ZoneMap {
+    /// Parse a mapping, refusing anything it does not understand.
+    pub fn parse(text: &str) -> Result<ZoneMap> {
+        let map: ZoneMap = toml::from_str(text).map_err(|e| {
+            wc_core::error::WcError::with_detail(
+                wc_core::error::Code::CONFIG_INVALID,
+                format!("zone map is not the expected shape: {e}"),
+            )
+        })?;
+        // A repository named twice with two zones is a mapping nobody can act on, and picking one
+        // silently would put a party in a zone the file does not obviously say.
+        let mut seen = std::collections::BTreeSet::new();
+        for r in &map.repos {
+            if !seen.insert(r.name.as_str()) {
+                return Err(wc_core::error::WcError::with_detail(
+                    wc_core::error::Code::CONFIG_INVALID,
+                    format!("{} appears twice in the zone map", r.name),
+                ));
+            }
+        }
+        Ok(map)
+    }
+
+    /// The row for a repository, if it has one.
+    #[must_use]
+    pub fn get(&self, repo: &str) -> Option<&ZoneRow> {
+        self.repos.iter().find(|r| r.name == repo)
+    }
+}
+
+/// Render a sweep as one deterministically ordered file, for a repository to hold.
+///
+/// # Why a repository, and why one file
+///
+/// A sweep's output is derived, non-authoritative data — exactly the kind that is safe in git, and
+/// exactly the kind git is good at. Committing it turns "what changed since the last sweep" into a
+/// diff a human reads in a pull request, which is the whole reconciliation problem solved by the
+/// medium instead of by code.
+///
+/// **One file, not one per server.** The write op is a PUT; there is no delete. Per-server files
+/// would make an appearance expressible and a *disappearance* not, so the inventory could only ever
+/// grow — the classic delta-sync bug. A single ordered file expresses a removal as a removed line.
+///
+/// Ordering is total and content-derived, never insertion-ordered: a sweep that listed the same
+/// estate in a different order would produce a diff full of moves, and a diff nobody can read is a
+/// diff nobody reads.
+#[must_use]
+pub fn render_state(inv: &Inventory, org: &str) -> String {
+    let mut out = String::new();
+    out.push_str("# warden-connect discovery state — generated, do not edit by hand\n#\n");
+    out.push_str("# Derived data: this records what a sweep FOUND, not what anybody approved.\n");
+    out.push_str(
+        "# Nothing here grants anything. A row appearing is a question, not a decision.\n",
+    );
+    out.push_str(
+        "#\n# Ordered by target so a re-sweep of an unchanged estate produces no diff.\n\n",
+    );
+    out.push_str(&format!("org = \"{org}\"\n"));
+    out.push_str(&format!("repos_scanned = {}\n", inv.repos_scanned));
+    if inv.repos_skipped > 0 {
+        out.push_str(&format!("repos_skipped = {}\n", inv.repos_skipped));
+    }
+    if let Some(w) = inv.watermark {
+        out.push_str(&format!("watermark = {w}\n"));
+    }
+
+    for (target, decls) in inv.by_server() {
+        out.push_str("\n[[server]]\n");
+        out.push_str(&format!("target = {}\n", toml_str(target)));
+        let mut transports: Vec<&str> = decls
+            .iter()
+            .map(|d| d.declaration.transport.as_str())
+            .collect();
+        transports.sort_unstable();
+        transports.dedup();
+        out.push_str(&format!(
+            "transport = {}\n",
+            toml_str(&transports.join(","))
+        ));
+        // Sorted, so two sweeps of one estate agree byte for byte.
+        let mut callers: Vec<&str> = decls.iter().map(|d| d.repo.as_str()).collect();
+        callers.sort_unstable();
+        callers.dedup();
+        out.push_str("callers = [");
+        for (i, c) in callers.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&toml_str(c));
+        }
+        out.push_str("]\n");
+        // The local labels, kept because they are how a team will recognise the row — and separate
+        // from `target`, because a name is a local decision and the target is the thing itself.
+        let mut names: Vec<&str> = decls.iter().map(|d| d.declaration.name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        out.push_str("names = [");
+        for (i, n) in names.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&toml_str(n));
+        }
+        out.push_str("]\n");
+    }
+    out
+}
+
+/// A TOML basic string. Escapes what TOML requires and nothing else.
+fn toml_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// What a declaration sweep found, and how much it cost to find.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Declared {
@@ -343,6 +522,10 @@ pub struct Declared {
     pub calls: usize,
     /// Whether the host's search index answered, or the sweep read every repository.
     pub via_search: bool,
+    /// Repositories not re-read because they had not been pushed to since the watermark.
+    pub skipped: usize,
+    /// The highest `pushed_at` seen, to pass as `--since` next time.
+    pub watermark: Option<u64>,
 }
 
 /// Find every repository that declares an offer or a need.
@@ -362,6 +545,7 @@ pub struct Declared {
 pub fn declared(
     shim: &crate::scm::ScmShim,
     org: &str,
+    since: Option<u64>,
     mut on_repo: impl FnMut(&str, usize),
 ) -> Result<Declared> {
     let mut out = Declared::default();
@@ -381,16 +565,21 @@ pub fn declared(
         }
     }
 
-    let repos = shim.repos(org)?;
+    let repos = shim.repos_with_cursor(org)?;
     out.calls += 1;
-    for (i, repo) in repos.iter().enumerate() {
-        on_repo(repo, i);
-        if shim.file_if_present(repo, "HEAD", OFFER_PATH)?.is_some() {
-            out.providers.push(repo.clone());
+    for (i, r) in repos.iter().enumerate() {
+        out.watermark = out.watermark.max(r.pushed_at);
+        if !r.changed_since(since) {
+            out.skipped += 1;
+            continue;
+        }
+        on_repo(&r.name, i);
+        if shim.file_if_present(&r.name, "HEAD", OFFER_PATH)?.is_some() {
+            out.providers.push(r.name.clone());
         }
         out.calls += 1;
-        if shim.file_if_present(repo, "HEAD", NEEDS_PATH)?.is_some() {
-            out.consumers.push(repo.clone());
+        if shim.file_if_present(&r.name, "HEAD", NEEDS_PATH)?.is_some() {
+            out.consumers.push(r.name.clone());
         }
         out.calls += 1;
     }
@@ -412,9 +601,10 @@ pub fn scan(
     shim: &crate::scm::ScmShim,
     org: &str,
     paths: Option<&[String]>,
+    since: Option<u64>,
     mut on_repo: impl FnMut(&str, usize),
 ) -> Result<Inventory> {
-    let repos = shim.repos(org)?;
+    let repos = shim.repos_with_cursor(org)?;
     let owned: Vec<String>;
     let paths: &[String] = match paths {
         Some(p) if !p.is_empty() => p,
@@ -431,7 +621,15 @@ pub fn scan(
         repos_scanned: repos.len(),
         ..Inventory::default()
     };
-    for (i, repo) in repos.iter().enumerate() {
+    for (i, r) in repos.iter().enumerate() {
+        // Recorded before the skip test, so the watermark advances past repositories this run did
+        // not read. Otherwise a quiet repository would be re-read on every sweep forever.
+        inv.watermark = inv.watermark.max(r.pushed_at);
+        if !r.changed_since(since) {
+            inv.repos_skipped += 1;
+            continue;
+        }
+        let repo = &r.name;
         on_repo(repo, i);
         let before = inv.findings.len();
         for path in paths {
@@ -461,6 +659,141 @@ pub fn scan(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn an_undated_repository_is_always_swept() {
+        use crate::scm::RepoRef;
+        let dated = |t| RepoRef {
+            name: "bank/a".to_string(),
+            pushed_at: Some(t),
+        };
+        let undated = RepoRef {
+            name: "bank/b".to_string(),
+            pushed_at: None,
+        };
+        // No watermark: everything.
+        assert!(dated(100).changed_since(None));
+        assert!(undated.changed_since(None));
+        // With one: only what moved after it.
+        assert!(dated(200).changed_since(Some(100)));
+        assert!(!dated(100).changed_since(Some(100)), "equal is not after");
+        assert!(!dated(50).changed_since(Some(100)));
+        // And anything the host could not date. Skipping the undateable would make a sweep quietly
+        // incomplete, which is the one direction a discovery cursor must never be wrong in.
+        assert!(
+            undated.changed_since(Some(100)),
+            "an undated repo must be swept, not skipped"
+        );
+    }
+
+    #[test]
+    fn the_watermark_advances_past_repositories_the_sweep_skipped() {
+        // Otherwise a quiet repository is re-read on every sweep forever: the watermark would only
+        // ever reach the newest repo that changed, and everything older than it stays in scope.
+        //
+        // **This tests the rule, not `scan`'s use of it.** It replicates the ordering rather than
+        // driving `scan`, which needs a live shim process — so moving the watermark update after
+        // the skip test inside `scan` leaves this green. Mutation testing said so. The real path is
+        // asserted in `scripts/catalogue-drill.sh`, against the built binary and a stub host.
+        let mut inv = Inventory::default();
+        for pushed in [500u64, 900, 4000] {
+            let r = crate::scm::RepoRef {
+                name: format!("bank/{pushed}"),
+                pushed_at: Some(pushed),
+            };
+            inv.watermark = inv.watermark.max(r.pushed_at);
+            if !r.changed_since(Some(1000)) {
+                inv.repos_skipped += 1;
+            }
+        }
+        assert_eq!(inv.repos_skipped, 2, "500 and 900 are behind the watermark");
+        assert_eq!(
+            inv.watermark,
+            Some(4000),
+            "the watermark must reach the newest repo seen, skipped or not"
+        );
+    }
+
+    #[test]
+    fn the_state_file_is_byte_identical_for_the_same_estate_in_any_order() {
+        // The property the whole discovery-repo idea rests on. If a re-sweep of an unchanged estate
+        // produced a different file, every run would open a pull request full of moves, and a diff
+        // nobody can read is a diff nobody reads.
+        let mk = |order: &[(&str, &str, &str)]| {
+            let mut inv = Inventory {
+                repos_scanned: 3,
+                ..Inventory::default()
+            };
+            for (repo, name, target) in order {
+                inv.findings.push(Finding {
+                    declaration: Declaration {
+                        name: (*name).to_string(),
+                        target: (*target).to_string(),
+                        transport: Transport::Stdio,
+                    },
+                    repo: (*repo).to_string(),
+                    path: ".mcp.json".to_string(),
+                });
+            }
+            render_state(&inv, "bank")
+        };
+        let a = mk(&[
+            ("bank/a", "pay", "npx -y @acme/pay"),
+            ("bank/c", "other", "npx -y @x/other"),
+            ("bank/b", "pay2", "npx -y @acme/pay"),
+        ]);
+        let b = mk(&[
+            ("bank/b", "pay2", "npx -y @acme/pay"),
+            ("bank/a", "pay", "npx -y @acme/pay"),
+            ("bank/c", "other", "npx -y @x/other"),
+        ]);
+        assert_eq!(a, b, "the same estate rendered two ways");
+        assert!(a.contains("callers = [\"bank/a\", \"bank/b\"]"), "{a}");
+        // Order-independence alone does not pin the order. Reversing it would keep two renderings
+        // equal to each other and produce a whole-file diff on the first sweep after the change —
+        // mutation testing showed exactly that, so the direction is asserted too.
+        let acme = a.find("@acme/pay").expect("acme row");
+        let other = a.find("@x/other").expect("other row");
+        assert!(acme < other, "servers must be ordered by target, ascending");
+    }
+
+    #[test]
+    fn a_target_containing_a_quote_cannot_break_the_state_file() {
+        // Targets are command lines from somebody else's repository. An unescaped quote would make
+        // the generated TOML unparseable at best, and at worst change which keys it defines.
+        let mut inv = Inventory::default();
+        inv.findings.push(Finding {
+            declaration: Declaration {
+                name: "odd".to_string(),
+                target: "npx \"a\" \\ b\nc".to_string(),
+                transport: Transport::Stdio,
+            },
+            repo: "bank/a".to_string(),
+            path: ".mcp.json".to_string(),
+        });
+        let out = render_state(&inv, "bank");
+        let parsed: toml::Value = toml::from_str(&out).expect("must still be valid TOML");
+        let got = parsed["server"][0]["target"].as_str().unwrap();
+        assert_eq!(got, "npx \"a\" \\ b\nc", "the target did not round-trip");
+    }
+
+    #[test]
+    fn a_zone_map_refuses_a_repository_named_twice() {
+        // Two zones for one repository is a mapping nobody can act on, and choosing one silently
+        // would put a party in a zone the file does not obviously say.
+        let ok = ZoneMap::parse(
+            "[[repo]]\nname = \"bank/a\"\nzone = \"internal.apac\"\nservice = \"ITAM-1\"\n",
+        )
+        .unwrap();
+        assert_eq!(ok.get("bank/a").unwrap().zone, "internal.apac");
+        assert_eq!(ok.get("bank/a").unwrap().service.as_deref(), Some("ITAM-1"));
+        assert!(ok.get("bank/nope").is_none());
+
+        let dup = ZoneMap::parse(
+            "[[repo]]\nname = \"bank/a\"\nzone = \"internal.a\"\n\n[[repo]]\nname = \"bank/a\"\nzone = \"internal.b\"\n",
+        );
+        assert!(dup.is_err(), "a duplicate must be refused");
+    }
 
     #[test]
     fn a_reserved_path_is_matched_after_a_leading_dot_slash() {
@@ -637,6 +970,8 @@ mod tests {
             ],
             repos_scanned: 3,
             repos_with_config: 3,
+            repos_skipped: 0,
+            watermark: None,
             configs_read: 3,
         };
         assert_eq!(inv.server_count(), 2);
@@ -661,6 +996,8 @@ mod tests {
             ],
             repos_scanned: 1,
             repos_with_config: 1,
+            repos_skipped: 0,
+            watermark: None,
             configs_read: 2,
         };
         assert_eq!(inv.server_count(), 1);
@@ -677,6 +1014,8 @@ mod tests {
             ],
             repos_scanned: 2,
             repos_with_config: 2,
+            repos_skipped: 0,
+            watermark: None,
             configs_read: 2,
         };
         assert_eq!(inv.server_count(), 2);
