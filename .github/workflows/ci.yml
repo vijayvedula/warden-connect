@@ -122,6 +122,11 @@ jobs:
         working-directory: warden-connect
         run: ./scripts/upgrade-drill.sh   # builds the workspace itself
 
+      # `into_offer` refuses what cannot work. `offer lint` catches what mints and is still wrong —
+      # a withdrawal date closer than the ceiling beside it refuses every consumer at that ceiling,
+      # and the message THEY see says "lower your ttl", which never reaches the provider whose two
+      # numbers disagree. Covered by unit tests; scripts/ci/offer-lint.yml is the provider-side job.
+
       # GitHub Actions publishes an RSA-only OIDC JWKS, and `IssuerKeys::add_jwks` skipped every
       # RSA key — so `--oidc-token` against the issuer most estates would use could resolve no key
       # at all. A documented flag that could not work. This drill proves the shape end to end, and
