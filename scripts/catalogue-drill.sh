@@ -63,6 +63,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 cd "$WORK"
 export WARDEN_CONNECT_ROOT="$WORK/root"
+mkdir -p warden
 
 CONSUMER="spiffe://drill.example/ns/agents/sa/recon-bot"
 OUTSIDER="spiffe://drill.example/ns/agents/sa/partner-bot"
@@ -108,7 +109,7 @@ terms = { evidence_sink = "ocsf://siem", evidence_delivery = "fail-safe" }
 reason = "the provider's own consent is what is under test, not the estate's"
 POLICY
 
-printf '{"tools":[{"name":"get_balance","description":"Read an account balance."},{"name":"transfer_funds","description":"Move money between accounts."}]}' > surface.json
+printf '{"tools":[{"name":"get_balance","description":"Read an account balance."},{"name":"transfer_funds","description":"Move money between accounts."}]}' > warden/surface.json
 printf '{"name":"recon","description":"The drill consumer.","version":"1.0.0","skills":[{"id":"drive","name":"drive","description":"Drives the drill."}]}' > card.json
 
 openssl ecparam -name prime256v1 -genkey -noout -out issuer.tmp 2>/dev/null
@@ -141,7 +142,7 @@ APPROVERS
     --id "$OUTSIDER" --by human:drill@org >/dev/null 2>&1
 # The provider is owned by payments-owner. That registration is what makes the owner check mean
 # something later — the owner is read from the registry, never from a flag on the approval.
-"$CONNECT" register server --id "$PROVIDER" --surface surface.json --endpoint stdio://drill \
+"$CONNECT" register server --id "$PROVIDER" --surface warden/surface.json --endpoint stdio://drill \
     --owner human:payments-owner@org --zone internal.drill --by human:drill@org >/dev/null 2>&1
 for id in "$CONSUMER" "$OUTSIDER" "$PROVIDER"; do
     "$CONNECT" activate "$id" --by human:drill@org >/dev/null 2>&1
@@ -163,7 +164,7 @@ SHIM_ARGS=(--shim "python3 $WORK/shim.py" --shim-label gh)
 
 # --- 1 · the provider publishes, knowing no consumer -------------------------
 bold "1 · a provider publishes terms about an audience, not about a consumer"
-cat > offer.toml <<TERMS
+cat > warden/offer.toml <<TERMS
 asset = "$PROVIDER"
 
 [[term]]
@@ -178,7 +179,7 @@ approval = "named_consumer"
 ttl_max = 3600
 to = { zone = "internal.*" }
 TERMS
-PUB="$("$CONNECT" offer publish --surface surface.json --terms offer.toml --kind mcp \
+PUB="$("$CONNECT" offer publish --surface warden/surface.json --terms warden/offer.toml --kind mcp \
     --repo drill/payments-mcp --sha aaa1 --version 1 "${SHIM_ARGS[@]}" 2>&1)"
 if printf '%s' "$PUB" | grep -qiE "version 1|published"; then
     ok "published, naming no consumer at all"
@@ -213,7 +214,7 @@ fi
 
 # --- 3 · a gate is not a refusal ---------------------------------------------
 bold "3 · a guarded item is PENDING, not REFUSED"
-cat > needs.toml <<NEEDS
+cat > warden/needs.toml <<NEEDS
 asset = "$CONSUMER"
 
 [[need]]
@@ -222,7 +223,7 @@ tools = ["transfer_funds"]
 justify = "the drill needs to move money"
 ttl = 3600
 NEEDS
-CHECK="$("$CONNECT" need check --manifest needs.toml 2>&1)"
+CHECK="$("$CONNECT" need check --manifest warden/needs.toml 2>&1)"
 if printf '%s' "$CHECK" | grep -q "^PENDING" \
    && ! printf '%s' "$CHECK" | grep -q "^REFUSED"; then
     ok "reported as awaiting the provider, not as unavailable"
@@ -241,7 +242,7 @@ fi
 
 # --- 4 · the ask opens a request ---------------------------------------------
 bold "4 · need apply opens a request and mints nothing"
-APPLY="$("$CONNECT" need apply --manifest needs.toml --repo drill/recon-bot --sha bbb1 \
+APPLY="$("$CONNECT" need apply --manifest warden/needs.toml --repo drill/recon-bot --sha bbb1 \
     --mediator "$MEDIATOR" "${SHIM_ARGS[@]}" --issuer-key issuer.pem --kid k1 2>&1)"
 REQ="$(printf '%s' "$APPLY" | grep -oE 'req_[a-f0-9]+' | head -1)"
 if [ -n "$REQ" ] && printf '%s' "$APPLY" | grep -q "0 minted"; then
@@ -334,7 +335,7 @@ ttl_max = "30d"
 terms = { evidence_sink = "ocsf://siem", evidence_delivery = "fail-safe" }
 reason = "the registered owner approving a merge is the consent here"
 POLICY
-cat > needs-keyless.toml <<NEEDS
+cat > warden/needs.toml <<NEEDS
 asset = "$CONSUMER"
 
 [[need]]
@@ -343,7 +344,7 @@ tools = ["transfer_funds"]
 justify = "settled by a merge, with no approver key in sight"
 ttl = 2400
 NEEDS
-K="$("$CONNECT" need apply --manifest needs-keyless.toml --repo drill/recon-bot --sha eee1 \
+K="$("$CONNECT" need apply --manifest warden/needs.toml --repo drill/recon-bot --sha eee1 \
     --mediator "$MEDIATOR" "${SHIM_ARGS[@]}" --issuer-key issuer.pem --kid k1 \
     --policy merge-policy.toml 2>&1)"
 KREQ="$(printf '%s' "$K" | grep -oE 'req_[a-f0-9]+' | head -1)"
@@ -412,7 +413,7 @@ elif q.get("op") == "file":
 else:
     sys.exit(1)
 WRONG
-cat > needs-keyless2.toml <<NEEDS
+cat > warden/needs.toml <<NEEDS
 asset = "$CONSUMER"
 
 [[need]]
@@ -421,7 +422,7 @@ tools = ["transfer_funds"]
 justify = "the negative direction for the keyless path"
 ttl = 2100
 NEEDS
-K2="$("$CONNECT" need apply --manifest needs-keyless2.toml --repo drill/recon-bot --sha eee2 \
+K2="$("$CONNECT" need apply --manifest warden/needs.toml --repo drill/recon-bot --sha eee2 \
     --mediator "$MEDIATOR" "${SHIM_ARGS[@]}" --issuer-key issuer.pem --kid k1 \
     --policy merge-policy.toml 2>&1)"
 K2REQ="$(printf '%s' "$K2" | grep -oE 'req_[a-f0-9]+' | head -1)"
@@ -475,7 +476,7 @@ ttl_max = "30d"
 terms = { evidence_sink = "ocsf://siem", evidence_delivery = "fail-safe" }
 reason = "as permissive as this system allows"
 POLICY
-cat > needs3.toml <<NEEDS
+cat > warden/needs.toml <<NEEDS
 asset = "$CONSUMER"
 
 [[need]]
@@ -484,7 +485,7 @@ tools = ["get_balance"]
 justify = "the control case: is the standing path reachable here at all?"
 ttl = 3600
 NEEDS
-P="$("$CONNECT" need apply --manifest needs3.toml --repo drill/recon-bot --sha ddd1 \
+P="$("$CONNECT" need apply --manifest warden/needs.toml --repo drill/recon-bot --sha ddd1 \
     --mediator "$MEDIATOR" "${SHIM_ARGS[@]}" --issuer-key issuer.pem --kid k1 \
     --policy wide-open.toml 2>&1)"
 # A tripwire, not a pass. If somebody later attests these parties, standing becomes reachable, this
@@ -499,7 +500,7 @@ fi
 # Still worth asserting, but for what it is: under the most permissive policy this drill can build,
 # a gated need does not mint. Attributed to nothing in particular — several controls would each stop
 # it, and that redundancy is itself worth keeping.
-cat > needs2.toml <<NEEDS
+cat > warden/needs.toml <<NEEDS
 asset = "$CONSUMER"
 
 [[need]]
@@ -508,7 +509,7 @@ tools = ["transfer_funds"]
 justify = "the same guarded item under the most permissive policy available"
 ttl = 1800
 NEEDS
-W="$("$CONNECT" need apply --manifest needs2.toml --repo drill/recon-bot --sha ccc1 \
+W="$("$CONNECT" need apply --manifest warden/needs.toml --repo drill/recon-bot --sha ccc1 \
     --mediator "$MEDIATOR" "${SHIM_ARGS[@]}" --issuer-key issuer.pem --kid k1 \
     --policy wide-open.toml 2>&1)"
 if printf '%s' "$W" | grep -q "0 minted" && printf '%s' "$W" | grep -qE 'req_[a-f0-9]+'; then
@@ -516,6 +517,110 @@ if printf '%s' "$W" | grep -q "0 minted" && printf '%s' "$W" | grep -qE 'req_[a-
 else
     bad "a wide-open policy minted a term the provider gated"
     printf '%s\n' "$W" | sed 's/^/       /' | head -12
+fi
+
+# --- 9 · the reserved paths ---------------------------------------------------
+bold "9 · a declaration only counts where a sweep will look"
+# The basis of the whole discovery model. `.mcp.json` lives at eight speculative paths belonging to
+# other ecosystems, so a scan must try all eight and a miss proves nothing. These paths are ours, so
+# one read answers the question — but only if nothing is allowed to declare somewhere else, or the
+# estate's inventory under-reports by exactly the repositories that did.
+cp warden/needs.toml elsewhere.toml
+NS="$("$CONNECT" need check --manifest elsewhere.toml 2>&1)"
+if printf '%s' "$NS" | grep -q "WC-8004" && printf '%s' "$NS" | grep -q "warden/needs.toml"; then
+    ok "a manifest outside warden/needs.toml is refused, and told where to live"
+else
+    bad "a declaration at an undiscoverable path was accepted"
+    printf '%s\n' "$NS" | tail -4 | sed 's/^/       /'
+fi
+# Deliberate is different from accidental. A monorepo or a migration needs a way through, and it has
+# to be a named one — an operator who meant it says so, and one who did not gets told.
+OV="$("$CONNECT" need check --manifest elsewhere.toml --allow-nonstandard-path 2>&1)"
+if printf '%s' "$OV" | grep -q "WC-8004"; then
+    bad "     --allow-nonstandard-path did not let a deliberate override through"
+else
+    ok "     and --allow-nonstandard-path is the deliberate way past it"
+fi
+# The default. An ordinary invocation should not have to name the path at all.
+DF="$("$CONNECT" need check 2>&1)"
+if printf '%s' "$DF" | grep -q "WC-8004"; then
+    bad "     the reserved path is not the default"
+else
+    ok "     and the reserved path is the default, so the flag is optional"
+fi
+
+# --- 10 · the cheap sweep ----------------------------------------------------
+bold "10 · discovery reads two paths, not eight"
+mkdir -p declared-estate/prov/warden declared-estate/cons/warden declared-estate/both/warden declared-estate/none
+cp warden/offer.toml declared-estate/prov/warden/offer.toml
+cp warden/needs.toml declared-estate/cons/warden/needs.toml
+cp warden/offer.toml declared-estate/both/warden/offer.toml
+cp warden/needs.toml declared-estate/both/warden/needs.toml
+: > declared-estate/none/README.md
+cat > declared-shim.py <<'DSHIM'
+#!/usr/bin/env python3
+"""A host with no search index, so the sweep must fall back to per-repo reads."""
+import base64, json, os, sys
+q = json.loads(sys.stdin.read())
+root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "declared-estate")
+op = q.get("op")
+if op == "search":
+    print(json.dumps({"unsupported": True}))
+elif op == "repos":
+    print(json.dumps({"repos": [f"bank/{d}" for d in sorted(os.listdir(root))]}))
+elif op == "file":
+    p = os.path.join(root, q["repo"].split("/", 1)[1], q["path"])
+    if os.path.isfile(p):
+        with open(p, "rb") as fh:
+            print(json.dumps({"content_b64": base64.b64encode(fh.read()).decode()}))
+    else:
+        print(json.dumps({"absent": True}))
+else:
+    sys.exit(1)
+DSHIM
+cat > search-shim.py <<'SSHIM'
+#!/usr/bin/env python3
+"""A host WITH a search index. Must agree with the crawl, or one of them is lying."""
+import json, os, sys
+q = json.loads(sys.stdin.read())
+root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "declared-estate")
+if q.get("op") == "search":
+    hits = [f"bank/{d}" for d in sorted(os.listdir(root))
+            if os.path.isfile(os.path.join(root, d, q["path"]))]
+    print(json.dumps({"repos": hits}))
+else:
+    sys.exit(1)
+SSHIM
+CRAWL="$("$CONNECT" inventory --declared --org bank --quiet \
+    --shim "python3 $WORK/declared-shim.py" --shim-label gh --json 2>&1)"
+SEARCH="$("$CONNECT" inventory --declared --org bank --quiet \
+    --shim "python3 $WORK/search-shim.py" --shim-label gh --json 2>&1)"
+read_field() { printf '%s' "$1" | python3 -c "import json,sys; print(json.load(sys.stdin)$2)" 2>/dev/null; }
+CP="$(read_field "$CRAWL" "['providers']")"; SP="$(read_field "$SEARCH" "['providers']")"
+CC="$(read_field "$CRAWL" "['consumers']")"; SC="$(read_field "$SEARCH" "['consumers']")"
+if [ "$CP" = "['bank/both', 'bank/prov']" ] && [ "$CC" = "['bank/both', 'bank/cons']" ]; then
+    ok "the crawl found both providers and both consumers, and not the repo that declares nothing"
+else
+    bad "the crawl found providers=$CP consumers=$CC"
+fi
+# The accelerator must agree with the fallback. If they can differ, the count depends on which host
+# you asked, which makes the inventory unusable as evidence.
+if [ "$CP" = "$SP" ] && [ "$CC" = "$SC" ]; then
+    ok "     and the search index agrees exactly with the crawl"
+else
+    bad "     search and crawl disagree: $SP/$SC vs $CP/$CC"
+fi
+CN="$(read_field "$CRAWL" "['calls']")"; SN="$(read_field "$SEARCH" "['calls']")"
+if [ -n "$CN" ] && [ -n "$SN" ] && [ "$SN" -lt "$CN" ]; then
+    ok "     the index cost $SN calls against the crawl's $CN — the reason it exists"
+else
+    bad "     the index did not cost less than the crawl ($SN vs $CN)"
+fi
+if printf '%s' "$CRAWL" | grep -q '"via_search": false' \
+   && printf '%s' "$SEARCH" | grep -q '"via_search": true'; then
+    ok "     and each reports which route answered, so a count can be explained later"
+else
+    bad "     the sweep does not say which route answered"
 fi
 
 echo

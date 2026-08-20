@@ -320,6 +320,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         ],
         "attest surface" => &["surface", "card-key", "out", "kid"],
         "offer publish" => &[
+            "allow-nonstandard-path",
             "surface",
             "terms",
             "kind",
@@ -333,8 +334,9 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         "offer list" => &["as", "json"],
         "offer show" => &["asset"],
         "offer status" => &["asset", "now"],
-        "need check" => &["manifest", "repo", "sha"],
+        "need check" => &["manifest", "repo", "sha", "allow-nonstandard-path"],
         "need apply" => &[
+            "allow-nonstandard-path",
             "manifest",
             "policy",
             "repo",
@@ -447,6 +449,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "ticket",
         ],
         "inventory" => &[
+            "declared",
             "shim",
             "shim-label",
             "org",
@@ -2840,7 +2843,67 @@ fn requester_of_merge(evidence: &wc_control::scm::MergeEvidence) -> Result<Human
 ///
 /// That is the whole design intent. Every other verb here needs something provisioned first, and a
 /// product whose first useful act requires a durable volume and a signing key does not get adopted.
+/// `connect inventory --declared` — who declares an offer or a need.
+///
+/// The cheap sweep, and the one to run often. `connect inventory` without it looks for other
+/// ecosystems' client configuration at eight speculative paths, which is how shadow usage is found
+/// and is inherently O(repos × 8). This reads the two paths warden-connect reserves, so it is
+/// O(repos × 2) — or one search per path where the host has an index.
+fn inventory_declared_cmd(args: &Args) -> Result<()> {
+    let org = require(args, "org")?;
+    let command = require(args, "shim")?;
+    let label = args.get("shim-label").unwrap_or("scm");
+    let mut shim = wc_control::scm::ScmShim::parse(label, command)?;
+    if let Some(secs) = args.number("timeout") {
+        shim = shim.with_timeout(std::time::Duration::from_secs(secs));
+    }
+
+    let quiet = args.has("quiet") || args.has("json");
+    let found = wc_control::inventory::declared(&shim, org, |repo, i| {
+        if !quiet && i % 25 == 0 {
+            eprintln!("  reading {repo} ({i})");
+        }
+    })?;
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&serde_json::to_value(&found).unwrap_or_default())?
+        );
+        return Ok(());
+    }
+
+    println!("declarations in {org}");
+    println!(
+        "  via        {}",
+        if found.via_search {
+            "the host's search index"
+        } else {
+            "per-repository reads (the host has no search op)"
+        }
+    );
+    println!("  calls      {}", found.calls);
+    println!();
+    println!("  providers  {}", found.providers.len());
+    for r in &found.providers {
+        println!("    {r}  ({})", wc_control::inventory::OFFER_PATH);
+    }
+    println!("  consumers  {}", found.consumers.len());
+    for r in &found.consumers {
+        println!("    {r}  ({})", wc_control::inventory::NEEDS_PATH);
+    }
+    if found.providers.is_empty() && found.consumers.is_empty() {
+        println!();
+        println!("  Nothing declares an offer or a need. That is a real answer, not a miss —");
+        println!("  the paths are reserved, so absence means absence.");
+    }
+    Ok(())
+}
+
 fn inventory_cmd(args: &Args) -> Result<()> {
+    if args.has("declared") {
+        return inventory_declared_cmd(args);
+    }
     let command = require(args, "shim")?;
     let label = args.get("shim-label").unwrap_or("scm");
     let org = require(args, "org")?;
@@ -3618,8 +3681,25 @@ fn blast_radius_cmd(args: &Args) -> Result<()> {
 /// (`ApprovalAuthority`). Until then `--by` names the actor, which is honest — the record says
 /// who asserted it rather than pretending it was verified.
 fn offer_publish_cmd(args: &Args) -> Result<()> {
-    let surface_path = require(args, "surface")?;
-    let terms_path = require(args, "terms")?;
+    // Defaulted to the reserved paths, so the ordinary invocation names neither.
+    let surface_path = args
+        .get("surface")
+        .unwrap_or(wc_control::inventory::SURFACE_PATH);
+    let terms_path = args
+        .get("terms")
+        .unwrap_or(wc_control::inventory::OFFER_PATH);
+    reserved_path_or_refuse(
+        args,
+        terms_path,
+        wc_control::inventory::OFFER_PATH,
+        "an offer",
+    )?;
+    reserved_path_or_refuse(
+        args,
+        surface_path,
+        wc_control::inventory::SURFACE_PATH,
+        "a surface",
+    )?;
     let repo = require(args, "repo")?.to_string();
     let sha = require(args, "sha")?.to_string();
     let kind = surface_kind(args.get("kind").unwrap_or("mcp"))?;
@@ -3892,6 +3972,30 @@ fn approve_by_merge_cmd(args: &Args, request_id: &str) -> Result<()> {
     print_issued(args, &issued, &paths)
 }
 
+/// Refuse a declaration at a path a discovery sweep will never look at.
+///
+/// The reserved path is the whole basis of the agreed discovery model: one read per repository
+/// instead of eight guesses, and absence that means something. A declaration somewhere else still
+/// mints a perfectly good contract — and is invisible to the sweep, so the estate's inventory
+/// silently under-reports. That is the shape this codebase keeps finding, so it fails closed.
+///
+/// `--allow-nonstandard-path` is the deliberate way out, for a monorepo or a migration. Named
+/// rather than inferred, because an operator who meant it can say so and one who did not gets told.
+fn reserved_path_or_refuse(args: &Args, given: &str, reserved: &str, what: &str) -> Result<()> {
+    if wc_control::inventory::is_reserved(given, reserved) || args.has("allow-nonstandard-path") {
+        return Ok(());
+    }
+    Err(WcError::with_detail(
+        Code::CONFIG_INVALID,
+        format!(
+            "{what} must live at `{reserved}` — a discovery sweep reads that path and nothing else, \
+             so a declaration at `{given}` would never be found and the estate's inventory would \
+             under-report by exactly this repository. Move it, or pass \
+             `--allow-nonstandard-path` if it is deliberate"
+        ),
+    ))
+}
+
 /// `scm probe` — exercise a source-host shim and say exactly what it returned (W4).
 ///
 /// The counterpart to the advice `signer.rs` gives about signing wrappers ("verify any wrapper
@@ -3989,7 +4093,15 @@ fn scm_probe_cmd(args: &Args) -> Result<()> {
 ///
 /// The verb `need check` could not be. It reports; this issues.
 fn need_apply_cmd(args: &Args) -> Result<()> {
-    let manifest_path = require(args, "manifest")?;
+    let manifest_path = args
+        .get("manifest")
+        .unwrap_or(wc_control::inventory::NEEDS_PATH);
+    reserved_path_or_refuse(
+        args,
+        manifest_path,
+        wc_control::inventory::NEEDS_PATH,
+        "a needs manifest",
+    )?;
     let repo = require(args, "repo")?.to_string();
     let sha = require(args, "sha")?.to_string();
     let mediator = require(args, "mediator")?.to_string();
@@ -4354,7 +4466,15 @@ fn requester_of(consent: &wc_core::contract::MergeApproval) -> Result<HumanRef> 
 /// The consumer's pipeline runs this on merge. It is deliberately read-only: see the usage text
 /// for why it cannot mint yet.
 fn need_check_cmd(args: &Args) -> Result<()> {
-    let manifest_path = require(args, "manifest")?;
+    let manifest_path = args
+        .get("manifest")
+        .unwrap_or(wc_control::inventory::NEEDS_PATH);
+    reserved_path_or_refuse(
+        args,
+        manifest_path,
+        wc_control::inventory::NEEDS_PATH,
+        "a needs manifest",
+    )?;
     let text = std::fs::read_to_string(manifest_path).map_err(|e| {
         WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {manifest_path}"))
             .with_source(e)
@@ -9167,6 +9287,21 @@ TOOLS
                 you do not own. Also refuses if connect-policy demands a role or
                 two approvers and the matched rule did not say
                 `owner_merge_approves = true` — silence stays closed.
+
+  inventory --declared --org ORG --shim CMD [--shim-label L] [--json]
+                who declares an offer or a need, from the paths warden-connect
+                reserves.
+
+                The cheap sweep, and the one to run often. `inventory` without
+                --declared looks for other ecosystems' client configuration at
+                eight speculative paths — that is how shadow usage is found, and
+                it is inherently O(repos x 8). This reads the two reserved paths,
+                so it is O(repos x 2), or two queries where the host has a search
+                index. It reports which route answered and what it cost.
+
+                Absence is a real answer here: the paths are reserved, so a
+                repository without them is not declaring, rather than possibly
+                declaring somewhere a scan did not look.
 
   offer list --as <consumer>
                 the catalogue, as that consumer sees it — every row is something

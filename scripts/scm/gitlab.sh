@@ -22,6 +22,12 @@ command -v jq >/dev/null 2>&1 || {
 JQDIR="$(cd "$(dirname "$0")/jq" && pwd)"
 
 case "$op" in
+search)
+  # Not implemented. `unsupported` is not the same answer as "nothing matched", and the
+  # caller treats them differently: this makes it fall back to reading the reserved path per
+  # repository, where an empty list would have it report an estate with no declarations.
+  printf '{"unsupported":true}\n'
+  ;;
 file)
   epath=$(printf '%s' "$path" | sed 's|/|%2F|g')
   glab api "projects/$enc/repository/files/$epath?ref=$sha" -F . 2>/dev/null \
