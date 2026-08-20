@@ -830,6 +830,94 @@ else
     bad "     the mapped repository did not take its zone from the map"
 fi
 
+# --- 14 · the receipt, and what never goes back ------------------------------
+bold "14 · a receipt goes back to the repository; the contract never does"
+CID="$("$CONNECT" contracts --json 2>/dev/null \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['cid'] if d else '')" 2>/dev/null)"
+if [ -z "$CID" ]; then
+    bad "no contract exists to write a receipt for"
+else
+    mkdir -p receipts state-merged
+    "$CONNECT" receipt "$CID" --out receipts >/dev/null 2>&1
+    RC="receipts/$CID.toml"
+    if [ -f "$RC" ]; then
+        ok "rendered a receipt for $CID"
+    else
+        bad "no receipt was written"
+    fi
+    # The property this whole design turns on. A signed contract in git is a bearer grant valid
+    # until its expiry however the registry changes afterwards, and git cannot express "withdrawn":
+    # a deletion is another commit and the blob stays reachable.
+    if grep -qE "eyJ|BEGIN [A-Z]+ KEY|BEGIN CERTIFICATE" "$RC" 2>/dev/null; then
+        bad "     the receipt carries signed or key material"
+    else
+        ok "     and it carries no JWS and no key — it grants nothing"
+    fi
+    grep -q "carries no signature and no key" "$RC" && ok "     and says so, for whoever reads the repo" \
+                                                    || bad "     it does not say what it is"
+    # Where an auditor should actually look: the pull request where consent happened.
+    #
+    # Checked against a contract that HAS merge evidence. A key-signed approval records none — the
+    # signature is the evidence — so asserting a merge on whichever cid sorts first tested nothing
+    # about the receipt and failed on a contract behaving correctly.
+    #
+    # And checked with grep, not tomllib: this drill's python may predate 3.11, and the first version
+    # swallowed the ImportError with 2>/dev/null and reported it as "the receipt does not point at
+    # the consent" — a check that cannot run must never render as a finding about the code.
+    MERGED_CID="$("$CONNECT" contracts --json 2>/dev/null | python3 -c "
+import json,sys
+for c in json.load(sys.stdin):
+    if c['approval'].get('merges'):
+        print(c['cid']); break" 2>/dev/null)"
+    if [ -z "$MERGED_CID" ]; then
+        bad "     no contract in this estate was settled by a merge, so this cannot be checked"
+    else
+        "$CONNECT" receipt "$MERGED_CID" --out receipts >/dev/null 2>&1
+        MR="receipts/$MERGED_CID.toml"
+        MISSING=""
+        for field in repo sha request_id author approvers; do
+            grep -qE "^${field} *= *(\"[^\"]+\"|\[\"[^\"]+\")" "$MR" || MISSING="$MISSING $field"
+        done
+        if [ -z "$MISSING" ]; then
+            ok "     and for a merge-settled one, names repo, sha, request, author and approvers"
+        else
+            bad "     the receipt's merge evidence is missing:$MISSING"
+            sed -n '/approval.merge/,$p' "$MR" | head -10 | sed 's/^/       /'
+        fi
+    fi
+
+    # As a pull request, with the same two properties every other write path here needs.
+    R1="$("$CONNECT" receipt "$CID" --repo bank/recon-bot --base main \
+        --shim "python3 $WORK/sweep-shim.py" --shim-label gh 2>&1)"
+    if printf '%s' "$R1" | grep -qE "pull req [0-9]+ opened"; then
+        ok "     opened a pull request carrying it"
+    else
+        bad "     no receipt pull request was opened"
+        printf '%s\n' "$R1" | tail -3 | sed 's/^/       /'
+    fi
+    # Merge it, then re-run: nothing to propose.
+    RPR="$(ls sweep-pr-*.json 2>/dev/null | tail -1)"
+    if [ -n "$RPR" ]; then
+        python3 - "$RPR" <<'DEC'
+import base64, json, os, sys
+q = json.load(open(sys.argv[1]))
+f = q["files"][0]
+dest = os.path.join("state-merged", f["path"])
+os.makedirs(os.path.dirname(dest), exist_ok=True)
+b = f["content_b64"]
+open(dest, "wb").write(base64.b64decode(b + "=" * (-len(b) % 4)))
+DEC
+        R2="$("$CONNECT" receipt "$CID" --repo bank/warden-state --base main \
+            --shim "python3 $WORK/sweep-shim.py" --shim-label gh 2>&1)"
+        if printf '%s' "$R2" | grep -q "unchanged on main"; then
+            ok "     and once merged, a re-run proposes nothing"
+        else
+            bad "     a re-run proposed the same receipt again"
+            printf '%s\n' "$R2" | tail -3 | sed 's/^/       /'
+        fi
+    fi
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     bold "DRILL PASSED — browse, ask, and the provider decides"
