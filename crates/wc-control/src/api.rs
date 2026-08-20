@@ -1216,6 +1216,31 @@ fn portal_page(cp: &Arc<ControlPlane>, req: &Request) -> Result<Response> {
         }
     }
 
+    // Per-provider impact, from the same `offer::impact` `offer status` uses. A contract whose
+    // consumer is no longer registered cannot be judged against an audience and is left out of the
+    // count rather than guessed at — the terminal report names those separately, and this page does
+    // not show them at all, which is a real limitation rather than a rounding.
+    let mut impacts: Vec<(EntityId, crate::offer::Impact)> = Vec::new();
+    for (asset, offer) in &p.offers {
+        let records: Vec<&wc_core::contract::ContractRecord> = p
+            .contracts
+            .values()
+            .filter(|c| &c.callee == asset && c.is_live(now))
+            .collect();
+        let live: Vec<crate::offer::LiveContract<'_>> = records
+            .iter()
+            .filter_map(|r| {
+                p.entity(&r.caller).map(|e| crate::offer::LiveContract {
+                    record: r,
+                    consumer_zone: e.zone.as_str(),
+                    consumer_tier: e.tier,
+                })
+            })
+            .collect();
+        impacts.push((asset.clone(), crate::offer::impact(offer, &live, now)));
+    }
+    impacts.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+
     let entities: Vec<&Entity> = p.entities.values().collect();
     let pending = crate::portal::open_requests(&p.requests, |id| p.entity(id), now);
 
@@ -1227,6 +1252,7 @@ fn portal_page(cp: &Arc<ControlPlane>, req: &Request) -> Result<Response> {
         inventory: inventory.as_ref(),
         inventory_error,
         known_targets,
+        impacts,
         contracts: p.contracts.len(),
         iss: &cp.iss,
     };

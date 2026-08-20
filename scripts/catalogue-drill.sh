@@ -675,6 +675,13 @@ if printf '%s' "$CSP" | grep -q "default-src 'none'"; then
 else
     bad "     no restrictive CSP on the response"
 fi
+# The provider-facing half: who breaks if I remove something.
+if grep -q "Who breaks if you remove something" portal.html; then
+    ok "     and answers the provider's question before a change, not after one"
+else
+    bad "     the page has no blast-radius view"
+fi
+
 # The catalogue must be the consumer's own, and the generator must produce the reserved path.
 if grep -q "transfer_funds" portal.html && grep -q "warden/needs.toml" portal.html; then
     ok "     the catalogue is rendered for $CONSUMER, and the generator writes the reserved path"
