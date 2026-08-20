@@ -1,0 +1,126 @@
+# A scheduled discovery sweep, as a GitHub Actions workflow.
+#
+# Copy into `.github/workflows/` in the repository that holds your discovery state.
+#
+# ## Why a workflow and not a daemon
+#
+# warden-connect has no async runtime and no scheduler, deliberately — see the dependency ceilings
+# in `scripts/dep-count.sh`. A sweep is a periodic batch job that needs a source-host token and
+# produces a pull request, which is precisely what a CI runner already is. Building a scheduler
+# inside the control plane would add a dependency tree to do a job the platform does better, and
+# would put a source-host token inside a long-running service that has no other use for one.
+#
+# ## Two cadences, on purpose
+#
+# The **declaration** sweep reads the two paths warden-connect reserves, so it is cheap enough to run
+# often — daily, or on push. The **shadow** sweep looks for other ecosystems' client configuration at
+# eight speculative paths, which is inherently O(repos × 8), so it runs monthly with a watermark.
+#
+# At 4,000 repositories a full shadow sweep is roughly 32,000 API calls: about six hours against a
+# 5,000/hour limit. With `--since` it reads only what was pushed to, which in a steady estate is a
+# few dozen repositories a day.
+#
+# ## The watermark
+#
+# `connect inventory` prints `watermark <n>`, and passing it as `--since` next run is what makes the
+# sweep incremental. This workflow keeps it in the state repository so it survives runner
+# replacement. A missing or stale watermark costs a full sweep — never a *skipped* repository, which
+# is the only direction that would matter: `changed_since` includes anything the host could not date.
+
+name: discovery sweep
+
+on:
+  schedule:
+    # Declarations daily, at a time nobody is deploying.
+    - cron: "17 3 * * *"
+    # The shadow sweep on the first of the month.
+    - cron: "43 4 1 * *"
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "run the full shadow sweep, ignoring the watermark"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    env:
+      ORG: your-org
+      STATE_REPO: your-org/warden-state
+      # The shim needs `gh`. A token with read access to the org's repositories, plus write on the
+      # state repository only — it must NOT be able to merge anything. There is no merge op in the
+      # shim protocol, and a token that could merge would make the sweep able to approve its own
+      # findings.
+      GH_TOKEN: ${{ secrets.WARDEN_DISCOVERY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install connect
+        run: |
+          cargo install --locked warden-connect-cli
+          connect --version
+
+      - name: Read the watermark
+        id: wm
+        run: |
+          # Absent on the first run, and after any change to what the sweep reads. Absent means a
+          # full sweep, which is the safe direction: the alternative is skipping repositories.
+          if [ -f discovery/watermark ] && [ "${{ inputs.full }}" != "true" ]; then
+            echo "since=$(cat discovery/watermark)" >> "$GITHUB_OUTPUT"
+          else
+            echo "since=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Declarations — who offers and who needs
+        run: |
+          # Cheap: two reserved paths, or two search queries where the host has an index.
+          connect inventory --declared --org "$ORG" \
+            --shim "bash scripts/scm/github.sh" --shim-label gh \
+            --json > declared.json
+          python3 -c "import json;d=json.load(open('declared.json'));print('providers',len(d['providers']),'consumers',len(d['consumers']),'calls',d['calls'])"
+
+      - name: Shadow sweep — used but never registered
+        id: sweep
+        run: |
+          SINCE=""
+          [ -n "${{ steps.wm.outputs.since }}" ] && SINCE="--since ${{ steps.wm.outputs.since }}"
+          # `--state-repo` opens a pull request with the delta. The diff IS the reconciliation: a row
+          # appearing is a server nobody registered, a row disappearing is one that stopped being
+          # used. Deletion is expressible because it is one ordered file, not one file per server —
+          # the write op is a PUT and there is no delete.
+          connect inventory --org "$ORG" \
+            --shim "bash scripts/scm/github.sh" --shim-label gh \
+            $SINCE --out inventory.json \
+            --state-repo "$STATE_REPO" --state-path discovery/inventory.toml \
+            | tee sweep.log
+          # Recorded only on success. A failed sweep must not advance the watermark, or the next run
+          # would skip everything the failed one never read.
+          grep -oE 'watermark  [0-9]+' sweep.log | awk '{print $2}' > watermark.new || true
+
+      - name: Advance the watermark
+        if: success()
+        run: |
+          if [ -s watermark.new ]; then
+            mkdir -p discovery
+            mv watermark.new discovery/watermark
+            git config user.name "warden-discovery"
+            git config user.email "warden-discovery@users.noreply.github.com"
+            git add discovery/watermark
+            git commit -m "discovery: watermark $(cat discovery/watermark)" || exit 0
+            git push
+          fi
+
+      - name: Upload the sweep
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inventory
+          path: |
+            inventory.json
+            declared.json
+            sweep.log

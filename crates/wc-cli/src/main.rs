@@ -429,6 +429,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "out",
         ],
         "inventory promote" => &[
+            "zone-map",
             "from",
             "activate",
             "repo-dir",
@@ -450,6 +451,10 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         ],
         "inventory" => &[
             "declared",
+            "since",
+            "state-repo",
+            "state-path",
+            "base",
             "shim",
             "shim-label",
             "org",
@@ -2062,6 +2067,18 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
     let target = require(args, "target")?;
     let owner = HumanRef::new(require(args, "owner")?)?;
     let zone = ZoneId::new(require(args, "zone")?)?;
+    // Per-repository zones, from wherever the estate tracks which service a repository belongs to.
+    // `--zone` remains the provider's and the fallback for consumers; this overrides it per repo.
+    let zone_map = match args.get("zone-map") {
+        None => None,
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|e| {
+                WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}"))
+                    .with_source(e)
+            })?;
+            Some(wc_control::inventory::ZoneMap::parse(&text)?)
+        }
+    };
 
     let text = std::fs::read_to_string(from).map_err(|e| {
         WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {from}")).with_source(e)
@@ -2208,6 +2225,27 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
 
     for repo in &consumers {
         let consumer_id = wc_control::inventory::derive_consumer_id(repo)?;
+        // Fail closed on an unmapped repository, once a map is in use at all. Falling back to
+        // `--zone` would put the party in a catch-all zone, and a catch-all zone is a WRONG zone:
+        // it decides which providers' audiences this consumer matches. Better to refuse and name
+        // the repository than to contract it into the wrong audience quietly.
+        let (repo_zone, repo_service) = match &zone_map {
+            None => (zone.clone(), None),
+            Some(map) => match map.get(repo) {
+                Some(row) => (ZoneId::new(&row.zone)?, row.service.clone()),
+                None => {
+                    return Err(WcError::with_detail(
+                        Code::CONFIG_INVALID,
+                        format!(
+                            "{repo} is not in the zone map, so its zone is unknown. A zone decides \
+                             which providers' audiences this consumer matches, so guessing one \
+                             puts it in the wrong audience rather than in none — add the row, or \
+                             drop --zone-map to use --zone for every consumer"
+                        ),
+                    ));
+                }
+            },
+        };
         // A minimal card naming the repository. A repository is not a workload, so this is a
         // placeholder an operator replaces with the agent's real identity — traceable in the
         // meantime, which beats leaving the consumer side of every finding blank.
@@ -2224,7 +2262,7 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
             endpoint: None,
             attestation: Vec::new(),
             owner: owner.clone(),
-            zone: zone.clone(),
+            zone: repo_zone.clone(),
             declared: declared(args)?,
             mode: mode(args),
         };
@@ -2239,7 +2277,12 @@ fn inventory_promote_cmd(args: &Args) -> Result<()> {
             admit_and_record(args, &consumer_request, &consumer_surface)?;
         }
         activate_if_asked(args, &consumer_id)?;
-        println!("  consumer {consumer_id}  ({repo})");
+        match &repo_service {
+            Some(svc) => {
+                println!("  consumer {consumer_id}  ({repo})  zone {repo_zone}  service {svc}")
+            }
+            None => println!("  consumer {consumer_id}  ({repo})  zone {repo_zone}"),
+        }
     }
 
     // The proposals a pull request will carry. Written, never committed: raising the PR is the
@@ -2861,7 +2904,8 @@ fn inventory_declared_cmd(args: &Args) -> Result<()> {
     }
 
     let quiet = args.has("quiet") || args.has("json");
-    let found = wc_control::inventory::declared(&shim, org, |repo, i| {
+    let since = args.number("since");
+    let found = wc_control::inventory::declared(&shim, org, since, |repo, i| {
         if !quiet && i % 25 == 0 {
             eprintln!("  reading {repo} ({i})");
         }
@@ -2885,6 +2929,12 @@ fn inventory_declared_cmd(args: &Args) -> Result<()> {
         }
     );
     println!("  calls      {}", found.calls);
+    if found.skipped > 0 {
+        println!("  skipped    {} unchanged since --since", found.skipped);
+    }
+    if let Some(w) = found.watermark {
+        println!("  watermark  {w}  (pass as --since on the next sweep)");
+    }
     println!();
     println!("  providers  {}", found.providers.len());
     for r in &found.providers {
@@ -2922,14 +2972,71 @@ fn inventory_cmd(args: &Args) -> Result<()> {
     if !quiet {
         eprintln!("scanning {org} through {label}…");
     }
-    let inv = wc_control::inventory::scan(&shim, org, paths.as_deref(), |repo, i| {
-        // Progress on stderr, so `--json` on stdout stays machine-readable and a scan of 400
-        // repositories does not look like a hang. A silent minute is indistinguishable from a
-        // broken shim.
-        if !quiet && i % 25 == 0 {
-            eprintln!("  {i} repos… {repo}");
+    let inv = wc_control::inventory::scan(
+        &shim,
+        org,
+        paths.as_deref(),
+        args.number("since"),
+        |repo, i| {
+            // Progress on stderr, so `--json` on stdout stays machine-readable and a scan of 400
+            // repositories does not look like a hang. A silent minute is indistinguishable from a
+            // broken shim.
+            if !quiet && i % 25 == 0 {
+                eprintln!("  {i} repos… {repo}");
+            }
+        },
+    )?;
+
+    // The sweep's answer, as a file in a repository. A pull request rather than a push: the diff IS
+    // the reconciliation, and somebody should look at it. A row appearing means a server nobody
+    // registered turned up, which is a question for a human, not a fact to absorb quietly.
+    if let Some(state_repo) = args.get("state-repo") {
+        let path = args
+            .get("state-path")
+            .unwrap_or("discovery/inventory.toml")
+            .to_string();
+        let base = args.get("base").unwrap_or("main").to_string();
+        let body = wc_control::inventory::render_state(&inv, org);
+        // Content-derived branch, so a re-sweep of an unchanged estate reuses it — the same property
+        // `inventory promote --raise-pr` needed and did not have at first.
+        let branch = format!(
+            "warden/discovery-{}",
+            &wc_core::util::sha256_hex(&body)[..12]
+        );
+        // Already on `base`? Then nothing changed. Without this a nightly sweep of a stable estate
+        // opens an empty pull request every night, which is how a reviewer learns to ignore them.
+        if shim.file_if_present(state_repo, &base, &path)?.as_deref() == Some(body.as_bytes()) {
+            println!();
+            println!("  state      unchanged on {base} — nothing to propose");
+        } else {
+            let outcome = shim.open_pr(&wc_control::scm::PrRequest {
+                repo: state_repo.to_string(),
+                base,
+                branch,
+                title: format!("discovery sweep: {org}"),
+                body: "Generated by `connect inventory`. **Derived data** — this records what a \
+                       sweep FOUND, not what anybody approved, and nothing in it grants \
+                       anything.\n\nA row appearing is a server nobody registered. A row \
+                       disappearing is one that stopped being used.\n\nNothing was probed: the \
+                       sweep reads client configuration and never speaks to a server.\n"
+                    .to_string(),
+                files: vec![wc_control::scm::PrFile::new(path.clone(), body.as_bytes())],
+            })?;
+            println!();
+            if outcome.created {
+                println!(
+                    "  state      pull req {} opened  {}",
+                    outcome.request_id, outcome.url
+                );
+            } else {
+                println!(
+                    "  state      pull req {} already open  {}",
+                    outcome.request_id, outcome.url
+                );
+            }
+            println!("  path       {path}");
         }
-    })?;
+    }
 
     if args.has("json") {
         println!(
@@ -2937,6 +3044,13 @@ fn inventory_cmd(args: &Args) -> Result<()> {
             pretty(&serde_json::to_value(&inv).unwrap_or_default())?
         );
         return Ok(());
+    }
+
+    if inv.repos_skipped > 0 {
+        println!("  skipped    {} unchanged since --since", inv.repos_skipped);
+    }
+    if let Some(w) = inv.watermark {
+        println!("  watermark  {w}  (pass as --since on the next sweep)");
     }
 
     // The three numbers that decide whether this report means anything, before any list.
@@ -9317,6 +9431,42 @@ TOOLS
                 ?as= chooses whose catalogue is shown, so this is a platform
                 operator's tool. In front of consumers directly, bind `as` to
                 their authenticated identity at the proxy, not in a query string.
+
+  inventory --org ORG --shim CMD [--since TS] [--state-repo REPO]
+                [--state-path PATH] [--base BR] [--out FILE] [--json]
+                the shadow sweep: what is used but never registered.
+
+                --since TS   skip repositories not pushed to since TS. The sweep
+                             prints `watermark N`; pass it next time. A repository
+                             the host cannot date is always swept, never skipped —
+                             under-reporting silently is the one direction a
+                             discovery cursor must not be wrong in.
+
+                --state-repo opens a pull request with the sweep's answer as ONE
+                             ordered file. The diff IS the reconciliation: a row
+                             appearing is a server nobody registered, a row
+                             disappearing is one that stopped being used. One
+                             file, not one per server — the write op is a PUT and
+                             there is no delete, so per-server files could never
+                             express a disappearance.
+
+                             Nothing is proposed when the file already matches
+                             base, so a nightly sweep of a stable estate opens
+                             nothing.
+
+                Cost: 8 paths per repository, so O(repos x 8). At 4,000 repos
+                that is ~32,000 calls, about 6 hours against a 5,000/hour limit —
+                run it monthly with --since, and run `--declared` daily.
+                scripts/ci/discovery-sweep.yml is that schedule as a workflow.
+
+  inventory promote ... [--zone-map FILE]
+                --zone-map gives each consuming repository its own zone, from
+                wherever your estate tracks which service a repository belongs to.
+                Generate it from the CMDB; nobody should write it by hand.
+
+                A repository with no row is REFUSED. A zone decides which
+                providers' audiences a consumer matches, so falling back to
+                --zone would put it in the wrong audience rather than in none.
 
   inventory --declared --org ORG --shim CMD [--shim-label L] [--json]
                 who declares an offer or a need, from the paths warden-connect

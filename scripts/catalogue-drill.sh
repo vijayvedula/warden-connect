@@ -696,6 +696,140 @@ wait "$PORTAL_PID" 2>/dev/null || true
 trap - EXIT
 fi
 
+# --- 12 · an incremental sweep, and its state as a diff ----------------------
+bold "12 · the sweep is incremental, and its answer is a reviewable file"
+mkdir -p sweep-estate/r1 sweep-estate/r2 sweep-estate/r3
+printf '{"mcpServers":{"a":{"command":"npx","args":["-y","@acme/pay"]}}}'   > sweep-estate/r1/.mcp.json
+printf '{"mcpServers":{"b":{"command":"npx","args":["-y","@acme/pay"]}}}'   > sweep-estate/r2/.mcp.json
+printf '{"mcpServers":{"c":{"command":"npx","args":["-y","@x/other"]}}}'    > sweep-estate/r3/.mcp.json
+cat > sweep-shim.py <<'SWEEP'
+#!/usr/bin/env python3
+"""A host that dates its repositories, and records the pull requests it is asked to open."""
+import base64, json, os, sys
+q = json.loads(sys.stdin.read())
+here = os.path.dirname(os.path.abspath(__file__))
+root = os.path.join(here, "sweep-estate")
+PUSHED = {"bank/r1": 1000, "bank/r2": 2000, "bank/r3": 3000}
+op = q.get("op")
+if op == "repos":
+    print(json.dumps({"repos": [{"name": n, "pushed_at": t} for n, t in sorted(PUSHED.items())]}))
+elif op == "file":
+    # The state repository is not part of the scanned estate, so `absent` for it is correct and is
+    # what makes the "nothing to propose" branch reachable only once the file really is on base.
+    merged = os.path.join(here, "state-merged", q["path"])
+    if q["repo"] == "bank/warden-state":
+        if os.path.isfile(merged):
+            with open(merged, "rb") as fh:
+                print(json.dumps({"content_b64": base64.b64encode(fh.read()).decode()}))
+        else:
+            print(json.dumps({"absent": True}))
+    else:
+        p = os.path.join(root, q["repo"].split("/", 1)[1], q["path"])
+        if os.path.isfile(p):
+            with open(p, "rb") as fh:
+                print(json.dumps({"content_b64": base64.b64encode(fh.read()).decode()}))
+        else:
+            print(json.dumps({"absent": True}))
+elif op == "open_pr":
+    st = os.path.join(here, "sweep-prs.json")
+    try:
+        prs = json.load(open(st))
+    except Exception:
+        prs = {}
+    b = q["branch"]
+    if b in prs:
+        print(json.dumps({"request_id": prs[b], "url": "u/" + prs[b], "created": False}))
+    else:
+        n = str(700 + len(prs) + 1)
+        prs[b] = n
+        json.dump(prs, open(st, "w"))
+        json.dump(q, open(os.path.join(here, f"sweep-pr-{n}.json"), "w"))
+        print(json.dumps({"request_id": n, "url": "u/" + n, "created": True}))
+else:
+    sys.exit(1)
+SWEEP
+SWEEP_ARGS=(--shim "python3 $WORK/sweep-shim.py" --shim-label gh)
+FULL="$("$CONNECT" inventory --org bank "${SWEEP_ARGS[@]}" --quiet --out inv-full.json 2>&1)"
+WM="$(printf '%s' "$FULL" | grep -oE 'watermark  [0-9]+' | awk '{print $2}')"
+if [ "$WM" = "3000" ]; then
+    ok "a full sweep reports the newest push as the watermark ($WM)"
+else
+    bad "the watermark was '$WM', expected 3000"
+fi
+INC="$("$CONNECT" inventory --org bank "${SWEEP_ARGS[@]}" --quiet --since 2000 2>&1)"
+SK="$(printf '%s' "$INC" | grep -oE 'skipped    [0-9]+' | awk '{print $2}')"
+[ "$SK" = "2" ] && ok "     --since 2000 skipped 2 of 3 — the point of the cursor" \
+                || bad "     --since 2000 skipped '$SK', expected 2"
+# The one that a unit test cannot reach: the watermark must advance PAST what was skipped, or a
+# quiet repository is re-read on every sweep forever.
+IWM="$(printf '%s' "$INC" | grep -oE 'watermark  [0-9]+' | awk '{print $2}')"
+[ "$IWM" = "3000" ] && ok "     and still reports 3000 — the watermark passes what it skipped" \
+                    || bad "     the incremental watermark was '$IWM', expected 3000"
+
+# The state file, as a pull request.
+S1="$("$CONNECT" inventory --org bank "${SWEEP_ARGS[@]}" --quiet --state-repo bank/warden-state 2>&1)"
+if printf '%s' "$S1" | grep -qE "state      pull req [0-9]+ opened"; then
+    ok "     the sweep opened a pull request with its state"
+else
+    bad "     no state pull request was opened"
+    printf '%s\n' "$S1" | tail -4 | sed 's/^/       /'
+fi
+SPR="$(ls sweep-pr-*.json 2>/dev/null | head -1)"
+if [ -n "$SPR" ]; then
+    python3 - "$SPR" > state.toml <<'DEC'
+import base64, json, sys
+q = json.load(open(sys.argv[1]))
+print(base64.b64decode(q["files"][0]["content_b64"]).decode(), end="")
+DEC
+    # One file, so a removal is a removed line. Per-server files could not express a disappearance:
+    # the write op is a PUT and there is no delete.
+    FILES="$(python3 -c "import json,sys; print(len(json.load(open('$SPR'))['files']))")"
+    [ "$FILES" = "1" ] && ok "     as ONE file, so a server disappearing is a removed line" \
+                       || bad "     the PR carried $FILES files; a delete cannot be expressed"
+    if grep -q 'callers = \["bank/r1", "bank/r2"\]' state.toml; then
+        ok "     with callers sorted, so an unchanged estate re-renders byte for byte"
+    else
+        bad "     callers are not deterministically ordered"
+        sed 's/^/       /' state.toml | head -8
+    fi
+    grep -q "not what anybody approved" state.toml \
+        && ok "     and the file says it is derived data that grants nothing" \
+        || bad "     the file does not say what it is"
+    # Merge it, then re-sweep: an unchanged estate must propose nothing at all.
+    mkdir -p state-merged/discovery && cp state.toml state-merged/discovery/inventory.toml
+    S2="$("$CONNECT" inventory --org bank "${SWEEP_ARGS[@]}" --quiet --state-repo bank/warden-state 2>&1)"
+    if printf '%s' "$S2" | grep -q "unchanged on main"; then
+        ok "     and once merged, a re-sweep proposes nothing"
+    else
+        bad "     a re-sweep of an unchanged estate proposed again"
+        printf '%s\n' "$S2" | tail -4 | sed 's/^/       /'
+    fi
+fi
+
+# --- 13 · zones come from the estate, not from the repository ----------------
+bold "13 · an unmapped repository is refused, not guessed into a zone"
+cat > zones.toml <<'ZM'
+[[repo]]
+name = "bank/r1"
+zone = "internal.drill"
+service = "ITAM-0001"
+ZM
+ZOUT="$("$CONNECT" inventory promote --from inv-full.json --target "npx -y @acme/pay" \
+    --owner human:payments-owner@org --zone internal.drill --by human:drill@org \
+    --surface warden/surface.json --zone-map zones.toml --tools get_balance \
+    --justify "zone map, fail closed" 2>&1)"
+if printf '%s' "$ZOUT" | grep -q "is not in the zone map"; then
+    ok "bank/r2 has no row, so it is refused rather than put in a catch-all zone"
+else
+    bad "an unmapped repository was given a zone anyway"
+    printf '%s\n' "$ZOUT" | tail -4 | sed 's/^/       /'
+fi
+if printf '%s' "$ZOUT" | grep -q "zone internal.drill  service ITAM-0001"; then
+    ok "     and a mapped one carries its zone and service from the map"
+else
+    bad "     the mapped repository did not take its zone from the map"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     bold "DRILL PASSED — browse, ask, and the provider decides"
