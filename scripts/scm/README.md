@@ -1,6 +1,8 @@
 # Source-host shims
 
-Each script answers the protocol in `crates/wc-control/src/scm.rs`. Three reads and one write:
+Each script answers the protocol in `crates/wc-control/src/scm.rs`. Four reads and one write —
+and one of the reads is optional, which the protocol makes explicit rather than leaving to a
+convention:
 
 ```
 stdin   {"op":"merge_evidence","repo":"…","sha":"…"}
@@ -14,10 +16,29 @@ stdout  {"absent":true}              # not there — an ANSWER, not a failure
 stdin   {"op":"repos","org":"bank"}
 stdout  {"repos":["bank/recon-bot","bank/payments-mcp"]}
 
+stdin   {"op":"search","org":"bank","path":"warden/offer.toml"}
+stdout  {"repos":["bank/payments-mcp"]}
+stdout  {"unsupported":true}          # cannot answer — NOT the same as "nothing matched"
+
 stdin   {"op":"open_pr","repo":"…","base":"main","branch":"warden/propose-…",
          "title":"…","body":"…","files":[{"path":"…","content_b64":"…"}]}
 stdout  {"request_id":"412","url":"https://…/pull/412","created":true}
 ```
+
+## `unsupported` is not an empty list
+
+`search` is an accelerator. Where a host has a code-search index, one query per reserved path
+replaces a read per repository — two calls instead of two per repo. Where it has none, or cannot
+answer *completely*, it must say `unsupported`, and the caller falls back to reading the reserved
+paths per repository.
+
+Answering `{"repos":[]}` when the index was truncated or absent would report an estate with no
+declarations at all, and the caller would believe it. That is why the two answers are different
+words: an accelerator that gives up quietly is worse than one that is missing, because nothing
+falls back.
+
+`github.sh` refuses partially: GitHub's code search caps at 1000 results however you page it, so
+past that it returns `unsupported` and lets the crawl do the work.
 
 ## `absent` is an answer, and it matters
 
@@ -44,12 +65,21 @@ Branch protection requiring a review is what enforces it. An estate that has not
 
 ## Verification status, per script and per op
 
-| Script | `merge_evidence` | `file` | `repos` | `open_pr` |
-|---|---|---|---|---|
-| `github.sh` | **verified** against a live repo | **verified** | **verified** | **verified** |
-| `gitlab.sh` | UNVERIFIED | UNVERIFIED | not implemented | not implemented |
-| `azure-repos.sh` | UNVERIFIED | UNVERIFIED | not implemented | not implemented |
-| `bitbucket.sh` | UNVERIFIED | UNVERIFIED | not implemented | not implemented |
+| Script | `merge_evidence` | `file` | `repos` | `search` | `open_pr` |
+|---|---|---|---|---|---|
+| `github.sh` | **verified** against a live repo | **verified** | **verified** | UNVERIFIED | **verified** |
+| `gitlab.sh` | parse-checked | UNVERIFIED | not implemented | `unsupported` | not implemented |
+| `azure-repos.sh` | parse-checked | UNVERIFIED | not implemented | `unsupported` | not implemented |
+| `bitbucket.sh` | parse-checked | UNVERIFIED | not implemented | `unsupported` | not implemented |
+
+**parse-checked** is weaker than verified and stronger than nothing. `merge_evidence` for those
+three is now read with `jq`, one field at a time, from `scripts/scm/jq/<host>-merge.jq`, and
+`scripts/scm/parse-drill.sh` runs each host's real program against fixtures shaped to defeat the
+greedy matching the previous `sed` versions used. The **field paths** are still unverified: if a
+host renames `approved_by`, the fixtures agree with the code and both are wrong together. Only
+`connect scm probe` against a real tenant closes that.
+
+`unsupported` is a legitimate implementation of `search`, not a gap — the caller falls back.
 
 All four `github.sh` ops have now been run against a live repository, including the write:
 `open_pr` opened a real pull request, and `merge_evidence` read that merge back.

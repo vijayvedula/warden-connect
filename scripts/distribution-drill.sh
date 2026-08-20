@@ -80,6 +80,7 @@ cleanup() {
 trap cleanup EXIT
 cd "$WORK"
 export WARDEN_CONNECT_ROOT="$WORK/root"
+mkdir -p warden
 
 AGENT="spiffe://drill.example/ns/agents/sa/recon-bot"
 SERVER="spiffe://drill.example/ns/svc/sa/payments-mcp"
@@ -130,7 +131,7 @@ id = "$MEDIATOR_ID"
 poll_interval = 5
 MEDIATORS
 
-printf '{"tools":[{"name":"get_balance","description":"Read an account balance."},{"name":"list_transactions","description":"List recent transactions."}]}' > surface.json
+printf '{"tools":[{"name":"get_balance","description":"Read an account balance."},{"name":"list_transactions","description":"List recent transactions."}]}' > warden/surface.json
 printf '{"name":"recon","description":"The drill consumer.","version":"1.0.0","skills":[{"id":"drive","name":"drive","description":"Drives the drill."}]}' > card.json
 
 openssl ecparam -name prime256v1 -genkey -noout -out issuer.tmp 2>/dev/null
@@ -150,7 +151,7 @@ APPROVERS
 
 "$CONNECT" register agent --card card.json --owner human:drill@org --zone internal.drill \
     --id "$AGENT" --by human:drill@org >/dev/null 2>&1
-"$CONNECT" register server --id "$SERVER" --surface surface.json --endpoint stdio://drill \
+"$CONNECT" register server --id "$SERVER" --surface warden/surface.json --endpoint stdio://drill \
     --owner human:drill@org --zone internal.drill --by human:drill@org >/dev/null 2>&1
 "$CONNECT" activate "$AGENT" --by human:drill@org >/dev/null 2>&1
 "$CONNECT" activate "$SERVER" --by human:drill@org >/dev/null 2>&1
@@ -376,7 +377,7 @@ else
     tail -4 serve-ro.log | sed 's/^/       /'
 fi
 
-cat > terms.toml <<TERMS
+cat > warden/offer.toml <<TERMS
 asset = "$SERVER"
 
 [[term]]
@@ -385,7 +386,7 @@ approval = "pre_granted"
 ttl_max = 604800
 to = { zone = "internal.*" }
 TERMS
-PUB="$("$CONNECT" offer publish --surface surface.json --terms terms.toml --kind mcp \
+PUB="$("$CONNECT" offer publish --surface warden/surface.json --terms warden/offer.toml --kind mcp \
     --repo drill/payments-mcp --sha aaa --version 1 2>&1)"
 if printf '%s' "$PUB" | grep -q "^published"; then
     ok "     a pipeline verb wrote to the state log while the plane served"

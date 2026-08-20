@@ -20,6 +20,10 @@ op=$(printf '%s' "$q" | sed -n 's/.*"op":"\([^"]*\)".*/\1/p')
 repo=$(printf '%s' "$q" | sed -n 's/.*"repo":"\([^"]*\)".*/\1/p')
 sha=$(printf '%s' "$q" | sed -n 's/.*"sha":"\([^"]*\)".*/\1/p')
 path=$(printf '%s' "$q" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')
+# `org` is used by `repos` and `search`. These extractions read warden-connect's OWN query — a flat
+# object it generated — not a host's API response, which is why sed is acceptable here and was not
+# in `merge_evidence`. Parsing what you emitted is a different risk from parsing what you were told.
+org=$(printf '%s' "$q" | sed -n 's/.*"org":"\([^"]*\)".*/\1/p')
 
 case "$op" in
 file)
@@ -84,6 +88,36 @@ merge_evidence)
   printf '{"merged":true,"ref":"refs/heads/%s","protected":%s,"request_id":"%s","author":"%s","approvers":%s,"merged_at":%s}\n' \
     "$base" "$prot" "$num" "$author" "$approvers" "$ts"
   ;;
+search)
+  # Repositories containing an exact path, from the code-search index. An accelerator: the caller
+  # falls back to reading the path per repository, which has no index lag and no result cap.
+  #
+  # `path:` is an exact match on the full path, so this only works because warden-connect reserves
+  # it. The 100-per-page cap is honoured explicitly — a truncated answer reported as complete would
+  # make discovery under-report silently, so `truncated` is returned and the caller re-reads.
+  q=$(printf 'org:%s path:%s' "$org" "$path")
+  page=1; out=""; truncated=false
+  while :; do
+    body=$(gh api -X GET "search/code" -f "q=$q" -f "per_page=100" -f "page=$page" 2>/dev/null) || break
+    names=$(printf '%s' "$body" | jq -r '[.items[]?.repository.full_name] | unique | .[]' 2>/dev/null)
+    [ -n "$names" ] && out=$(printf '%s\n%s' "$out" "$names")
+    total=$(printf '%s' "$body" | jq -r '.total_count // 0')
+    # GitHub's code search returns at most 1000 results however you page it.
+    if [ "$total" -gt 1000 ]; then truncated=true; fi
+    got=$(printf '%s' "$body" | jq -r '(.items // []) | length')
+    [ "$got" -lt 100 ] && break
+    page=$((page + 1))
+    [ "$page" -gt 10 ] && { truncated=true; break; }
+  done
+  if [ "$truncated" = true ]; then
+    # Refuse rather than answer partially. An accelerator that quietly drops repositories is worse
+    # than one that is absent, because the caller stops falling back.
+    printf '{"unsupported":true}\n'
+    echo "code search returned more than it can page through; falling back to per-repo reads" >&2
+    exit 0
+  fi
+  printf '%s' "$out" | jq -R -s 'split("\n") | map(select(length > 0)) | unique | {repos: .}'
+  ;;
 repos)
   # An org or a user. `orgs/X/repos` 404s for a user account, so try both — and note that the first
   # version of this wrapped the 404 body as a repository name and exited 0, which is a shim
@@ -92,7 +126,6 @@ repos)
   #
   # `--paginate` matters too: an org with 400 repos returns 30 by default, and a scan of the first
   # page would report a clean estate for a large one.
-  org=$(printf '%s' "$q" | sed -n 's/.*"org":"\([^"]*\)".*/\1/p')
   list=""
   for scope in orgs users; do
     if list=$(gh api --paginate "$scope/$org/repos?per_page=100" -q '.[].full_name' 2>/dev/null) \

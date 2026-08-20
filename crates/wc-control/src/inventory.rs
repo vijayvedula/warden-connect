@@ -36,6 +36,32 @@ use serde::{Deserialize, Serialize};
 use wc_core::error::Result;
 use wc_core::model::EntityId;
 
+/// Where a provider declares its terms. Reserved by warden-connect.
+///
+/// The reserved path is what makes discovery cheap and absence meaningful. [`CLIENT_CONFIG_PATHS`]
+/// below is the opposite case and shows why: those are other ecosystems' files at eight speculative
+/// locations, so a scan must try all eight per repository and a miss proves nothing. This path is
+/// ours, so one read answers the question, and *not* having it is a fact rather than a maybe.
+pub const OFFER_PATH: &str = "warden/offer.toml";
+
+/// Where a provider declares the surface its terms cover.
+pub const SURFACE_PATH: &str = "warden/surface.json";
+
+/// Where a consumer declares what it needs.
+pub const NEEDS_PATH: &str = "warden/needs.toml";
+
+/// Every path warden-connect reserves, for a discovery sweep to read.
+pub const DECLARED_PATHS: &[&str] = &[OFFER_PATH, SURFACE_PATH, NEEDS_PATH];
+
+/// Whether `path` is the reserved location for this kind of declaration.
+///
+/// Compared after trimming a leading `./`, which is what shell tab-completion produces and which
+/// would otherwise make an operator's correct path look wrong.
+#[must_use]
+pub fn is_reserved(path: &str, reserved: &str) -> bool {
+    path.trim().trim_start_matches("./") == reserved
+}
+
 /// The client-configuration paths a scan looks for, in the order it tries them.
 ///
 /// Speculative by nature: most repositories have none of these. The list is data rather than a
@@ -306,6 +332,73 @@ pub fn derive_consumer_id(repo: &str) -> Result<EntityId> {
     EntityId::new(format!("urn:wc:repo:{}", cleaned.trim_matches('-')))
 }
 
+/// What a declaration sweep found, and how much it cost to find.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Declared {
+    /// Repositories carrying [`OFFER_PATH`].
+    pub providers: Vec<String>,
+    /// Repositories carrying [`NEEDS_PATH`].
+    pub consumers: Vec<String>,
+    /// Requests made against the source host.
+    pub calls: usize,
+    /// Whether the host's search index answered, or the sweep read every repository.
+    pub via_search: bool,
+}
+
+/// Find every repository that declares an offer or a need.
+///
+/// Two orders of magnitude cheaper than [`scan`], for one reason: the paths are **ours**. `scan`
+/// tries eight speculative locations per repository because they belong to other ecosystems and a
+/// miss proves nothing. This reads one path per kind, and a miss is a fact.
+///
+/// Uses the host's search index when it has one, and falls back to reading the reserved paths per
+/// repository when it does not. The fallback is the correct implementation rather than a degraded
+/// one: a code-search index caps its results and lags a push, and [`crate::scm::ScmShim::search_path`]
+/// answers `unsupported` rather than a short list when it cannot answer completely — so a sweep
+/// never under-reports because an accelerator gave up quietly.
+///
+/// Both searches must succeed or neither is trusted. Half a sweep from the index and half from a
+/// crawl would produce a count nobody can reason about.
+pub fn declared(
+    shim: &crate::scm::ScmShim,
+    org: &str,
+    mut on_repo: impl FnMut(&str, usize),
+) -> Result<Declared> {
+    let mut out = Declared::default();
+
+    let offers = shim.search_path(org, OFFER_PATH)?;
+    out.calls += 1;
+    if let Some(providers) = offers {
+        let needs = shim.search_path(org, NEEDS_PATH)?;
+        out.calls += 1;
+        if let Some(consumers) = needs {
+            out.providers = providers;
+            out.consumers = consumers;
+            out.providers.sort_unstable();
+            out.consumers.sort_unstable();
+            out.via_search = true;
+            return Ok(out);
+        }
+    }
+
+    let repos = shim.repos(org)?;
+    out.calls += 1;
+    for (i, repo) in repos.iter().enumerate() {
+        on_repo(repo, i);
+        if shim.file_if_present(repo, "HEAD", OFFER_PATH)?.is_some() {
+            out.providers.push(repo.clone());
+        }
+        out.calls += 1;
+        if shim.file_if_present(repo, "HEAD", NEEDS_PATH)?.is_some() {
+            out.consumers.push(repo.clone());
+        }
+        out.calls += 1;
+    }
+    out.providers.sort_unstable();
+    out.consumers.sort_unstable();
+    Ok(out)
+}
+
 /// Scan an organisation's repositories for MCP client configuration.
 ///
 /// `shim` is the same source-host adapter the contract path uses, so an estate that has verified
@@ -368,6 +461,33 @@ pub fn scan(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn a_reserved_path_is_matched_after_a_leading_dot_slash() {
+        // `./warden/offer.toml` is what shell tab-completion produces, and refusing it would tell
+        // an operator their correct path is wrong.
+        assert!(is_reserved("warden/offer.toml", OFFER_PATH));
+        assert!(is_reserved("./warden/offer.toml", OFFER_PATH));
+        assert!(is_reserved("  warden/offer.toml  ", OFFER_PATH));
+        assert!(!is_reserved("warden/offers.toml", OFFER_PATH));
+        assert!(!is_reserved("offer.toml", OFFER_PATH));
+        assert!(!is_reserved("a/warden/offer.toml", OFFER_PATH));
+    }
+
+    #[test]
+    fn the_reserved_paths_are_distinct_and_none_is_a_client_config_path() {
+        // A reserved path colliding with a speculative one would make the two sweeps report the
+        // same file as two different kinds of declaration.
+        let mut seen = std::collections::BTreeSet::new();
+        for p in DECLARED_PATHS {
+            assert!(seen.insert(*p), "{p} is listed twice");
+            assert!(
+                !CLIENT_CONFIG_PATHS.contains(p),
+                "{p} is both reserved and a client-config path"
+            );
+        }
+        assert_eq!(seen.len(), 3);
+    }
 
     #[test]
     fn a_derived_id_is_readable_and_unique() {

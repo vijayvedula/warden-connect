@@ -478,6 +478,42 @@ impl ScmShim {
             .collect())
     }
 
+    /// Repositories in `org` that contain `path`, when the host can answer that cheaply.
+    ///
+    /// `Ok(None)` means the shim does not implement `search` — not that nothing matched. The two are
+    /// different answers and conflating them would report an empty estate for an unimplemented op,
+    /// which is the worst possible way to be wrong about discovery. A caller that gets `None` must
+    /// fall back to reading the path per repository.
+    ///
+    /// Optional because it is an accelerator, not a primitive. GitHub answers it from a code-search
+    /// index, which caps results and lags behind a push; the per-repository read has neither
+    /// problem and is only ~8× more expensive now that the path is reserved. So the fallback is the
+    /// correct path and this is the fast one.
+    pub fn search_path(&self, org: &str, path: &str) -> Result<Option<Vec<String>>> {
+        let answer = self.ask(&json!({ "op": "search", "org": org, "path": path }))?;
+        if answer
+            .get("unsupported")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(None);
+        }
+        let list = answer
+            .get("repos")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| self.fail("answer carries neither `repos` nor `unsupported`"))?;
+        let mut out = Vec::with_capacity(list.len());
+        for v in list {
+            let name = v
+                .as_str()
+                .ok_or_else(|| self.fail("a searched repo is not a string"))?;
+            if !name.trim().is_empty() {
+                out.push(name.trim().to_string());
+            }
+        }
+        Ok(Some(out))
+    }
+
     /// A file at a revision, or `None` when the host says it is not there.
     ///
     /// **Absence only.** Any other failure propagates, and that distinction is the whole point: an

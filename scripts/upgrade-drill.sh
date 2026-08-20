@@ -62,6 +62,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 cd "$WORK"
 export WARDEN_CONNECT_ROOT="$WORK/root"
+mkdir -p warden
 
 CONSUMER="spiffe://drill.example/ns/agents/sa/recon-bot"
 PROVIDER="spiffe://drill.example/ns/svc/sa/payments-mcp"
@@ -101,7 +102,7 @@ terms = { evidence_sink = "ocsf://siem", evidence_delivery = "fail-safe" }
 reason = "the offer is the ceiling under test here, not org policy"
 POLICY
 
-printf '{"tools":[{"name":"get_balance","description":"Read an account balance."},{"name":"list_transactions","description":"List recent transactions."}]}' > surface.json
+printf '{"tools":[{"name":"get_balance","description":"Read an account balance."},{"name":"list_transactions","description":"List recent transactions."}]}' > warden/surface.json
 printf '{"name":"recon","description":"The drill consumer.","version":"1.0.0","skills":[{"id":"drive","name":"drive","description":"Drives the drill."}]}' > card.json
 
 openssl ecparam -name prime256v1 -genkey -noout -out issuer.tmp 2>/dev/null
@@ -110,7 +111,7 @@ rm -f issuer.tmp
 
 "$CONNECT" register agent --card card.json --owner human:drill@org --zone internal.drill \
     --id "$CONSUMER" --by human:drill@org >/dev/null 2>&1
-"$CONNECT" register server --id "$PROVIDER" --surface surface.json --endpoint stdio://drill \
+"$CONNECT" register server --id "$PROVIDER" --surface warden/surface.json --endpoint stdio://drill \
     --owner human:drill@org --zone internal.drill --by human:drill@org >/dev/null 2>&1
 "$CONNECT" activate "$CONSUMER" --by human:drill@org >/dev/null 2>&1
 "$CONNECT" activate "$PROVIDER" --by human:drill@org >/dev/null 2>&1
@@ -133,11 +134,12 @@ SHIM
 SHIM_ARGS=(--shim "python3 $WORK/shim.py" --shim-label gh)
 
 publish() {  # publish <terms-file> <version> <sha>
-    "$CONNECT" offer publish --surface surface.json --terms "$1" --kind mcp \
+    cp "$1" warden/offer.toml
+    "$CONNECT" offer publish --surface warden/surface.json --terms warden/offer.toml --kind mcp \
         --repo drill/payments-mcp --sha "$3" --version "$2" "${SHIM_ARGS[@]}" 2>&1
 }
 apply() {    # apply <sha>
-    "$CONNECT" need apply --manifest needs.toml --repo drill/recon-bot --sha "$1" \
+    "$CONNECT" need apply --manifest warden/needs.toml --repo drill/recon-bot --sha "$1" \
         --mediator "$MEDIATOR" "${SHIM_ARGS[@]}" --issuer-key issuer.pem --kid k1 2>&1
 }
 jti_of() {   # jti_of <artifact.jws>
@@ -160,7 +162,7 @@ approval = "pre_granted"
 ttl_max = 604800
 to = { zone = "internal.*" }
 TERMS
-cat > needs.toml <<NEEDS
+cat > warden/needs.toml <<NEEDS
 asset = "$CONSUMER"
 
 [[need]]
@@ -246,7 +248,7 @@ bold "4 · the consumer's unchanged manifest"
 # pipeline, as a non-zero exit, without anybody sending them an email. What changed is *which*
 # non-zero: `list_transactions` moved behind the provider's approval rather than out of the offer, so
 # the honest answer is PENDING and the exit code is WC-3024 rather than WC-3011.
-CHECK="$("$CONNECT" need check --manifest needs.toml 2>&1)"
+CHECK="$("$CONNECT" need check --manifest warden/needs.toml 2>&1)"
 CHECK_RC=$?
 if printf '%s' "$CHECK" | grep -q "PENDING" && [ "$CHECK_RC" -ne 0 ]; then
     ok "still a red build in the consumer's own pipeline — now PENDING, not REFUSED"
@@ -262,7 +264,7 @@ printf '%s' "$CHECK" | grep -q "REFUSED" \
 
 # --- 5 · a contract that would outlive the withdrawal ------------------------
 bold "5 · a TTL that would outlive the withdrawal date"
-cat > needs.toml <<NEEDS
+cat > warden/needs.toml <<NEEDS
 asset = "$CONSUMER"
 
 [[need]]
@@ -271,7 +273,7 @@ tools = ["get_balance"]
 justify = "APAC reconciliation needs balances"
 ttl = 604800
 NEEDS
-LONG="$("$CONNECT" need check --manifest needs.toml 2>&1)"
+LONG="$("$CONNECT" need check --manifest warden/needs.toml 2>&1)"
 if printf '%s' "$LONG" | grep -q "would outlive it"; then
     ok "refused, and it names the largest TTL that fits"
     printf '%s' "$LONG" | grep -o "Lower .ttl. in your need to at most [0-9]*s" | head -1 | sed 's/^/       /'
@@ -282,7 +284,7 @@ fi
 
 # --- 6 · the identity does not move with the clock --------------------------
 bold "6 · why it refuses instead of shortening"
-sed -i.bak 's/^ttl = 604800$/ttl = 86400/' needs.toml && rm -f needs.toml.bak
+sed -i.bak 's/^ttl = 604800$/ttl = 86400/' warden/needs.toml && rm -f warden/needs.toml.bak
 # The robust assertion is the TTL, not the jti. An implementation that clamped to
 # `after - now` would report roughly 259200s here instead of the 86400s the manifest asks for —
 # deterministic, and it does not depend on two runs landing in different seconds. The jti
@@ -290,7 +292,7 @@ sed -i.bak 's/^ttl = 604800$/ttl = 86400/' needs.toml && rm -f needs.toml.bak
 # fell inside one second, so it is not the one carrying the claim; the clock-independence proof
 # proper is `a_contract_that_would_outlive_a_withdrawal_is_refused_not_shortened`, which advances
 # the clock by ten minutes between two derivations.
-FIT="$("$CONNECT" need check --manifest needs.toml 2>&1)"
+FIT="$("$CONNECT" need check --manifest warden/needs.toml 2>&1)"
 FIT_TTL="$(printf '%s' "$FIT" | awk '/^  ttl/ {print $2}')"
 if [ "$FIT_TTL" = "86400s" ]; then
     ok "the TTL is what the manifest asked for ($FIT_TTL), not what is left before withdrawal"
@@ -299,13 +301,13 @@ else
     bad "the TTL was shortened to $FIT_TTL; a ceiling that moves with the clock churns the jti"
 fi
 FIT_A="$(printf '%s' "$FIT" | awk '/^  jti/ {print $2}')"
-FIT_B="$("$CONNECT" need check --manifest needs.toml 2>&1 | awk '/^  jti/ {print $2}')"
+FIT_B="$("$CONNECT" need check --manifest warden/needs.toml 2>&1 | awk '/^  jti/ {print $2}')"
 if [ -n "$FIT_A" ] && [ "$FIT_A" = "$FIT_B" ]; then
     ok "     and the derived jti is the same on a second run ($FIT_A)"
 else
     bad "     the derived jti moved between two runs of an unchanged manifest: $FIT_A vs $FIT_B"
 fi
-NOTICE="$("$CONNECT" need check --manifest needs.toml 2>&1)"
+NOTICE="$("$CONNECT" need check --manifest warden/needs.toml 2>&1)"
 printf '%s' "$NOTICE" | grep -q "NOTICE" \
     && ok "     and the contract that DOES fit still carries the withdrawal notice" \
     || bad "     a permitted contract for a deprecated item carried no notice"
