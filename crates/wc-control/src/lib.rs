@@ -42,6 +42,7 @@ pub mod offer;
 pub mod pipeline;
 pub mod portal;
 pub mod proposal;
+pub mod receipt;
 pub mod registry;
 pub mod rekor;
 pub mod scm;

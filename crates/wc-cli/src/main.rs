@@ -199,6 +199,7 @@ const COMMANDS: &[&str] = &[
     "scm probe",
     "blast-radius",
     "quarantine",
+    "receipt",
     "revoke",
     "unquarantine",
     "mediators",
@@ -331,6 +332,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "shim-label",
             "git-ref",
         ],
+        "receipt" => &["cid", "out", "repo", "base", "shim", "shim-label", "json"],
         "offer list" => &["as", "json"],
         "offer show" => &["asset"],
         "offer status" => &["asset", "now"],
@@ -757,6 +759,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "attest verify" => attest_verify_cmd(args)?,
         "attest surface" => attest_surface_cmd(args)?,
         "offer publish" => offer_publish_cmd(args)?,
+        "receipt" => receipt_cmd(args)?,
         "offer list" => offer_list_cmd(args)?,
         "offer show" => offer_show_cmd(args)?,
         "offer status" => offer_status_cmd(args)?,
@@ -4720,6 +4723,95 @@ fn need_check_cmd(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// `connect receipt <cid>` — the record that goes back to a repository.
+///
+/// Never the signed artifact. A contract in git is a bearer grant valid until its expiry however the
+/// registry changes afterwards, and git cannot express "withdrawn" — a deletion is another commit and
+/// the blob stays reachable. So this writes a human-readable record that grants nothing, and names
+/// the merge where the consent actually happened.
+fn receipt_cmd(args: &Args) -> Result<()> {
+    let cid = wc_core::model::Cid::new(positional_or_flag(args, "cid")?)?;
+    let projection = open_projection(args)?;
+    let record = projection.contracts.get(&cid).ok_or_else(|| {
+        WcError::with_detail(
+            Code::CONTRACT_NOT_FOUND,
+            format!("no contract {cid} is held here"),
+        )
+    })?;
+    let body = wc_control::receipt::render(record);
+    let path = wc_control::receipt::receipt_path(record);
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&serde_json::json!({ "cid": cid.as_str(), "path": path, "receipt": body }))?
+        );
+        return Ok(());
+    }
+
+    if let Some(dir) = args.get("out") {
+        let name = std::path::Path::new(&path).file_name().map_or_else(
+            || format!("{cid}.toml"),
+            |n| n.to_string_lossy().to_string(),
+        );
+        let local = std::path::Path::new(dir).join(&name);
+        std::fs::write(&local, &body).map_err(|e| {
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!("cannot write {}", local.display()),
+            )
+            .with_source(e)
+        })?;
+        println!("receipt    {}", local.display());
+    }
+
+    if let Some(repo) = args.get("repo") {
+        let base = args.get("base").unwrap_or("main").to_string();
+        let command = require(args, "shim")?;
+        let label = args.get("shim-label").unwrap_or("scm");
+        let shim = wc_control::scm::ScmShim::parse(label, command)?;
+        // Content-derived branch, and nothing proposed when it already matches base — the same two
+        // properties every other write path here needed and did not have at first.
+        let branch = format!("warden/receipt-{}", &wc_core::util::sha256_hex(&body)[..12]);
+        if shim.file_if_present(repo, &base, &path)?.as_deref() == Some(body.as_bytes()) {
+            println!("receipt    unchanged on {base} — nothing to propose");
+        } else {
+            let outcome = shim.open_pr(&wc_control::scm::PrRequest {
+                repo: repo.to_string(),
+                base,
+                branch,
+                title: format!("contract receipt: {cid}"),
+                body: format!(
+                    "A record that this repository holds a connection. **Not** a grant: it carries \
+                     no signature and no key, and holding it permits nothing.\n\nThe contract \
+                     itself is a signed artifact held by the control plane and is deliberately not \
+                     committed — a signed contract in git verifies until its expiry no matter what \
+                     the registry says.\n\nTo check whether it is still live: `connect show \
+                     {cid}`\n"
+                ),
+                files: vec![wc_control::scm::PrFile::new(path.clone(), body.as_bytes())],
+            })?;
+            if outcome.created {
+                println!(
+                    "receipt    pull req {} opened  {}",
+                    outcome.request_id, outcome.url
+                );
+            } else {
+                println!(
+                    "receipt    pull req {} already open  {}",
+                    outcome.request_id, outcome.url
+                );
+            }
+            println!("  path     {path}");
+        }
+    }
+
+    if args.get("out").is_none() && args.get("repo").is_none() {
+        print!("{body}");
+    }
+    Ok(())
+}
+
 /// `offer list` — the catalogue, as one consumer sees it.
 ///
 /// The consumer's entry point. Every row is something a provider already consented to expose to
@@ -8326,6 +8418,19 @@ fn contracts_cmd(args: &Args) -> Result<()> {
 
     let mut rows: Vec<_> = projection.contracts.values().collect();
     rows.sort_by(|a, b| a.cid.as_str().cmp(b.cid.as_str()));
+
+    // `--json` is a global flag and was accepted here and silently ignored: the single-contract
+    // view honoured it, the list printed its table regardless. A script piping this into a parser
+    // got a table, and a tolerant parser got nothing — which reads as an estate with no contracts.
+    // Found by a drill doing exactly that.
+    if args.has("json") && !args.has("dormant") {
+        println!(
+            "{}",
+            pretty(&serde_json::to_value(&rows).unwrap_or_default())?
+        );
+        return Ok(());
+    }
+
     if rows.is_empty() {
         println!("no contracts");
         return Ok(());
@@ -9406,6 +9511,24 @@ TOOLS
                 you do not own. Also refuses if connect-policy demands a role or
                 two approvers and the matched rule did not say
                 `owner_merge_approves = true` — silence stays closed.
+
+  receipt <cid> [--out DIR] [--repo R --shim CMD [--base BR] [--shim-label L]]
+                the record that goes back to a repository.
+
+                NEVER the signed artifact. A contract in git is a bearer grant
+                valid until its expiry however the registry changes afterwards,
+                and git cannot express withdrawal — a deletion is another commit
+                and the blob stays reachable. So this writes a human-readable
+                record that carries no signature and no key, grants nothing, and
+                names the merge where the consent actually happened.
+
+                Written to warden/contracts/<cid>.toml, reserved like the
+                manifests: what a repository may call then has one predictable
+                answer, instead of being answerable only by somebody with
+                control-plane access.
+
+                --repo opens a pull request with it, and proposes nothing when the
+                file already matches base.
 
   serve --portal [--inventory FILE] [--read-only] ...
                 serve a read-only page at GET /portal, gated by connect.read
