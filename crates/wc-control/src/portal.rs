@@ -87,6 +87,12 @@ pub struct View<'a> {
     pub inventory_error: Option<String>,
     /// Which registered servers the sweep's targets map to, so shadow rows can be told apart.
     pub known_targets: BTreeMap<String, EntityId>,
+    /// Per-provider impact of the terms now in force: who breaks, and how.
+    ///
+    /// Computed by the route from [`crate::offer::impact`], which is the same function
+    /// `offer status` uses. Two implementations of "who does this affect" would eventually
+    /// disagree, and the one on the page is the one a provider would act on.
+    pub impacts: Vec<(EntityId, crate::offer::Impact)>,
     /// Live contract count, for the header.
     pub contracts: usize,
     /// The issuer this plane mints as.
@@ -170,6 +176,7 @@ pub fn render(v: &View<'_>) -> String {
     catalogue_section(&mut h, v);
     generator_section(&mut h, v);
     pending_section(&mut h, v);
+    impact_section(&mut h, v);
 
     h.push_str("<h2>Why there are no buttons here</h2>");
     h.push_str(
@@ -427,6 +434,88 @@ fn generator_section(h: &mut String, v: &View<'_>) {
     h.push_str("tools();draw();})();</script>");
 }
 
+/// What a provider needs before removing anything.
+///
+/// The provider-facing half of the page. `offer status` answers this on a terminal; a provider
+/// deciding whether to withdraw a tool wants to see the consumers, not parse a report.
+///
+/// Four buckets, and they are separate because the actions differ. `gone` means the provider's
+/// intent and a live contract have diverged with no path back. `on ask` means the provider chose to
+/// decide each consumer and there is a person who can restore it — themselves. Conflating those
+/// two sends a provider to fix a term that is behaving exactly as they configured it.
+fn impact_section(h: &mut String, v: &View<'_>) {
+    let affected: usize = v.impacts.iter().map(|(_, i)| i.affected.len()).sum();
+    h.push_str("<h2>Who breaks if you remove something</h2>");
+    if v.impacts.is_empty() {
+        h.push_str(
+            "<p class=\"lede\">No offers are held, so there is nothing to withdraw yet.</p>",
+        );
+        return;
+    }
+    if affected == 0 {
+        h.push_str(
+            "<p class=\"lede\">Every live contract sits inside the terms now in force. Nothing to \
+             report — which is the answer a provider wants before a change, not after one.</p>",
+        );
+        return;
+    }
+    h.push_str(
+        "<div class=\"tw\"><table><tr><th>Provider</th><th>Connection</th><th>Consumer</th>\
+         <th>What</th><th>Expires</th></tr>",
+    );
+    for (asset, imp) in &v.impacts {
+        for a in &imp.affected {
+            let (pill, what) = if !a.gone.is_empty() {
+                ("dn", format!("gone: {}", a.gone.join(", ")))
+            } else if !a.withdrawn.is_empty() {
+                (
+                    "dn",
+                    format!(
+                        "past its date: {}",
+                        a.withdrawn
+                            .iter()
+                            .map(|(i, _)| i.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )
+            } else if !a.needs_approval.is_empty() {
+                ("wn", format!("on ask: {}", a.needs_approval.join(", ")))
+            } else {
+                (
+                    "wn",
+                    format!(
+                        "scheduled: {}",
+                        a.withdrawing
+                            .iter()
+                            .map(|(i, _)| i.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )
+            };
+            h.push_str(&format!(
+                "<tr><td class=\"mono\">{}</td><td class=\"mono\">{}</td>\
+                 <td class=\"mono\">{}</td><td><span class=\"pill {pill}\">{}</span></td>\
+                 <td class=\"mono\">{}</td></tr>",
+                esc(asset.as_str()),
+                esc(&a.cid),
+                esc(a.consumer.as_str()),
+                esc(&what),
+                esc(&crate::export::iso8601(a.exp))
+            ));
+        }
+    }
+    h.push_str("</table></div>");
+    h.push_str(
+        "<p class=\"lede\">A version bump changes nothing about a contract already issued — it is a \
+         signed ceiling with a hard expiry, and letting a publisher shorten one remotely would make \
+         the artifact a cache of a mutable decision. What closes the gap is the contract's own \
+         expiry, the consumer's next build, and — if the tool really goes — surface drift at the \
+         mediator, which fails closed with nobody publishing anything.</p>",
+    );
+}
+
 fn pending_section(h: &mut String, v: &View<'_>) {
     h.push_str("<h2>Awaiting a decision</h2>");
     if v.pending.is_empty() {
@@ -506,6 +595,7 @@ mod tests {
             inventory: None,
             inventory_error: None,
             known_targets: BTreeMap::new(),
+            impacts: Vec::new(),
             contracts: 0,
             iss: "https://connect.internal",
         }
@@ -626,6 +716,79 @@ mod tests {
         assert!(
             html.contains(r"<\/script>"),
             "the escape did not happen: {html}"
+        );
+    }
+
+    #[test]
+    fn gone_and_on_ask_are_told_apart_in_the_blast_radius() {
+        // The distinction a provider acts on. `gone` means their intent and a live contract have
+        // diverged with no path back; `on ask` means they chose to decide each consumer and can
+        // restore it themselves. Conflating them sends a provider to fix a working term.
+        use crate::offer::{Affected, Impact};
+        let mut v = view(None, Vec::new());
+        v.impacts = vec![(
+            EntityId::new("urn:acme:mcp:pay").unwrap(),
+            Impact {
+                version: 2,
+                live: 2,
+                behind: 1,
+                affected: vec![
+                    Affected {
+                        cid: "conn_11111111".to_string(),
+                        consumer: EntityId::new("urn:acme:repo:a").unwrap(),
+                        minted_under: Some(1),
+                        exp: 1_787_000_000,
+                        gone: vec!["removed_tool".to_string()],
+                        needs_approval: Vec::new(),
+                        withdrawn: Vec::new(),
+                        withdrawing: Vec::new(),
+                    },
+                    Affected {
+                        cid: "conn_22222222".to_string(),
+                        consumer: EntityId::new("urn:acme:repo:b").unwrap(),
+                        minted_under: Some(1),
+                        exp: 1_787_000_000,
+                        gone: Vec::new(),
+                        needs_approval: vec!["transfer_funds".to_string()],
+                        withdrawn: Vec::new(),
+                        withdrawing: Vec::new(),
+                    },
+                ],
+            },
+        )];
+        let html = render(&v);
+        assert!(html.contains("gone: removed_tool"), "{html}");
+        assert!(html.contains("on ask: transfer_funds"), "{html}");
+        // Different severities, so a provider can see which row is a break and which is a decision.
+        assert!(
+            html.contains("pill dn\">gone"),
+            "gone must read as the worse one"
+        );
+        assert!(
+            html.contains("pill wn\">on ask"),
+            "on ask must not read as a break"
+        );
+    }
+
+    #[test]
+    fn a_clean_estate_says_so_rather_than_showing_an_empty_table() {
+        // "Nothing to report" is the answer a provider wants BEFORE a change. An empty table reads
+        // as a page that failed to load.
+        use crate::offer::Impact;
+        let mut v = view(None, Vec::new());
+        v.impacts = vec![(
+            EntityId::new("urn:acme:mcp:pay").unwrap(),
+            Impact {
+                version: 1,
+                live: 3,
+                behind: 0,
+                affected: Vec::new(),
+            },
+        )];
+        let html = render(&v);
+        assert!(
+            html.contains("Every live contract sits inside the terms"),
+            "{html}"
         );
     }
 
