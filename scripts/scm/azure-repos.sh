@@ -2,6 +2,11 @@
 # Azure Repos shim. Requires `az` with the azure-devops extension, AZURE_DEVOPS_EXT_PAT set.
 # `repo` is org/project/repo — three parts, which is why the core never parses it.
 # UNVERIFIED — see README.md, and probe it before trusting it.
+# CHANGED: `merge_evidence` is now parsed with jq, one field at a time, from
+# scripts/scm/jq/. It used to use `sed` with greedy `.*`, which could read the author from a
+# reviewer's record — and author/approver swapping places is exactly what `is_reviewed_merge`
+# exists to prevent. `scripts/scm/parse-drill.sh` checks the extraction against fixtures; the
+# FIELD PATHS are still unverified against a live host, so probe before trusting it.
 set -eu
 q=$(cat)
 op=$(printf '%s' "$q" | sed -n 's/.*"op":"\([^"]*\)".*/\1/p')
@@ -13,6 +18,12 @@ proj=$(printf '%s' "$repo" | cut -d/ -f2)
 name=$(printf '%s' "$repo" | cut -d/ -f3-)
 ORG_URL="https://dev.azure.com/$org"
 
+command -v jq >/dev/null 2>&1 || {
+  echo "this shim needs jq: every field is read from its own path, and the sed version it replaced\ncould invert author and approver, which makes a self-approval read as reviewed" >&2
+  exit 2
+}
+JQDIR="$(cd "$(dirname "$0")/jq" && pwd)"
+
 case "$op" in
 file)
   az repos show --repository "$name" --project "$proj" --org "$ORG_URL" >/dev/null
@@ -23,22 +34,16 @@ file)
     --output tsv 2>/dev/null | base64 | tr -d '\n' | awk '{printf "{\"content_b64\":\"%s\"}\n", $0}'
   ;;
 merge_evidence)
-  # Reviewer vote >= 10 is an approval in Azure DevOps.
   pr=$(az repos pr list --repository "$name" --project "$proj" --org "$ORG_URL" \
-        --status completed --query "[?lastMergeCommit.commitId=='$sha'] | [0]" -o json 2>/dev/null)
-  [ -n "$pr" ] && [ "$pr" != "null" ] || { printf '{"merged":false,"ref":"","protected":false}\n'; exit 0; }
-  id=$(printf '%s' "$pr" | sed -n 's/.*"pullRequestId": \([0-9]*\).*/\1/p')
-  target=$(printf '%s' "$pr" | sed -n 's|.*"targetRefName": "refs/heads/\([^"]*\)".*|\1|p')
-  author=$(printf '%s' "$pr" | sed -n 's/.*"createdBy":.*"uniqueName": "\([^"]*\)".*/\1/p')
-  approvers=$(printf '%s' "$pr" | tr '{' '\n' \
-        | awk '/"vote": (10|5)/{ok=1} /uniqueName/{if(ok){gsub(/.*"uniqueName": "/,"");gsub(/".*/,"");print;ok=0}}' \
-        | paste -sd'","' -)
-  # A branch policy is Azure's guard. Any enabled policy on the target counts.
+        --status completed --query "[?lastMergeCommit.commitId=='$sha'] | [0]" -o json 2>/dev/null) || pr=null
+  [ -n "$pr" ] || pr=null
+  if [ "$pr" = "null" ]; then printf '{"merged":false,"ref":"","protected":false}\n'; exit 0; fi
+  target=$(printf '%s' "$pr" | jq -r '(.targetRefName // "") | sub("^refs/heads/"; "")')
+  # A branch policy is Azure's guard. Any enabled policy scoped to the target counts.
   if az repos policy list --project "$proj" --org "$ORG_URL" \
         --query "[?isEnabled && settings.scope[?refName=='refs/heads/$target']] | length(@)" -o tsv 2>/dev/null \
         | grep -qv '^0$'; then prot=true; else prot=false; fi
-  printf '{"merged":true,"ref":"refs/heads/%s","protected":%s,"request_id":"%s","author":"%s","approvers":["%s"],"merged_at":0}\n' \
-    "$target" "$prot" "$id" "$author" "$approvers"
+  jq -n --argjson pr "$pr" --arg prot "$prot" -f "$JQDIR/azure-repos-merge.jq"
   ;;
 *) echo "unknown op: $op" >&2; exit 2 ;;
 esac
