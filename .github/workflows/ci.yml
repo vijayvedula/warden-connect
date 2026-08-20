@@ -122,6 +122,14 @@ jobs:
         working-directory: warden-connect
         run: ./scripts/upgrade-drill.sh   # builds the workspace itself
 
+      # GitHub Actions publishes an RSA-only OIDC JWKS, and `IssuerKeys::add_jwks` skipped every
+      # RSA key — so `--oidc-token` against the issuer most estates would use could resolve no key
+      # at all. A documented flag that could not work. This drill proves the shape end to end, and
+      # states plainly that OIDC satisfies the identity stage and does NOT reach Attested.
+      - name: OIDC drill — a workload identity from a token the estate already has
+        working-directory: warden-connect
+        run: ./scripts/oidc-drill.sh
+
       # The catalogue drill now also covers the read-only portal: that it serves behind the read
       # role, refuses an unauthenticated request, ships `default-src 'none'`, and contains no form,
       # button or POST. That last one is a design claim, and a claim nobody asserts is a claim that
