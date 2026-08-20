@@ -18,15 +18,107 @@ use wc_core::error::{Code, Result, WcError};
 /// unlock call to forget.
 #[derive(Debug)]
 pub struct LockGuard {
+    /// Kept for the drop trace only. The lock's lifetime is the descriptor's, not this field's.
+    path: std::path::PathBuf,
     _file: File,
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        // The close is what releases the flock; this only records that it happened, so a trace can
+        // show whether a release was missing or merely late.
+        trace(&self.path, &self._file, "release");
+    }
 }
 
 /// Take the exclusive writer lock on `<dir>/<name>.lock`.
 pub fn acquire(dir: &Path, name: &str) -> Result<LockGuard> {
     let path = dir.join(format!("{name}.lock"));
-    let file = open_lock_file(&path)?;
-    flock_exclusive(&file, &path)?;
-    Ok(LockGuard { _file: file })
+    // Retried briefly, and the reason is measured rather than assumed.
+    //
+    // `registry::tests::transitions_are_durable_across_reopen` failed about one run in six with
+    // WC-8003 on a path unique to its own process and test. Instrumenting `acquire` with the pid and
+    // the inode showed the release logged immediately before the blocking acquire — same process,
+    // same inode, nothing else holding it. A minimal probe (`reacquire_after_drop_never_blocks`)
+    // then reproduced it with nothing but this function: 20,000 acquire-drop-acquire cycles never
+    // block in isolation, and block within one run under parallel test load.
+    //
+    // So on this platform a `flock` taken immediately after a release on the same inode can
+    // transiently see the old lock. Reporting that as "another writer holds this" is a lie — nobody
+    // holds it — and an operator restarting a control plane right after stopping one would read it.
+    //
+    // Bounded and short on purpose. This does not weaken the single-writer guarantee: `flock` still
+    // arbitrates, and a genuinely held lock is still held after 50ms. A longer or unbounded wait is
+    // what `open_with_standby` is for, and it is a deliberate election rather than a retry.
+    const ATTEMPTS: u32 = 8;
+    let mut last = None;
+    for attempt in 0..ATTEMPTS {
+        let file = open_lock_file(&path)?;
+        trace(&path, &file, "acquire");
+        match flock_exclusive(&file, &path) {
+            Ok(()) => {
+                return Ok(LockGuard {
+                    path: path.clone(),
+                    _file: file,
+                })
+            }
+            Err(e) => {
+                trace(&path, &file, "BLOCKED");
+                last = Some(e);
+                // Reopened next time round: a failed `flock` leaves this descriptor open, and
+                // holding it would mean waiting on an inode the writer may have replaced.
+                drop(file);
+                if attempt + 1 < ATTEMPTS {
+                    std::thread::sleep(std::time::Duration::from_millis(1 << attempt.min(4)));
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| WcError::with_detail(Code::STORE_LOCKED, "lock could not be taken")))
+}
+
+/// Diagnostics for a lock that should not have been contended.
+///
+/// Opt-in through `WARDEN_CONNECT_TRACE_LOCKS`, and doing nothing otherwise — a lock path is taken
+/// on every write and this must not cost anything in the ordinary case.
+///
+/// It exists because `registry::tests::transitions_are_durable_across_reopen` fails roughly one run
+/// in six with `WC-8003` on a path that is unique per process and per test. Everything reachable by
+/// reading was ruled out: the prefix is used by no other module, `LockGuard` is owned by value and
+/// never shared with a thread, and the test's own inner scope drops before it reopens. `EWOULDBLOCK`
+/// requires another LIVE descriptor on the same inode, so the inode and the pid are the two facts
+/// that would identify the holder — and neither is visible from the failure message.
+fn trace(path: &Path, file: &File, what: &str) {
+    if std::env::var_os("WARDEN_CONNECT_TRACE_LOCKS").is_none() {
+        return;
+    }
+    let ino = std::os::unix::fs::MetadataExt::ino(&match file.metadata() {
+        Ok(m) => m,
+        Err(_) => return,
+    });
+    let line = format!(
+        "{what} pid={} tid={:?} ino={ino} fd={} path={}\n",
+        std::process::id(),
+        std::thread::current().id(),
+        std::os::unix::io::AsRawFd::as_raw_fd(file),
+        path.display()
+    );
+    // Appended to one file rather than printed. `cargo test` captures stdout per test, so a
+    // contended lock's other holder — which is in a DIFFERENT test — is invisible on stderr. The
+    // whole question is who else had it, so the trace has to outlive the test that noticed.
+    match std::env::var("WARDEN_CONNECT_TRACE_LOCKS") {
+        Ok(p) if p != "1" => {
+            use std::io::Write as _;
+            if let Ok(mut fh) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&p)
+            {
+                let _ = fh.write_all(line.as_bytes());
+            }
+        }
+        _ => eprint!("LOCKTRACE {line}"),
+    }
 }
 
 /// What a standby did while waiting for the lock.
@@ -107,7 +199,10 @@ pub fn acquire_waiting(
         match flock_exclusive(&file, &path) {
             Ok(()) => {
                 return Ok((
-                    LockGuard { _file: file },
+                    LockGuard {
+                        path: path.clone(),
+                        _file: file,
+                    },
                     Election {
                         waited_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
                         uncontended: !contended,
@@ -194,9 +289,85 @@ fn flock_exclusive(_file: &File, path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    /// The reproduction, kept and ignored.
+    ///
+    /// 20,000 acquire-drop-acquire cycles never block in isolation and block within one run under
+    /// parallel test load — which is how the transient `EWOULDBLOCK` behind
+    /// `registry::tests::transitions_are_durable_across_reopen` was finally identified.
+    ///
+    /// `#[ignore]` because it is a load generator, not a test. Left in the suite it made a *shim*
+    /// test time out at 5s — a diagnostic that breaks its neighbours is measuring the harness.
+    ///
+    ///     cargo test -p warden-connect-control --lib -- --ignored reacquire
+    #[test]
+    #[ignore = "load generator: this is the reproduction, not a check"]
+    fn reacquire_after_drop_never_blocks() {
+        let dir = std::env::temp_dir().join(format!("wc-lockprobe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..20_000u32 {
+            let g = acquire(&dir, "events").expect("first");
+            drop(g);
+            let g2 = acquire(&dir, "events");
+            assert!(g2.is_ok(), "blocked on iteration {i}: {:?}", g2.err());
+            drop(g2);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The fix, tested deterministically rather than by racing.
+    ///
+    /// A holder releases after a delay well inside the retry budget. Before the retry existed this
+    /// reported `WC-8003 another writer holds …` — true at the instant it looked, and a lie by the
+    /// time an operator read it.
+    #[test]
+    fn a_lock_released_a_moment_later_is_acquired_rather_than_reported_as_contended() {
+        let dir = std::env::temp_dir().join(format!("wc-lockwait-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let held = acquire(&dir, "events").expect("the holder takes it first");
+        let d = dir.clone();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            drop(held);
+            let _ = &d;
+        });
+        // Inside the retry budget, so this must wait and succeed.
+        let taken = acquire(&dir, "events");
+        releaser.join().unwrap();
+        assert!(
+            taken.is_ok(),
+            "a lock released 20ms in must be acquired, not reported as contended: {:?}",
+            taken.err()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// And a lock genuinely held is still refused. The retry must not become a wait.
+    #[test]
+    fn a_lock_that_stays_held_is_still_refused() {
+        let dir = std::env::temp_dir().join(format!("wc-lockheld-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _held = acquire(&dir, "events").expect("first");
+        let started = std::time::Instant::now();
+        let err = acquire(&dir, "events").expect_err("a held lock is held");
+        assert_eq!(err.code(), Code::STORE_LOCKED);
+        // Bounded. An unbounded wait here would turn a second writer into a hang, and a hang is
+        // indistinguishable from a slow start — which is the failure `open_with_standby` exists to
+        // make explicit and deliberate.
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "the retry budget must stay small: waited {:?}",
+            started.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_second_holder_is_refused_and_drop_releases() {

@@ -437,6 +437,15 @@ pub struct Chain {
 }
 
 impl Chain {
+    /// The directory this chain lives in.
+    ///
+    /// Derived from the file path rather than stored twice: two fields that must agree are two
+    /// fields that can disagree.
+    #[must_use]
+    pub fn dir(&self) -> &Path {
+        self.path.parent().unwrap_or(Path::new("."))
+    }
+
     /// Open (or create) the chain in `dir`, taking the writer lock.
     pub fn open(dir: impl AsRef<Path>) -> Result<Chain> {
         let dir = dir.as_ref();

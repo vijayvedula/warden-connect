@@ -460,6 +460,15 @@ pub struct Evidence {
 }
 
 impl Evidence {
+    /// The directory this instance's chain lives in.
+    ///
+    /// So a caller holding an `Evidence` can read the chain back without being told separately
+    /// where it is — two sources for one path are two sources that can disagree.
+    #[must_use]
+    pub fn dir(&self) -> &Path {
+        self.chain.dir()
+    }
+
     /// Open the evidence chain in `dir`.
     pub fn open(dir: impl AsRef<Path>) -> Result<Evidence> {
         Ok(Evidence {
