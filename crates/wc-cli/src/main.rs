@@ -167,6 +167,7 @@ const TWO_WORD: &[&str] = &[
     "attest verify",
     "attest surface",
     "offer publish",
+    "offer lint",
     "offer list",
     "offer show",
     "offer status",
@@ -189,6 +190,7 @@ const COMMANDS: &[&str] = &[
     "attest verify",
     "attest surface",
     "offer publish",
+    "offer lint",
     "offer list",
     "offer show",
     "offer status",
@@ -335,9 +337,17 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "git-ref",
         ],
         "receipt" => &["cid", "out", "repo", "base", "shim", "shim-label", "json"],
+        "offer lint" => &[
+            "terms",
+            "surface",
+            "kind",
+            "now",
+            "json",
+            "allow-nonstandard-path",
+        ],
         "offer list" => &["as", "json"],
         "offer show" => &["asset"],
-        "offer status" => &["asset", "now"],
+        "offer status" => &["asset", "now", "within", "json"],
         "need check" => &["manifest", "repo", "sha", "allow-nonstandard-path"],
         "need apply" => &[
             "allow-nonstandard-path",
@@ -762,6 +772,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "attest surface" => attest_surface_cmd(args)?,
         "offer publish" => offer_publish_cmd(args)?,
         "receipt" => receipt_cmd(args)?,
+        "offer lint" => offer_lint_cmd(args)?,
         "offer list" => offer_list_cmd(args)?,
         "offer show" => offer_show_cmd(args)?,
         "offer status" => offer_status_cmd(args)?,
@@ -4839,6 +4850,220 @@ fn receipt_cmd(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// `offer status --within <duration>` — every withdrawal coming up, across every offer.
+///
+/// The reminder nothing sent. A provider publishes a withdrawal date and then nothing chases it:
+/// `offer status <asset>` answers for one asset when somebody asks, and the whole point of a
+/// schedule is that it acts before anybody thinks to.
+///
+/// Sweeps every held offer and reports items due inside the window, with the contracts that hold
+/// them. Suitable for a weekly job — exits non-zero when there is anything to act on, so a pipeline
+/// can carry it.
+fn offer_status_upcoming(args: &Args, within: u64) -> Result<()> {
+    let projection = open_projection(args)?;
+    let at = args.number("now").unwrap_or_else(now);
+    let horizon = at.saturating_add(within);
+
+    struct Due {
+        asset: String,
+        item: String,
+        after: u64,
+        holders: Vec<String>,
+    }
+    let mut due: Vec<Due> = Vec::new();
+
+    for (asset, offer) in &projection.offers {
+        // Every item any term mentions, deduplicated — an item deprecated in two terms has one
+        // earliest date, which `deprecated_after` already resolves.
+        let mut items: Vec<&str> = offer
+            .terms
+            .iter()
+            .flat_map(|t| t.items.iter().map(String::as_str))
+            .collect();
+        items.sort_unstable();
+        items.dedup();
+        for item in items {
+            let Some(after) = offer.deprecated_after(item) else {
+                continue;
+            };
+            if after > horizon {
+                continue;
+            }
+            // Who actually holds it. A date with no holders is a schedule nobody needs telling
+            // about, and reporting it would bury the ones that matter.
+            let holders: Vec<String> = projection
+                .contracts
+                .values()
+                .filter(|c| {
+                    &c.callee == asset
+                        && c.is_live(at)
+                        && c.surface.items().iter().any(|i| i == item)
+                })
+                .map(|c| format!("{} ({})", c.cid, c.caller))
+                .collect();
+            if holders.is_empty() {
+                continue;
+            }
+            due.push(Due {
+                asset: asset.as_str().to_string(),
+                item: item.to_string(),
+                after,
+                holders,
+            });
+        }
+    }
+    // Soonest first: the thing to act on is at the top.
+    due.sort_by(|a, b| a.after.cmp(&b.after).then(a.asset.cmp(&b.asset)));
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&serde_json::json!({
+                "within_secs": within,
+                "due": due.iter().map(|d| serde_json::json!({
+                    "asset": d.asset, "item": d.item, "after": d.after,
+                    "holders": d.holders,
+                })).collect::<Vec<_>>(),
+            }))?
+        );
+    } else {
+        println!("withdrawals due within {}", human_duration(within));
+        if due.is_empty() {
+            println!();
+            println!("  Nothing. No item any live contract holds is scheduled for removal inside");
+            println!("  this window — which is the answer, not an empty report.");
+            return Ok(());
+        }
+        for d in &due {
+            println!();
+            println!("{}  {}", d.asset, d.item);
+            println!(
+                "  removed  {} ({} away)",
+                wc_control::export::iso8601(d.after),
+                human_duration(d.after.saturating_sub(at))
+            );
+            println!("  held by  {} contract(s)", d.holders.len());
+            for h in &d.holders {
+                println!("    {h}");
+            }
+        }
+        println!();
+        println!("  A version bump changes nothing about a contract already issued. What closes");
+        println!("  the gap is the contract's own expiry and the consumer's next build, so the");
+        println!("  consumers above are who to tell.");
+    }
+
+    if !due.is_empty() {
+        // Non-zero so a weekly job can carry it. Something to act on is not an error, but a report
+        // that exits 0 either way is a report nobody notices.
+        return Err(WcError::with_detail(
+            Code::WITHDRAWAL_DUE,
+            format!(
+                "{} withdrawal(s) due within {}",
+                due.len(),
+                human_duration(within)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// `offer lint` — check an offer before it is merged.
+///
+/// Needs no control plane: no state log, no key, no registry. A provider's CI has none of those, and
+/// the moment to catch a bad term is in the repository where it was written, before the merge that
+/// makes it consent.
+///
+/// Errors mirror what `offer publish` refuses, so a clean lint means a clean publish. Warnings are
+/// the interesting half: terms that parse, mint, and do something the provider did not intend.
+fn offer_lint_cmd(args: &Args) -> Result<()> {
+    let terms_path = args
+        .get("terms")
+        .unwrap_or(wc_control::inventory::OFFER_PATH);
+    let surface_path = args
+        .get("surface")
+        .unwrap_or(wc_control::inventory::SURFACE_PATH);
+    reserved_path_or_refuse(
+        args,
+        terms_path,
+        wc_control::inventory::OFFER_PATH,
+        "an offer",
+    )?;
+
+    let terms_text = std::fs::read_to_string(terms_path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {terms_path}"))
+            .with_source(e)
+    })?;
+    let manifest = wc_control::offer::OfferManifest::parse(&terms_text)?;
+
+    let surface_raw = std::fs::read(surface_path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {surface_path}"))
+            .with_source(e)
+    })?;
+    let surface: serde_json::Value = serde_json::from_slice(&surface_raw).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("{surface_path} is not JSON"))
+            .with_source(e)
+    })?;
+    // Canonicalised, exactly as `offer publish` does it — a term may only offer what the callee
+    // declares, and the canonicaliser is the one thing that decides what "declares" means. Deriving
+    // the set differently here would let a lint pass where a publish refuses.
+    let kind = surface_kind(args.get("kind").unwrap_or("mcp"))?;
+    let asset = EntityId::new(&manifest.asset)?;
+    let pin =
+        wc_core::canon::canonicalise(kind, &asset, &surface, &wc_core::canon::Limits::default())?;
+    let declared: std::collections::BTreeSet<String> = pin.items.keys().cloned().collect();
+
+    let now = args.number("now").unwrap_or_else(now);
+    let findings = wc_control::offer::lint(&manifest, &declared, now);
+    let errors = findings.iter().filter(|f| f.error).count();
+    let warnings = findings.len() - errors;
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&serde_json::json!({
+                "errors": errors,
+                "warnings": warnings,
+                "findings": findings.iter().map(|f| serde_json::json!({
+                    "severity": if f.error { "error" } else { "warning" },
+                    "detail": f.detail,
+                })).collect::<Vec<_>>(),
+            }))?
+        );
+    } else {
+        println!("{terms_path}");
+        println!(
+            "  surface  {} item(s) declared in {surface_path}",
+            declared.len()
+        );
+        println!("  terms    {}", manifest.terms.len());
+        for f in &findings {
+            println!(
+                "  {} {}",
+                if f.error { "ERROR  " } else { "warning" },
+                f.detail
+            );
+        }
+        println!();
+        if findings.is_empty() {
+            println!("  clean");
+        } else {
+            println!("  {errors} error(s) · {warnings} warning(s)");
+        }
+    }
+
+    // Non-zero on an error, so a provider's pipeline fails before the merge. Warnings do not fail:
+    // a term with no audience is legitimate for a read-only tool, and a lint that blocked on
+    // judgement calls would be turned off.
+    if errors > 0 {
+        return Err(WcError::with_detail(
+            Code::POLICY_INVALID,
+            format!("{errors} term(s) cannot be published as written"),
+        ));
+    }
+    Ok(())
+}
+
 /// `offer list` — the catalogue, as one consumer sees it.
 ///
 /// The consumer's entry point. Every row is something a provider already consented to expose to
@@ -4987,6 +5212,17 @@ fn offer_show_cmd(args: &Args) -> Result<()> {
 /// affects", and it was dropped on the floor at mint time — the field, the comment, and no path
 /// between them.
 fn offer_status_cmd(args: &Args) -> Result<()> {
+    // `--within` sweeps every offer instead of answering for one. Kept on this verb rather than a
+    // new one: it is the same question — what is going away — asked before anybody thinks to ask it.
+    if let Some(w) = args.get("within") {
+        let secs = wc_control::cpolicy::parse_duration(w).ok_or_else(|| {
+            WcError::with_detail(
+                Code::CONFIG_INVALID,
+                format!("--within {w:?} is not a duration; try 30d, 12h, 90d"),
+            )
+        })?;
+        return offer_status_upcoming(args, secs);
+    }
     let asset = EntityId::new(positional_or_flag(args, "asset")?)?;
     let at = args.number("now").unwrap_or_else(now);
     let projection = open_projection(args)?;
@@ -9554,6 +9790,40 @@ TOOLS
                 you do not own. Also refuses if connect-policy demands a role or
                 two approvers and the matched rule did not say
                 `owner_merge_approves = true` — silence stays closed.
+
+  offer lint [--terms F] [--surface F] [--kind K] [--now TS] [--json]
+                check an offer before the merge that makes it consent.
+
+                Needs NO control plane — no state log, no key, no registry — so it
+                runs in the provider's own repository, on the pull request.
+                Paths default to the reserved ones.
+
+                Errors mirror what `offer publish` refuses, so a clean lint means
+                a clean publish. Warnings are the interesting half: terms that
+                mint and do something else. The sharpest is a withdrawal date
+                closer than the ttl_max beside it — every consumer asking for the
+                full ceiling is refused, and the message THEY see tells them to
+                lower their ttl, which never reaches the provider whose two
+                numbers disagree.
+
+                Exit non-zero on errors only. Warnings do not block: a term with
+                no audience is legitimate for a read-only tool, and a lint that
+                blocked on judgement calls is one people switch off.
+
+                scripts/ci/offer-lint.yml is this as a provider-side workflow.
+
+  offer status --within DUR [--json]
+                every withdrawal coming up, across every offer, with the contracts
+                that hold each item.
+
+                The reminder nothing sent. `offer status <asset>` answers for one
+                asset when somebody asks; the point of a schedule is that it acts
+                before anybody thinks to. Soonest first, and items no live
+                contract holds are left out — a date nobody depends on would bury
+                the ones that matter.
+
+                Exits WC-3033 when there is something to act on, so a weekly job
+                can carry it.
 
   receipt <cid> [--out DIR] [--repo R --shim CMD [--base BR] [--shim-label L]]
                 the record that goes back to a repository.

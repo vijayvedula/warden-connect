@@ -1,0 +1,62 @@
+# Lint an offer before the merge that makes it consent.
+#
+# Copy into `.github/workflows/` in a PROVIDER's repository.
+#
+# ## Why in the provider's repo, and why on the pull request
+#
+# Merging `warden/offer.toml` is the provider's consent. After that merge the terms are what the
+# estate acts on, and a term that mints but does the wrong thing is only visible when somebody's
+# build breaks — usually the consumer's, whose message says "lower your ttl" and never reaches the
+# provider whose two numbers disagree.
+#
+# `connect offer lint` needs no control plane: no state log, no key, no registry. That is what lets
+# it run here, in the repository where the terms were written, before anyone has agreed to them.
+#
+# Errors fail the check; warnings do not. A term with no audience is legitimate for a read-only
+# tool, and a lint that blocked on judgement calls is a lint people switch off.
+
+name: offer lint
+
+on:
+  pull_request:
+    paths:
+      - "warden/offer.toml"
+      - "warden/surface.json"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install connect
+        run: cargo install --locked warden-connect-cli
+
+      - name: Lint the offer
+        run: |
+          # Paths default to the reserved ones, so neither is named here. A declaration anywhere
+          # else is refused: a discovery sweep reads that path and nothing else.
+          connect offer lint | tee lint.txt
+
+      - name: Comment the warnings on the pull request
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Warnings do not fail the job, so they have to be put somewhere a reviewer will see them.
+          # A warning nobody reads is the same as no warning.
+          if grep -q '^  warning' lint.txt; then
+            {
+              echo "### warden-connect offer lint"
+              echo
+              echo 'These terms will publish. They may not do what you meant:'
+              echo
+              echo '```'
+              grep '^  warning' lint.txt
+              echo '```'
+            } > body.md
+            gh pr comment "${{ github.event.pull_request.number }}" --body-file body.md
+          fi

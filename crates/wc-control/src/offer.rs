@@ -591,6 +591,147 @@ pub struct LiveContract<'a> {
     pub consumer_tier: Tier,
 }
 
+/// One thing a lint found, and how much it matters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    /// `error` refuses; `warning` is a term that mints and is probably not what was meant.
+    pub error: bool,
+    /// What is wrong, in words a provider can act on.
+    pub detail: String,
+}
+
+/// Check an offer for terms that are valid and probably wrong.
+///
+/// # Why this is separate from `into_offer`
+///
+/// `into_offer` refuses what cannot work: no terms, an empty item list, a `ttl_max` of zero or past
+/// the ceiling, an item outside the declared surface. Those are errors and it is right to refuse
+/// them.
+///
+/// What is left is worse in one way: terms that parse, mint, and do something the provider did not
+/// intend. A withdrawal date already in the past silently makes an item unreachable. A withdrawal
+/// date closer than the term's own ceiling refuses every contract at that ceiling — the consumer
+/// sees "lower your ttl" and the provider never learns their two numbers disagree. Neither is
+/// visible until somebody's build breaks.
+///
+/// # Runs with nothing
+///
+/// Takes the manifest and the surface, not a control plane. A provider's CI has no state log, no
+/// key and no registry — and the moment to catch a bad term is before the merge, in the repository
+/// where it was written.
+#[must_use]
+pub fn lint(manifest: &OfferManifest, declared: &BTreeSet<String>, now: u64) -> Vec<Finding> {
+    let mut out = Vec::new();
+
+    // Errors first, mirroring `into_offer` so a lint that passes means a publish will too. Repeating
+    // the checks rather than calling it: `into_offer` stops at the first problem, and a provider
+    // fixing terms wants all of them at once.
+    if manifest.terms.is_empty() {
+        out.push(Finding {
+            error: true,
+            detail: "no terms: an offer with no terms permits nothing and is not a catalogue entry"
+                .to_string(),
+        });
+    }
+    for (i, term) in manifest.terms.iter().enumerate() {
+        if term.items.is_empty() {
+            out.push(Finding {
+                error: true,
+                detail: format!("term {i}: no items"),
+            });
+        }
+        if term.ttl_max == 0 {
+            out.push(Finding {
+                error: true,
+                detail: format!("term {i}: ttl_max is 0, so nothing can be contracted under it"),
+            });
+        }
+        for item in &term.items {
+            if !declared.contains(item) {
+                out.push(Finding {
+                    error: true,
+                    detail: format!(
+                        "term {i}: {item:?} is not in the declared surface, so the term grants \
+                         something this server does not expose"
+                    ),
+                });
+            }
+        }
+
+        // --- the warnings: valid, and probably not meant ---
+        if term.to.zone.is_none() && term.to.tier.is_none() {
+            out.push(Finding {
+                error: false,
+                detail: format!(
+                    "term {i}: no audience, so every registered consumer may ask. Legitimate for a \
+                     read-only tool and rarely meant for anything else — set `to = {{ zone = … }}`"
+                ),
+            });
+        }
+        for dep in &term.deprecates {
+            if !term.items.iter().any(|it| it == &dep.item) {
+                out.push(Finding {
+                    error: false,
+                    detail: format!(
+                        "term {i}: deprecates {:?}, which this term does not offer — the schedule \
+                         binds nothing",
+                        dep.item
+                    ),
+                });
+            }
+            if dep.after <= now {
+                out.push(Finding {
+                    error: false,
+                    detail: format!(
+                        "term {i}: {:?} was withdrawn on {} — it is already unreachable, and a \
+                         consumer asking for it is refused rather than told it is going",
+                        dep.item,
+                        crate::export::iso8601(dep.after)
+                    ),
+                });
+            } else if dep.after.saturating_sub(now) < term.ttl_max {
+                // The trap worth catching. `match_need` refuses a contract that would outlive a
+                // withdrawal date, so a ceiling longer than the remaining window means every
+                // consumer at that ceiling is refused — and the message they see says "lower your
+                // ttl", which never reaches the provider whose two numbers disagree.
+                out.push(Finding {
+                    error: false,
+                    detail: format!(
+                        "term {i}: {:?} is withdrawn on {} — {}s away — but ttl_max is {}s, so \
+                         every consumer asking for the full ceiling is refused. Lower ttl_max or \
+                         move the date",
+                        dep.item,
+                        crate::export::iso8601(dep.after),
+                        dep.after.saturating_sub(now),
+                        term.ttl_max
+                    ),
+                });
+            }
+        }
+    }
+
+    // An item in two terms: the strictest wins, so the other is dead weight. Reported because a
+    // provider editing the lenient one will see no change and conclude the file is not being read.
+    let mut seen: std::collections::BTreeMap<&str, Vec<usize>> = std::collections::BTreeMap::new();
+    for (i, term) in manifest.terms.iter().enumerate() {
+        for item in &term.items {
+            seen.entry(item.as_str()).or_default().push(i);
+        }
+    }
+    for (item, terms) in seen {
+        if terms.len() > 1 {
+            out.push(Finding {
+                error: false,
+                detail: format!(
+                    "{item:?} appears in terms {terms:?}. The strictest applies and the others are \
+                     inert — editing one of those will look like the file is being ignored"
+                ),
+            });
+        }
+    }
+    out
+}
+
 /// Judge live contracts against the offer now in force.
 ///
 /// **A version bump changes nothing about a contract already issued**, and that is deliberate:
@@ -906,6 +1047,158 @@ deprecates = [{ item = "get_balance", after = 1000 }]
             offer_version: version,
             schema: wc_core::contract::CONTRACT_SCHEMA,
         }
+    }
+
+    fn declared_set(items: &[&str]) -> std::collections::BTreeSet<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn lint_is_clean_on_an_offer_that_says_what_it_means() {
+        let m = OfferManifest::parse(
+            r#"
+asset = "spiffe://bank/ns/svc/sa/pay"
+
+[[term]]
+items = ["get_balance"]
+approval = "pre_granted"
+ttl_max = 3600
+to = { zone = "internal.*" }
+"#,
+        )
+        .unwrap();
+        assert!(
+            lint(&m, &declared_set(&["get_balance"]), NOW).is_empty(),
+            "a clean offer must produce nothing, or the noise trains people to ignore it"
+        );
+    }
+
+    #[test]
+    fn lint_catches_a_withdrawal_closer_than_the_ceiling_it_sits_beside() {
+        // The trap worth having a lint for. `match_need` refuses a contract that would outlive a
+        // withdrawal date, so a ceiling longer than the remaining window refuses every consumer
+        // asking for the full ceiling — and the message THEY see says "lower your ttl", which
+        // never reaches the provider whose two numbers disagree.
+        let m = OfferManifest::parse(&format!(
+            r#"
+asset = "spiffe://bank/ns/svc/sa/pay"
+
+[[term]]
+items = ["get_balance"]
+approval = "pre_granted"
+ttl_max = 604800
+to = {{ zone = "internal.*" }}
+deprecates = [{{ item = "get_balance", after = {} }}]
+"#,
+            NOW + 86_400
+        ))
+        .unwrap();
+        let found = lint(&m, &declared_set(&["get_balance"]), NOW);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(!found[0].error, "this mints, so it is a warning");
+        assert!(
+            found[0].detail.contains("Lower ttl_max or move the date"),
+            "the finding must say what to do: {}",
+            found[0].detail
+        );
+    }
+
+    #[test]
+    fn lint_catches_a_date_already_passed_and_an_item_in_two_terms() {
+        let m = OfferManifest::parse(&format!(
+            r#"
+asset = "spiffe://bank/ns/svc/sa/pay"
+
+[[term]]
+items = ["get_balance", "transfer_funds"]
+approval = "pre_granted"
+ttl_max = 3600
+to = {{ zone = "internal.*" }}
+deprecates = [{{ item = "get_balance", after = {} }}]
+
+[[term]]
+items = ["transfer_funds"]
+approval = "named_consumer"
+ttl_max = 3600
+"#,
+            NOW - 100
+        ))
+        .unwrap();
+        let found = lint(&m, &declared_set(&["get_balance", "transfer_funds"]), NOW);
+        let all: String = found.iter().map(|f| f.detail.clone()).collect();
+        assert!(all.contains("already unreachable"), "{all}");
+        // The shadowed term. A provider editing the inert one sees no change and concludes the
+        // file is not being read.
+        assert!(all.contains("appears in terms [0, 1]"), "{all}");
+        // No audience at all on term 1.
+        assert!(all.contains("no audience"), "{all}");
+        assert!(
+            found.iter().all(|f| !f.error),
+            "none of these blocks a publish"
+        );
+    }
+
+    #[test]
+    fn lint_reports_every_error_rather_than_stopping_at_the_first() {
+        // `into_offer` stops at the first problem, which is right for a refusal and wrong for a
+        // provider fixing terms — they want the whole list in one run.
+        let m = OfferManifest::parse(
+            r#"
+asset = "spiffe://bank/ns/svc/sa/pay"
+
+[[term]]
+items = ["nope_one", "nope_two"]
+approval = "pre_granted"
+ttl_max = 3600
+to = { zone = "internal.*" }
+
+[[term]]
+items = ["nope_three"]
+approval = "pre_granted"
+ttl_max = 3600
+to = { zone = "internal.*" }
+"#,
+        )
+        .unwrap();
+        let found = lint(&m, &declared_set(&["get_balance"]), NOW);
+        let errors: Vec<&Finding> = found.iter().filter(|f| f.error).collect();
+        // Two bad items in ONE term plus one in another, deliberately. An earlier version used one
+        // item per term, so a mutation reporting only the first item of each still produced the
+        // expected count — the test proved the loop over terms and said nothing about the loop over
+        // items inside them.
+        assert_eq!(
+            errors.len(),
+            3,
+            "every undeclared item must be named, across terms and within one: {found:?}"
+        );
+        let all: String = errors.iter().map(|f| f.detail.clone()).collect();
+        for bad in ["nope_one", "nope_two", "nope_three"] {
+            assert!(all.contains(bad), "{bad} was not reported: {all}");
+        }
+    }
+
+    #[test]
+    fn lint_catches_a_deprecation_for_an_item_the_term_does_not_offer() {
+        // A schedule that binds nothing. The provider believes they announced a withdrawal.
+        let m = OfferManifest::parse(&format!(
+            r#"
+asset = "spiffe://bank/ns/svc/sa/pay"
+
+[[term]]
+items = ["get_balance"]
+approval = "pre_granted"
+ttl_max = 3600
+to = {{ zone = "internal.*" }}
+deprecates = [{{ item = "transfer_funds", after = {} }}]
+"#,
+            NOW + 999_999
+        ))
+        .unwrap();
+        let found = lint(&m, &declared_set(&["get_balance", "transfer_funds"]), NOW);
+        assert!(
+            found.iter().any(|f| f.detail.contains("binds nothing")),
+            "{found:?}"
+        );
     }
 
     #[test]

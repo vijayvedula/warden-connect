@@ -117,6 +117,13 @@ impl Code {
     pub const RENEWAL_REATTEST_FAILED: Code = Code(3031);
     /// Contract already revoked or expired.
     pub const CONTRACT_ALREADY_ENDED: Code = Code(3032);
+    /// A provider's published withdrawal is due, and live contracts hold the item.
+    ///
+    /// Not a failure — a schedule arriving. It exists so a weekly job can exit non-zero on
+    /// something to act on: the first version reused `TTL_EXCEEDS_ZONE_BAR`, which reported
+    /// "ttl exceeds zone bar, narrowed" about a withdrawal date and told an operator nothing
+    /// true.
+    pub const WITHDRAWAL_DUE: Code = Code(3033);
 
     // --- WC-31xx contract verification (data plane) ---
     /// Non-asymmetric or unsupported `alg`.
@@ -469,6 +476,7 @@ pub static CODES: &[CodeSpec] = &[
     spec(3030, Closed, Some(409), None, "renewal blocked, posture degraded"),
     spec(3031, Closed, Some(409), None, "renewal blocked, re-attestation failed"),
     spec(3032, Report, Some(410), None, "contract already revoked or expired"),
+    spec(3033, Report, Some(200), None, "provider withdrawal due, live contracts hold the item"),
     // --- contract verification ---
     spec(3101, Closed, None, Some(-32001), "alg not asymmetric"),
     spec(3102, Closed, None, Some(-32001), "signature or issuer chain invalid"),
@@ -654,7 +662,7 @@ mod tests {
             );
             prev = s.code;
         }
-        assert_eq!(CODES.len(), 78, "the LLD §8.11 table has 78 codes");
+        assert_eq!(CODES.len(), 79, "the LLD §8.11 table has 79 codes");
     }
 
     #[test]

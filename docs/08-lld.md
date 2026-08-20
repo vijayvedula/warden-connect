@@ -2087,6 +2087,7 @@ so they are additive-only — never renumbered, never reused.
 | WC-3022 | Dual control not satisfied | closed | 403 |
 | WC-3023 | Approval signature invalid | closed | 401 |
 | WC-3024 | Callee's registered owner did not approve | closed | 403 |
+| WC-3033 | Provider withdrawal due, live contracts hold the item | report | 200 |
 | WC-3030 | Renewal blocked: posture degraded | closed | 409 |
 | WC-3031 | Renewal blocked: re-attestation failed | closed | 409 |
 | WC-3032 | Contract already revoked/expired | — | 410 |
