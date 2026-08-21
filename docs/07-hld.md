@@ -1,48 +1,65 @@
-# 7 · warden-connect — High-Level Technical Design
+# 7 · warden-connect — High-Level Design
 
-> Status: design. Target: a control plane plus a thin inline data-plane extension
-> to the shipped Warden proxy. Diagram companion:
-> [warden-connect-logical-architecture.svg](warden-connect-logical-architecture.svg).
-> Implementation companion: [08-lld.md](08-lld.md) — crate layout, module
-> signatures, algorithms, error codes, latency budgets and test suite.
+> **One sentence.** warden-connect decides whether a connection between two
+> parties may *exist*; warden decides whether each *call* on that connection may
+> proceed. Neither can do the other's job, and the interface between them is two
+> signed artifacts and one identifier.
+
+| | |
+|---|---|
+| **Status** | v0.1.1 · Rust 2021 · MSRV 1.89 · 5 crates · 1,273 tests |
+| **Audience** | Architects, reviewers, implementers of a competing verifier |
+| **Companion** | [08-lld.md](08-lld.md) for every module and every check · [use-cases/](use-cases/) for the ten flows · [explainer.html](explainer.html) for the narrative |
 
 ---
 
 ## 7.1 Scope and context
 
-**In scope.** Registry of agents and tool servers; admission and attestation;
-mediated discovery; connection contract lifecycle; inline channel mediation and
-surface filtering; continuous posture and drift; containment; evidence and
-regulatory export; cross-org federation.
+### What this is
 
-**Out of scope.** Per-action authorization (Warden core), authority attenuation
-across hops (`warden-delegate`), cross-agent lineage and taint (`warden-trace`),
-model/content guardrails, agent runtime, network transport security below the
-channel (mesh/TLS termination — composed with, not replaced).
+A **connection control plane** for AI agents. It answers a question that neither
+authentication nor authorization answers:
+
+> Who agreed to this, and can you show me?
+
+Authentication answers *who is calling*. Authorization answers *what they may
+do*. Neither asks the party being called whether it agreed to be called by this
+caller, for these tools, on these terms, until this date.
+
+### What it is not
+
+| Not | Because |
+|---|---|
+| A policy engine | warden already is one. This produces the ceiling warden intersects |
+| An identity provider | Identity arrives already proven; this binds to it |
+| A service mesh | No traffic management, no retries, no load balancing |
+| A secrets manager | No credential is ever minted, held or distributed here |
+| A gateway product | `wc-mediator` runs standalone or compiles into warden's proxy |
 
 ### System context
 
+```mermaid
+flowchart LR
+    subgraph Control["warden-connect control plane"]
+        REG[(registry)]
+        ISS[issuance]
+        ASR[assurance loop]
+        CHN[(audit chain)]
+    end
+    subgraph Data["data plane"]
+        MED[wc-mediator]
+    end
+    DEV[Agent Developer] -->|offer.toml / needs.toml| SCM[(GitHub / Azure DevOps / Bitbucket)]
+    SCM -->|reviewed merge| ISS
+    ISS -->|signed contract| MED
+    ISS --> REG
+    ASR --> REG
+    ISS --> CHN
+    AGENT[Calling agent] --> MED
+    MED --> SRV[MCP tool server]
+    MED -->|effective = surface ∩ scope ∩ policy| WARDEN[warden]
+    CHN --> SIEM[(SIEM / GRC)]
 ```
-   Agent Developer   Security Architect   SecOps   Risk & Compliance   Partner Org
-          │                  │               │            │                │
-          └────────── control-plane API / CLI / portal ────┘        federation (OIDC-Fed)
-                                   │                                       │
-                        ┌──────────▼───────────────────────────────────────▼─────────┐
-                        │              warden-connect CONTROL PLANE                  │
-                        │ registry · admission · broker · contract · assurance · evd │
-                        └──────────┬───────────────────────────────┬─────────────────┘
-        signed contracts + revocations │                           │ evidence (OCSF/CAEP/OSCAL)
-                                   ┌───▼────┐                  ┌───▼────┐
-                Agent ──MCP/A2A──▶ │ MEDIATOR + Warden proxy │ │ SIEM · GRC · IdP │
-                                   └───┬────┘                  └────────┘
-                                       │ contracted surface only
-                                       ▼
-                            Tool server / callee agent
-```
-
-The control plane is **off the hot path**. The data plane verifies a signed
-artifact locally — the same stance that keeps Warden core's token verification
-free of network calls.
 
 ---
 
@@ -50,90 +67,103 @@ free of network calls.
 
 ### Plane split
 
-| | Control plane | Data plane |
-|---|---|---|
-| **Runs** | Centrally (per tenant), HA, replicated | Inline, co-located with the agent runtime — same process or sidecar alongside `warden proxy` |
-| **Owns** | Registry, admission, discovery, contract issuance, posture, exports | Contract verification, peer authentication, surface filtering, ceilings, per-connection evidence |
-| **Latency** | Seconds acceptable | **p99 < 5 ms added** per connection establishment; ~0 per subsequent call |
-| **On failure** | New issuance stops; existing contracts remain valid to `exp` | Fail closed: no valid contract → no connection |
-| **State** | Durable (registry, contracts, audit chain) | Cache of contracts + revocation set; rebuildable |
+| Plane | Crate | Decides | Latency budget | Failure stance |
+|---|---|---|---|---|
+| **Control** | `wc-control`, `wc-cli` | May this connection exist? | Human timescale | Fail closed; a withheld contract denies |
+| **Data** | `wc-mediator` | Is this call inside the ceiling? | Sub-millisecond, no network call | Fail closed on every gate |
+| **Shared** | `wc-core` | The artifact, its canonical form, the 79 codes | — | — |
 
-The asymmetry is deliberate: **a control-plane outage must not take the estate
-down**, but it must not allow new authority either. Contracts already issued keep
-working until they expire — which is why TTLs are short and expiry is hard.
+The control plane can be entirely offline and the data plane still enforces
+correctly against contracts it already holds. **A compromised control plane can
+withhold a contract, which fails closed. It cannot manufacture one** — contracts
+are verified against issuer keys, not looked up in a database the mediator
+trusts.
 
 ### Component inventory
 
-| Component | Responsibility | Relationship to Warden core |
+| Component | Crate | Responsibility |
 |---|---|---|
-| **registry** | Entity records for agents and servers; content-addressed cards/manifests; ownership, tier, zone, lifecycle, posture | new |
-| **admission** | Verify identity, provenance, card/manifest signature; screen declared surface; derive tier; pin hashes | new |
-| **broker** | Mediated capability discovery; policy-filtered results; anti-enumeration | new |
-| **contract** | Mint / verify / renew / revoke `warden-connection+jws`; approval workflow; policy evaluation | new (JOSE direct; condition algebra mirrors `policy.rs`) |
-| **assurance** | Scheduled re-attestation; drift detection & semantic diff; posture scoring; expiry watch; blast-radius | new |
-| **evidence** | Lifecycle events → tamper-evident chain + anchors; OCSF/CAEP sinks; OSCAL & register exports | same formats as `audit.rs`/`anchor.rs`/`sink.rs`/`ocsf.rs`, wire-compatible by golden vector |
-| **mediator** *(data plane)* | Peer auth, contract verification, `tools/list` filtering, surface allowlist, ceilings, zone rules, drain | **the one component that links core** — an `Upstream` decorator composed with `warden::Gateway`; needs no change to core (LLD §8.6.1). **Optional**: omit it for a control-plane-only deployment |
-
-Seven components. One — the mediator — composes Warden core's shipped gateway as a
-library and is the only one that links it; the other six stand alone, so the
-connection layer can be adopted with no Warden core deployed at all (LLD §8.3).
-Critically, the mediator requires **no modification to Warden core**: it decorates
-the public `Upstream` trait (LLD §8.6.1), so enforcement ships against the proxy as
-released. `evidence` and `revocation` are reimplemented to core's proven design and
-stay wire-compatible through shared golden vectors rather than shared code.
+| Registry | `wc-control::registry` | Entities, lifecycle, posture, ownership |
+| Admission | `wc-control::admission` | Identity, provenance, screening, pinning, tiering |
+| Issuance | `wc-control::issuance` | Request → disposition → mint → distribute |
+| Connect policy | `wc-control::cpolicy` | May this contract exist? |
+| Assurance | `wc-control::assurance` | Re-attestation, drift, posture scoring |
+| Containment | `wc-control::contain` | Quarantine, revocation, blast radius |
+| Federation | `wc-control::federate` | Trust anchors, chains, monotonic narrowing |
+| Inventory | `wc-control::inventory` | Reserved-path sweep across SCM hosts |
+| Evidence | `wc-control::chain`, `evidence`, `export` | Tamper-evident chain, DORA/CPS230/OSCAL/OCSF |
+| Portal | `wc-control::portal` | Read-only, server-rendered discovery view |
+| Mediator | `wc-mediator` | Contract verification, surface filter, ceilings |
+| Contract | `wc-core::contract` | Payload, canonical form, verification, the algebra |
 
 ---
 
 ## 7.3 Domain model
 
 ```
-Entity (agent | server)
-  id            spiffe:// | urn:  (the wire identity)
-  kind          agent | mcp_server | a2a_agent
-  owner         human:…                 (accountable, required)
-  service       business service ref
-  tier          1..4                    (derived at admission)
+Entity (agent | mcp_server | a2a_agent)
+  id            spiffe:// | urn:                        the wire identity
+  owner         human:…                                 accountable, required
+  service       business service reference
+  tier          1..4                                    derived at admission
   zone          internal.<domain> | partner.<org> | public
-  surface_hash  sha256 of canonical card/manifest   ← the pin
-  provenance    [slsa|sigstore refs]
+  surface_hash  sha256 of the canonical card/manifest   ← the pin
+  provenance    [slsa | sigstore refs]
   posture       attested | degraded | unattested | quarantined
   lifecycle     pending | active | suspended | retired
-  data_classes  [...]      jurisdictions [...]
+  data_classes  [...]        jurisdictions [...]
 
-Contract  (the interface artifact — §7.4)
-  cid, caller→Entity, callee→Entity, surface, terms, assurance, approval, exp
+Contract        cid, caller→Entity, callee→Entity, surface, terms,
+                assurance, approval, exp                (§7.4)
 
-Zone
-  id, trust_level, assurance_bar {identity, provenance, ttl_max, approval, oversight}
+Zone            id, trust_level, assurance_bar { identity, provenance,
+                ttl_max, approval, oversight, max_delegation_depth }
 
-Approval
-  id, cid, approver (human), signature, ticket, policy_version, ts
+Approval        id, cid, approver (human), signature, ticket,
+                policy_version, ts
 
-PostureEvent
-  entity, kind (drift|reattest|expiry|screening|quarantine), diff, severity, ts
+PostureEvent    entity, kind (drift | reattest | expiry | screening |
+                quarantine), diff, severity, ts
 
-AuditEntry   (Warden core shape, extended)
-  … + cid, contract_jti, entity ids, policy_version   ← folded into row_hash
+AuditEntry      warden's shape, extended with cid, contract_jti,
+                entity ids, policy_version — folded into row_hash
 ```
 
-**Key invariants**
+### Lifecycle and posture
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending: register
+    Pending --> Active: admission complete
+    Active --> Suspended: material drift / reattest failed / owner departed
+    Suspended --> Active: re-approval (re-runs admission)
+    Active --> Retired: exp reached, or terminated
+    Suspended --> Retired: lapse
+    Retired --> [*]: retained for the regulatory clock
+    note right of Retired: never returns
+```
+
+`Posture` is orthogonal to lifecycle: `Attested` · `Degraded` · `Unattested` ·
+`Quarantined`. Quarantined is **terminal until a full re-admission** — never a
+state flip.
+
+### Key invariants
 
 1. An `Entity` with no `owner` cannot be `active`.
-2. A `Contract` cannot reference an entity whose `posture = quarantined`.
-3. `contract.surface ⊆ callee.declared_surface` at mint time — always.
+2. A `Contract` cannot reference an entity whose posture is `quarantined`.
+3. `contract.surface ⊆ callee.declared_surface` at mint time. Always.
 4. `contract.exp − iat ≤ zone.assurance_bar.ttl_max`.
-5. Presented surface hash must equal `entity.surface_hash` at connect time.
-6. A quarantined entity's contracts are revoked; clearing quarantine requires a
-   new admission, never a state transition.
+5. The presented surface hash must equal `entity.surface_hash` at connect time.
+6. A quarantined entity's contracts are revoked; clearing requires new admission.
+7. **No signed JWS is ever committed to a repository.** Receipts only.
 
 ---
 
 ## 7.4 The connection contract
 
-The single coupling point, exactly as the session token is for Warden core.
-Media type `application/warden-connection+jws`; asymmetric signatures only
-(ES256/EdDSA), matching core's `ASYMMETRIC_ALGS` stance to preclude algorithm
-confusion.
+The single coupling point, exactly as the session token is for warden. Media
+type `application/warden-connection+jws`; asymmetric signatures only
+(ES256/ES384/EdDSA/PS256/RS256), which precludes algorithm confusion.
 
 ### Payload
 
@@ -142,7 +172,7 @@ confusion.
   "typ": "warden-connection+jws",
   "cid": "conn_7f3a91c4",
   "iss": "https://connect.internal/t/apac",
-  "aud": "warden:mediator:apac-ops",       // MUST match this mediator, else reject
+  "aud": "warden:mediator:apac-ops",        // MUST match this mediator
   "jti": "cx_84be…",
   "iat": 1785312000, "nbf": 1785312000, "exp": 1785398400,
 
@@ -151,13 +181,12 @@ confusion.
   "callee": { "id": "spiffe://org/ns/tools/sa/payments-mcp",
               "manifest": "sha256:41ab…", "zone": "internal.payments", "tier": 1 },
 
-  "surface": { "tools": ["get_balance","list_transactions"],
-               "skills": [],
-               "resources": ["ledger://apac/*"] },
+  "surface": { "tools": ["get_balance", "list_transactions"],
+               "skills": [], "resources": ["ledger://apac/*"] },
 
   "terms": {
     "data_classes": ["internal"],
-    "jurisdictions": ["SG","AU"],
+    "jurisdictions": ["SG", "AU"],
     "max_calls_per_hour": 500,
     "max_concurrent": 8,
     "max_spend_usd_per_day": 200,
@@ -166,251 +195,165 @@ confusion.
     "evidence": { "sink": "ocsf://siem", "delivery": "blocking" }
   },
 
-  "assurance": { "attestation": ["slsa-provenance:sha256:…","sigstore-bundle:…"],
+  "assurance": { "attestation": ["slsa-provenance:sha256:…", "sigstore-bundle:…"],
                  "reattest_every": "24h", "posture": "attested" },
 
   "approval": { "by": "human:cecil@org", "jti": "apr_5d2e…",
-                "ticket": "RISK-4471", "mode": "human" },   // or "standing_policy"
+                "ticket": "RISK-4471", "mode": "human" },
 
   "policy_version": "connect-policy@v37"
 }
 ```
 
-### Verification algorithm (data plane, fail-closed at every step)
+### Verification algorithm — fail-closed at every step
 
 ```
-verify(contract, peer_caller, peer_callee, presented_surface_hash) -> Result
-  1. JWS signature valid against a trusted connect issuer key (JWKS by kid)   else Deny
-  2. alg ∈ {ES256, ES384, EdDSA, PS256, RS256}   (no HMAC)                    else Deny
-  3. nbf ≤ now < exp                                                          else Deny
-  4. aud == this mediator id                                                  else Deny
-  5. jti ∉ revocation set   (and cid ∉ revoked, parties ∉ quarantined)        else Deny
-  6. peer_caller.identity == contract.caller.id  (authenticated, not claimed) else Deny
-  7. peer_callee.identity == contract.callee.id                               else Deny
-  8. presented_surface_hash == contract.callee.manifest                       else Deny + raise DRIFT
-  9. assurance.posture == "attested"  (or observe-mode override, logged)      else Deny
- 10. zone_pair(caller.zone, callee.zone) permitted by local zone policy       else Deny
- --> Admit; install surface filter, ceilings and terms for this connection
+verify(contract, peer_caller, peer_callee, presented_surface_hash)
+
+  1. JWS signature valid against a trusted issuer key (JWKS by kid)   else WC-3102
+  2. alg ∈ {ES256, ES384, EdDSA, PS256, RS256}  — no HMAC             else WC-3101
+  3. nbf ≤ now < exp                                                  else WC-3103
+  4. aud == this mediator id                                          else WC-3104
+  5. jti ∉ revocation set; cid not revoked; parties not quarantined   else WC-3105
+  6. peer_caller.identity == contract.caller.id  (authenticated)      else WC-3106
+  7. peer_callee.identity == contract.callee.id                       else WC-3107
+  8. presented_surface_hash == contract.callee.manifest               else WC-3108 + DRIFT
+  9. assurance.posture == attested  (observe-mode override is logged) else WC-3109
+ 10. zone_pair(caller.zone, callee.zone) permitted locally            else WC-3110
+ 11. token binding matches                                            else WC-3111
+ 12. issuer matches the expected issuer for this tenant               else WC-3112
+ 13. schema version known                                             else WC-3120
+ 14. contract within size bound                                       else WC-3121
+
+  → Admit; install surface filter, ceilings and terms for this connection
 ```
 
-Steps 1–5 are constant-time local checks. Steps 6–7 come from the already
-established mTLS/SVID peer identity. Step 8 is a hash comparison against a value
-captured during `initialize`. **No network call on the hot path.**
+Steps 1–5 are local constant-time checks. Steps 6–7 come from already-established
+peer identity. Step 8 compares against a value captured during `initialize`.
+**No network call on the hot path.**
 
 ### The narrowing algebra
 
 ```
-per-action authority  =  contract.surface  ∩  token.scope  ∩  policy_decision
-per-hop authority     =  contract.terms.delegation  ⊇  delegate's attenuation   (never ⊂ violated)
+per-action authority  =  contract.surface ∩ token.scope ∩ policy_decision
+per-hop authority     =  contract.terms.delegation ⊇ delegate's attenuation
+federated term        =  min(local_term, superior_term)
 ```
 
-A contract is a **ceiling**, never a grant that overrides Warden core. This is
-the connection-layer statement of core's existing rule that locally-derived and
-unsigned inputs may only narrow authority.
+A contract is a **ceiling, never a grant**. A contract naming `transfer_funds`
+does not permit `transfer_funds` — it permits *at most* that. The worst a forged
+or over-broad contract can do is fail to widen anything.
 
 ### Conformance
 
-`connect verify <contract>` is the ground truth, exactly as `warden token verify`
-is for the token spec. Any registry, platform or framework may mint contracts; a
-contract is valid iff the verifier accepts it. That is what makes the artifact a
-candidate standard rather than a product format.
+`connect verify <contract>` is ground truth, exactly as `warden token verify` is
+for the token spec. Any registry or framework may mint contracts; a contract is
+valid iff the verifier accepts it. That is what makes the artifact a candidate
+standard rather than a product format.
 
 ---
 
 ## 7.5 Key flows
 
-### F1 · Admission (UC-01 / UC-02)
+Each flow is specified in full, with a sequence diagram, in [use-cases/](use-cases/).
 
-```
-CI ──register(card|endpoint, attestation, owner)──▶ admission
-                                                     │ 1 verify workload identity (SVID / trust bundle)
-                                                     │ 2 verify card signature | MCP initialize+tools/list
-                                                     │ 3 verify provenance (SLSA / Sigstore / Rekor)
-                                                     │ 4 screen declared surface for injection patterns
-                                                     │ 5 derive tier from data classes × capability classes
-                                                     │ 6 canonicalise + hash surface  → PIN
-                                                     ▼
-                                            registry.write(entity, posture=attested)
-                                                     │
-                                            evidence.append(chain) ──▶ OCSF sink
-```
+| Flow | Use case | One line |
+|---|---|---|
+| **F1 · Admission** | [UC-01](use-cases/UC-01-register-and-admit-an-agent.md), [UC-02](use-cases/UC-02-onboard-a-tool-server.md) | Prove identity, screen the surface, pin the hash. Registration is not connectivity |
+| **F2 · Connection establishment** | [UC-04](use-cases/UC-04-establish-a-connection.md) | Offer meets need, policy disposes, a ceiling is minted and distributed |
+| **F3 · Drift detection** | [UC-06](use-cases/UC-06-surface-drift.md) | Re-hash on an interval; material drift suspends every dependent contract |
+| **F4 · Quarantine** | [UC-07](use-cases/UC-07-emergency-quarantine.md) | Terminal state, revoke everywhere, report non-confirmation |
+| **F5 · Federation** | [UC-05](use-cases/UC-05-cross-organisation-federation.md) | Anchors and chains, terms narrowed by `min`, one hop only |
 
-Failure at 1, 2, 3 or 4 → **no registration** in enforce mode; registration with
-`posture: unattested` and a finding in observe mode.
+### Bilateral consent
 
-### F2 · Connection establishment (UC-04)
-
-```
-developer ─request(from,to,tools,justify,ttl)──▶ contract
-                                                  │ policy: zones, tiers, surface ⊆ declared,
-                                                  │         data classes, jurisdictions, requester authority
-                                        ┌─────────┴─────────┐
-                          standing policy            human approval
-                                        └─────────┬─────────┘
-                                                  │ mint warden-connection+jws (cid, surface, terms, exp)
-                                                  ▼
-                                        distribute to mediator(s) on the path
-                                                  │
-runtime:  agent ──initialize──▶ mediator ─┤ verify contract (10 steps) ├─▶ callee
-          agent ──tools/list──▶ mediator ─┤ FILTER to surface.tools    ├─▶ agent sees 2 tools
-          agent ──tools/call──▶ mediator ─┤ surface allowlist, ceilings├─▶ Warden core policy ─▶ callee
-                                                  │
-                                        every action recorded with cid
+```mermaid
+sequenceDiagram
+    participant P as Provider repo
+    participant R as registry
+    participant C as Consumer repo
+    P->>R: warden/offer.toml  (what may ever be exposed)
+    C->>R: warden/needs.toml  (what is being asked, and why)
+    R->>R: offer ∩ need, then connect-policy
+    alt both consent and policy permits
+        R->>R: mint contract (ceiling)
+        R->>C: receipt warden/contracts/<cid>.toml
+    else either withholds
+        R-->>C: no contract exists
+    end
 ```
 
-Step **`tools/list` filtering** is the highest-leverage line in this design: an
-uncontracted tool never enters the model's context, so no prompt injection can
-induce a call to it. The control is structural, not probabilistic.
-
-### F3 · Drift detection (UC-06)
-
-```
-assurance ─(schedule | connect-time mismatch)──▶ re-fetch surface
-                                                   │ canonicalise + hash
-                                                   │ compare to pin ── equal ──▶ record reattest, done
-                                                   │ differ
-                                                   ▼
-                                       semantic diff  (tools ±, description Δ, params Δ, endpoint Δ)
-                                                   │ re-screen new text for injection patterns
-                                                   ▼
-                              classify:  benign ──▶ auto-repin under standing policy, record
-                                         material ─▶ SUSPEND every contract referencing the pin
-                                                   ──▶ notify owners with the diff
-                                                   ──▶ re-approval re-runs admission (F1)
-```
-
-### F4 · Quarantine (UC-07)
-
-```
-secops ──quarantine(party, reason)──▶ registry: posture=quarantined (terminal)
-                                        │
-                                        ├─▶ contract: revoke all where party ∈ {caller, callee}
-                                        ├─▶ push signed revocation events to every mediator
-                                        │      mediator: refuse new · drain|abort in-flight · ACK
-                                        ├─▶ emit CAEP SET  (downstream + federated partners)
-                                        ├─▶ assurance: blast-radius report as of the cut
-                                        └─▶ evidence: order, revocations, ACKs, non-ACKs → chain + SIEM
-```
-
-**Unacknowledged mediators are reported as unconfirmed, never assumed
-contained** — and because they fail closed on their next contract check, the
-worst case is bounded by the revocation-poll interval.
-
-### F5 · Cross-org federation (UC-05)
-
-```
-org A connect ⟷ org B connect
-  1 exchange federation entity statements; verify to the agreed trust anchor
-  2 resolve a specific partner agent by capability (no catalogue exchange)
-  3 fetch + verify its signed card; PIN locally
-  4 partner-zone assurance bar: signed card + provenance + short TTL
-      + mandatory human approval + delegation.max_depth = 1
-  5 mint contract; both sides hold a verifiable copy
-  6 mediator enforces egress: declared data classes and jurisdictions only
-```
+Two pipelines, two repositories, two reviews. Neither party can produce a
+contract alone — that is the whole point.
 
 ---
 
 ## 7.6 Interfaces
 
-### Control-plane API (OpenAPI 3.1, `/v1`)
+### CLI — 61 commands, mirroring warden's verb style
 
-| Method & path | Purpose |
+| Group | Commands |
 |---|---|
-| `POST /v1/entities` | Register an agent or server (admission) |
-| `GET /v1/entities/{id}` | Entity record, pin, posture, provenance |
-| `POST /v1/discover` | Mediated capability query (policy-filtered) |
-| `POST /v1/connections` | Request a connection |
-| `POST /v1/connections/{cid}/approve` \| `/deny` | Signed human decision |
-| `GET /v1/connections/{cid}` | Contract + status |
-| `POST /v1/connections/{cid}/renew` \| `/revoke` | Lifecycle |
-| `POST /v1/quarantine` | Estate-wide containment |
-| `GET /v1/posture` | Drift, expiring, unattested, shadow |
-| `GET /v1/blast-radius/{id}` | Transitive reachable set |
-| `GET /v1/export?format=dora\|cps230\|oscal\|ocsf\|csv&as_of=` | Register & evidence |
-| `POST /access/v1/evaluation` | **AuthZEN** PDP passthrough for external policy engines |
+| Admission | `register agent` · `register server` · `activate` · `attest verify` · `attest surface` · `screen` |
+| Registry | `entities` · `show` · `posture` · `discover` · `blast-radius` · `tenants` |
+| GitOps | `offer publish` · `offer lint` · `offer list` · `offer show` · `offer status` · `need check` · `need apply` · `receipt` · `scm probe` |
+| Issuance | `request` · `approve` · `deny` · `requests` · `contracts` · `breakglass` |
+| Containment | `quarantine` · `unquarantine` · `revoke` |
+| Distribution | `mediators` · `distribution` |
+| Discovery | `inventory` · `inventory promote` · `proposals apply` |
+| Federation | `federate` |
+| Keys | `keys list` · `new` · `add` · `rotate` · `retire` · `jwks` · `note` |
+| Evidence | `audit verify` · `export` · `bundle export` · `bundle verify` · `backup` · `restore` · `retention` |
+| Policy | `policy lint` · `policy dry-run` · `policy show` |
+| Runtime | `serve` · `canon` · `verify` · `bench` · `caep ingest` · `version` |
 
-### CLI (mirrors Warden core's verb style)
+### Reserved paths — the declarative interface
 
-```sh
-connect register agent  --card agent-card.json --attest bundle.sigstore --owner human:priya@org
-connect register server --endpoint https://payments-mcp.internal --tier 1 --zone internal.payments
-connect discover --capability "payments.balance.read" --as agent:recon-bot-7
-connect request  --from agent:recon-bot-7 --to server:payments-mcp \
-                 --tools get_balance,list_transactions --justify "APAC recon" --ttl 30d
-connect approve  <req-id> --by human:cecil@org --approver-key ~/.keys/cecil.pem
-connect contracts | contracts <cid>
-connect quarantine spiffe://org/ns/agents/sa/recon --reason "SOC-2291" \
-                 --approver human:cecil@org --approver human:dana@org
-connect unquarantine spiffe://org/ns/agents/sa/recon \
-                 --approver human:cecil@org --approver human:dana@org
-connect posture --expiring --unattested --score
-connect blast-radius agent:recon-bot-7
-connect export --format dora --as-of 2026-06-30
-connect verify <contract.jws>          # conformance ground truth
-connect audit verify                   # prove the lifecycle record is untampered
-```
+| Path | Written by | Meaning |
+|---|---|---|
+| `warden/offer.toml` | provider | this repo provides capability |
+| `warden/needs.toml` | consumer | this repo consumes capability |
+| `warden/surface.json` | provider | the declared surface, as captured |
+| `warden/contracts/<cid>.toml` | control plane | a receipt — **never a JWS** |
 
-### Wire (data plane)
+Discovery reads these paths and nothing else. **The scanner probes nothing:** no
+port scans, no endpoint calls, no fetching what a repository has not published.
 
-- **MCP**: contract referenced in `initialize` params `_meta.warden.cid` and
-  carried alongside the existing session token; `tools/list` responses filtered.
-- **A2A**: contract presented on the invocation channel; agent card hash
-  verified against the pin.
-- **Peer identity**: mTLS with SPIFFE X.509-SVID, or JWT-SVID plus DPoP where
-  mTLS is unavailable.
-- **Revocations**: signed event feed polled/pushed to mediators, in core's
-  `revocation.rs` format (`{kind, sub, ts}` ES256 events) plus CAEP ingest — the
-  same wire format, so one feed serves both planes.
+### Policy-as-code
 
-### Policy-as-code (`connect-policy.toml`, Warden-style, hot-reloadable)
+Two distinct policies, at two distinct moments:
 
-```toml
-default = "require_approval"
-
-[[zone]]
-id = "internal.apac-ops"; trust = "internal"
-
-[[zone]]
-id = "partner.acme"; trust = "external"
-assurance = { identity = "required", provenance = "required",
-              ttl_max = "7d", approval = "human", oversight = "required" }
-
-# standing policy: the low-risk majority never reaches a human
-[[rules]]
-caller_zone = "internal.*"
-callee_zone = "internal.*"
-callee_tier = { op = "gte", value = 3 }
-surface     = { write = false }
-decision    = "allow"
-ttl_max     = "30d"
-
-[[rules]]
-callee_tier = { op = "lte", value = 2 }
-decision    = "require_approval"
-approver_role = "security.architect"
-
-[[rules]]
-caller_zone = "internal.*"
-callee_zone = "public.*"
-decision    = "deny"
-reason      = "public-zone egress requires a partner onboarding"
-```
+| | `connect-policy.toml` | warden policy |
+|---|---|---|
+| Question | May this contract **exist**? | May this **call** proceed? |
+| Evaluated | at issuance | per call |
+| Owned by | warden-connect | warden |
+| Inputs | zone, tier, surface, data class, jurisdiction, authority | token scope, context, action |
 
 ---
 
-## 7.7 Integration with the Warden family
+## 7.7 Integration with the family
 
-| Direction | Contract |
-|---|---|
-| **connect → Warden core** | Mediator hands core the `surface` allowlist and `terms` as additional conditions; core computes `surface ∩ token.scope ∩ policy`. Core's audit `Entry` gains `cid` and `contract_jti`, folded into `row_hash`. |
-| **connect → warden-delegate** | `terms.delegation.{max_depth, attenuation}` is the envelope delegate must attenuate within. Delegate may reduce depth or scope; it can never raise either. |
-| **connect → warden-trace** | `cid` is the correlation root stamped on every action, evidence row and delegation across the whole multi-agent transaction. Without it, cross-agent reconstruction is heuristic; with it, it is exact. |
-| **Warden core → connect** | Denied-action patterns and ceiling breaches feed posture scoring; repeated denials degrade a party's posture and shorten its re-attestation interval. |
-| **trace → connect** | Taint findings (a response influenced by untrusted content) raise the counterparty's risk signal, which can trigger re-approval. |
+The family — warden, warden-connect, warden-delegate, warden-trace — is coupled
+by **two signed artifacts and one identifier**, never a shared library.
 
-The interface between the four is deliberately **two artifacts and one
-identifier**: the session token, the connection contract, and `cid`.
+| Term in `effective` | Owned by | Decided |
+|---|---|---|
+| `contract.surface` | **warden-connect** | at issuance |
+| `token.scope` | warden | at authentication |
+| `policy_decision` | warden | per call |
+| `effective` | warden — it computes the intersection | per call |
+
+warden-connect owns the first set, the terms and the `cid`. It hands that ceiling
+to warden and never learns what warden decides inside it. Signal runs the other
+way too: denied-action patterns and ceiling breaches feed posture scoring in
+connect, so repeated denials degrade a party and shorten its re-attestation
+interval.
+
+Only `wc-mediator` runs **standalone by default** — connection enforcement with
+no warden and no `warden.policy.toml`. The `warden-proxy` build feature adds the
+decorator topology back, compiling the mediator into warden's proxy so per-action
+policy applies as well. One process, no extra hop.
 
 ---
 
@@ -418,137 +361,104 @@ identifier**: the session token, the connection contract, and `cid`.
 
 ### Trust boundaries
 
-| Boundary | Trusted side | Untrusted side |
-|---|---|---|
-| Agent runtime ↔ mediator | mediator | **agent** (may be prompt-injected; is the thing being policed) |
-| Mediator ↔ callee | mediator | **callee's declared surface and responses** |
-| Control plane ↔ mediator | signed contracts and revocations | transport |
-| Org ↔ partner org | own trust anchor | **everything the partner asserts** |
-| Admission ↔ CI/CD | verified provenance | **self-asserted metadata** |
+```mermaid
+flowchart TB
+    subgraph T1["Trusted: issuer signing keys"]
+        K[key custody]
+    end
+    subgraph T2["Semi-trusted: control plane"]
+        CP[registry, issuance, assurance]
+    end
+    subgraph T3["Untrusted: everything on the wire"]
+        AG[agents] --- MED[mediator] --- SRV[tool servers]
+    end
+    K -->|signs| CP
+    CP -->|signed contracts only| MED
+    MED -->|verifies against keys, not against CP| K
+```
 
-### Threats and controls
-
-| # | Threat | Control | Residual |
-|---|---|---|---|
-| A1 | Forged connection contract | Asymmetric-only JWS, JWKS by `kid`, `aud` binding, revocation set | Issuer key compromise → key rotation + anchor detection |
-| A2 | Contract replay against another mediator | `aud` per mediator, `nbf`/`exp`, `jti` tracking | Bounded by TTL |
-| A3 | Peer impersonation | mTLS/SVID peer identity compared to contract claims — authenticated, never claimed | Depends on the workload-identity issuer |
-| A4 | Rug-pull / tool poisoning | Pinned surface hash, connect-time comparison, scheduled re-attestation, injection screening | A change **within** a pinned description is impossible; semantic-but-unpinned changes on the callee's *behaviour* are `warden-trace`'s problem |
-| A5 | Shadow endpoint bypassing the mediator | Mediator on the path is a deployment property; shadow detection finds bypass attempts; strict mode denies unknown counterparties | Requires the mediator to actually be inline — an assumption to enforce at deploy time |
-| A6 | Discovery used for reconnaissance | Mediated results, no enumeration, throttling, indistinguishable empty results | Aggregation over time by a legitimate asker |
-| A7 | Approval fatigue exploited | Standing policy for the low-risk majority; risk-ranked queue; requests carry full context | Human judgement remains the limit at the top tier |
-| A8 | Control-plane compromise | Signed artifacts, tamper-evident chain with anchors, dual control for quarantine override, per-tenant keys | Full CP compromise is catastrophic — hence anchors are externally verifiable |
-| A9 | Control-plane DoS | DP works from cache to `exp`; issuance stops but the estate keeps running | New connections blocked during outage (by design) |
-| A10 | Malicious insider widening a contract | Contracts are signed and versioned; every mint carries approver and `policy_version`; widening is visible in the chain | Detection, not prevention — dual control at tier 1 |
-| A11 | Delegation-depth evasion via a chain of contracts | `max_depth` enforced by delegate against the **originating** contract, not per hop | Requires `delegate` to be deployed on every hop |
+A compromised control plane **cannot mint a valid contract** without the signing
+keys. It can withhold — and withholding fails closed.
 
 ### Fail-closed matrix
 
-| Condition | Strict (default) | Observe |
+| Dependency unavailable | Behaviour | Code |
 |---|---|---|
-| No contract | Deny connection | Allow + finding |
-| Contract expired | Deny (no grace) | Deny |
-| Surface hash mismatch | Deny + drift event | Allow + drift event |
-| Posture `unattested` | Deny | Allow + finding |
-| Posture `quarantined` | Deny | **Deny** (never overridable) |
-| Control plane unreachable | Serve from cache to `exp`; no new connections | same |
-| Revocation feed unreadable | Deny all (feed integrity is load-bearing) | Allow + alarm |
-| Blocking evidence sink unavailable | Deny (no connection without a recorded trail) | Allow + alarm |
+| Issuer JWKS unreachable | Refuse the connection | `WC-3102` |
+| Revocation feed unwritable | Refuse to quarantine silently | `WC-6002` |
+| A mediator does not acknowledge | Report **not confirmed**; it fails closed itself | `WC-6003` |
+| Blocking evidence sink down | Refuse the call | `WC-7001` |
+| Audit chain broken | Refuse to export | `WC-7003` |
+| Registry lock held | Refuse to write | `WC-8003` |
+| Policy file invalid | Refuse to start | `WC-8001` |
+| Surface unobtainable at attest | Degrade posture, never pass | `WC-1002` |
+
+The single exception is **posture in observe mode**, which admits with
+`Unattested` and logs — deliberately, because that is the adoption wedge.
+
+### The recurring bug class
+
+The defect this system produces is not a crash. It is **a control that reads as
+configured and does nothing**: a flag parsed and never enforced, a role required
+and never checked, a gate deleted with every test still green. Review here
+targets that class specifically, and mutation testing is standard practice
+because it is what exposes it.
 
 ---
 
 ## 7.9 Deployment topologies
 
-| Topology | Shape | When | Trade-off |
-|---|---|---|---|
-| **Control plane only** | No data-plane component at all. Registry, admission, pins, drift, posture, exports, quarantine *orders* | The P0 wedge; estates that want the register and the evidence before they want enforcement | **Nothing is enforced.** Contracts are issued but unverified, `tools/list` is unfiltered, quarantine notifies rather than cuts. Honest visibility, zero behaviour change |
-| **Sidecar** (preferred) | `connect mediate` — one process composing **unmodified** Warden core's gateway with the connect decorator — per agent runtime | Matches core's MVP; surgical containment; enforcement without changing Warden core | More instances to operate |
-| **Shared gateway** | One mediator fronting many agents | Simpler ops, brownfield | Concentrated trust boundary; containment relies on per-`cid` revocation rather than process isolation |
-| **Third-party enforcement** | Someone else's Envoy filter, API gateway plugin or agent framework runs the eleven checks | An egress proxy already exists and should not be duplicated | Conformance is on them; `connect verify` + `fixtures/contracts/` is the suite they must pass |
-| **Egress mediator** | Dedicated mediator on the org boundary | Partner/public zone crossings | Must not be the only mediator — internal relationships still need governing |
-| **Federated** | CP per org, federated trust anchors | Cross-org A2A | Trust-anchor lifecycle becomes a first-class operational concern |
-| **Air-gapped** | Contracts pre-issued as signed bundles; no CP call | Regulated/offline estates | Expiry is hard; revocation depends on bundle refresh |
-
----
-
-## 7.10 Non-functional requirements
-
-| Dimension | Target | Notes |
+| Topology | Mediator placement | When |
 |---|---|---|
-| Added latency, connection establishment | **p99 < 5 ms** | Signature verify + set membership; no network call |
-| Added latency, per subsequent call | **< 1 ms** | Surface allowlist is a set check inside core's existing dispatch |
-| Contract distribution | < 5 s to all mediators | Push with poll fallback |
-| Quarantine propagation | **< 60 s estate-wide**, with per-mediator ACK | The headline containment number |
-| Drift detection | ≤ re-attestation interval; tier 1 ≤ 1 h | Plus every connect-time check |
-| Registry scale | 10⁴ entities, 10⁵ contracts per tenant | Contract graph fits in memory for blast-radius queries |
-| Control-plane availability | 99.9% | DP unaffected to `exp` |
-| Data-plane availability | Inherits the agent runtime | Stateless beyond cache |
-| Evidence durability | Tamper-evident + externally anchored | Same chain and anchor format as core `audit.rs` / `anchor.rs` |
-| Retention | Contract + lifecycle history ≥ 7 years (configurable) | DORA/CPS 230 horizons |
-| Multi-tenancy | Per-tenant registry, keys, policy, audit chain | Cross-tenant resolution structurally impossible |
+| **Standalone** | Its own process in the path | No warden deployed; connection enforcement only |
+| **Decorator** | Compiled into warden's proxy (`warden-proxy` feature) | warden already in the path; one process, no extra hop |
+| **Sidecar** | One mediator per agent | Enforcement at the edge; highest fidelity, highest cost |
+| **Observe-only** | In the path, refusing nothing | Stage ① — inventory before enforcement |
 
 ---
 
-## 7.11 Data protection and privacy
+## 7.10 The adoption ladder
 
-- The contract carries **identifiers and terms, not payloads**. No business data
-  transits the control plane.
-- Human identifiers (`owner`, `approval.by`) are personal data: minimised to a
-  stable pseudonymous identifier plus a directory reference, and retained under
-  the regulatory retention clock rather than indefinitely.
-- Discovery logs record the asker and the capability question — retained for
-  reconnaissance detection, with a shorter clock than contract history.
-- Jurisdiction terms are enforced but not *inferred*: the declaring party asserts
-  them and is accountable for the assertion, which is exactly how third-party
-  attestations work today.
+| Rung | What you get | What it costs |
+|---|---|---|
+| **1 · Inventory** | What is being used, and by whom | A read token. No infrastructure |
+| **2 · Register** | Contracts issued, nothing enforced | One service, one key |
+| **3 · Enforce at the gateway** | Calls actually bounded | A mediator in the path |
+| **4 · Enforce per agent** | Bounded at the edge | A sidecar per agent |
+
+Most of the value is at rungs 1 and 2, and they cost almost nothing. The original
+design started at rung 4 — which is why nobody could adopt it.
 
 ---
 
-## 7.12 Build phases
+## 7.11 Non-functional requirements
 
-| Phase | Ships | Unlocks | Rough shape |
-|---|---|---|---|
-| **P0 — Observe** | Registry, CLI, entity records, shadow detection from mediator observation, tamper-evident lifecycle chain, OCSF sink | Estate visibility with zero behaviour change; maturity **L1** | Registry + evidence. The wedge, standalone. |
-| **P1 — Contract** | Contract mint/verify/renew/revoke, request→approval workflow, standing policy, mediator surface allowlist + `tools/list` filtering | Deny-by-default topology; maturity **L2** | The core loop (UC-04). |
-| **P2 — Assure** | Provenance verification, card/manifest signing, surface screening, pinning, drift detection, re-attestation, posture scoring | Rug-pull and tool-poisoning defence; maturity **L3** | The differentiated security value. |
-| **P3 — Contain** | Estate-wide quarantine with ACKs, CAEP ingest/emit, blast-radius, drain semantics, break-glass | The demo moment; sub-minute MTTC | `revocation.rs`'s feed format, reimplemented. |
-| **P4 — Govern** | Zone model, cross-org federation, egress control, DORA/CPS 230/OSCAL export, multi-tenancy | Regulated-enterprise close; maturity **L4** | The commercial edge. |
+| Property | Target | How |
+|---|---|---|
+| Hot-path latency | No network call | Contracts and pins cached; verification is local |
+| Availability | Data plane survives control-plane outage | Contracts already distributed remain valid to `exp` |
+| Integrity | Independently verifiable | Anchored hash chain; `connect audit verify` needs no trust in the plane |
+| Dependency budget | Enforced in CI | `scripts/dep-count.sh` ceilings per crate |
+| Determinism | Byte-identical canonical form | `wc-core::canon`, depth-bounded |
+| Portability | No async runtime | Threads and blocking I/O throughout |
 
-P0 is deliberately the smallest possible thing that is independently valuable —
-and it ships without Warden core deployed at all, which is what makes it adoptable
-by a team that has not (or will not) adopt the rest of the family.
+---
+
+## 7.12 Data protection
+
+- Contracts carry **references**, never payloads: hashes, identifiers, terms.
+- `terms.data_classes` and `terms.jurisdictions` are enforced as egress control.
+- The evidence chain is append-only and **must never move to Postgres** — its
+  value is that it is independently verifiable, not that it is queryable.
+- Retention deletes nothing; it retires. The regulatory clock outlives the entity.
 
 ---
 
 ## 7.13 Open questions
 
-> **All seven are now resolved in [08-lld.md §8.17](08-lld.md#817-resolved-hld-open-questions).**
-> They are kept here as the record of what was open at HLD stage, and of the
-> leaning the LLD had to either confirm or overturn.
-
-1. **Contract transport into the mediator.** Pre-distributed (push) versus
-   agent-carried (like the session token) versus both. Agent-carried is simpler
-   and matches core's "carried, not looked up" stance; pre-distributed makes
-   revocation crisper. Current lean: **pre-distributed, with an agent-carried
-   fallback for air-gapped and sidecar-less deployments.**
-2. **Canonicalisation of the tool manifest.** The pin is only as good as the
-   canonical form. Needs a specified normalisation (field ordering, whitespace,
-   optional-field handling) or benign formatting changes will generate drift noise
-   and train operators to ignore alerts.
-3. **Surface screening false-positive rate.** Tool descriptions are legitimately
-   imperative ("use this to transfer funds when the user asks"). The screening
-   heuristic must be tuned against a real corpus before it can gate admission
-   rather than merely flag.
-4. **Standing-policy blast radius.** Auto-approval is required for adoption but
-   is also the widest possible policy surface. Needs its own review cadence and
-   an explicit cap on how much of the estate may be auto-approved.
-5. **Zone taxonomy.** Two levels (internal/partner/public) or a full lattice with
-   per-domain internal zones? Start with three; make it extensible.
-6. **Relationship to service mesh.** Where a mesh already provides SPIFFE
-   identity and mTLS, connect should consume rather than duplicate it. Needs a
-   defined "mesh-provided identity" mode.
-7. **Does the contract belong in the token?** A merged artifact is simpler for
-   adopters; separate artifacts keep the lifecycles independent (tokens are
-   per-session, contracts are per-relationship and much longer-lived). Current
-   lean: **separate, joined by `cid`** — but this is the most consequential open
-   decision for the spec.
+| # | Question | Current stance |
+|---|---|---|
+| 1 | Does `terms.delegation.max_depth` bind anything today? | **No.** It is carried, narrowed and federated correctly, but no chain exists to measure against it. This is the hole [warden-delegate](#) is designed to fill |
+| 2 | Are ADO and Bitbucket at parity with GitHub? | Merge parsing is; the `repos` and `open_pr` shim operations are GitHub-only so far |
+| 3 | Cluster-scale behaviour | Unverified — needs a real cluster |
+| 4 | Independent security review | Not yet done, and it must be done by someone who did not build it |
