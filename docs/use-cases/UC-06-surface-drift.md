@@ -1,0 +1,108 @@
+# UC-06 · Detect and respond to surface drift
+
+> The use case that most clearly cannot be served at the action layer.
+> A tool whose description changed yesterday is a different tool, and no per-call policy will notice.
+
+| Field | Detail |
+|---|---|
+| **ID** | UC-06 |
+| **Primary actor** | Assurance loop, automated (`wc-control::assurance`) |
+| **Supporting** | AppSec Engineer, entity owner |
+| **Trigger** | Scheduled re-attestation, or a hash mismatch at connect time |
+| **Preconditions** | A pinned card or manifest hash exists |
+| **Stage** | ② Register → ③ Enforce |
+| **Command** | `connect posture --drift` · `connect attest surface` |
+
+## Main flow
+
+1. The assurance loop re-fetches the callee's declared surface on its interval.
+2. Canonicalise and hash; compare against the pin.
+3. On mismatch, compute a **semantic diff**: tools added or removed, descriptions changed, parameters changed, endpoints changed.
+4. Re-run injection screening against the new text.
+5. Classify:
+
+   | Class | Examples | Response |
+   |---|---|---|
+   | **Benign** | Documentation typo; a tool added *outside* the contracted surface | Pin auto-updated under standing policy, event recorded |
+   | **Material** | A contracted tool's description or parameters changed; a new exfiltration-shaped instruction; the endpoint moved | Every contract referencing that pin is **suspended immediately** |
+
+6. Material drift suspends contracts and notifies owners with the diff.
+7. Re-approval re-runs admission. On approval, a new pin and new contracts are issued.
+
+## Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Loop as assurance loop
+    participant Srv as Tool server
+    participant Canon as canon
+    participant Scr as screen
+    participant Reg as registry
+    participant Med as wc-mediator
+    actor Owner
+    actor AppSec
+
+    loop every reattest_every (tier-derived)
+        Loop->>Srv: tools/list
+        Srv-->>Loop: current declared surface
+        Loop->>Canon: canonicalise
+        Canon-->>Loop: canonical bytes
+        Loop->>Loop: sha256 vs pin
+        alt hash matches
+            Loop->>Reg: refresh last_attested_at
+        else mismatch
+            Loop->>Loop: semantic diff (tools, descriptions, params, endpoint)
+            Loop->>Scr: re-screen new text
+            Scr-->>Loop: findings or clean
+            alt benign, standing policy allows
+                Loop->>Reg: auto-update pin, record event
+            else material
+                Loop->>Reg: posture -> degraded
+                Loop->>Med: suspend every contract referencing this pin
+                Med-->>Loop: acknowledged
+                Loop->>Owner: notify with diff
+                Loop->>AppSec: WC-5002 drift material
+                AppSec->>Reg: re-approval re-runs admission
+                Reg-->>AppSec: new pin, new contracts
+            end
+        end
+    end
+```
+
+
+## Commands
+
+```sh
+connect posture --drift
+connect attest surface --surface surface.json --out surface.pin
+connect screen --file surface.json --kind server --rules screen-rules.toml --mode enforce
+connect show --id server:payments-mcp
+```
+
+## Alternate and exception flows
+
+| Ref | Condition | Behaviour | Code |
+|---|---|---|---|
+| **A1** | Drift detected at connect time, before the scheduled check | Connection refused on the spot; the same flow runs | `WC-3108` |
+| **A2** | Benign drift under standing policy | Pin auto-updated, event recorded, no suspension | — |
+| **A3** | Repeated drift from one party | Posture degraded, tier escalated, `reattest_every` shortened | `WC-5001` |
+| **A4** | Surface unobtainable at re-attestation | Re-attestation fails; posture degrades rather than silently passing | `WC-1002` |
+
+## Postconditions
+
+- Either the pin still matches, or every contract that depended on it has been suspended.
+- The diff, the screening result and the decision are all on the chain.
+
+## Controls, evidence, threats
+
+| | |
+|---|---|
+| **Controls** | T2.2, T5.1, T5.2, T5.3, T5.4, T6.1 |
+| **Evidence** | Old and new hashes · semantic diff · screening result · suspension and re-approval records |
+| **Threats mitigated** | Tool poisoning · rug-pull · cross-server shadowing · T12 · T11 |
+| **Success measure** | Mean time to detect material drift below the re-attestation interval (target ≤ 1 h at tier 1); 0 undetected contracted-surface changes |
+
+## Related
+
+[UC-02](UC-02-onboard-a-tool-server.md) establishes the baseline · [UC-04](UC-04-establish-a-connection.md) is what gets suspended · [UC-09](UC-09-renewal-review-offboarding.md) re-decides on schedule.
