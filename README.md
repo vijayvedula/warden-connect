@@ -7,11 +7,11 @@ whether two parties may be *connected at all*, and bounds what that connection c
 ever carry. One is per-call authorisation. The other is the standing relationship the
 calls happen inside.
 
-> **Beta.** Not independently audited, and no hardening pass has been run. Two documents you
-> should read before relying on this: [docs/limitations.md](docs/limitations.md) — everything
-> it does not do, in one place, labelled *by design* / *unbuilt* / *unproven* / *environmental*
-> — and [docs/production-readiness.md](docs/production-readiness.md), which tracks the work.
-> Both were written before anyone asked.
+> **Beta.** Not independently audited, and no hardening pass has been run. What this does
+> not do is stated in [docs/07-hld.md §7.13](docs/07-hld.md) (open questions) and
+> [docs/08-lld.md §8.16b](docs/08-lld.md) (deliberately not built). The detailed
+> limitations and production-readiness registers were retired in the 2026-08-21 docs
+> rewrite and live in git history at `3f30697`.
 
 ---
 
@@ -145,15 +145,14 @@ connect serve --listen 0.0.0.0:8787 --issuer-key .keys/k-2026-01.pem --kid k-202
     --tokens tokens.toml --approvers approvers.toml
 ```
 
-`serve` speaks **plain HTTP on purpose** — every topology in
-[docs/physical-architecture.md](docs/physical-architecture.md) terminates TLS at an ALB,
+`serve` speaks **plain HTTP on purpose** — every supported topology terminates TLS at an ALB,
 an Ingress, HAProxy or Front Door. So a non-loopback listener **refuses to start**
 unless you say how TLS is handled, and with `--behind-tls-proxy` every authenticated
 request must carry `x-forwarded-proto: https` from an address you named. A request that
 reaches the port directly, bypassing the ingress, is refused rather than trusted.
 
 Signing keys have a **delegated form** everywhere they have a PEM form
-([docs/key-custody.md](docs/key-custody.md)): `--signer COMMAND` reads a base64url
+([docs/08-lld.md §8.12.1](docs/08-lld.md)): `--signer COMMAND` reads a base64url
 signing input on stdin and writes a base64url signature on stdout, so the private key
 can live in an HSM, a smartcard or a KMS and never reach this process.
 `--require-external-signing` refuses to start if any key would be read from local disk.
@@ -162,24 +161,19 @@ can live in an HSM, a smartcard or a KMS and never reach this process.
 
 | | |
 |---|---|
-| [docs/07-hld.md](docs/07-hld.md) | High-level design — the two-layer model, the artifact, the family |
-| [docs/08-lld.md](docs/08-lld.md) | Low-level design — every module, every check, the build order |
-| [docs/physical-architecture.md](docs/physical-architecture.md) | Four deployment variants: on-prem VMs, Kubernetes, AWS, Azure |
-| [docs/limitations.md](docs/limitations.md) | **Everything this does not do**, in one place |
-| [docs/prerequisites.md](docs/prerequisites.md) | Every external dependency, what each unlocks, and `scripts/preflight.sh` to check |
-| [docs/threat-model.md](docs/threat-model.md) | The bug class this system produces, a review checklist, and the eleven threats as things to verify |
-| [docs/deployment.md](docs/deployment.md) | The four-stage adoption ladder, and a pre-production checklist |
-| [docs/runbook.md](docs/runbook.md) | Symptom-first incident response |
-| [docs/key-custody.md](docs/key-custody.md) | Six signing operations, and which key loss is unrecoverable |
-| [docs/twelve-factor.md](docs/twelve-factor.md) | Config, state, logs, disposability — and where this deviates |
-| [docs/observability.md](docs/observability.md) | Every metric family, the four alerts as PromQL, and what the telemetry cannot answer |
-| [docs/operations.md](docs/operations.md) | Backup, restore, the quarterly drill, and why retention deletes nothing |
-| [docs/releasing.md](docs/releasing.md) | What ships, the two revisions a release is pinned by, and what is verified where |
-| [docs/conformance.md](docs/conformance.md) | Run the vectors against **your** verifier, the two stages, and the version policy |
+| [docs/explainer.html](docs/explainer.html) | **Start here.** A 21-slide self-building deck: the problem, the model, the lifecycle, the capabilities |
+| [docs/07-hld.md](docs/07-hld.md) | High-level design — the plane split, the artifact, the algebra, the trust and threat model, the adoption ladder |
+| [docs/08-lld.md](docs/08-lld.md) | Low-level design — every crate, every module, every check, the error taxonomy, the build order |
+| [docs/use-cases/](docs/use-cases/) | Ten use cases, one file each, with a sequence diagram per use case |
 | [sdk/python/](sdk/python) · [examples/](examples) | A dependency-free client for the control-plane API, and three runnable examples |
-| [docs/production-readiness.md](docs/production-readiness.md) | What is not ready, in priority order |
 | [DRILL.md](DRILL.md) | How this was built, module by module |
 | [SECURITY.md](SECURITY.md) | Reporting a vulnerability; what is in and out of scope |
+
+> `docs/` was rebuilt on 2026-08-21. The previous set — capability matrices, journey maps,
+> threat model, limitations, production readiness, key custody, runbook, deployment,
+> observability, operations, releasing, conformance, prerequisites, physical architecture,
+> twelve-factor, and the HTML/video explainer estate — is preserved in git history at
+> `3f30697`. Comments throughout the source still cite those paths.
 
 ## Conformance
 
@@ -198,8 +192,7 @@ scripts/conformance.sh                         # ours, as a self-check
 Fifteen vectors any verifier can run; four need a mediator (an authenticated peer, a
 presented surface, a revocation feed) and are reported as **deferred** rather than passed —
 counting them would tell you you had covered nineteen checks when you had covered fifteen.
-[docs/conformance.md](docs/conformance.md) has the calling convention and the version
-policy.
+`fixtures/contracts/README.md` has the calling convention and the version policy.
 
 If your verifier and this one disagree on any vector, one of us has a bug — and that is
 a more useful conversation than a specification document.

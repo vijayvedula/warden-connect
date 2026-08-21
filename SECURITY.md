@@ -81,9 +81,7 @@ their controls and stated residuals. The highest-value targets:
   description and schema are unchanged but which behaves differently is
   `warden-trace`'s problem, and is named as A4's residual.
 - **A host compromise that already holds the signing keys.** Documented non-goal until
-  key custody is fully delegated; see
-  [docs/key-custody.md](docs/key-custody.md) and P0 #5 in
-  [docs/production-readiness.md](docs/production-readiness.md).
+  key custody is fully delegated; see [docs/08-lld.md §8.12.1](docs/08-lld.md).
 - **`--insecure-plaintext`.** It accepts bearer tokens over plaintext from anywhere. That
   is what it says, it is named so it is visible in the process list and the startup
   banner, and reporting that it does it is not a finding.
@@ -91,11 +89,10 @@ their controls and stated residuals. The highest-value targets:
   be on the path; that is a deployment property, stated as A5's residual.
 - **Third-party MCP servers, agent frameworks or identity providers themselves.**
 - **Self-inflicted misconfiguration** — running `--observe` and expecting denials, an
-  empty zone matrix, or a control plane with no durable volume (see
-  [docs/twelve-factor.md](docs/twelve-factor.md)).
-- **Known and documented gaps.** Everything in
-  [docs/production-readiness.md](docs/production-readiness.md) is already public. A report
-  that an unchecked box is unchecked is welcome as an issue, not as a vulnerability.
+  empty zone matrix, or a control plane with no durable volume.
+- **Known and documented gaps.** Everything in [docs/07-hld.md §7.13](docs/07-hld.md)
+  and [docs/08-lld.md §8.16b](docs/08-lld.md) is already public. A report that a stated
+  gap is a gap is welcome as an issue, not as a vulnerability.
 
 ## Conformance findings
 
@@ -117,8 +114,8 @@ fixes. Pin a release for production.
 ## Beta / production-use notice
 
 warden-connect is in **beta** and has **not** undergone an independent security audit.
-[docs/production-readiness.md](docs/production-readiness.md) is the honest list of what is
-missing, written before anyone asked for it. Recommended adoption:
+[docs/07-hld.md §7.13](docs/07-hld.md) is the honest list of what is missing, written
+before anyone asked for it. Recommended adoption:
 
 1. **Control plane only, first.** Register the estate, pin surfaces, collect evidence.
    Nothing is enforced, so nothing can break — and the register and the audit trail are
