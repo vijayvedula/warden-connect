@@ -14,7 +14,6 @@
       merged: true,
       ref: ("refs/heads/" + ($m.target_branch // "")),
       protected: ($prot == "true"),
-      owner_review: ($owner_review == "true"),
       request_id: (($m.iid // 0) | tostring),
       author: ($m.author.username // ""),
       # `approved_by[].user.username` — the approvals endpoint, not the MR body.

@@ -93,26 +93,6 @@ pub struct MergeEvidence {
     /// When it merged.
     #[serde(default)]
     pub merged_at: u64,
-    /// Whether the ref **requires** approval from a reviewer the host designates as owner of the
-    /// changed path — not merely from somebody with push access — and the merge landed under that
-    /// requirement.
-    ///
-    /// Deliberately not "an owner approved". No host's review list says which approver was a code
-    /// owner, so proving that would mean the shim parsing `CODEOWNERS` and resolving teams, which
-    /// is a second implementation of the host's own rule and would drift from it. What is checked
-    /// is the requirement plus the merge; the residual is an administrator with bypass, which is
-    /// the same residual `protected` already carries.
-    ///
-    /// `CODEOWNERS` on GitHub and GitLab, an `isBlocking` required-reviewers policy whose
-    /// `filenamePatterns` covers the path on Azure Repos, a default-reviewer approval requirement
-    /// on Bitbucket. Normalising these is the point of this module; the differences between them
-    /// are recorded per shim, because Bitbucket Cloud's is repo-wide rather than path-scoped and
-    /// claiming parity it does not have is worse than reporting the gap.
-    ///
-    /// `#[serde(default)]` so a shim that predates this field, and an event log written before it,
-    /// both read as `false` — absent evidence of owner review is not evidence of it.
-    #[serde(default)]
-    pub owner_review: bool,
 }
 
 impl MergeEvidence {
@@ -142,21 +122,6 @@ impl MergeEvidence {
                 .any(|a| !a.trim().is_empty() && a.trim() != self.author.trim())
     }
 
-    /// Whether the merge was reviewed **by an owner of the path it changed**.
-    ///
-    /// Strictly stronger than [`Self::is_reviewed_merge`], and deliberately a separate predicate
-    /// rather than a fourth condition inside it: a caller that only needs two-person review keeps
-    /// working unchanged, and a caller that needs owner review has to say so.
-    ///
-    /// The weaker form answers "did two humans touch this". This answers "did the human the host
-    /// holds accountable for this path agree to it" — which is the question a connection contract
-    /// is actually asking, because a repository full of collaborators can satisfy the first
-    /// without anyone accountable ever seeing the change.
-    #[must_use]
-    pub fn is_owner_reviewed_merge(&self) -> bool {
-        self.is_reviewed_merge() && self.owner_review
-    }
-
     /// Why it is not evidence, for a refusal an operator can act on.
     #[must_use]
     pub fn why_not_reviewed(&self) -> String {
@@ -178,25 +143,10 @@ impl MergeEvidence {
         if self.approvers.is_empty() {
             return "the merge carries no approver".to_string();
         }
-        if !self
-            .approvers
-            .iter()
-            .any(|a| !a.trim().is_empty() && a.trim() != self.author.trim())
-        {
-            return format!(
-                "the only approver is the author ({}), and a self-approved merge is one person's \
-                 decision wearing two hats",
-                self.author
-            );
-        }
-        // Reached only when the two-person rule is satisfied and owner review is what is missing,
-        // so the message must not repeat the earlier ones.
         format!(
-            "{} does not require approval from an owner of the path, so any collaborator's \
-             approval merges it. Set CODEOWNERS and \"Require review from Code Owners\" \
-             (GitHub, GitLab), a blocking required-reviewers policy whose file pattern covers the \
-             path (Azure Repos), or a default-reviewer approval requirement (Bitbucket)",
-            self.git_ref
+            "the only approver is the author ({}), and a self-approved merge is one person's \
+             decision wearing two hats",
+            self.author
         )
     }
 }
@@ -761,86 +711,6 @@ mod tests {
             .unwrap()
             .with_timeout(Duration::from_secs(5));
         (d, shim)
-    }
-
-    /// A merge that satisfies the two-person rule, so only `owner_review` is in question.
-    fn reviewed() -> MergeEvidence {
-        MergeEvidence {
-            merged: true,
-            git_ref: "refs/heads/main".into(),
-            protected: true,
-            request_id: "7".into(),
-            author: "author-dev".into(),
-            approvers: vec!["reviewer-one".into()],
-            merged_at: 0,
-            owner_review: true,
-        }
-    }
-
-    #[test]
-    fn owner_review_is_strictly_stronger_than_two_person_review() {
-        let mut e = reviewed();
-        e.owner_review = false;
-        assert!(
-            e.is_reviewed_merge(),
-            "two humans still touched it, so the weaker predicate must still hold"
-        );
-        assert!(
-            !e.is_owner_reviewed_merge(),
-            "no owner requirement on the ref means any collaborator's approval merges it"
-        );
-        assert!(reviewed().is_owner_reviewed_merge());
-    }
-
-    #[test]
-    fn owner_review_cannot_rescue_a_merge_that_was_not_reviewed_at_all() {
-        // The ordering that matters: owner review is an ADDITIONAL condition, never a substitute.
-        // If it were OR-ed rather than AND-ed, a self-approved merge onto a code-owner-guarded ref
-        // would pass — and that is one person's decision wearing two hats with extra steps.
-        for broken in [
-            MergeEvidence { merged: false, ..reviewed() },
-            MergeEvidence { protected: false, ..reviewed() },
-            MergeEvidence { author: String::new(), ..reviewed() },
-            MergeEvidence { approvers: vec!["author-dev".into()], ..reviewed() },
-        ] {
-            assert!(
-                !broken.is_owner_reviewed_merge(),
-                "owner_review must not rescue {broken:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_shim_that_does_not_report_owner_review_reads_as_false() {
-        // Absent evidence of the requirement is not evidence of it. A shim predating this field,
-        // and an event log written before it, must both read false — the direction that refuses.
-        let e: MergeEvidence = serde_json::from_str(
-            r#"{"merged":true,"ref":"refs/heads/main","protected":true,
-                "author":"author-dev","approvers":["reviewer-one"]}"#,
-        )
-        .expect("evidence without the field still deserialises");
-        assert!(e.is_reviewed_merge(), "the old contract is unchanged");
-        assert!(
-            !e.owner_review,
-            "a missing field must default to the answer that refuses, never the one that admits"
-        );
-    }
-
-    #[test]
-    fn the_refusal_names_owner_review_and_not_an_earlier_condition() {
-        let mut e = reviewed();
-        e.owner_review = false;
-        let why = e.why_not_reviewed();
-        assert!(
-            why.contains("owner of the path"),
-            "an operator needs to be told which control is missing, got: {why}"
-        );
-        for stale in ["wearing two hats", "carries no approver", "not a guarded ref"] {
-            assert!(
-                !why.contains(stale),
-                "the message repeated an earlier condition that is satisfied ({stale}): {why}"
-            );
-        }
     }
 
     fn asserted() -> Asserted {

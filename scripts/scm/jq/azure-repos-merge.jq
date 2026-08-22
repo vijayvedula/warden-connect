@@ -15,7 +15,6 @@
   # Already fully qualified in Azure's payload — not prefixed again.
   ref: ($pr.targetRefName // ""),
   protected: ($prot == "true"),
-  owner_review: ($owner_review == "true"),
   request_id: (($pr.pullRequestId // 0) | tostring),
   author: ($pr.createdBy.uniqueName // ""),
   approvers: [ (($pr.reviewers // [])[] | select(.vote >= 10) | .uniqueName // empty) ],
