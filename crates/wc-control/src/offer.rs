@@ -353,6 +353,10 @@ impl Offer {
 /// for no gain (§8.3). It also matches `connect-policy.toml`, so an operator reads one syntax.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OfferManifest {
+    /// Who may approve a change to this manifest. Absent is a refusal at consent
+    /// time, not a default — see [`crate::authority::ApprovalBlock`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<crate::authority::ApprovalBlock>,
     /// The providing party's id.
     pub asset: String,
     /// The terms.
