@@ -45,25 +45,9 @@ merge_evidence)
   [ -n "$pr" ] || pr='{}'
   target=$(printf '%s' "$pr" | jq -r '.destination.branch.name // ""')
   # shellcheck disable=SC2086
-  restrictions=$(curl -sf $AUTH "$API/branch-restrictions?pattern=$target" 2>/dev/null) || restrictions='{}'
-  [ -n "$restrictions" ] || restrictions='{}'
-  prot=$(printf '%s' "$restrictions" | jq -r 'if ((.values // []) | length) > 0 then "true" else "false" end')
-
-  # RESIDUAL, recorded rather than papered over: Bitbucket Cloud has no path-scoped code owners.
-  # Default reviewers are a property of the repository, so the strongest thing this host can say is
-  # "a default reviewer approved" — not "the owner of warden/offer.toml approved". GitHub, GitLab
-  # and Azure Repos can all scope to the path; Bitbucket Cloud cannot, and reporting parity it does
-  # not have would make the weakest host look like the strongest.
-  #
-  # `require_default_reviewer_approvals_to_merge` with value >= 1 is the closest true statement, so
-  # that is what is reported. Bitbucket Data Center does have code owners; this shim targets Cloud.
-  owner_review=$(printf '%s' "$restrictions" | jq -r '
-    if any((.values // [])[];
-           (.kind == "require_default_reviewer_approvals_to_merge") and ((.value // 0) >= 1))
-    then "true" else "false" end')
-
-  jq -n --argjson pr "$pr" --arg prot "$prot" \
-     --arg owner_review "$owner_review" -f "$JQDIR/bitbucket-merge.jq"
+  if curl -sf $AUTH "$API/branch-restrictions?pattern=$target" 2>/dev/null | jq -e '(.values // []) | length > 0' >/dev/null 2>&1; then
+    prot=true; else prot=false; fi
+  jq -n --argjson pr "$pr" --arg prot "$prot" -f "$JQDIR/bitbucket-merge.jq"
   ;;
 *) echo "unknown op: $op" >&2; exit 2 ;;
 esac

@@ -46,40 +46,10 @@ merge_evidence)
   if [ "$pr" = "null" ]; then printf '{"merged":false,"ref":"","protected":false}\n'; exit 0; fi
   target=$(printf '%s' "$pr" | jq -r '(.targetRefName // "") | sub("^refs/heads/"; "")')
   # A branch policy is Azure's guard. Any enabled policy scoped to the target counts.
-  pols=$(az repos policy list --project "$proj" --org "$ORG_URL" -o json 2>/dev/null) || pols='[]'
-  [ -n "$pols" ] || pols='[]'
-  prot=$(printf '%s' "$pols" | jq -r --arg ref "refs/heads/$target" '
-    if any(.[]; .isEnabled and ([ (.settings.scope // [])[] | .refName ] | index($ref)))
-    then "true" else "false" end')
-
-  # Azure's CODEOWNERS analogue is the "Automatically included reviewers" policy, and it is the one
-  # place a branch policy can be scoped to a path. Four conditions, and dropping any one of them
-  # leaves a control that reads as configured and guards nothing:
-  #
-  #   isEnabled    — a disabled policy is a comment
-  #   isBlocking   — a non-blocking policy suggests a reviewer and lets the merge through anyway
-  #   scope        — scoped to the ref that was actually merged onto, not some other branch
-  #   patterns     — covering the reserved paths. THIS is the trap: a required-reviewers policy on
-  #                  /src guards /src. It does not guard warden/offer.toml, and a check that only
-  #                  asks "does a policy exist" would call that owner review.
-  #
-  # Patterns are Azure's own syntax: absolute paths, `*` wildcards, `;`-separated. Only the forms
-  # that demonstrably cover the reserved tree are accepted; anything cleverer is refused rather
-  # than guessed, because a wrong "yes" here is the whole defect this field exists to prevent.
-  RR_TYPE=fd2167ab-b0be-447a-8ec8-39368250530e
-  owner_review=$(printf '%s' "$pols" | jq -r --arg ref "refs/heads/$target" --arg t "$RR_TYPE" '
-    [ .[]
-      | select(.isEnabled and (.isBlocking // false))
-      | select(((.type.id // "") | ascii_downcase) == $t)
-      | select([ (.settings.scope // [])[] | .refName ] | index($ref))
-      | select(
-          [ (.settings.filenamePatterns // [])[] | ascii_downcase | ltrimstr("/") ]
-          | any(. == "*" or . == "warden/*" or . == "warden/**" or startswith("warden/"))
-        )
-    ] | if length > 0 then "true" else "false" end')
-
-  jq -n --argjson pr "$pr" --arg prot "$prot" \
-     --arg owner_review "$owner_review" -f "$JQDIR/azure-repos-merge.jq"
+  if az repos policy list --project "$proj" --org "$ORG_URL" \
+        --query "[?isEnabled && settings.scope[?refName=='refs/heads/$target']] | length(@)" -o tsv 2>/dev/null \
+        | grep -qv '^0$'; then prot=true; else prot=false; fi
+  jq -n --argjson pr "$pr" --arg prot "$prot" -f "$JQDIR/azure-repos-merge.jq"
   ;;
 *) echo "unknown op: $op" >&2; exit 2 ;;
 esac

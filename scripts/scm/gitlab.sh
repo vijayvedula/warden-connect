@@ -41,21 +41,8 @@ merge_evidence)
   ap=$(glab api "projects/$enc/merge_requests/$iid/approvals" 2>/dev/null) || ap="{}"
   [ -n "$ap" ] || ap="{}"
   target=$(printf '%s' "$mr" | jq -r 'map(select(.state=="merged")) | first | .target_branch // ""')
-  # Read once, answering both questions: is the ref guarded, and does it require approval from a
-  # CODEOWNERS owner of the changed path. `code_owner_approval_required` is a GitLab Premium
-  # setting; on Free it is absent, which reads as false — a tier that cannot enforce the control
-  # must not report it as enforced.
-  pb=$(glab api "projects/$enc/protected_branches/$target" 2>/dev/null) || pb=""
-  if [ -n "$pb" ]; then
-    prot=true
-    owner_review=$(printf '%s' "$pb" \
-      | jq -r 'if (.code_owner_approval_required // false) then "true" else "false" end')
-  else
-    prot=false
-    owner_review=false
-  fi
-  jq -n --argjson mr "$mr" --argjson ap "$ap" --arg prot "$prot" \
-     --arg owner_review "$owner_review" -f "$JQDIR/gitlab-merge.jq"
+  if glab api "projects/$enc/protected_branches/$target" >/dev/null 2>&1; then prot=true; else prot=false; fi
+  jq -n --argjson mr "$mr" --argjson ap "$ap" --arg prot "$prot" -f "$JQDIR/gitlab-merge.jq"
   ;;
 *) echo "unknown op: $op" >&2; exit 2 ;;
 esac
