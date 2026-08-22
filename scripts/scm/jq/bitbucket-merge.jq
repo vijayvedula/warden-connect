@@ -17,5 +17,6 @@
      | select(.approved == true)
      | .user.nickname // .user.display_name // empty)
   ],
-  merged_at: 0
+  merged_at: 0,
+  base_sha: ($pr.destination.commit.hash // "")
 }

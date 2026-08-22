@@ -381,6 +381,15 @@ pub struct MergeApproval {
     /// Which shim reported this, because a `Verified` claim is only as good as its source.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub via: String,
+    /// Whether the manifest declared no approvers at the base commit and the registry owner
+    /// stood in.
+    ///
+    /// Recorded so a consent settled by the fallback is distinguishable from one settled by a
+    /// declared list. They are not the same claim: the first says the registry's owner agreed,
+    /// the second says the people the repository names agreed. An estate migrating onto
+    /// `[approval]` wants to see the first count go to zero, and cannot if the two look alike.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bootstrap: bool,
 }
 
 /// The approval that authorised a contract.

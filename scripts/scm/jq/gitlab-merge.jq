@@ -18,6 +18,7 @@
       author: ($m.author.username // ""),
       # `approved_by[].user.username` — the approvals endpoint, not the MR body.
       approvers: [ (($ap.approved_by // [])[] | .user.username // empty) ],
-      merged_at: 0
+      merged_at: 0,
+      base_sha: ($m.diff_refs.base_sha // "")
     }
   end

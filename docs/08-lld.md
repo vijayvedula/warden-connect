@@ -8,7 +8,7 @@
 | | |
 |---|---|
 | **Version** | v0.1.1 · Rust 2021 · MSRV 1.89 |
-| **Scale** | 5 crates · 64 modules · 79 error codes · 1,273 tests |
+| **Scale** | 5 crates · 64 modules · 81 error codes · 1,280 tests |
 | **Companion** | [07-hld.md](07-hld.md) for the model · [use-cases/](use-cases/) for the flows |
 
 ---
@@ -61,16 +61,7 @@ warden-connect/
 
 **Dependency direction is strictly one-way:**
 
-```mermaid
-flowchart LR
-    core[wc-core] --> control[wc-control]
-    core --> mediator[wc-mediator]
-    control --> cli[wc-cli]
-    mediator --> cli
-    core --> e2e[wc-e2e]
-    control --> e2e
-    mediator --> e2e
-```
+<img src="diagrams/lld-1.svg" alt="Crate dependency direction — one way, and the mediator never depends on the control plane" width="100%">
 
 `wc-mediator` does **not** depend on `wc-control`. That is what lets it run
 standalone, and what stops a control-plane compromise from reaching the data
@@ -208,22 +199,7 @@ fresh admission that creates a new record.
 
 Five stages, each fail-closed, in this order:
 
-```mermaid
-flowchart LR
-    S1[1 · identity] --> S2[2 · card signature + schema]
-    S2 --> S3[3 · provenance]
-    S3 --> S4[4 · surface capture]
-    S4 --> S5[5 · screening]
-    S5 --> T[tier derivation]
-    T --> P[pin + write]
-    S1 -.WC-1001.-> X[refuse]
-    S2 -.WC-1003.-> X
-    S3 -.WC-1004.-> X
-    S4 -.WC-1002.-> X
-    S5 -.WC-1005.-> X
-    T -.WC-1006.-> X
-    P -.WC-1007 / WC-1008 / WC-1010.-> X
-```
+<img src="diagrams/lld-2.svg" alt="The five admission stages, each fail-closed, with the code each refusal produces" width="100%">
 
 Ordering matters: the surface is captured **before** it is screened, and screened
 **before** it is pinned. Pinning unscreened text would make the pin an assertion
@@ -319,6 +295,34 @@ dangled on temporaries.
 shim, with per-host `jq` extractors loaded by `jq -f` (never copied inline).
 
 **`receipt`** writes `warden/contracts/<cid>.toml`. It **never carries a JWS**.
+
+**`authority`** holds `ApprovalBlock` — `[approval]` in both manifests, naming who may approve a
+change to them:
+
+```toml
+[approval]
+approvers = ["s.iyer", "p.rao"]
+min       = 2
+```
+
+Read at the merge's **base commit**, never at the head. A pull request that adds its own author to
+the list must not be approvable by that author — the list that governs a change is the one already
+on the branch. `MergeEvidence.base_sha` is what makes that readable; a host that does not report one
+refuses (`WC-3025`) rather than falling back to the head, which would reinstate the hole. Quorum is
+counted against declared approvers only (`WC-3026`).
+
+**Bootstrap (W8.4).** A manifest's first commit has no list behind it, so the registry owner stands
+in — for that one merge, and only when the `[approval]` key is **absent**. `MergeApproval.bootstrap`
+records that it happened, so an estate migrating onto declared approvers can watch that count go to
+zero. Two distinctions keep it from becoming a default:
+
+| At base | Meaning | Behaviour |
+|---|---|---|
+| no `[approval]` key | nobody has declared yet | registry owner stands in |
+| `approvers = []` | somebody wrote "nobody" | refuse — an instruction, not a gap |
+
+The fallback never widens: it supplies a list where there was none, and a declared list that
+excludes the owner still excludes them.
 
 **`inventory`** sweeps reserved paths across repositories. It probes nothing. It
 reports `watermark` and `repos_skipped` so a partial sweep never reads as
@@ -528,7 +532,7 @@ fail a regression.
 
 ## 8.11 Error taxonomy
 
-79 codes. The family is the triage:
+81 codes. The family is the triage:
 
 | Family | Range | Domain |
 |---|---|---|
@@ -537,7 +541,7 @@ fail a regression.
 | Zones & discovery | `WC-2011`–`WC-2021` | Zone pairs, throttling, attestation |
 | Federation | `WC-2030`–`WC-2035` | Anchors, chains, expiry, widening, signals |
 | Issuance | `WC-3001`–`WC-3015` | Subsets, policy, preconditions, TTL, widening, caps |
-| Approval | `WC-3020`–`WC-3024` | Roles, staleness, dual control, signatures, owner |
+| Approval | `WC-3020`–`WC-3026` | Roles, staleness, dual control, signatures, owner, declared approvers |
 | Renewal | `WC-3030`–`WC-3033` | Posture, re-attestation, ended contracts, withdrawal |
 | **Mediation** | `WC-3101`–`WC-3121` | The 14 verification gates |
 | Runtime | `WC-4001`–`WC-4020` | No contract, uncontracted tool, ceilings, egress, frames, peer headers |

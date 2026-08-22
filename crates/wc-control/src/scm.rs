@@ -93,6 +93,14 @@ pub struct MergeEvidence {
     /// When it merged.
     #[serde(default)]
     pub merged_at: u64,
+    /// The commit the review unit targeted — the base, not the merge result.
+    ///
+    /// What the approver list is read at. Reading it at the merge commit would let a pull request
+    /// add its own author to `[approval]` and be approved by them in the same change, which makes
+    /// the list describe the change rather than govern it. Empty means the host did not say, and a
+    /// consent that needs the base list refuses rather than falling back to the head.
+    #[serde(default)]
+    pub base_sha: String,
 }
 
 impl MergeEvidence {

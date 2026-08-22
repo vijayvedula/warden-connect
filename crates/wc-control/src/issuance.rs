@@ -2627,7 +2627,8 @@ reason = "a role holder must sign, and no merge may stand in for one"
             author: "r.mehta".to_string(),
             approvers: vec![approver.to_string()],
             via: "gh".to_string(),
-        }
+                bootstrap: false,
+    }
     }
 
     /// A policy where an owner-approved merge is declared to be the consent.
@@ -2903,7 +2904,8 @@ reason = "the registered owner approving a merge is the consent"
             author: "r.mehta".to_string(),
             approvers: vec!["priya@bank.com".to_string()],
             via: "gh".to_string(),
-        };
+                bootstrap: false,
+    };
         let err = issuer
             .mint_with_identity(
                 &pending,

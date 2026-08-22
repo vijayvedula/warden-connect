@@ -18,5 +18,7 @@
   request_id: (($pr.pullRequestId // 0) | tostring),
   author: ($pr.createdBy.uniqueName // ""),
   approvers: [ (($pr.reviewers // [])[] | select(.vote >= 10) | .uniqueName // empty) ],
-  merged_at: 0
+  merged_at: 0,
+  # The target branch tip the PR was created against.
+  base_sha: ($pr.lastMergeTargetCommit.commitId // "")
 }

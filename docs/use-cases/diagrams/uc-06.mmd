@@ -1,0 +1,36 @@
+sequenceDiagram
+    autonumber
+    participant Asr as assurance loop
+    participant Srv as Tool server
+    participant Canon as canon
+    participant Scr as screen
+    participant Reg as registry
+    participant Med as wc-mediator
+    actor Owner
+    actor AppSec
+
+    loop every reattest_every (tier-derived)
+        Asr->>Srv: tools/list
+        Srv-->>Asr: current declared surface
+        Asr->>Canon: canonicalise
+        Canon-->>Asr: canonical bytes
+        Asr->>Asr: sha256 vs pin
+        alt hash matches
+            Asr->>Reg: refresh last_attested_at
+        else mismatch
+            Asr->>Asr: semantic diff (tools, descriptions, params, endpoint)
+            Asr->>Scr: re-screen new text
+            Scr-->>Asr: findings or clean
+            alt benign, standing policy allows
+                Asr->>Reg: auto-update pin, record event
+            else material
+                Asr->>Reg: posture -> degraded
+                Asr->>Med: suspend every contract referencing this pin
+                Med-->>Asr: acknowledged
+                Asr->>Owner: notify with diff
+                Asr->>AppSec: WC-5002 drift material
+                AppSec->>Reg: re-approval re-runs admission
+                Reg-->>AppSec: new pin, new contracts
+            end
+        end
+    end

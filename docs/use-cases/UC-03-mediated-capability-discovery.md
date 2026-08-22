@@ -23,33 +23,7 @@
 
 ## Sequence
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Dev as Agent Developer
-    participant Brk as broker
-    participant Pol as connect-policy
-    participant Reg as registry
-    participant Log as discovery log
-
-    Dev->>Brk: connect discover --capability --as --jurisdiction
-    Brk->>Reg: asker attested?
-    alt asker not attested
-        Reg-->>Brk: posture unattested
-        Brk-->>Dev: WC-2021 asker not attested
-    end
-    Brk->>Reg: candidate entries for capability
-    Reg-->>Brk: candidates (full records)
-    Brk->>Pol: eligibility filter (zone, tier, data class, jurisdiction)
-    Pol-->>Brk: eligible subset
-    Brk->>Brk: project to summaries only<br/>(no endpoint, no credential, no schema)
-    Brk->>Log: record query + asker identity
-    alt enumeration pattern detected
-        Brk-->>Dev: WC-2020 discovery throttled + recon finding
-    end
-    Brk-->>Dev: capability summaries
-    Note over Dev,Brk: The asker now knows a capability exists.<br/>It still cannot reach anything.
-```
+<img src="diagrams/uc-03.svg" alt="UC-03 — discovery returns capability summaries only, filtered by policy eligibility" width="100%">
 
 
 ## Commands

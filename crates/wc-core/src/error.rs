@@ -111,6 +111,10 @@ impl Code {
     pub const OWNER_APPROVAL_MISSING: Code = Code(3024);
     /// Approval signature invalid.
     pub const APPROVAL_SIGNATURE_INVALID: Code = Code(3023);
+    /// The approver is not in `[approval].approvers` as it stood on the base commit.
+    pub const APPROVER_NOT_DECLARED: Code = Code(3025);
+    /// Fewer declared approvers signed off than `[approval].min` requires.
+    pub const APPROVAL_QUORUM_MISSING: Code = Code(3026);
     /// Renewal blocked: posture degraded.
     pub const RENEWAL_POSTURE_DEGRADED: Code = Code(3030);
     /// Renewal blocked: re-attestation failed.
@@ -473,6 +477,8 @@ pub static CODES: &[CodeSpec] = &[
     spec(3022, Closed, Some(403), None, "dual control not satisfied"),
     spec(3023, Closed, Some(401), None, "approval signature invalid"),
     spec(3024, Closed, Some(403), None, "callee's registered owner did not approve"),
+    spec(3025, Closed, Some(403), None, "approver is not declared in the manifest's [approval]"),
+    spec(3026, Closed, Some(403), None, "fewer approvers than [approval].min requires"),
     spec(3030, Closed, Some(409), None, "renewal blocked, posture degraded"),
     spec(3031, Closed, Some(409), None, "renewal blocked, re-attestation failed"),
     spec(3032, Report, Some(410), None, "contract already revoked or expired"),
@@ -662,7 +668,7 @@ mod tests {
             );
             prev = s.code;
         }
-        assert_eq!(CODES.len(), 79, "the LLD §8.11 table has 79 codes");
+        assert_eq!(CODES.len(), 81, "the LLD §8.11 table has 81 codes");
     }
 
     #[test]
