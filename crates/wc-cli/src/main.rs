@@ -2796,6 +2796,9 @@ fn proposals_apply_cmd(args: &Args) -> Result<()> {
             author: evidence.author.clone(),
             approvers: evidence.approvers.clone(),
             via: shim_label.to_string(),
+            // Not the bootstrap path: this is a `Human` consent settled by one repository's merge,
+            // and the approver was checked against the registry owner directly.
+            bootstrap: false,
         };
         with_issuer(args, |issuer| {
             for p in &plan {
@@ -3923,7 +3926,10 @@ fn offer_publish_cmd(args: &Args) -> Result<()> {
         let label = args.get("shim-label").unwrap_or("scm");
         let git_ref = args.get("git-ref").unwrap_or("refs/heads/main");
         let shim = wc_control::scm::ScmShim::parse(label, command)?;
-        let authority = wc_control::authority::ScmMerge { shim: &shim };
+        let authority = wc_control::authority::ScmMerge {
+            shim: &shim,
+            bootstrap: bootstrap_owner(args, offer.asset.as_str()),
+        };
         let asserted = wc_control::pipeline::Asserted {
             repo: repo.clone(),
             git_ref: git_ref.to_string(),
@@ -4101,7 +4107,10 @@ fn approve_by_merge_cmd(args: &Args, request_id: &str) -> Result<()> {
     })?;
     let file = wc_control::issuance::ApprovalFile::parse(&text)?;
 
-    let authority = wc_control::authority::ScmMerge { shim: &shim };
+    let authority = wc_control::authority::ScmMerge {
+        shim: &shim,
+        bootstrap: bootstrap_owner(args, &file.callee),
+    };
     let asserted = wc_control::pipeline::Asserted {
         repo: repo.clone(),
         git_ref,
@@ -4249,6 +4258,19 @@ fn scm_probe_cmd(args: &Args) -> Result<()> {
 /// `need apply` — mint what a consumer's manifest asks for, on the strength of two merges (W5).
 ///
 /// The verb `need check` could not be. It reports; this issues.
+/// The registered owner of an asset, for the W8.4 bootstrap.
+///
+/// Only consulted when a manifest declares no `[approval]` at the base commit. `None` — an asset
+/// not yet registered — means a manifest without a declared list cannot be consented to, which is
+/// the direction that refuses.
+fn bootstrap_owner(args: &Args, asset: &str) -> Option<String> {
+    let projection = open_projection(args).ok()?;
+    let id = wc_core::model::EntityId::new(asset).ok()?;
+    projection
+        .entity(&id)
+        .map(|e| e.owner.as_str().to_string())
+}
+
 fn need_apply_cmd(args: &Args) -> Result<()> {
     let manifest_path = args
         .get("manifest")
@@ -4276,7 +4298,10 @@ fn need_apply_cmd(args: &Args) -> Result<()> {
     // carried the whole file, and asking the source host the same question per entry would be a
     // slower way to get the same answer.
     let shim = wc_control::scm::ScmShim::parse(shim_label, shim_cmd)?;
-    let authority = wc_control::authority::ScmMerge { shim: &shim };
+    let authority = wc_control::authority::ScmMerge {
+        shim: &shim,
+        bootstrap: bootstrap_owner(args, &manifest.asset),
+    };
     let asserted = wc_control::pipeline::Asserted {
         repo: repo.clone(),
         git_ref,

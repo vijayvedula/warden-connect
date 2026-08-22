@@ -8,7 +8,7 @@
 | | |
 |---|---|
 | **Version** | v0.1.1 · Rust 2021 · MSRV 1.89 |
-| **Scale** | 5 crates · 64 modules · 81 error codes · 1,276 tests |
+| **Scale** | 5 crates · 64 modules · 81 error codes · 1,280 tests |
 | **Companion** | [07-hld.md](07-hld.md) for the model · [use-cases/](use-cases/) for the flows |
 
 ---
@@ -310,6 +310,19 @@ the list must not be approvable by that author — the list that governs a chang
 on the branch. `MergeEvidence.base_sha` is what makes that readable; a host that does not report one
 refuses (`WC-3025`) rather than falling back to the head, which would reinstate the hole. Quorum is
 counted against declared approvers only (`WC-3026`).
+
+**Bootstrap (W8.4).** A manifest's first commit has no list behind it, so the registry owner stands
+in — for that one merge, and only when the `[approval]` key is **absent**. `MergeApproval.bootstrap`
+records that it happened, so an estate migrating onto declared approvers can watch that count go to
+zero. Two distinctions keep it from becoming a default:
+
+| At base | Meaning | Behaviour |
+|---|---|---|
+| no `[approval]` key | nobody has declared yet | registry owner stands in |
+| `approvers = []` | somebody wrote "nobody" | refuse — an instruction, not a gap |
+
+The fallback never widens: it supplies a list where there was none, and a declared list that
+excludes the owner still excludes them.
 
 **`inventory`** sweeps reserved paths across repositories. It probes nothing. It
 reports `watermark` and `repos_skipped` so a partial sweep never reads as

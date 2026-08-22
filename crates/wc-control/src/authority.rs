@@ -116,6 +116,9 @@ pub trait ApprovalAuthority {
 pub struct ScmMerge<'a> {
     /// The shim to ask.
     pub shim: &'a ScmShim,
+    /// The registry owner, used only when the manifest declares no `[approval]` at the base
+    /// commit. `None` means a manifest without a declared list cannot be consented to at all.
+    pub bootstrap: Option<String>,
 }
 
 impl ScmMerge<'_> {
@@ -124,13 +127,24 @@ impl ScmMerge<'_> {
     /// Both manifests carry the block under the same key, so the TOML is parsed for that key alone
     /// rather than through `OfferManifest` or `NeedManifest`. Parsing the whole manifest here would
     /// make an unrelated schema change to either one able to break consent for both.
-    fn declared_approvers(&self, repo: &str, base_sha: &str, path: &str) -> Result<ApprovalBlock> {
+    ///
+    /// `None` when the manifest is absent at `base_sha`, or present without an `[approval]` key —
+    /// the case the bootstrap turns on. `Some` with an empty `approvers` is the opposite: somebody
+    /// wrote "nobody", and that is an instruction rather than a gap.
+    fn declared_approvers(
+        &self,
+        repo: &str,
+        base_sha: &str,
+        path: &str,
+    ) -> Result<Option<ApprovalBlock>> {
         #[derive(serde::Deserialize)]
         struct JustApproval {
             #[serde(default)]
             approval: Option<ApprovalBlock>,
         }
-        let bytes = self.shim.file(repo, base_sha, path)?;
+        let Some(bytes) = self.shim.file_if_present(repo, base_sha, path)? else {
+            return Ok(None);
+        };
         let text = String::from_utf8_lossy(&bytes);
         let parsed: JustApproval = toml::from_str(&text).map_err(|e| {
             WcError::with_detail(
@@ -139,7 +153,7 @@ impl ScmMerge<'_> {
             )
             .with_source(e)
         })?;
-        Ok(parsed.approval.unwrap_or_default())
+        Ok(parsed.approval)
     }
 }
 
@@ -193,17 +207,44 @@ impl ApprovalAuthority for ScmMerge<'_> {
             ));
         }
         let declared = self.declared_approvers(&asserted.repo, &evidence.base_sha, &manifest.path)?;
-        if declared.is_empty() {
+        // W8.4 · bootstrap. No `[approval]` at base is the first commit of a manifest: there is
+        // nothing behind it to authorise it, and refusing that makes the feature impossible to
+        // adopt. The registry owner stands in for exactly that one merge — the authority that
+        // governed this repository before `[approval]` existed. A fallback, never a default: it
+        // applies only when the key is ABSENT, and the consent records that it was used.
+        let bootstrap = declared.is_none();
+        let block = match declared {
+            Some(b) => b,
+            None => {
+                let Some(owner) = self.bootstrap.as_deref().filter(|o| !o.trim().is_empty()) else {
+                    return Err(WcError::with_detail(
+                        Code::APPROVER_NOT_DECLARED,
+                        format!(
+                            "{} declares no [approval] at {}, and no registry owner was supplied \
+                             to stand in for a first commit",
+                            manifest.path, evidence.base_sha
+                        ),
+                    ));
+                };
+                ApprovalBlock { approvers: vec![owner.to_string()], min: 1 }
+            }
+        };
+
+        // An empty list is the opposite of an absent one. Somebody wrote "nobody may approve
+        // this", which is an instruction, so the owner does not stand in for it.
+        if block.is_empty() {
             return Err(WcError::with_detail(
                 Code::APPROVER_NOT_DECLARED,
                 format!(
-                    "{} at {} declares no [approval].approvers, so nobody is entitled to approve a                      change to it. An absent list is a refusal, not a default",
+                    "{} at {} has an [approval] block naming nobody, so nothing can approve a \
+                     change to it",
                     manifest.path, evidence.base_sha
                 ),
             ));
         }
-        let signed = declared.declared(&evidence.approvers);
-        if signed.len() < declared.min {
+
+        let signed = block.declared(&evidence.approvers);
+        if signed.len() < block.min {
             return Err(WcError::with_detail(
                 if signed.is_empty() {
                     Code::APPROVER_NOT_DECLARED
@@ -211,15 +252,19 @@ impl ApprovalAuthority for ScmMerge<'_> {
                     Code::APPROVAL_QUORUM_MISSING
                 },
                 format!(
-                    "{} at {} requires {} of [{}]; the merge was approved by [{}], of whom {} \
-                     {} declared",
+                    "{} at {} requires {} of [{}]{}; the merge was approved by [{}], of whom {} \
+                     entitled",
                     manifest.path,
                     evidence.base_sha,
-                    declared.min,
-                    declared.approvers.join(", "),
+                    block.min,
+                    block.approvers.join(", "),
+                    if bootstrap {
+                        " — the registry owner, standing in because no [approval] is declared there"
+                    } else {
+                        ""
+                    },
                     evidence.approvers.join(", "),
                     signed.len(),
-                    if signed.len() == 1 { "is" } else { "are" },
                 ),
             ));
         }
@@ -232,6 +277,7 @@ impl ApprovalAuthority for ScmMerge<'_> {
             author: evidence.author,
             approvers: evidence.approvers,
             via: self.name().to_string(),
+            bootstrap,
         })
     }
 }
@@ -302,6 +348,24 @@ mod tests {
         (d, s)
     }
 
+    /// A shim serving `head` at the merge commit and reporting the path **absent** at base.
+    fn shim_serving_absent_base(tag: &str, head: &str) -> (Dir, ScmShim) {
+        use base64::Engine as _;
+        let h64 = base64::engine::general_purpose::STANDARD.encode(head);
+        let d = Dir::new(tag);
+        let s = d.shim(&format!(
+            "read -r q\n\
+             case \"$q\" in\n\
+             *merge_evidence*) printf '%s\\n' '{{\"merged\":true,\"ref\":\"refs/heads/main\",\
+             \"protected\":true,\"request_id\":\"214\",\"author\":\"r.mehta\",\
+             \"approvers\":[\"s.iyer\"],\"base_sha\":\"ba5e000\"}}' ;;\n\
+             *ba5e000*) printf '%s\\n' '{{\"absent\":true}}' ;;\n\
+             *) printf '%s\\n' '{{\"content_b64\":\"{h64}\"}}' ;;\n\
+             esac\n"
+        ));
+        (d, s)
+    }
+
     fn asserted() -> Asserted {
         Asserted {
             repo: "bank/payments-mcp".into(),
@@ -313,7 +377,7 @@ mod tests {
     #[test]
     fn a_reviewed_merge_of_the_submitted_manifest_is_a_consent() {
         let (_d, shim) = shim_serving("good", MANIFEST);
-        let auth = ScmMerge { shim: &shim };
+        let auth = ScmMerge { shim: &shim, bootstrap: None };
         let c = auth
             .consent(
                 Side::Target,
@@ -355,7 +419,7 @@ mod tests {
                 base64::engine::general_purpose::STANDARD.encode(head)
             }
         ));
-        let auth = ScmMerge { shim: &sh };
+        let auth = ScmMerge { shim: &sh, bootstrap: None };
         let err = auth
             .consent(
                 Side::Target,
@@ -368,12 +432,37 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_declaring_nobody_refuses() {
-        // Absent is a refusal, not a default. A manifest with no [approval] would otherwise be
-        // approvable by anyone the host let merge it.
+    fn a_first_commit_with_no_approval_block_falls_back_to_the_registry_owner() {
+        // W8.4. The manifest is absent at base — this merge introduces it — so there is no list
+        // behind it. The registry owner stands in for that one merge, and the consent says so.
         let bare = "asset = \"spiffe://bank/ns/svc/sa/payments-mcp\"\n";
-        let (_d, shim) = shim_serving_base("nobody", bare, bare);
-        let auth = ScmMerge { shim: &shim };
+        let (_d, shim) = shim_serving_absent_base("bootstrap", bare);
+        let auth = ScmMerge {
+            shim: &shim,
+            bootstrap: Some("s.iyer".into()),
+        };
+        let c = auth
+            .consent(
+                Side::Target,
+                &asserted(),
+                &ManifestBinding::of("warden/offer.toml", bare),
+            )
+            .expect("the first commit of a manifest must be adoptable");
+        assert!(
+            c.bootstrap,
+            "a consent settled by the fallback must be distinguishable from a declared one"
+        );
+    }
+
+    #[test]
+    fn the_fallback_still_requires_the_owner_to_be_the_approver() {
+        // Not a bypass. No list at base means the owner decides — not that anybody does.
+        let bare = "asset = \"spiffe://bank/ns/svc/sa/payments-mcp\"\n";
+        let (_d, shim) = shim_serving_absent_base("bootstrap-wrong", bare);
+        let auth = ScmMerge {
+            shim: &shim,
+            bootstrap: Some("someone.else".into()),
+        };
         let err = auth
             .consent(
                 Side::Target,
@@ -382,11 +471,73 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.code(), Code::APPROVER_NOT_DECLARED);
+        assert!(err.detail().contains("standing in"), "{}", err.detail());
+    }
+
+    #[test]
+    fn with_no_registry_owner_an_undeclared_manifest_cannot_be_consented_to() {
+        let bare = "asset = \"spiffe://bank/ns/svc/sa/payments-mcp\"\n";
+        let (_d, shim) = shim_serving_absent_base("bootstrap-none", bare);
+        let auth = ScmMerge {
+            shim: &shim,
+            bootstrap: None,
+        };
+        let err = auth
+            .consent(
+                Side::Target,
+                &asserted(),
+                &ManifestBinding::of("warden/offer.toml", bare),
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), Code::APPROVER_NOT_DECLARED);
+        // The code alone cannot tell this apart from "an owner was supplied and did not approve":
+        // both refuse with 3025. Asserting the reason is what makes the test able to notice a
+        // fallback that quietly invents an owner.
         assert!(
-            err.detail().contains("refusal, not a default"),
-            "{}",
+            err.detail().contains("no registry owner was supplied"),
+            "the refusal must name the missing owner, got: {}",
             err.detail()
         );
+    }
+
+    #[test]
+    fn an_empty_approval_block_is_not_a_gap_the_owner_fills() {
+        // The distinction the whole fallback turns on. Absent means nobody has said yet; an empty
+        // list means somebody said "nobody". If the owner stood in for the second, writing
+        // `approvers = []` would silently hand approval back to the registry.
+        let empty = "asset = \"spiffe://bank/ns/svc/sa/payments-mcp\"\n[approval]\napprovers = []\n";
+        let (_d, shim) = shim_serving_base("emptied", empty, empty);
+        let auth = ScmMerge {
+            shim: &shim,
+            bootstrap: Some("s.iyer".into()),
+        };
+        let err = auth
+            .consent(
+                Side::Target,
+                &asserted(),
+                &ManifestBinding::of("warden/offer.toml", empty),
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), Code::APPROVER_NOT_DECLARED);
+        assert!(err.detail().contains("naming nobody"), "{}", err.detail());
+    }
+
+    #[test]
+    fn a_declared_list_is_never_overridden_by_the_registry_owner() {
+        // The fallback must not widen. A declared list that excludes the owner still excludes them.
+        let (_d, shim) = shim_serving("owner-not-declared", MANIFEST);
+        let auth = ScmMerge {
+            shim: &shim,
+            bootstrap: Some("outsider".into()),
+        };
+        let c = auth
+            .consent(
+                Side::Target,
+                &asserted(),
+                &ManifestBinding::of("warden/offer.toml", MANIFEST),
+            )
+            .expect("s.iyer is declared and approved");
+        assert!(!c.bootstrap, "a declared list did not use the fallback");
     }
 
     #[test]
@@ -396,7 +547,7 @@ mod tests {
         let m = "asset = \"spiffe://bank/ns/svc/sa/payments-mcp\"\n\
                  [approval]\napprovers = [\"s.iyer\", \"p.rao\"]\nmin = 2\n";
         let (_d, shim) = shim_serving_base("quorum", m, m);
-        let auth = ScmMerge { shim: &shim };
+        let auth = ScmMerge { shim: &shim, bootstrap: None };
         let err = auth
             .consent(
                 Side::Target,
@@ -427,7 +578,7 @@ mod tests {
              *) printf '%s\\n' '{{\"content_b64\":\"{b64}\"}}' ;;\n\
              esac\n"
         ));
-        let auth = ScmMerge { shim: &sh };
+        let auth = ScmMerge { shim: &sh, bootstrap: None };
         let err = auth
             .consent(
                 Side::Target,
@@ -460,7 +611,7 @@ mod tests {
         // The check that makes the review mean anything. Without it a pipeline with a genuine
         // reviewed merge could submit whatever it liked and every other check would still pass.
         let (_d, shim) = shim_serving("swapped", "asset = \"spiffe://bank/ns/svc/sa/other\"\n");
-        let auth = ScmMerge { shim: &shim };
+        let auth = ScmMerge { shim: &shim, bootstrap: None };
         let err = auth
             .consent(
                 Side::Target,
@@ -484,7 +635,7 @@ mod tests {
              printf '%s\\n' '{\"merged\":true,\"ref\":\"refs/heads/main\",\"protected\":true,\
              \"author\":\"a.khan\",\"approvers\":[\"a.khan\"]}'\n",
         );
-        let auth = ScmMerge { shim: &shim };
+        let auth = ScmMerge { shim: &shim, bootstrap: None };
         let err = auth
             .consent(
                 Side::Source,
@@ -516,7 +667,8 @@ mod tests {
             author: author.into(),
             approvers: approvers.iter().map(|s| (*s).to_string()).collect(),
             via: "gh".into(),
-        }
+                bootstrap: false,
+    }
     }
 
     #[test]
