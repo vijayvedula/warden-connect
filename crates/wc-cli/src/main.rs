@@ -373,6 +373,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "timeout",
             "expect-ref",
             "expect-protected",
+            "expect-owner-review",
             "expect-approver",
             "expect-file",
         ],
@@ -4179,13 +4180,19 @@ fn scm_probe_cmd(args: &Args) -> Result<()> {
     println!("  merged     {}", evidence.merged);
     println!("  ref        {}", evidence.git_ref);
     println!("  protected  {}", evidence.protected);
+    println!("  owner rev  {}", evidence.owner_review);
     println!("  request    {}", evidence.request_id);
     println!("  author     {}", evidence.author);
     println!("  approvers  {}", evidence.approvers.join(", "));
     println!(
         "  verdict    {}",
-        if evidence.is_reviewed_merge() {
-            "a reviewed merge".to_string()
+        if evidence.is_owner_reviewed_merge() {
+            "an owner-reviewed merge".to_string()
+        } else if evidence.is_reviewed_merge() {
+            format!(
+                "a reviewed merge, but NOT owner-reviewed — {}",
+                evidence.why_not_reviewed()
+            )
         } else {
             format!("NOT a reviewed merge — {}", evidence.why_not_reviewed())
         }
@@ -4201,6 +4208,14 @@ fn scm_probe_cmd(args: &Args) -> Result<()> {
     }
     if args.has("expect-protected") && !evidence.protected {
         wrong.push("expected a protected ref, and the shim says it is not".to_string());
+    }
+    if args.has("expect-owner-review") && !evidence.owner_review {
+        wrong.push(
+            "expected the ref to require review from an owner of the path, and the shim says it \
+             does not. On GitHub that is CODEOWNERS plus \"Require review from Code Owners\"; on \
+             Azure Repos a BLOCKING required-reviewers policy whose file patterns cover warden/"
+                .to_string(),
+        );
     }
     for who in args.list("expect-approver") {
         if !evidence.approvers.iter().any(|a| a == &who) {
@@ -9709,7 +9724,8 @@ TOOLS
                 silently ignored rather than applied.
 
   scm probe --shim COMMAND --label NAME --repo NAME --sha SHA
-            [--expect-ref REF] [--expect-protected] [--expect-approver WHO]
+            [--expect-ref REF] [--expect-protected] [--expect-owner-review]
+            [--expect-approver WHO]
             [--expect-file PATH] [--timeout N]
                 exercise a source-host shim against a commit whose answer you
                 already know, and print what it returned.
