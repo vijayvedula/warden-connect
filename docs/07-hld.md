@@ -38,28 +38,7 @@ caller, for these tools, on these terms, until this date.
 
 ### System context
 
-```mermaid
-flowchart LR
-    subgraph Control["warden-connect control plane"]
-        REG[(registry)]
-        ISS[issuance]
-        ASR[assurance loop]
-        CHN[(audit chain)]
-    end
-    subgraph Data["data plane"]
-        MED[wc-mediator]
-    end
-    DEV[Agent Developer] -->|offer.toml / needs.toml| SCM[(GitHub / Azure DevOps / Bitbucket)]
-    SCM -->|reviewed merge| ISS
-    ISS -->|signed contract| MED
-    ISS --> REG
-    ASR --> REG
-    ISS --> CHN
-    AGENT[Calling agent] --> MED
-    MED --> SRV[MCP tool server]
-    MED -->|effective = surface ∩ scope ∩ policy| WARDEN[warden]
-    CHN --> SIEM[(SIEM / GRC)]
-```
+<img src="diagrams/hld-1.svg" alt="System context — offers and needs merge into the control plane, which issues contracts to the mediator" width="100%">
 
 ---
 
@@ -131,17 +110,7 @@ AuditEntry      warden's shape, extended with cid, contract_jti,
 
 ### Lifecycle and posture
 
-```mermaid
-stateDiagram-v2
-    [*] --> Pending: register
-    Pending --> Active: admission complete
-    Active --> Suspended: material drift / reattest failed / owner departed
-    Suspended --> Active: re-approval (re-runs admission)
-    Active --> Retired: exp reached, or terminated
-    Suspended --> Retired: lapse
-    Retired --> [*]: retained for the regulatory clock
-    note right of Retired: never returns
-```
+<img src="diagrams/hld-2.svg" alt="Entity lifecycle — pending, active, suspended, retired; retired never returns" width="100%">
 
 `Posture` is orthogonal to lifecycle: `Attested` · `Degraded` · `Unattested` ·
 `Quarantined`. Quarantined is **terminal until a full re-admission** — never a
@@ -267,21 +236,7 @@ Each flow is specified in full, with a sequence diagram, in [use-cases/](use-cas
 
 ### Bilateral consent
 
-```mermaid
-sequenceDiagram
-    participant P as Provider repo
-    participant R as registry
-    participant C as Consumer repo
-    P->>R: warden/offer.toml  (what may ever be exposed)
-    C->>R: warden/needs.toml  (what is being asked, and why)
-    R->>R: offer ∩ need, then connect-policy
-    alt both consent and policy permits
-        R->>R: mint contract (ceiling)
-        R->>C: receipt warden/contracts/<cid>.toml
-    else either withholds
-        R-->>C: no contract exists
-    end
-```
+<img src="diagrams/hld-3.svg" alt="Bilateral consent — provider offer and consumer need meet in the registry" width="100%">
 
 Two pipelines, two repositories, two reviews. Neither party can produce a
 contract alone — that is the whole point.
@@ -361,21 +316,7 @@ policy applies as well. One process, no extra hop.
 
 ### Trust boundaries
 
-```mermaid
-flowchart TB
-    subgraph T1["Trusted: issuer signing keys"]
-        K[key custody]
-    end
-    subgraph T2["Semi-trusted: control plane"]
-        CP[registry, issuance, assurance]
-    end
-    subgraph T3["Untrusted: everything on the wire"]
-        AG[agents] --- MED[mediator] --- SRV[tool servers]
-    end
-    K -->|signs| CP
-    CP -->|signed contracts only| MED
-    MED -->|verifies against keys, not against CP| K
-```
+<img src="diagrams/hld-4.svg" alt="Trust boundaries — the mediator verifies against issuer keys, not against the control plane" width="100%">
 
 A compromised control plane **cannot mint a valid contract** without the signing
 keys. It can withhold — and withholding fails closed.
@@ -462,3 +403,34 @@ design started at rung 4 — which is why nobody could adopt it.
 | 2 | Are ADO and Bitbucket at parity with GitHub? | Merge parsing is; the `repos` and `open_pr` shim operations are GitHub-only so far |
 | 3 | Cluster-scale behaviour | Unverified — needs a real cluster |
 | 4 | Independent security review | Not yet done, and it must be done by someone who did not build it |
+| 5 | What happens to a contract when the basis of its approval changes? | **Undesigned.** See below |
+
+---
+
+## 7.14 Contract maintenance — the undesigned axis
+
+Assurance today watches one thing: the **surface**. Pin it, re-check it on an
+interval, classify benign or material, suspend on material (§7.5 F3).
+
+Nothing watches the **consent**. A contract records who approved it and on what
+basis, and then that basis is never revisited until `exp`. Three events change it
+and none of them is a trigger today:
+
+| Event | What changes | Status |
+|---|---|---|
+| **Repo transfer** | The host-designated owner changes, so who may approve changes — silently, mid-contract. Acute after Wave 8, which moves the authority for consent to the source host | undesigned |
+| **Approver leaver** | The human who consented no longer exists. Their contracts remain valid to `exp` | partial: [UC-09](use-cases/UC-09-renewal-review-offboarding.md) A2 flags an orphaned *owner*, but only at renewal, and only for the owner — not the approver |
+| **Approver mover** | Role or team changed, so the authority they held when they approved is gone | undesigned |
+
+The shape is the same as drift and should reuse it: **pin the consent basis, re-check
+it, classify, suspend on material**. Surface drift and consent drift are two axes of
+one loop, not two mechanisms.
+
+Open questions before this can be built:
+
+1. Is a leaver's approval retroactively void, or valid until `exp` with a flag? (Voiding is safer and will cause an outage the first time someone resigns.)
+2. Does a repo transfer suspend, or only degrade posture and block renewal?
+3. What is the pinned artifact — CODEOWNERS content hash, the ADO policy id, the approver identity, or all three?
+
+Until this exists, the honest statement is: **a contract's approval is checked once,
+at issuance, and never again.**

@@ -35,43 +35,7 @@
 
 ## Sequence
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Dev as Agent Developer
-    participant CI as CI/CD pipeline
-    participant Adm as admission
-    participant Scr as screen
-    participant Reg as registry
-    participant Chain as audit chain
-    actor Arch as Security Architect
-
-    Dev->>CI: merge to main
-    CI->>Adm: connect register agent --card --attest --owner --service
-    Adm->>Adm: verify workload identity vs trust bundle
-    alt identity unverifiable
-        Adm-->>CI: WC-1001 identity unverifiable
-    end
-    Adm->>Adm: verify card signature + schema
-    Adm->>Adm: verify build provenance (SLSA / Sigstore)
-    Adm->>Scr: screen declared surface text
-    alt injection pattern found
-        Scr-->>Adm: finding
-        Adm-->>CI: WC-1005 screening blocked
-    end
-    Scr-->>Adm: clean
-    Adm->>Adm: derive risk tier from data classes + capability classes
-    opt tier >= 2
-        Adm->>Arch: confirmation request with full context
-        Arch-->>Adm: confirm
-    end
-    Adm->>Adm: canonicalise card, sha256, pin
-    Adm->>Reg: write entity (posture attested, lifecycle active, 0 contracts)
-    Adm->>Chain: append registration record
-    Chain-->>Adm: chain head
-    Adm-->>CI: registered, entity id
-    CI-->>Dev: green
-```
+<img src="diagrams/uc-01.svg" alt="UC-01 — CI registers an agent: identity, provenance, screening, then pin and write" width="100%">
 
 
 ## Commands

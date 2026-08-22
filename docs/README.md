@@ -48,6 +48,30 @@ Bitbucket — same paths, same flow.
 | UC-09 | [Renewal, review, offboarding](use-cases/UC-09-renewal-review-offboarding.md) | ② → ③ |
 | UC-10 | [Regulatory register and evidence](use-cases/UC-10-regulatory-register-and-evidence.md) | ③ |
 
+## Diagrams
+
+Diagrams are committed as SVG, with the Mermaid source beside each one:
+
+```
+docs/diagrams/hld-1.mmd            docs/use-cases/diagrams/uc-01.mmd
+docs/diagrams/hld-1.svg            docs/use-cases/diagrams/uc-01.svg
+```
+
+GitHub overlays a pan/zoom control cluster on every ```` ```mermaid ```` fence it
+renders, and there is no document-level way to suppress it
+([github/community#178929](https://github.com/orgs/community/discussions/178929)).
+So the documents reference images. The `.mmd` is what you review in a pull
+request; the `.svg` is marked `linguist-generated`.
+
+To regenerate after editing a `.mmd`:
+
+```sh
+scripts/render-diagrams.sh
+```
+
+That script is the only part of the toolchain that needs Node, and it runs only
+when a diagram changes. CI never runs it.
+
 ## Note on this rewrite
 
 `docs/` was rebuilt on 2026-08-21. The previous set — capability matrices,

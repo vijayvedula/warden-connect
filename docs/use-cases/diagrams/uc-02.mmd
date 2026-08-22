@@ -1,0 +1,32 @@
+sequenceDiagram
+    autonumber
+    actor Ops as Platform Operator
+    participant Adm as admission
+    participant Srv as MCP tool server
+    participant Scr as screen
+    participant Canon as canon
+    participant Reg as registry
+    participant Chain as audit chain
+
+    Ops->>Adm: connect register server --endpoint --owner --tier --zone
+    Adm->>Srv: MCP initialize
+    alt endpoint unreachable
+        Srv-->>Adm: timeout
+        Adm-->>Ops: WC-1002 surface unobtainable (nothing pinned)
+    end
+    Srv-->>Adm: capabilities
+    Adm->>Srv: tools/list
+    Srv-->>Adm: full declared surface
+    Adm->>Scr: screen every name, description, parameter doc
+    alt poisoned description
+        Scr-->>Adm: finding, text quoted
+        Adm-->>Ops: WC-1005 screening blocked
+    end
+    Scr-->>Adm: clean
+    Adm->>Adm: record data classes + jurisdictions
+    Adm->>Canon: canonicalise surface
+    Canon-->>Adm: canonical bytes
+    Adm->>Adm: sha256 -> pin, emit CycloneDX BOM
+    Adm->>Reg: write server (posture attested, reattest_every from tier)
+    Adm->>Chain: append admission record
+    Adm-->>Ops: registered, pin sha256:...

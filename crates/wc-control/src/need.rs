@@ -66,6 +66,10 @@ pub struct NeedEntry {
 /// A consumer's `warden/connections.toml`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NeedManifest {
+    /// Who may approve a change to this manifest. Absent is a refusal at consent
+    /// time, not a default — see [`crate::authority::ApprovalBlock`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<crate::authority::ApprovalBlock>,
     /// The consuming party's id.
     pub asset: String,
     /// What it wants.
