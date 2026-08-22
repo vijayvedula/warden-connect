@@ -83,10 +83,25 @@ merge_evidence)
   # A protected base branch is what makes the merge evidence of review. Needs ADMIN on the repo: a
   # repo:read token gets 404 here and this reports false, which fails closed and reads as a policy
   # problem rather than a token scope.
-  if gh api "repos/$repo/branches/$base/protection" >/dev/null 2>&1; then prot=true; else prot=false; fi
+  #
+  # Fetched once and read twice — guarded at all, and requires review from an owner of the changed
+  # path. Two calls could disagree with each other between them, and the whole point of the second
+  # answer is that it is about the same rule as the first.
+  protection=$(gh api "repos/$repo/branches/$base/protection" 2>/dev/null) || protection=""
+  if [ -n "$protection" ]; then
+    prot=true
+    # CODEOWNERS alone guards nothing: the file assigns reviewers, the protection setting is what
+    # makes their review required. Reading the file would report a control that is not enforced.
+    owner_review=$(printf '%s' "$protection" \
+      | jq -r 'if (.required_pull_request_reviews.require_code_owner_reviews // false)
+               then "true" else "false" end')
+  else
+    prot=false
+    owner_review=false
+  fi
 
-  printf '{"merged":true,"ref":"refs/heads/%s","protected":%s,"request_id":"%s","author":"%s","approvers":%s,"merged_at":%s}\n' \
-    "$base" "$prot" "$num" "$author" "$approvers" "$ts"
+  printf '{"merged":true,"ref":"refs/heads/%s","protected":%s,"owner_review":%s,"request_id":"%s","author":"%s","approvers":%s,"merged_at":%s}\n' \
+    "$base" "$prot" "$owner_review" "$num" "$author" "$approvers" "$ts"
   ;;
 search)
   # Repositories containing an exact path, from the code-search index. An accelerator: the caller

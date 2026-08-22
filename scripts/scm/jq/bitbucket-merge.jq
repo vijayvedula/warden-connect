@@ -9,6 +9,7 @@
   merged: true,
   ref: ("refs/heads/" + ($pr.destination.branch.name // "")),
   protected: ($prot == "true"),
+  owner_review: ($owner_review == "true"),
   request_id: (($pr.id // 0) | tostring),
   # `nickname` is not always present; `display_name` is the documented fallback.
   author: ($pr.author.nickname // $pr.author.display_name // ""),

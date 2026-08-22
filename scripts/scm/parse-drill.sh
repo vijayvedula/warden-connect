@@ -73,7 +73,7 @@ GL_AP='{"approved_by": [
   {"user": {"username": "reviewer-one"}},
   {"user": {"username": "reviewer-two"}}
 ]}'
-GL="$(jq -n --argjson mr "$GL_MR" --argjson ap "$GL_AP" --arg prot true -f "$JQDIR/gitlab-merge.jq")"
+GL="$(jq -n --argjson mr "$GL_MR" --argjson ap "$GL_AP" --arg prot true --arg owner_review true -f "$JQDIR/gitlab-merge.jq")"
 expect "picks the MERGED request, not the first in the list" "$GL" '.request_id' "42"
 expect "     target branch from the merged one"              "$GL" '.ref'        "refs/heads/main"
 expect "     author from .author.username, not the last match in the payload" \
@@ -84,11 +84,11 @@ expect "     protected reflects the flag passed in"          "$GL" '.protected' 
 # No approvals at all must be an EMPTY array. The sed version pasted into `["$approvers"]`, which
 # emits `[""]` — a list containing one empty string. `is_reviewed_merge` refuses that, so it failed
 # closed by luck rather than by construction.
-GL_NONE="$(jq -n --argjson mr "$GL_MR" --argjson ap '{}' --arg prot false -f "$JQDIR/gitlab-merge.jq")"
+GL_NONE="$(jq -n --argjson mr "$GL_MR" --argjson ap '{}' --arg prot false --arg owner_review false -f "$JQDIR/gitlab-merge.jq")"
 expect "     no approvals is an empty array, not [\"\"]" "$GL_NONE" '.approvers | length' "0"
 
 # Nothing merged at all.
-GL_OPEN="$(jq -n --argjson mr '[{"iid":9,"state":"opened"}]' --argjson ap '{}' --arg prot true -f "$JQDIR/gitlab-merge.jq")"
+GL_OPEN="$(jq -n --argjson mr '[{"iid":9,"state":"opened"}]' --argjson ap '{}' --arg prot true --arg owner_review true -f "$JQDIR/gitlab-merge.jq")"
 expect "     an unmerged commit reports merged=false" "$GL_OPEN" '.merged' "false"
 
 echo
@@ -107,7 +107,7 @@ BB_PR='{
     {"approved": false, "user": {"nickname": "lurker-dev"}}
   ]
 }'
-BB="$(jq -n --argjson pr "$BB_PR" --arg prot true -f "$JQDIR/bitbucket-merge.jq")"
+BB="$(jq -n --argjson pr "$BB_PR" --arg prot true --arg owner_review true -f "$JQDIR/bitbucket-merge.jq")"
 expect "only the participant whose own approved flag is true" "$BB" '.approvers | join(",")' "reviewer-one"
 expect "     author from .author.nickname"                    "$BB" '.author'  "author-dev"
 expect "     ref built from destination.branch.name"          "$BB" '.ref'     "refs/heads/main"
@@ -115,7 +115,7 @@ expect "     request_id as a string"                          "$BB" '.request_id
 
 # `nickname` is not always present. Falling back to display_name beats reporting an empty author,
 # because an empty author makes any approver satisfy separation of duties.
-BB_DN="$(jq -n --argjson pr '{"id":1,"destination":{"branch":{"name":"main"}},"author":{"display_name":"A Dev"},"participants":[{"approved":true,"user":{"display_name":"R One"}}]}' --arg prot true -f "$JQDIR/bitbucket-merge.jq")"
+BB_DN="$(jq -n --argjson pr '{"id":1,"destination":{"branch":{"name":"main"}},"author":{"display_name":"A Dev"},"participants":[{"approved":true,"user":{"display_name":"R One"}}]}' --arg prot true --arg owner_review true -f "$JQDIR/bitbucket-merge.jq")"
 expect "     display_name when nickname is absent" "$BB_DN" '.author' "A Dev"
 
 echo
@@ -136,7 +136,7 @@ AZ_PR='{
     {"vote": 5,  "uniqueName": "suggestions@bank.com"}
   ]
 }'
-AZ="$(jq -n --argjson pr "$AZ_PR" --arg prot true -f "$JQDIR/azure-repos-merge.jq")"
+AZ="$(jq -n --argjson pr "$AZ_PR" --arg prot true --arg owner_review true -f "$JQDIR/azure-repos-merge.jq")"
 expect "author from createdBy, NOT the last uniqueName in the payload" \
        "$AZ" '.author' "author-dev@bank.com"
 expect "     only vote>=10 counts as an approval"  "$AZ" '.approvers | join(",")' "reviewer-one@bank.com"
@@ -148,7 +148,7 @@ expect "     targetRefName is not prefixed twice" "$AZ" '.ref' "refs/heads/main"
 # A self-approval must be reported FAITHFULLY, so `is_reviewed_merge` can refuse it. The shim's job
 # is to report, not to judge — but it has to report the same person as both, or the judgement is made
 # on a lie.
-AZ_SELF="$(jq -n --argjson pr '{"pullRequestId":9,"targetRefName":"refs/heads/main","createdBy":{"uniqueName":"solo@bank.com"},"reviewers":[{"vote":10,"uniqueName":"solo@bank.com"}]}' --arg prot true -f "$JQDIR/azure-repos-merge.jq")"
+AZ_SELF="$(jq -n --argjson pr '{"pullRequestId":9,"targetRefName":"refs/heads/main","createdBy":{"uniqueName":"solo@bank.com"},"reviewers":[{"vote":10,"uniqueName":"solo@bank.com"}]}' --arg prot true --arg owner_review true -f "$JQDIR/azure-repos-merge.jq")"
 SELF_A="$(field "$AZ_SELF" '.author')"
 SELF_R="$(field "$AZ_SELF" '.approvers | join(",")')"
 if [ "$SELF_A" = "solo@bank.com" ] && [ "$SELF_R" = "solo@bank.com" ]; then
@@ -157,6 +157,58 @@ if [ "$SELF_A" = "solo@bank.com" ] && [ "$SELF_R" = "solo@bank.com" ]; then
 else
     bad "     a self-approval was not reported faithfully (author=$SELF_A approvers=$SELF_R)"
 fi
+
+echo
+# --- owner review (W8) --------------------------------------------------------
+# The field says: the ref REQUIRES approval from an owner of the changed path. Absent evidence of
+# that requirement must read false, never true — an unset field defaulting to "yes" is the exact
+# shape of a control that reads as configured and enforces nothing.
+bold "owner review"
+
+GL_NO="$(jq -n --argjson mr "$GL_MR" --argjson ap "$GL_AP" --arg prot true --arg owner_review false -f "$JQDIR/gitlab-merge.jq")"
+expect "gitlab  carries owner_review through faithfully"  "$GL_NO" '.owner_review | tostring' "false"
+BB_NO="$(jq -n --argjson pr "$BB_PR" --arg prot true --arg owner_review false -f "$JQDIR/bitbucket-merge.jq")"
+expect "bitbucket carries owner_review through faithfully" "$BB_NO" '.owner_review | tostring' "false"
+AZ_NO="$(jq -n --argjson pr "$AZ_PR" --arg prot true --arg owner_review false -f "$JQDIR/azure-repos-merge.jq")"
+expect "azure   carries owner_review through faithfully"  "$AZ_NO" '.owner_review | tostring' "false"
+
+# THE AZURE TRAP. A required-reviewers policy that exists, is enabled, is blocking and is scoped to
+# the merged ref — and whose file patterns cover /src. It guards /src. It does not guard
+# warden/offer.toml. A check that asked only "does a blocking policy exist" would call this owner
+# review and be wrong in the one direction that matters.
+RR=fd2167ab-b0be-447a-8ec8-39368250530e
+az_owner_review() {
+    jq -r --arg ref "refs/heads/main" --arg t "$RR" '
+      [ .[]
+        | select(.isEnabled and (.isBlocking // false))
+        | select(((.type.id // "") | ascii_downcase) == $t)
+        | select([ (.settings.scope // [])[] | .refName ] | index($ref))
+        | select(
+            [ (.settings.filenamePatterns // [])[] | ascii_downcase | ltrimstr("/") ]
+            | any(. == "*" or . == "warden/*" or . == "warden/**" or startswith("warden/"))
+          )
+      ] | if length > 0 then "true" else "false" end'
+}
+pol() { printf '[{"isEnabled":%s,"isBlocking":%s,"type":{"id":"%s"},"settings":{"scope":[{"refName":"%s"}],"filenamePatterns":%s}}]' "$1" "$2" "$3" "$4" "$5"; }
+
+got="$(pol true true "$RR" refs/heads/main '["/src/*"]' | az_owner_review)"
+[ "$got" = "false" ] && ok "azure   a blocking policy over /src is NOT owner review of warden/" \
+                     || bad "azure   a policy over /src was counted as guarding warden/ — got $got"
+got="$(pol true true "$RR" refs/heads/main '["/warden/*"]' | az_owner_review)"
+[ "$got" = "true" ]  && ok "azure   a blocking policy over /warden/* IS owner review" \
+                     || bad "azure   a policy over /warden/* was not counted — got $got"
+got="$(pol true false "$RR" refs/heads/main '["/warden/*"]' | az_owner_review)"
+[ "$got" = "false" ] && ok "azure   a NON-BLOCKING policy suggests a reviewer, it does not require one" \
+                     || bad "azure   a non-blocking policy was counted — got $got"
+got="$(pol false true "$RR" refs/heads/main '["/warden/*"]' | az_owner_review)"
+[ "$got" = "false" ] && ok "azure   a DISABLED policy is a comment" \
+                     || bad "azure   a disabled policy was counted — got $got"
+got="$(pol true true "$RR" refs/heads/develop '["/warden/*"]' | az_owner_review)"
+[ "$got" = "false" ] && ok "azure   a policy scoped to another ref does not guard this one" \
+                     || bad "azure   a policy on develop was counted for main — got $got"
+got="$(pol true true 00000000-0000-0000-0000-000000000000 refs/heads/main '["/warden/*"]' | az_owner_review)"
+[ "$got" = "false" ] && ok "azure   only the required-reviewers policy type counts" \
+                     || bad "azure   some other policy type was counted — got $got"
 
 echo
 if [ "$fail" -eq 0 ]; then
