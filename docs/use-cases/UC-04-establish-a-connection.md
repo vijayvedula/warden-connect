@@ -36,65 +36,7 @@ They meet in the registry. Neither party can produce a contract alone.
 
 ## Sequence
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Dev as Agent Developer
-    participant Iss as issuance
-    participant Pol as connect-policy
-    actor Arch as Approver (human or merge)
-    participant Med as wc-mediator
-    participant Agent as Calling agent
-    participant Srv as Tool server
-    participant Warden as warden
-
-    Dev->>Iss: connect request --from --to --tools --justify --ttl
-    Iss->>Pol: evaluate zone, tier, surface subset, data class, jurisdiction
-    alt requested surface exceeds declared surface
-        Pol-->>Iss: not a subset
-        Iss-->>Dev: WC-3010 surface not subset (with diff)
-    else policy refuses outright
-        Pol-->>Iss: refused
-        Iss-->>Dev: WC-3011 policy denied
-    else standing policy satisfies
-        Pol-->>Iss: Grant
-    else needs a human
-        Pol-->>Iss: NeedsApproval
-        Iss->>Arch: request with full context
-        alt not approved within SLA
-            Arch-->>Iss: silence
-            Iss-->>Dev: request expired, nothing provisioned
-        end
-        Arch-->>Iss: approve (role checked, dual control if required)
-    end
-    Iss->>Iss: mint contract (cid, surface, terms, assurance, exp)
-    Iss->>Med: distribute signed contract
-    Iss->>Dev: write receipt warden/contracts/<cid>.toml (no JWS)
-
-    Note over Agent,Srv: runtime
-    Agent->>Med: connect
-    Med->>Med: verify JWS, alg, nbf/exp, aud, revocation
-    Med->>Med: peer caller == contract.caller, peer callee == contract.callee
-    Med->>Srv: initialize + tools/list
-    Srv-->>Med: declared surface
-    Med->>Med: presented hash == pinned hash?
-    alt hash mismatch
-        Med-->>Agent: WC-3108 pin mismatch
-        Med->>Iss: raise DRIFT (UC-06)
-    end
-    Med-->>Agent: tools/list filtered to surface.tools
-    Agent->>Med: tools/call get_balance
-    Med->>Warden: effective = surface ∩ token.scope ∩ policy
-    alt outside the ceiling
-        Med-->>Agent: WC-4002 tool uncontracted
-    else ceiling breached (rate / spend / concurrency)
-        Med-->>Agent: WC-4003 / WC-4004 / WC-4005
-        Med->>Dev: notify owner, contract stays valid
-    end
-    Warden-->>Med: permit
-    Med->>Srv: tools/call
-    Srv-->>Agent: result (audited under cid)
-```
+<img src="diagrams/uc-04.svg" alt="UC-04 — request, disposition, approval, mint, distribute, then runtime verification and filtering" width="100%">
 
 
 ## Commands

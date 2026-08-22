@@ -35,45 +35,7 @@ Every renewal is an opportunity to make the ceiling smaller. It is never an oppo
 
 ## Sequence
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Loop as assurance loop
-    participant Usage as usage record (from mediators)
-    actor Owner
-    participant Iss as issuance
-    participant Adm as admission
-    actor Arch as Security Architect
-    participant Reg as registry
-
-    Loop->>Usage: actual usage for the period
-    Usage-->>Loop: tools called, volume, spend, denials
-    Loop->>Owner: renewal notice + usage report + reduction proposal
-    alt owner does not respond
-        Note over Owner,Iss: silence
-        Iss->>Reg: contract lapses at exp (WC-3103)
-    else owner terminates
-        Owner->>Iss: terminate
-        Iss->>Reg: retire, retain for the regulatory clock
-    else owner renews
-        Owner->>Iss: renew (optionally with reduced surface)
-        Iss->>Adm: re-run admission — identity, provenance, pin, screening
-        alt re-attestation fails
-            Adm-->>Iss: WC-3031 renewal reattest failed
-            Iss->>Reg: no renewal, lapses on schedule
-        else posture degraded
-            Adm-->>Iss: WC-3030 renewal posture degraded
-            Iss->>Reg: no renewal
-        end
-        Adm-->>Iss: clean
-        opt surface widened vs previous contract
-            Iss->>Arch: fresh approval required
-            Arch-->>Iss: approve or refuse
-        end
-        Iss->>Iss: mint new contract (narrower by default)
-        Iss->>Reg: supersede old cid
-    end
-```
+<img src="diagrams/uc-09.svg" alt="UC-09 — renewal re-runs admission; silence lapses the contract at exp" width="100%">
 
 
 ## Commands

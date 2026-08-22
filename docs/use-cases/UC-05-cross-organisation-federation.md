@@ -35,45 +35,7 @@ A statement that tries to widen is rejected with `WC-2033` — metadata widened.
 
 ## Sequence
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor TPR as Third-Party Risk
-    participant Fed as federate
-    participant Anchor as trust anchor
-    participant Partner as Partner registry
-    actor DPO
-    actor Arch as Security Architect
-    participant Iss as issuance
-    participant Med as wc-mediator
-
-    TPR->>Fed: connect federate --anchors --chain
-    Fed->>Anchor: verify entity statement
-    alt anchor unknown
-        Anchor-->>Fed: no match
-        Fed-->>TPR: WC-2030 federation anchor unknown
-    else chain invalid
-        Fed-->>TPR: WC-2031 federation chain invalid
-    else statement expired
-        Fed-->>TPR: WC-2032 statement expired
-    end
-    Anchor-->>Fed: chain built
-    Fed->>Partner: resolve partner agent
-    Partner-->>Fed: signed card
-    Fed->>Fed: pin card locally
-    Fed->>Fed: intersect terms with superior (min)
-    alt subordinate tries to widen
-        Fed-->>TPR: WC-2033 metadata widened
-    end
-    Fed->>DPO: review data classes + jurisdictions
-    DPO-->>Fed: approved
-    Fed->>Arch: mandatory human approval (partner zone bar)
-    Arch-->>Fed: approved
-    Fed->>Iss: mint contract, short TTL, tight ceilings, max_depth 1
-    Iss->>Med: distribute
-    Note over Med: egress control:<br/>declared data classes only,<br/>declared jurisdictions only
-    Med->>Med: enforce per call
-```
+<img src="diagrams/uc-05.svg" alt="UC-05 — federation: anchor verification, chain build, term narrowing, egress control" width="100%">
 
 
 ## Commands

@@ -31,44 +31,7 @@
 
 ## Sequence
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Loop as assurance loop
-    participant Srv as Tool server
-    participant Canon as canon
-    participant Scr as screen
-    participant Reg as registry
-    participant Med as wc-mediator
-    actor Owner
-    actor AppSec
-
-    loop every reattest_every (tier-derived)
-        Loop->>Srv: tools/list
-        Srv-->>Loop: current declared surface
-        Loop->>Canon: canonicalise
-        Canon-->>Loop: canonical bytes
-        Loop->>Loop: sha256 vs pin
-        alt hash matches
-            Loop->>Reg: refresh last_attested_at
-        else mismatch
-            Loop->>Loop: semantic diff (tools, descriptions, params, endpoint)
-            Loop->>Scr: re-screen new text
-            Scr-->>Loop: findings or clean
-            alt benign, standing policy allows
-                Loop->>Reg: auto-update pin, record event
-            else material
-                Loop->>Reg: posture -> degraded
-                Loop->>Med: suspend every contract referencing this pin
-                Med-->>Loop: acknowledged
-                Loop->>Owner: notify with diff
-                Loop->>AppSec: WC-5002 drift material
-                AppSec->>Reg: re-approval re-runs admission
-                Reg-->>AppSec: new pin, new contracts
-            end
-        end
-    end
-```
+<img src="diagrams/uc-06.svg" alt="UC-06 — the assurance loop re-hashes the surface and suspends contracts on material drift" width="100%">
 
 
 ## Commands
