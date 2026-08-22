@@ -33,37 +33,7 @@
 
 ## Sequence
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor RCO as Risk & Compliance Officer
-    participant Exp as export
-    participant Reg as registry
-    participant Hist as contract history
-    participant Chain as audit chain
-    actor Auditor
-
-    RCO->>Exp: connect export --format dora --as-of 2026-06-30
-    Exp->>Reg: every party, owner, service, tier, jurisdiction, data class
-    Reg-->>Exp: entity set
-    Exp->>Hist: contracts in force as of the date
-    Hist-->>Exp: contracts + terms + approvals + exit paths
-    Exp->>Chain: anchors covering the period
-    Chain-->>Exp: anchor references
-    Exp->>Exp: detect gaps (unregistered or unattested parties)
-    alt gaps present
-        Exp->>Exp: write an explicit exceptions section
-        Note over Exp: never silently omitted
-    end
-    alt chain broken
-        Chain-->>Exp: WC-7003 chain broken
-        Exp-->>RCO: export refused — integrity cannot be asserted
-    end
-    Exp-->>RCO: register + exceptions + anchor references
-    RCO->>Auditor: submit
-    Auditor->>Chain: connect audit verify (independent)
-    Chain-->>Auditor: verified against anchors
-```
+<img src="diagrams/uc-10.svg" alt="UC-10 — export enumerates dependencies, states its gaps, and is verified against anchors" width="100%">
 
 
 ## Commands

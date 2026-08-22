@@ -1,0 +1,9 @@
+stateDiagram-v2
+    [*] --> Pending: register
+    Pending --> Active: admission complete
+    Active --> Suspended: material drift / reattest failed / owner departed
+    Suspended --> Active: re-approval (re-runs admission)
+    Active --> Retired: exp reached, or terminated
+    Suspended --> Retired: lapse
+    Retired --> [*]: retained for the regulatory clock
+    note right of Retired: never returns

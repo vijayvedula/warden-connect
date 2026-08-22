@@ -61,16 +61,7 @@ warden-connect/
 
 **Dependency direction is strictly one-way:**
 
-```mermaid
-flowchart LR
-    core[wc-core] --> control[wc-control]
-    core --> mediator[wc-mediator]
-    control --> cli[wc-cli]
-    mediator --> cli
-    core --> e2e[wc-e2e]
-    control --> e2e
-    mediator --> e2e
-```
+<img src="diagrams/lld-1.svg" alt="Crate dependency direction — one way, and the mediator never depends on the control plane" width="100%">
 
 `wc-mediator` does **not** depend on `wc-control`. That is what lets it run
 standalone, and what stops a control-plane compromise from reaching the data
@@ -208,22 +199,7 @@ fresh admission that creates a new record.
 
 Five stages, each fail-closed, in this order:
 
-```mermaid
-flowchart LR
-    S1[1 · identity] --> S2[2 · card signature + schema]
-    S2 --> S3[3 · provenance]
-    S3 --> S4[4 · surface capture]
-    S4 --> S5[5 · screening]
-    S5 --> T[tier derivation]
-    T --> P[pin + write]
-    S1 -.WC-1001.-> X[refuse]
-    S2 -.WC-1003.-> X
-    S3 -.WC-1004.-> X
-    S4 -.WC-1002.-> X
-    S5 -.WC-1005.-> X
-    T -.WC-1006.-> X
-    P -.WC-1007 / WC-1008 / WC-1010.-> X
-```
+<img src="diagrams/lld-2.svg" alt="The five admission stages, each fail-closed, with the code each refusal produces" width="100%">
 
 Ordering matters: the surface is captured **before** it is screened, and screened
 **before** it is pinned. Pinning unscreened text would make the pin an assertion

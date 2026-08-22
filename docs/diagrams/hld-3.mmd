@@ -1,0 +1,13 @@
+sequenceDiagram
+    participant P as Provider repo
+    participant R as registry
+    participant C as Consumer repo
+    P->>R: warden/offer.toml  (what may ever be exposed)
+    C->>R: warden/needs.toml  (what is being asked, and why)
+    R->>R: offer ∩ need, then connect-policy
+    alt both consent and policy permits
+        R->>R: mint contract (ceiling)
+        R->>C: receipt warden/contracts/<cid>.toml
+    else either withholds
+        R-->>C: no contract exists
+    end

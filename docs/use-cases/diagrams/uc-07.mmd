@@ -1,0 +1,41 @@
+sequenceDiagram
+    autonumber
+    actor SOC as SecOps Analyst
+    participant Con as contain
+    participant Reg as registry
+    participant Feed as revocation feed
+    participant M1 as mediator A
+    participant M2 as mediator B
+    participant CAEP as CAEP emitter
+    participant Chain as audit chain
+    participant SIEM
+
+    SOC->>Con: connect quarantine agent:recon-bot-7 --reason SOC-2291
+    alt dual control required and missing
+        Con-->>SOC: WC-6001 quarantine dual control missing
+    end
+    Con->>Reg: lifecycle -> suspended, posture -> quarantined (terminal)
+    Con->>Reg: find every contract where party is caller OR callee
+    Reg-->>Con: contract set
+    Con->>Feed: append signed revocations
+    alt feed unwritable
+        Feed-->>Con: WC-6002 revocation feed unwritable (fail closed)
+    end
+    par propagate to every mediator
+        Con->>M1: signed revocation events
+        M1-->>Con: ack
+    and
+        Con->>M2: signed revocation events
+        M2--xCon: unreachable
+    end
+    alt a mediator did not acknowledge
+        Con-->>SOC: WC-6003 mediator ack missing — NOT CONFIRMED
+        Note over M2: strict mode: it fails closed<br/>on its own next contract check
+    end
+    M1->>M1: refuse new connections, drain or abort in flight
+    Con->>CAEP: emit signed SET (session-revoked)
+    CAEP->>SIEM: downstream and partners cut their own sessions
+    Con->>Con: compute blast radius (reachable / reachable-by)
+    Con->>Chain: append every step
+    Chain->>SIEM: ship
+    Con-->>SOC: contained + blast-radius report

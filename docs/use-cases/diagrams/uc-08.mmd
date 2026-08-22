@@ -1,0 +1,31 @@
+sequenceDiagram
+    autonumber
+    participant Med as wc-mediator (observe)
+    participant Inv as inventory
+    participant Reg as registry
+    actor Owner
+    actor CISO
+    actor Ops as Platform Operator
+
+    Med->>Med: observe attempt: caller or callee unknown
+    Med->>Reg: is this identity registered?
+    Reg-->>Med: not found (WC-2001)
+    alt observe mode
+        Med->>Med: ALLOW the call
+        Med->>Inv: finding {endpoint, observed surface, timestamps}
+    else enforce mode
+        Med-->>Med: REFUSE (WC-4001 no contract)
+        Med->>Inv: finding raised as incident
+    end
+    Inv->>Inv: infer owner from workload identity / namespace / repo
+    alt owner inferable
+        Inv->>Owner: one-command remediation path
+        Owner->>Reg: connect register agent|server  (UC-01 / UC-02)
+    else owner not inferable
+        Inv->>Ops: escalate with network + identity context
+    end
+    alt endpoint is external and unapproved
+        Inv->>CISO: egress incident, regardless of mode
+    end
+    Inv->>CISO: shadow-estate view ranked by risk
+    Note over Inv,CISO: ranked by: external endpoint,<br/>write-capable tools,<br/>sensitive data classes

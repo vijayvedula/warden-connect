@@ -1,0 +1,13 @@
+flowchart TB
+    subgraph T1["Trusted: issuer signing keys"]
+        K[key custody]
+    end
+    subgraph T2["Semi-trusted: control plane"]
+        CP[registry, issuance, assurance]
+    end
+    subgraph T3["Untrusted: everything on the wire"]
+        AG[agents] --- MED[mediator] --- SRV[tool servers]
+    end
+    K -->|signs| CP
+    CP -->|signed contracts only| MED
+    MED -->|verifies against keys, not against CP| K
