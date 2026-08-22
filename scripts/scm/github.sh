@@ -62,7 +62,8 @@ merge_evidence)
             | [ (.number|tostring),
                 .base.ref,
                 (.user.login // ""),
-                ((.merged_at // "") | if . == "" then 0 else fromdateiso8601 end | tostring)
+                ((.merged_at // "") | if . == "" then 0 else fromdateiso8601 end | tostring),
+                (.base.sha // "")
               ] | @tsv' 2>/dev/null) || pr=""
   if [ -z "$pr" ]; then
     printf '{"merged":false,"ref":"","protected":false}\n'
@@ -72,6 +73,8 @@ merge_evidence)
   base=$(printf '%s' "$pr" | cut -f2)
   author=$(printf '%s' "$pr" | cut -f3)
   ts=$(printf '%s' "$pr" | cut -f4)
+  # The commit the PR targeted. `[approval]` is read here, never at the merge result.
+  base_sha=$(printf '%s' "$pr" | cut -f5)
 
   # Approvers as a JSON array straight from jq, so an empty result is `[]` and not `[""]`. The old
   # `join` produced a single empty string, which `is_reviewed_merge` had to defend against.
@@ -85,8 +88,8 @@ merge_evidence)
   # problem rather than a token scope.
   if gh api "repos/$repo/branches/$base/protection" >/dev/null 2>&1; then prot=true; else prot=false; fi
 
-  printf '{"merged":true,"ref":"refs/heads/%s","protected":%s,"request_id":"%s","author":"%s","approvers":%s,"merged_at":%s}\n' \
-    "$base" "$prot" "$num" "$author" "$approvers" "$ts"
+  printf '{"merged":true,"ref":"refs/heads/%s","protected":%s,"request_id":"%s","author":"%s","approvers":%s,"merged_at":%s,"base_sha":"%s"}\n' \
+    "$base" "$prot" "$num" "$author" "$approvers" "$ts" "$base_sha"
   ;;
 search)
   # Repositories containing an exact path, from the code-search index. An accelerator: the caller

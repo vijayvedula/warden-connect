@@ -8,7 +8,7 @@
 | | |
 |---|---|
 | **Version** | v0.1.1 · Rust 2021 · MSRV 1.89 |
-| **Scale** | 5 crates · 64 modules · 79 error codes · 1,273 tests |
+| **Scale** | 5 crates · 64 modules · 81 error codes · 1,276 tests |
 | **Companion** | [07-hld.md](07-hld.md) for the model · [use-cases/](use-cases/) for the flows |
 
 ---
@@ -296,6 +296,21 @@ shim, with per-host `jq` extractors loaded by `jq -f` (never copied inline).
 
 **`receipt`** writes `warden/contracts/<cid>.toml`. It **never carries a JWS**.
 
+**`authority`** holds `ApprovalBlock` — `[approval]` in both manifests, naming who may approve a
+change to them:
+
+```toml
+[approval]
+approvers = ["s.iyer", "p.rao"]
+min       = 2
+```
+
+Read at the merge's **base commit**, never at the head. A pull request that adds its own author to
+the list must not be approvable by that author — the list that governs a change is the one already
+on the branch. `MergeEvidence.base_sha` is what makes that readable; a host that does not report one
+refuses (`WC-3025`) rather than falling back to the head, which would reinstate the hole. Quorum is
+counted against declared approvers only (`WC-3026`).
+
 **`inventory`** sweeps reserved paths across repositories. It probes nothing. It
 reports `watermark` and `repos_skipped` so a partial sweep never reads as
 complete coverage.
@@ -504,7 +519,7 @@ fail a regression.
 
 ## 8.11 Error taxonomy
 
-79 codes. The family is the triage:
+81 codes. The family is the triage:
 
 | Family | Range | Domain |
 |---|---|---|
@@ -513,7 +528,7 @@ fail a regression.
 | Zones & discovery | `WC-2011`–`WC-2021` | Zone pairs, throttling, attestation |
 | Federation | `WC-2030`–`WC-2035` | Anchors, chains, expiry, widening, signals |
 | Issuance | `WC-3001`–`WC-3015` | Subsets, policy, preconditions, TTL, widening, caps |
-| Approval | `WC-3020`–`WC-3024` | Roles, staleness, dual control, signatures, owner |
+| Approval | `WC-3020`–`WC-3026` | Roles, staleness, dual control, signatures, owner, declared approvers |
 | Renewal | `WC-3030`–`WC-3033` | Posture, re-attestation, ended contracts, withdrawal |
 | **Mediation** | `WC-3101`–`WC-3121` | The 14 verification gates |
 | Runtime | `WC-4001`–`WC-4020` | No contract, uncontracted tool, ceilings, egress, frames, peer headers |
