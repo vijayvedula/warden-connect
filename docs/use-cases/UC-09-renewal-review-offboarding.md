@@ -73,6 +73,12 @@ connect retention --contracts --retire --anchor-pub anchor.pub
 | **Threats mitigated** | Standing-privilege accumulation · orphaned authority · T3 |
 | **Success measure** | 0 connections past TTL; percentage of renewals with reduced surface — the ratchet |
 
+## Not covered here
+
+A leaver is caught at renewal, and only if they were the **owner**. An approver who
+leaves or moves mid-contract triggers nothing, and neither does a repo transfer.
+That gap is [HLD §7.14](../07-hld.md) — contract maintenance, undesigned.
+
 ## Related
 
 [UC-04](UC-04-establish-a-connection.md) created it · [UC-06](UC-06-surface-drift.md) may have degraded it first · [UC-10](UC-10-regulatory-register-and-evidence.md) reports the lifecycle.
