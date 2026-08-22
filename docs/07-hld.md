@@ -403,3 +403,34 @@ design started at rung 4 — which is why nobody could adopt it.
 | 2 | Are ADO and Bitbucket at parity with GitHub? | Merge parsing is; the `repos` and `open_pr` shim operations are GitHub-only so far |
 | 3 | Cluster-scale behaviour | Unverified — needs a real cluster |
 | 4 | Independent security review | Not yet done, and it must be done by someone who did not build it |
+| 5 | What happens to a contract when the basis of its approval changes? | **Undesigned.** See below |
+
+---
+
+## 7.14 Contract maintenance — the undesigned axis
+
+Assurance today watches one thing: the **surface**. Pin it, re-check it on an
+interval, classify benign or material, suspend on material (§7.5 F3).
+
+Nothing watches the **consent**. A contract records who approved it and on what
+basis, and then that basis is never revisited until `exp`. Three events change it
+and none of them is a trigger today:
+
+| Event | What changes | Status |
+|---|---|---|
+| **Repo transfer** | The host-designated owner changes, so who may approve changes — silently, mid-contract. Acute after Wave 8, which moves the authority for consent to the source host | undesigned |
+| **Approver leaver** | The human who consented no longer exists. Their contracts remain valid to `exp` | partial: [UC-09](use-cases/UC-09-renewal-review-offboarding.md) A2 flags an orphaned *owner*, but only at renewal, and only for the owner — not the approver |
+| **Approver mover** | Role or team changed, so the authority they held when they approved is gone | undesigned |
+
+The shape is the same as drift and should reuse it: **pin the consent basis, re-check
+it, classify, suspend on material**. Surface drift and consent drift are two axes of
+one loop, not two mechanisms.
+
+Open questions before this can be built:
+
+1. Is a leaver's approval retroactively void, or valid until `exp` with a flag? (Voiding is safer and will cause an outage the first time someone resigns.)
+2. Does a repo transfer suspend, or only degrade posture and block renewal?
+3. What is the pinned artifact — CODEOWNERS content hash, the ADO policy id, the approver identity, or all three?
+
+Until this exists, the honest statement is: **a contract's approval is checked once,
+at issuance, and never again.**
