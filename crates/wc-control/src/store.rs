@@ -2492,7 +2492,10 @@ mod tests {
         }
         let (projection, report) = Projection::rebuild(tmp.path(), STATE_LOG_NAME).unwrap();
         assert!(report.is_clean(), "{report:?}");
-        let held = projection.needs.get(&asset).expect("the declaration persists");
+        let held = projection
+            .needs
+            .get(&asset)
+            .expect("the declaration persists");
         assert_eq!(held.sha, "s2", "last write wins for a versionless manifest");
         assert_ne!(
             held.approval_digest(),
@@ -2520,5 +2523,4 @@ mod tests {
             crate::offer::approval_digest(Some(&block))
         );
     }
-
 }

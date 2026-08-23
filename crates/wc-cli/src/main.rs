@@ -4294,9 +4294,7 @@ fn scm_probe_cmd(args: &Args) -> Result<()> {
 fn bootstrap_owner(args: &Args, asset: &str) -> Option<String> {
     let projection = open_projection(args).ok()?;
     let id = wc_core::model::EntityId::new(asset).ok()?;
-    projection
-        .entity(&id)
-        .map(|e| e.owner.as_str().to_string())
+    projection.entity(&id).map(|e| e.owner.as_str().to_string())
 }
 
 fn need_apply_cmd(args: &Args) -> Result<()> {

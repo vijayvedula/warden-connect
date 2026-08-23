@@ -1742,5 +1742,4 @@ to = { zone = "internal.payments-only" }
         });
         assert_ne!(o.approval_digest(), "none");
     }
-
 }

@@ -8,7 +8,7 @@
 | | |
 |---|---|
 | **Version** | v0.1.1 · Rust 2021 · MSRV 1.89 |
-| **Scale** | 5 crates · 64 modules · 81 error codes · 1,284 tests |
+| **Scale** | 5 crates · 64 modules · 82 error codes · 1,285 tests |
 | **Companion** | [07-hld.md](07-hld.md) for the model · [use-cases/](use-cases/) for the flows |
 
 ---
@@ -345,6 +345,20 @@ and the one that mattered would be whichever side the estate looked at.
 | Conflict rule | highest version wins | last write wins — a needs manifest has no version |
 | Compared at | `offer publish` | `need apply` |
 
+**Distinct approvers (W8.5).** `require_distinct_approvers` on the zone assurance bar refuses a
+contract whose two sides were approved by the same human (`WC-3027`). Off inside a zone — one
+accountable owner on both sides is defensible there — on for `partner` and `public`, where it is one
+person's decision wearing two hats.
+
+Distinct from `dual_control`, which asks for two approvers on one side. This asks that the
+provider's approver and the consumer's are different people; one approval each is normal, and the
+point is that nobody decides alone that A may call B. `strictest` ORs it, like every other
+tightening. Break-glass sets it false explicitly: it has no merges at all, so asserting a property
+of a two-sided merge would be a condition nothing can satisfy.
+
+The check sits **above** the `owner_merge_approves` early return. Below it, opting into merge
+consent would silently opt out of distinctness — which the test caught.
+
 **`inventory`** sweeps reserved paths across repositories. It probes nothing. It
 reports `watermark` and `repos_skipped` so a partial sweep never reads as
 complete coverage.
@@ -553,7 +567,7 @@ fail a regression.
 
 ## 8.11 Error taxonomy
 
-81 codes. The family is the triage:
+82 codes. The family is the triage:
 
 | Family | Range | Domain |
 |---|---|---|
@@ -562,7 +576,7 @@ fail a regression.
 | Zones & discovery | `WC-2011`–`WC-2021` | Zone pairs, throttling, attestation |
 | Federation | `WC-2030`–`WC-2035` | Anchors, chains, expiry, widening, signals |
 | Issuance | `WC-3001`–`WC-3015` | Subsets, policy, preconditions, TTL, widening, caps |
-| Approval | `WC-3020`–`WC-3026` | Roles, staleness, dual control, signatures, owner, declared approvers |
+| Approval | `WC-3020`–`WC-3027` | Roles, staleness, dual control, signatures, owner, declared approvers, cross-side distinctness |
 | Renewal | `WC-3030`–`WC-3033` | Posture, re-attestation, ended contracts, withdrawal |
 | **Mediation** | `WC-3101`–`WC-3121` | The 14 verification gates |
 | Runtime | `WC-4001`–`WC-4020` | No contract, uncontracted tool, ceilings, egress, frames, peer headers |
