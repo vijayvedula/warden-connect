@@ -202,7 +202,9 @@ impl ApprovalAuthority for ScmMerge<'_> {
             return Err(WcError::with_detail(
                 Code::APPROVER_NOT_DECLARED,
                 format!(
-                    "{} did not report the base commit for {}, so the approver list cannot be read                      from anywhere but the merge itself — and a list read from the change it                      governs governs nothing",
+                    "{} did not report the base commit for {}, so the approver list could only \
+                     be read from the merge itself — and a list read from the change it governs \
+                     governs nothing",
                     self.name(),
                     asserted.sha
                 ),
