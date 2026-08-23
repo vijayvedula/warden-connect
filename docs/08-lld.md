@@ -8,7 +8,7 @@
 | | |
 |---|---|
 | **Version** | v0.1.1 · Rust 2021 · MSRV 1.89 |
-| **Scale** | 5 crates · 64 modules · 81 error codes · 1,280 tests |
+| **Scale** | 5 crates · 64 modules · 81 error codes · 1,282 tests |
 | **Companion** | [07-hld.md](07-hld.md) for the model · [use-cases/](use-cases/) for the flows |
 
 ---
@@ -323,6 +323,15 @@ zero. Two distinctions keep it from becoming a default:
 
 The fallback never widens: it supplies a list where there was none, and a declared list that
 excludes the owner still excludes them.
+
+**Approver drift (W8.6).** `Offer` holds the `[approval]` block it was published with, and
+`approval_digest()` reduces it to a stable value — sorted, lower-cased, `human:` stripped, `min`
+folded in. Reordering the list is not drift; adding, removing, or changing `min` is. `offer publish`
+compares the held digest against the incoming one and reports a change.
+
+Reported, not refused. The change is already *governed* — the base-commit read means moving the
+list takes a merge the previous list approved. What was missing was the trace: an auditor reading
+the registry could not tell the approver set had moved.
 
 **`inventory`** sweeps reserved paths across repositories. It probes nothing. It
 reports `watermark` and `repos_skipped` so a partial sweep never reads as

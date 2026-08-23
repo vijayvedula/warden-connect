@@ -196,6 +196,15 @@ pub struct Offer {
     /// shim for that host has been probed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consent: Option<wc_core::contract::MergeApproval>,
+    /// `[approval]` as published. Held so a later publish can be compared against it.
+    ///
+    /// Who may approve a change to an offer is itself a control, and a control that can change
+    /// without a signal is the defect this project keeps finding. The change is already *governed*
+    /// — W8.3 reads the list at the base commit, so altering it takes a merge the previous list
+    /// approved. What was missing is that it left no trace: an auditor reading the registry could
+    /// not tell that the approver set had moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<crate::authority::ApprovalBlock>,
 }
 
 /// What an offer says about one requested item.
@@ -224,6 +233,29 @@ pub enum TermOutcome {
 }
 
 impl Offer {
+    /// A stable digest of who may approve a change to this offer.
+    ///
+    /// Sorted and lower-cased before hashing, so reordering the list or changing its case is not
+    /// drift. Adding, removing or changing `min` is.
+    #[must_use]
+    pub fn approval_digest(&self) -> String {
+        let Some(b) = &self.approval else {
+            return "none".to_string();
+        };
+        let mut who: Vec<String> = b
+            .approvers
+            .iter()
+            .map(|a| a.trim().trim_start_matches("human:").to_ascii_lowercase())
+            .filter(|a| !a.is_empty())
+            .collect();
+        who.sort_unstable();
+        who.dedup();
+        format!(
+            "sha256:{}",
+            wc_core::util::sha256_hex(&format!("min={};{}", b.min, who.join(",")))
+        )
+    }
+
     /// Attach the provider's verified consent.
     #[must_use]
     pub fn with_consent(mut self, consent: wc_core::contract::MergeApproval) -> Offer {
@@ -448,6 +480,7 @@ impl OfferManifest {
             terms: self.terms,
             source,
             consent: None,
+            approval: self.approval,
         })
     }
 }
@@ -1617,4 +1650,87 @@ to = { zone = "internal.payments-only" }
         let err = attest_surface(&serde_json::json!(["tools"]), &card_key()).unwrap_err();
         assert_eq!(err.code(), Code::CONFIG_INVALID);
     }
+    #[test]
+    fn the_approval_digest_ignores_order_and_case_but_not_membership() {
+        // Reordering a list is not a change to who may approve. Adding somebody is.
+        let mk = |who: &[&str], min: usize| Offer {
+            asset: EntityId::new("urn:acme:mcp:x").unwrap(),
+            version: 1,
+            surface_kind: wc_core::canon::SurfaceKind::McpTools,
+            surface_digest: "sha256:s".to_string(),
+            terms: vec![Term {
+                items: vec!["a".to_string()],
+                to: Audience::default(),
+                approval: TermApproval::PreGranted,
+                ttl_max: 3_600,
+                deprecates: Vec::new(),
+            }],
+            source: OfferSource {
+                repo: "r".to_string(),
+                sha: "s".to_string(),
+                manifest_digest: "sha256:m".to_string(),
+            },
+            consent: None,
+            approval: Some(crate::authority::ApprovalBlock {
+                approvers: who.iter().map(|s| (*s).to_string()).collect(),
+                min,
+            }),
+        };
+
+        let base = mk(&["s.iyer", "p.rao"], 1);
+        assert_eq!(
+            base.approval_digest(),
+            mk(&["p.rao", "s.iyer"], 1).approval_digest(),
+            "order is not membership"
+        );
+        assert_eq!(
+            base.approval_digest(),
+            mk(&["S.Iyer", "human:p.rao"], 1).approval_digest(),
+            "case and the human: prefix are notation, not identity"
+        );
+        assert_ne!(
+            base.approval_digest(),
+            mk(&["s.iyer", "p.rao", "newcomer"], 1).approval_digest(),
+            "adding an approver must be visible"
+        );
+        assert_ne!(
+            base.approval_digest(),
+            mk(&["s.iyer"], 1).approval_digest(),
+            "removing an approver must be visible"
+        );
+        assert_ne!(
+            base.approval_digest(),
+            mk(&["s.iyer", "p.rao"], 2).approval_digest(),
+            "raising the quorum is a change to how many must agree"
+        );
+    }
+
+    #[test]
+    fn an_offer_with_no_approval_block_digests_to_none() {
+        // Distinguishable from any real list, so the first publish that declares one reads as a
+        // change rather than as noise.
+        let mut o = OfferManifest::parse(
+            "asset = \"urn:acme:mcp:x\"\n[[term]]\nitems=[\"a\"]\napproval=\"pre_granted\"\nttl_max=3600\n",
+        )
+        .unwrap()
+        .into_offer(
+            &["a".to_string()].into_iter().collect(),
+            wc_core::canon::SurfaceKind::McpTools,
+            "sha256:s",
+            1,
+            OfferSource {
+                repo: "r".to_string(),
+                sha: "s".to_string(),
+                manifest_digest: "sha256:m".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(o.approval_digest(), "none");
+        o.approval = Some(crate::authority::ApprovalBlock {
+            approvers: vec!["s.iyer".to_string()],
+            min: 1,
+        });
+        assert_ne!(o.approval_digest(), "none");
+    }
+
 }

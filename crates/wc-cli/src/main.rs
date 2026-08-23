@@ -3889,7 +3889,8 @@ fn offer_publish_cmd(args: &Args) -> Result<()> {
     let surface_digest = pin.manifest_hash();
 
     let mut store = open_store(args)?;
-    let held = store.projection.offers.get(&asset).map(|o| o.version);
+    let held_offer = store.projection.offers.get(&asset).cloned();
+    let held = held_offer.as_ref().map(|o| o.version);
     let version = match args.number("version") {
         Some(v) => {
             if held.is_some_and(|h| v <= h) {
@@ -3974,6 +3975,33 @@ fn offer_publish_cmd(args: &Args) -> Result<()> {
         items.iter().cloned().collect::<Vec<_>>().join(", ")
     );
     println!("  from     {repo}@{sha}");
+
+    // W8.6 · a change to who may approve is drift, and drift is reported.
+    //
+    // The change is already governed — W8.3 reads `[approval]` at the base commit, so moving the
+    // list takes a merge the previous list approved. What was missing is the trace: an auditor
+    // reading the registry could not tell the approver set had moved, and posture could not react
+    // to it. Reported rather than refused, for the same reason the surface narrowing above is: a
+    // provider is entitled to change who approves for their own asset.
+    let before = held_offer.as_ref().map_or_else(
+        || "none".to_string(),
+        wc_control::offer::Offer::approval_digest,
+    );
+    let after = published.approval_digest();
+    println!("  approval {after}");
+    if held_offer.is_some() && before != after {
+        let names = |o: Option<&wc_control::offer::Offer>| {
+            o.and_then(|o| o.approval.as_ref())
+                .map_or_else(|| "none".to_string(), |b| b.approvers.join(", "))
+        };
+        println!();
+        println!("APPROVER SET CHANGED");
+        println!("  was      [{}]  {before}", names(held_offer.as_ref()));
+        println!("  now      [{}]  {after}", names(Some(&published)));
+        println!("  Who may approve a change to this offer is itself a control. This merge was");
+        println!("  approved by the previous list, which is what makes the change legitimate —");
+        println!("  and it is recorded so it is not silent.");
+    }
 
     // Who this just affected, printed here rather than left for someone to go and ask. A
     // provider narrowing their terms finds out at the moment they can still do something about

@@ -1710,6 +1710,7 @@ mod tests {
                 manifest_digest: format!("sha256:m{version}"),
             },
             consent: None,
+            approval: None,
         }
     }
 
