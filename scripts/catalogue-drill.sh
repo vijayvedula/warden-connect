@@ -154,7 +154,15 @@ import base64, json, sys
 q = json.loads(sys.stdin.read())
 if q.get("op") == "merge_evidence":
     print(json.dumps({"merged": True, "ref": "refs/heads/main", "protected": True,
-                      "request_id": "77", "approvers": ["s.iyer"], "author": "r.mehta"}))
+                      # The offer declares no [approval] yet, so W8.4's bootstrap applies and the
+                      # REGISTERED OWNER is who may approve. Author stays somebody else: an
+                      # approver who is also the author is refused before any of that is reached.
+                      # One shim answers for both repositories here, so both registered owners
+                      # appear: the provider's for warden/offer.toml, the consumer's for
+                      # warden/needs.toml. Each side's bootstrap finds its own.
+                      "request_id": "77",
+                      "approvers": ["payments-owner@org", "drill@org"],
+                      "author": "r.mehta", "base_sha": "ba5e000"}))
 elif q.get("op") == "file":
     print(json.dumps({"content_b64": base64.b64encode(open(q["path"], "rb").read()).decode()}))
 else:
@@ -383,7 +391,7 @@ q = json.loads(sys.stdin.read())
 if q.get("op") == "merge_evidence":
     print(json.dumps({"merged": True, "ref": "refs/heads/main", "protected": True,
                       "request_id": "88", "approvers": ["payments-owner@org"],
-                      "author": "r.mehta"}))
+                      "author": "r.mehta", "base_sha": "ba5e000"}))
 elif q.get("op") == "file":
     print(json.dumps({"content_b64": base64.b64encode(open(q["path"], "rb").read()).decode()}))
 else:
@@ -407,7 +415,8 @@ import base64, json, sys
 q = json.loads(sys.stdin.read())
 if q.get("op") == "merge_evidence":
     print(json.dumps({"merged": True, "ref": "refs/heads/main", "protected": True,
-                      "request_id": "99", "approvers": ["someone-else"], "author": "r.mehta"}))
+                      "request_id": "99", "approvers": ["someone-else"], "author": "r.mehta",
+                      "base_sha": "ba5e000"}))
 elif q.get("op") == "file":
     print(json.dumps({"content_b64": base64.b64encode(open(q["path"], "rb").read()).decode()}))
 else:
@@ -430,8 +439,14 @@ K2REQ="$(printf '%s' "$K2" | grep -oE 'req_[a-f0-9]+' | head -1)"
 WOUT="$("$CONNECT" approve "$K2REQ" --merge-repo bank/payments-mcp --sha fff2 \
     --approval-file "emitted/$K2REQ.toml" --shim "python3 $WORK/wrong-owner.py" --shim-label gh \
     --issuer-key issuer.pem --kid k1 --policy merge-policy.toml 2>&1)"
-if printf '%s' "$WOUT" | grep -q "WC-3024"; then
-    ok "     a merge approved by anyone else refuses WC-3024 — write access is not consent"
+# WC-3025, not WC-3024, since W8. The manifest declares no `[approval]`, so the bootstrap puts the
+# registered owner in as the list of one — and a merge approved by anybody else fails the DECLARED
+# check before `approve_by_merge` reaches its own owner check. Same refusal, named one step earlier
+# and more precisely. WC-3024 is still what a declared list that omits the owner produces.
+if printf '%s' "$WOUT" | grep -q "WC-3025" \
+   && printf '%s' "$WOUT" | grep -q "someone-else"; then
+    ok "     a merge approved by anyone else refuses WC-3025 — write access is not consent"
+    printf '       and the refusal names who approved, so it is actionable\n'
 else
     bad "     a merge by a non-owner settled the request"
     printf '%s\n' "$WOUT" | tail -5 | sed 's/^/       /'

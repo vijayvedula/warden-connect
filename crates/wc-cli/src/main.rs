@@ -3889,7 +3889,8 @@ fn offer_publish_cmd(args: &Args) -> Result<()> {
     let surface_digest = pin.manifest_hash();
 
     let mut store = open_store(args)?;
-    let held = store.projection.offers.get(&asset).map(|o| o.version);
+    let held_offer = store.projection.offers.get(&asset).cloned();
+    let held = held_offer.as_ref().map(|o| o.version);
     let version = match args.number("version") {
         Some(v) => {
             if held.is_some_and(|h| v <= h) {
@@ -3974,6 +3975,33 @@ fn offer_publish_cmd(args: &Args) -> Result<()> {
         items.iter().cloned().collect::<Vec<_>>().join(", ")
     );
     println!("  from     {repo}@{sha}");
+
+    // W8.6 · a change to who may approve is drift, and drift is reported.
+    //
+    // The change is already governed — W8.3 reads `[approval]` at the base commit, so moving the
+    // list takes a merge the previous list approved. What was missing is the trace: an auditor
+    // reading the registry could not tell the approver set had moved, and posture could not react
+    // to it. Reported rather than refused, for the same reason the surface narrowing above is: a
+    // provider is entitled to change who approves for their own asset.
+    let before = held_offer.as_ref().map_or_else(
+        || "none".to_string(),
+        wc_control::offer::Offer::approval_digest,
+    );
+    let after = published.approval_digest();
+    println!("  approval {after}");
+    if held_offer.is_some() && before != after {
+        let names = |o: Option<&wc_control::offer::Offer>| {
+            o.and_then(|o| o.approval.as_ref())
+                .map_or_else(|| "none".to_string(), |b| b.approvers.join(", "))
+        };
+        println!();
+        println!("APPROVER SET CHANGED");
+        println!("  was      [{}]  {before}", names(held_offer.as_ref()));
+        println!("  now      [{}]  {after}", names(Some(&published)));
+        println!("  Who may approve a change to this offer is itself a control. This merge was");
+        println!("  approved by the previous list, which is what makes the change legitimate —");
+        println!("  and it is recorded so it is not silent.");
+    }
 
     // Who this just affected, printed here rather than left for someone to go and ask. A
     // provider narrowing their terms finds out at the moment they can still do something about
@@ -4266,9 +4294,7 @@ fn scm_probe_cmd(args: &Args) -> Result<()> {
 fn bootstrap_owner(args: &Args, asset: &str) -> Option<String> {
     let projection = open_projection(args).ok()?;
     let id = wc_core::model::EntityId::new(asset).ok()?;
-    projection
-        .entity(&id)
-        .map(|e| e.owner.as_str().to_string())
+    projection.entity(&id).map(|e| e.owner.as_str().to_string())
 }
 
 fn need_apply_cmd(args: &Args) -> Result<()> {
@@ -4346,6 +4372,46 @@ fn need_apply_cmd(args: &Args) -> Result<()> {
 
     {
         let mut store = open_store(args)?;
+
+        // W8.6, consumer side. The needs themselves settle into requests and contracts, which are
+        // already durable; who may approve a change to the manifest was the one thing left with no
+        // trace. Recorded here so the next apply has something to compare against — without it an
+        // approver set could move on the consumer side and never be visible, which is the asymmetry
+        // W8.6 left when it covered offers alone.
+        let consumer = wc_core::model::EntityId::new(&manifest.asset)?;
+        let record = wc_control::store::NeedRecord {
+            asset: consumer.clone(),
+            approval: manifest.approval.clone(),
+            repo: args.get("repo").unwrap_or_default().to_string(),
+            sha: args.get("sha").unwrap_or_default().to_string(),
+        };
+        let before = store
+            .projection
+            .needs
+            .get(&consumer)
+            .map(wc_control::store::NeedRecord::approval_digest);
+        let after = record.approval_digest();
+        store.commit(
+            wc_control::store::Event::NeedDeclared {
+                need: Box::new(record),
+                actor: actor(args)?,
+            },
+            now(),
+            wc_control::store::Durability::Durable,
+        )?;
+        if let Some(before) = before {
+            if before != after {
+                println!("APPROVER SET CHANGED  {consumer}");
+                println!("  was      {before}");
+                println!("  now      {after}");
+                println!(
+                    "  This merge was approved by the previous list, which is what makes the \
+                     change legitimate — and it is recorded so it is not silent."
+                );
+                println!();
+            }
+        }
+
         for entry in &manifest.needs {
             let need = manifest.resolve(entry)?;
 

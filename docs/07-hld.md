@@ -421,6 +421,7 @@ and none of them is a trigger today:
 | **Repo transfer** | The host-designated owner changes, so who may approve changes — silently, mid-contract. Acute after Wave 8, which moves the authority for consent to the source host | undesigned |
 | **Approver leaver** | The human who consented no longer exists. Their contracts remain valid to `exp` | partial: [UC-09](use-cases/UC-09-renewal-review-offboarding.md) A2 flags an orphaned *owner*, but only at renewal, and only for the owner — not the approver |
 | **Approver mover** | Role or team changed, so the authority they held when they approved is gone | undesigned |
+| **Approver set moves without a re-apply** | W8.6 compares `[approval]` at `offer publish` and `need apply`. A manifest whose approver set changes but is never re-applied is never compared, so the change lands silently | **known gap** |
 
 The shape is the same as drift and should reuse it: **pin the consent basis, re-check
 it, classify, suspend on material**. Surface drift and consent drift are two axes of

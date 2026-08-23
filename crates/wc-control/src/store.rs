@@ -471,6 +471,35 @@ pub enum SuspendCause {
     Policy,
 }
 
+/// What a consumer declared, and who may change it.
+///
+/// Deliberately small. The needs themselves settle into requests and contracts, which are already
+/// durable; the one thing that was left with no trace is **who may approve a change to the
+/// manifest**. Without this the consumer side has nothing to compare a later `[approval]` against,
+/// so an approver set could move there and never be visible — the asymmetry W8.6 left behind on
+/// the offer side alone.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct NeedRecord {
+    /// The consuming party.
+    pub asset: EntityId,
+    /// `[approval]` as declared, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<crate::authority::ApprovalBlock>,
+    /// Where it was read from.
+    pub repo: String,
+    /// The commit it was read at.
+    pub sha: String,
+}
+
+impl NeedRecord {
+    /// Same reduction as [`crate::offer::Offer::approval_digest`], and deliberately the same rule:
+    /// order and notation are not membership.
+    #[must_use]
+    pub fn approval_digest(&self) -> String {
+        crate::offer::approval_digest(self.approval.as_ref())
+    }
+}
+
 /// A state-log event (§8.8.2).
 ///
 /// `#[serde(other)]` on [`Event::Unknown`] is what makes §8.14.4's
@@ -629,6 +658,14 @@ pub enum Event {
         /// Who published it — a pipeline, so normally `Actor::Service`.
         actor: Actor,
     },
+    /// A consumer declared its needs (W2), recorded for the approver set alone.
+    #[serde(rename = "need.declared")]
+    NeedDeclared {
+        /// What was declared.
+        need: Box<NeedRecord>,
+        /// Who applied it — a pipeline, so normally `Actor::Service`.
+        actor: Actor,
+    },
     /// An event kind this binary does not know. Counted, never silently dropped.
     #[serde(other)]
     Unknown,
@@ -676,6 +713,11 @@ pub struct Projection {
     /// means a replay cannot land on a different answer and a stale republish cannot roll an
     /// offer backwards to terms the provider has already withdrawn.
     pub offers: HashMap<EntityId, crate::offer::Offer>,
+    /// The last declared needs manifest per consuming party, for approver-set comparison.
+    ///
+    /// Last-write-wins, unlike `offers`: a needs manifest carries no version, and its identity is
+    /// the commit it was read at. Replay order is the log's order, which is what the fold follows.
+    pub needs: HashMap<EntityId, NeedRecord>,
     /// Highest sequence applied.
     pub seq: u64,
 }
@@ -711,6 +753,10 @@ impl Projection {
         match &framed.rec {
             Event::EntityPut { entity, .. } => {
                 self.entities.insert(entity.id.clone(), (**entity).clone());
+                report.applied += 1;
+            }
+            Event::NeedDeclared { need, .. } => {
+                self.needs.insert(need.asset.clone(), (**need).clone());
                 report.applied += 1;
             }
             Event::OfferPublished { offer, .. } => {
@@ -1710,6 +1756,7 @@ mod tests {
                 manifest_digest: format!("sha256:m{version}"),
             },
             consent: None,
+            approval: None,
         }
     }
 
@@ -2413,5 +2460,67 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids[0].as_str() < ids[1].as_str());
         assert_eq!(entity_map(&p).len(), 2);
+    }
+    #[test]
+    fn a_needs_manifest_records_its_approver_set_and_last_write_wins() {
+        // Unlike offers, a needs manifest carries no version — its identity is the commit it was
+        // read at, so the fold follows the log's order rather than taking a maximum.
+        let tmp = TmpDir::new("need-declared");
+        let asset = agent_id();
+        let mk = |who: &[&str], sha: &str| NeedRecord {
+            asset: asset.clone(),
+            approval: Some(crate::authority::ApprovalBlock {
+                approvers: who.iter().map(|s| (*s).to_string()).collect(),
+                min: 1,
+            }),
+            repo: "acme/recon".to_string(),
+            sha: sha.to_string(),
+        };
+        {
+            let mut log = StateLog::open(tmp.path(), STATE_LOG_NAME).unwrap();
+            for (who, sha, at) in [(&["a"][..], "s1", 1_000u64), (&["a", "b"][..], "s2", 1_001)] {
+                log.append(
+                    &Event::NeedDeclared {
+                        need: Box::new(mk(who, sha)),
+                        actor: actor(),
+                    },
+                    at,
+                    Durability::Durable,
+                )
+                .unwrap();
+            }
+        }
+        let (projection, report) = Projection::rebuild(tmp.path(), STATE_LOG_NAME).unwrap();
+        assert!(report.is_clean(), "{report:?}");
+        let held = projection
+            .needs
+            .get(&asset)
+            .expect("the declaration persists");
+        assert_eq!(held.sha, "s2", "last write wins for a versionless manifest");
+        assert_ne!(
+            held.approval_digest(),
+            mk(&["a"], "s1").approval_digest(),
+            "adding an approver on the consumer side must be visible too"
+        );
+    }
+
+    #[test]
+    fn offers_and_needs_reduce_an_approver_set_identically() {
+        // One rule, both sides. Two implementations would drift, and the one that mattered would
+        // be whichever side the estate happened to look at.
+        let block = crate::authority::ApprovalBlock {
+            approvers: vec!["human:S.Iyer".to_string(), "p.rao".to_string()],
+            min: 2,
+        };
+        let need = crate::store::NeedRecord {
+            asset: EntityId::new("urn:acme:agent:recon").unwrap(),
+            approval: Some(block.clone()),
+            repo: "r".to_string(),
+            sha: "s".to_string(),
+        };
+        assert_eq!(
+            need.approval_digest(),
+            crate::offer::approval_digest(Some(&block))
+        );
     }
 }

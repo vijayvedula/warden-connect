@@ -345,6 +345,17 @@ pub struct AssuranceBar {
     pub oversight: Requirement,
     /// Ceiling on delegation depth.
     pub max_delegation_depth: Option<u8>,
+    /// Whether the two sides must be approved by different people.
+    ///
+    /// `dual_control` asks for two approvers; this asks that the provider's approver and the
+    /// consumer's are not the same human. They are different questions, and an estate can want
+    /// the second without the first: one approval per side is normal, and the point is that no
+    /// single person can decide unilaterally that A may call B.
+    ///
+    /// Off by default. Inside one zone, one accountable owner on both sides is defensible; across
+    /// zones it is one person's decision wearing two hats.
+    #[serde(default)]
+    pub require_distinct_approvers: bool,
 }
 
 impl Default for AssuranceBar {
@@ -356,6 +367,7 @@ impl Default for AssuranceBar {
             approval: ApprovalRequirement::Standing,
             oversight: Requirement::Optional,
             max_delegation_depth: None,
+            require_distinct_approvers: false,
         }
     }
 }
@@ -375,6 +387,8 @@ impl AssuranceBar {
                 approval: ApprovalRequirement::Standing,
                 oversight: Requirement::Optional,
                 max_delegation_depth: Some(3),
+                // Inside one zone, one accountable owner on both sides is defensible.
+                require_distinct_approvers: false,
             },
             TrustLevel::Partner => AssuranceBar {
                 identity: Requirement::Required,
@@ -383,6 +397,8 @@ impl AssuranceBar {
                 approval: ApprovalRequirement::Human,
                 oversight: Requirement::Required,
                 max_delegation_depth: Some(1),
+                // Across an organisational boundary one person cannot hold both hats.
+                require_distinct_approvers: true,
             },
             TrustLevel::Public => AssuranceBar {
                 identity: Requirement::Required,
@@ -391,6 +407,7 @@ impl AssuranceBar {
                 approval: ApprovalRequirement::DualControl,
                 oversight: Requirement::Required,
                 max_delegation_depth: Some(0),
+                require_distinct_approvers: true,
             },
         }
     }
@@ -409,6 +426,8 @@ impl AssuranceBar {
             },
             approval: self.approval.max(other.approval),
             oversight: self.oversight.strictest(other.oversight),
+            require_distinct_approvers: self.require_distinct_approvers
+                || other.require_distinct_approvers,
             max_delegation_depth: match (self.max_delegation_depth, other.max_delegation_depth) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (Some(a), None) | (None, Some(a)) => Some(a),
@@ -947,6 +966,8 @@ pub struct ConnEval {
     pub dual_control: bool,
     /// Whether an owner-approved reviewed merge satisfies the approval requirement.
     pub owner_merge_approves: bool,
+    /// Whether the two sides must be approved by different people.
+    pub require_distinct_approvers: bool,
     /// The bar the zone pair set.
     pub bar: AssuranceBar,
 }
@@ -1178,6 +1199,7 @@ impl ConnectPolicy {
                 // A denial. Nothing is approved, so nothing may be satisfied by a merge.
                 owner_merge_approves: false,
                 dual_control: false,
+                require_distinct_approvers: false,
                 bar: self.bar_for_pair(&caller.zone, &callee.zone),
             });
         }
@@ -1339,6 +1361,7 @@ impl ConnectPolicy {
                 // A denial. Nothing is approved, so nothing may be satisfied by a merge.
                 owner_merge_approves: false,
                 dual_control: false,
+                require_distinct_approvers: bar.require_distinct_approvers,
                 bar,
             });
         }
@@ -1361,6 +1384,7 @@ impl ConnectPolicy {
             approver_role,
             dual_control,
             owner_merge_approves,
+            require_distinct_approvers: bar.require_distinct_approvers,
             bar,
         })
     }
