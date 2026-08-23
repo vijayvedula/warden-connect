@@ -25,6 +25,31 @@ The most valuable contributions here, roughly in order:
    [docs/08-lld.md](docs/08-lld.md) and `fixtures/contracts/` is the suite you must pass.
 4. **Docs, deployment recipes, policy examples.**
 
+## Running CI locally
+
+`scripts/ci-local.sh` mirrors `.github/workflows/ci.yml`, step for step:
+
+```sh
+scripts/ci-local.sh                    # every job
+scripts/ci-local.sh check              # one job: check msrv gates supply-chain image fuzz
+```
+
+It exists because a hosted runner is not always reachable — quota, an outage, a fork
+without secrets — and a repository whose only proof lives somewhere it cannot currently
+reach is back to "true on one laptop", which is what CI was added to end.
+
+Two rules, both from `ci.yml`'s own header. **A step that could not run fails**; it does
+not skip, because a missing toolchain is a failure of the run and not an absence of
+evidence. And the release-mode gates are named explicitly, because a latency gate in a
+debug build measures nothing.
+
+It needs `../warden` checked out beside this repo for the `warden-proxy` step, plus
+`rustup toolchain install 1.89 nightly`, `cargo-deny`, `docker`, and optionally
+`promtool`.
+
+It is a mirror, not the authority. A step added to `ci.yml` and not here passes locally
+by not existing.
+
 ## Ground rules
 
 - **Be respectful.** See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
