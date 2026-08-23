@@ -8,7 +8,7 @@
 | | |
 |---|---|
 | **Version** | v0.1.1 · Rust 2021 · MSRV 1.89 |
-| **Scale** | 5 crates · 64 modules · 81 error codes · 1,282 tests |
+| **Scale** | 5 crates · 64 modules · 81 error codes · 1,284 tests |
 | **Companion** | [07-hld.md](07-hld.md) for the model · [use-cases/](use-cases/) for the flows |
 
 ---
@@ -332,6 +332,18 @@ compares the held digest against the incoming one and reports a change.
 Reported, not refused. The change is already *governed* — the base-commit read means moving the
 list takes a merge the previous list approved. What was missing was the trace: an auditor reading
 the registry could not tell the approver set had moved.
+
+Both sides, symmetrically. `store::NeedRecord` and the `need.declared` event give the consumer the
+durable record it lacked — the needs themselves settle into requests and contracts, but who may
+approve a change to the manifest had nowhere to be compared against. `offer::approval_digest` is a
+free function used by both, because two implementations of "has the approver set moved" would drift
+and the one that mattered would be whichever side the estate looked at.
+
+| | Offer | Need |
+|---|---|---|
+| Held in | `Projection.offers` | `Projection.needs` |
+| Conflict rule | highest version wins | last write wins — a needs manifest has no version |
+| Compared at | `offer publish` | `need apply` |
 
 **`inventory`** sweeps reserved paths across repositories. It probes nothing. It
 reports `watermark` and `repos_skipped` so a partial sweep never reads as

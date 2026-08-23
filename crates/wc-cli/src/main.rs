@@ -4374,6 +4374,46 @@ fn need_apply_cmd(args: &Args) -> Result<()> {
 
     {
         let mut store = open_store(args)?;
+
+        // W8.6, consumer side. The needs themselves settle into requests and contracts, which are
+        // already durable; who may approve a change to the manifest was the one thing left with no
+        // trace. Recorded here so the next apply has something to compare against — without it an
+        // approver set could move on the consumer side and never be visible, which is the asymmetry
+        // W8.6 left when it covered offers alone.
+        let consumer = wc_core::model::EntityId::new(&manifest.asset)?;
+        let record = wc_control::store::NeedRecord {
+            asset: consumer.clone(),
+            approval: manifest.approval.clone(),
+            repo: args.get("repo").unwrap_or_default().to_string(),
+            sha: args.get("sha").unwrap_or_default().to_string(),
+        };
+        let before = store
+            .projection
+            .needs
+            .get(&consumer)
+            .map(wc_control::store::NeedRecord::approval_digest);
+        let after = record.approval_digest();
+        store.commit(
+            wc_control::store::Event::NeedDeclared {
+                need: Box::new(record),
+                actor: actor(args)?,
+            },
+            now(),
+            wc_control::store::Durability::Durable,
+        )?;
+        if let Some(before) = before {
+            if before != after {
+                println!("APPROVER SET CHANGED  {consumer}");
+                println!("  was      {before}");
+                println!("  now      {after}");
+                println!(
+                    "  This merge was approved by the previous list, which is what makes the \
+                     change legitimate — and it is recorded so it is not silent."
+                );
+                println!();
+            }
+        }
+
         for entry in &manifest.needs {
             let need = manifest.resolve(entry)?;
 

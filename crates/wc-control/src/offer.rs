@@ -232,28 +232,38 @@ pub enum TermOutcome {
     },
 }
 
+/// A stable digest of an approver set.
+///
+/// Sorted, lower-cased and `human:`-stripped before hashing, so reordering the list or writing a
+/// name differently is not drift. Adding, removing or changing `min` is. `None` digests to `none`
+/// rather than to the empty string, so the first declaration reads as a change and not as noise.
+///
+/// One function for offers and needs. Two implementations of "has the approver set moved" would
+/// eventually disagree, and the one that mattered would be whichever side the estate looked at.
+#[must_use]
+pub fn approval_digest(block: Option<&crate::authority::ApprovalBlock>) -> String {
+    let Some(b) = block else {
+        return "none".to_string();
+    };
+    let mut who: Vec<String> = b
+        .approvers
+        .iter()
+        .map(|a| a.trim().trim_start_matches("human:").to_ascii_lowercase())
+        .filter(|a| !a.is_empty())
+        .collect();
+    who.sort_unstable();
+    who.dedup();
+    format!(
+        "sha256:{}",
+        wc_core::util::sha256_hex(&format!("min={};{}", b.min, who.join(",")))
+    )
+}
+
 impl Offer {
     /// A stable digest of who may approve a change to this offer.
-    ///
-    /// Sorted and lower-cased before hashing, so reordering the list or changing its case is not
-    /// drift. Adding, removing or changing `min` is.
     #[must_use]
     pub fn approval_digest(&self) -> String {
-        let Some(b) = &self.approval else {
-            return "none".to_string();
-        };
-        let mut who: Vec<String> = b
-            .approvers
-            .iter()
-            .map(|a| a.trim().trim_start_matches("human:").to_ascii_lowercase())
-            .filter(|a| !a.is_empty())
-            .collect();
-        who.sort_unstable();
-        who.dedup();
-        format!(
-            "sha256:{}",
-            wc_core::util::sha256_hex(&format!("min={};{}", b.min, who.join(",")))
-        )
+        approval_digest(self.approval.as_ref())
     }
 
     /// Attach the provider's verified consent.
