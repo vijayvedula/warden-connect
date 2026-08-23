@@ -27,9 +27,9 @@ use wc_core::contract::{MergeApproval, Side};
 use wc_core::error::{Code, Result, WcError};
 use wc_core::util::sha256_hex;
 
-use serde::{Deserialize, Serialize};
 use crate::pipeline::Asserted;
 use crate::scm::ScmShim;
+use serde::{Deserialize, Serialize};
 
 /// The manifest a consent is being claimed for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +149,9 @@ impl ScmMerge<'_> {
         let parsed: JustApproval = toml::from_str(&text).map_err(|e| {
             WcError::with_detail(
                 Code::APPROVER_NOT_DECLARED,
-                format!("{path} at {base_sha} is not readable TOML, so its [approval] cannot be read"),
+                format!(
+                    "{path} at {base_sha} is not readable TOML, so its [approval] cannot be read"
+                ),
             )
             .with_source(e)
         })?;
@@ -200,13 +202,16 @@ impl ApprovalAuthority for ScmMerge<'_> {
             return Err(WcError::with_detail(
                 Code::APPROVER_NOT_DECLARED,
                 format!(
-                    "{} did not report the base commit for {}, so the approver list cannot be read                      from anywhere but the merge itself — and a list read from the change it                      governs governs nothing",
+                    "{} did not report the base commit for {}, so the approver list could only \
+                     be read from the merge itself — and a list read from the change it governs \
+                     governs nothing",
                     self.name(),
                     asserted.sha
                 ),
             ));
         }
-        let declared = self.declared_approvers(&asserted.repo, &evidence.base_sha, &manifest.path)?;
+        let declared =
+            self.declared_approvers(&asserted.repo, &evidence.base_sha, &manifest.path)?;
         // W8.4 · bootstrap. No `[approval]` at base is the first commit of a manifest: there is
         // nothing behind it to authorise it, and refusing that makes the feature impossible to
         // adopt. The registry owner stands in for exactly that one merge — the authority that
@@ -226,7 +231,10 @@ impl ApprovalAuthority for ScmMerge<'_> {
                         ),
                     ));
                 };
-                ApprovalBlock { approvers: vec![owner.to_string()], min: 1 }
+                ApprovalBlock {
+                    approvers: vec![owner.to_string()],
+                    min: 1,
+                }
             }
         };
 
@@ -319,7 +327,8 @@ mod tests {
     }
 
     const APPROVAL: &str = "[approval]\napprovers = [\"s.iyer\"]\n";
-    const MANIFEST: &str = "asset = \"spiffe://bank/ns/svc/sa/payments-mcp\"\n[approval]\napprovers = [\"s.iyer\"]\n";
+    const MANIFEST: &str =
+        "asset = \"spiffe://bank/ns/svc/sa/payments-mcp\"\n[approval]\napprovers = [\"s.iyer\"]\n";
 
     /// A shim answering both verbs: a reviewed merge, and `file` returning `body` at every commit.
     fn shim_serving(tag: &str, body: &str) -> (Dir, ScmShim) {
@@ -377,7 +386,10 @@ mod tests {
     #[test]
     fn a_reviewed_merge_of_the_submitted_manifest_is_a_consent() {
         let (_d, shim) = shim_serving("good", MANIFEST);
-        let auth = ScmMerge { shim: &shim, bootstrap: None };
+        let auth = ScmMerge {
+            shim: &shim,
+            bootstrap: None,
+        };
         let c = auth
             .consent(
                 Side::Target,
@@ -419,7 +431,10 @@ mod tests {
                 base64::engine::general_purpose::STANDARD.encode(head)
             }
         ));
-        let auth = ScmMerge { shim: &sh, bootstrap: None };
+        let auth = ScmMerge {
+            shim: &sh,
+            bootstrap: None,
+        };
         let err = auth
             .consent(
                 Side::Target,
@@ -505,7 +520,8 @@ mod tests {
         // The distinction the whole fallback turns on. Absent means nobody has said yet; an empty
         // list means somebody said "nobody". If the owner stood in for the second, writing
         // `approvers = []` would silently hand approval back to the registry.
-        let empty = "asset = \"spiffe://bank/ns/svc/sa/payments-mcp\"\n[approval]\napprovers = []\n";
+        let empty =
+            "asset = \"spiffe://bank/ns/svc/sa/payments-mcp\"\n[approval]\napprovers = []\n";
         let (_d, shim) = shim_serving_base("emptied", empty, empty);
         let auth = ScmMerge {
             shim: &shim,
@@ -547,7 +563,10 @@ mod tests {
         let m = "asset = \"spiffe://bank/ns/svc/sa/payments-mcp\"\n\
                  [approval]\napprovers = [\"s.iyer\", \"p.rao\"]\nmin = 2\n";
         let (_d, shim) = shim_serving_base("quorum", m, m);
-        let auth = ScmMerge { shim: &shim, bootstrap: None };
+        let auth = ScmMerge {
+            shim: &shim,
+            bootstrap: None,
+        };
         let err = auth
             .consent(
                 Side::Target,
@@ -578,7 +597,10 @@ mod tests {
              *) printf '%s\\n' '{{\"content_b64\":\"{b64}\"}}' ;;\n\
              esac\n"
         ));
-        let auth = ScmMerge { shim: &sh, bootstrap: None };
+        let auth = ScmMerge {
+            shim: &sh,
+            bootstrap: None,
+        };
         let err = auth
             .consent(
                 Side::Target,
@@ -587,11 +609,7 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.code(), Code::APPROVER_NOT_DECLARED);
-        assert!(
-            err.detail().contains("governs nothing"),
-            "{}",
-            err.detail()
-        );
+        assert!(err.detail().contains("governs nothing"), "{}", err.detail());
     }
 
     #[test]
@@ -611,7 +629,10 @@ mod tests {
         // The check that makes the review mean anything. Without it a pipeline with a genuine
         // reviewed merge could submit whatever it liked and every other check would still pass.
         let (_d, shim) = shim_serving("swapped", "asset = \"spiffe://bank/ns/svc/sa/other\"\n");
-        let auth = ScmMerge { shim: &shim, bootstrap: None };
+        let auth = ScmMerge {
+            shim: &shim,
+            bootstrap: None,
+        };
         let err = auth
             .consent(
                 Side::Target,
@@ -635,7 +656,10 @@ mod tests {
              printf '%s\\n' '{\"merged\":true,\"ref\":\"refs/heads/main\",\"protected\":true,\
              \"author\":\"a.khan\",\"approvers\":[\"a.khan\"]}'\n",
         );
-        let auth = ScmMerge { shim: &shim, bootstrap: None };
+        let auth = ScmMerge {
+            shim: &shim,
+            bootstrap: None,
+        };
         let err = auth
             .consent(
                 Side::Source,
@@ -667,8 +691,8 @@ mod tests {
             author: author.into(),
             approvers: approvers.iter().map(|s| (*s).to_string()).collect(),
             via: "gh".into(),
-                bootstrap: false,
-    }
+            bootstrap: false,
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@
 | | |
 |---|---|
 | **Version** | v0.1.1 · Rust 2021 · MSRV 1.89 |
-| **Scale** | 5 crates · 64 modules · 81 error codes · 1,280 tests |
+| **Scale** | 5 crates · 64 modules · 82 error codes · 1,285 tests |
 | **Companion** | [07-hld.md](07-hld.md) for the model · [use-cases/](use-cases/) for the flows |
 
 ---
@@ -324,6 +324,41 @@ zero. Two distinctions keep it from becoming a default:
 The fallback never widens: it supplies a list where there was none, and a declared list that
 excludes the owner still excludes them.
 
+**Approver drift (W8.6).** `Offer` holds the `[approval]` block it was published with, and
+`approval_digest()` reduces it to a stable value — sorted, lower-cased, `human:` stripped, `min`
+folded in. Reordering the list is not drift; adding, removing, or changing `min` is. `offer publish`
+compares the held digest against the incoming one and reports a change.
+
+Reported, not refused. The change is already *governed* — the base-commit read means moving the
+list takes a merge the previous list approved. What was missing was the trace: an auditor reading
+the registry could not tell the approver set had moved.
+
+Both sides, symmetrically. `store::NeedRecord` and the `need.declared` event give the consumer the
+durable record it lacked — the needs themselves settle into requests and contracts, but who may
+approve a change to the manifest had nowhere to be compared against. `offer::approval_digest` is a
+free function used by both, because two implementations of "has the approver set moved" would drift
+and the one that mattered would be whichever side the estate looked at.
+
+| | Offer | Need |
+|---|---|---|
+| Held in | `Projection.offers` | `Projection.needs` |
+| Conflict rule | highest version wins | last write wins — a needs manifest has no version |
+| Compared at | `offer publish` | `need apply` |
+
+**Distinct approvers (W8.5).** `require_distinct_approvers` on the zone assurance bar refuses a
+contract whose two sides were approved by the same human (`WC-3027`). Off inside a zone — one
+accountable owner on both sides is defensible there — on for `partner` and `public`, where it is one
+person's decision wearing two hats.
+
+Distinct from `dual_control`, which asks for two approvers on one side. This asks that the
+provider's approver and the consumer's are different people; one approval each is normal, and the
+point is that nobody decides alone that A may call B. `strictest` ORs it, like every other
+tightening. Break-glass sets it false explicitly: it has no merges at all, so asserting a property
+of a two-sided merge would be a condition nothing can satisfy.
+
+The check sits **above** the `owner_merge_approves` early return. Below it, opting into merge
+consent would silently opt out of distinctness — which the test caught.
+
 **`inventory`** sweeps reserved paths across repositories. It probes nothing. It
 reports `watermark` and `repos_skipped` so a partial sweep never reads as
 complete coverage.
@@ -532,7 +567,7 @@ fail a regression.
 
 ## 8.11 Error taxonomy
 
-81 codes. The family is the triage:
+82 codes. The family is the triage:
 
 | Family | Range | Domain |
 |---|---|---|
@@ -541,7 +576,7 @@ fail a regression.
 | Zones & discovery | `WC-2011`–`WC-2021` | Zone pairs, throttling, attestation |
 | Federation | `WC-2030`–`WC-2035` | Anchors, chains, expiry, widening, signals |
 | Issuance | `WC-3001`–`WC-3015` | Subsets, policy, preconditions, TTL, widening, caps |
-| Approval | `WC-3020`–`WC-3026` | Roles, staleness, dual control, signatures, owner, declared approvers |
+| Approval | `WC-3020`–`WC-3027` | Roles, staleness, dual control, signatures, owner, declared approvers, cross-side distinctness |
 | Renewal | `WC-3030`–`WC-3033` | Posture, re-attestation, ended contracts, withdrawal |
 | **Mediation** | `WC-3101`–`WC-3121` | The 14 verification gates |
 | Runtime | `WC-4001`–`WC-4020` | No contract, uncontracted tool, ceilings, egress, frames, peer headers |

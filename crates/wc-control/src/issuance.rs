@@ -81,6 +81,9 @@ pub struct PendingRequest {
     pub approver_role: Option<String>,
     /// Whether two distinct approvers are needed.
     pub dual_control: bool,
+    /// Whether the two sides must be approved by different people.
+    #[serde(default)]
+    pub require_distinct_approvers: bool,
     /// Whether an owner-approved reviewed merge satisfies this request's approval requirement.
     ///
     /// Carried on the request rather than re-read from policy at mint time, for the same reason
@@ -1249,6 +1252,10 @@ impl<'a> Issuer<'a> {
             mediators: input.mediators.clone(),
             approver_role: None,
             dual_control: true,
+            // Break-glass already demands two signatures. Distinctness across sides is a property
+            // of a two-sided merge, and break-glass has no merges at all — asserting it here would
+            // be a condition nothing can satisfy, which is how an emergency path stops working.
+            require_distinct_approvers: false,
             // Break-glass is key-signed and dual-controlled; it never settles by merge.
             owner_merge_approves: false,
             // Break-glass deliberately does **not** require the callee's owner.
@@ -1406,6 +1413,7 @@ impl<'a> Issuer<'a> {
             mediators: input.mediators.clone(),
             approver_role: eval.approver_role.clone(),
             dual_control: eval.dual_control,
+            require_distinct_approvers: eval.require_distinct_approvers,
             owner_merge_approves: eval.owner_merge_approves,
             owner_must_approve: input.owner_must_approve,
             policy_version: self.policy.version.clone(),
@@ -1505,6 +1513,41 @@ impl<'a> Issuer<'a> {
         if approval.merges.is_empty() {
             return Ok(());
         }
+
+        // W8.5 · the two sides must not be the same human.
+        //
+        // Distinct from `dual_control`, which asks for two approvers. This asks that the provider's
+        // approver and the consumer's are different people — one approval per side is normal, and
+        // the point is that no single person decides unilaterally that A may call B. An estate can
+        // want this without wanting two approvals on each side.
+        if pending.require_distinct_approvers {
+            let side = |s: wc_core::contract::Side| -> std::collections::BTreeSet<String> {
+                approval
+                    .merges
+                    .iter()
+                    .filter(|m| m.side == s)
+                    .flat_map(|m| m.approvers.iter())
+                    .map(|a| a.trim().trim_start_matches("human:").to_ascii_lowercase())
+                    .filter(|a| !a.is_empty())
+                    .collect()
+            };
+            let source = side(wc_core::contract::Side::Source);
+            let target = side(wc_core::contract::Side::Target);
+            let both: Vec<&String> = source.intersection(&target).collect();
+            if !both.is_empty() {
+                return Err(WcError::with_detail(
+                    Code::APPROVERS_NOT_DISTINCT,
+                    format!(
+                        "the zone bar for this pair requires the two sides to be approved by                          different people, and {} approved both. A contract is two parties                          agreeing; one person holding both hats is one party agreeing twice",
+                        both.iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+            }
+        }
+
         // The operator said, on the rule that matched, that an owner-approved merge is the consent
         // they intend here. Dual control is still refused below: a merge carries one owner's
         // approval, and "two distinct humans" is not something this can show.
@@ -2627,11 +2670,40 @@ reason = "a role holder must sign, and no merge may stand in for one"
             author: "r.mehta".to_string(),
             approvers: vec![approver.to_string()],
             via: "gh".to_string(),
-                bootstrap: false,
-    }
+            bootstrap: false,
+        }
     }
 
     /// A policy where an owner-approved merge is declared to be the consent.
+    /// A policy whose zone bar demands the two sides be approved by different people.
+    fn policy_distinct_approvers() -> ConnectPolicy {
+        ConnectPolicy::parse(&format!(
+            r#"
+default = "require_approval"
+version = "connect-policy@v9"
+
+[[zone]]
+id = "internal.apac-ops"
+trust = "internal"
+assurance = {{ require_distinct_approvers = true }}
+[[zone]]
+id = "internal.payments"
+trust = "internal"
+
+[standing]
+enabled = false
+reviewed_at = {}
+
+[[rules]]
+decision = "require_approval"
+owner_merge_approves = true
+reason = "merge consent, but not from one person twice"
+"#,
+            NOW
+        ))
+        .unwrap()
+    }
+
     fn policy_owner_merge() -> ConnectPolicy {
         ConnectPolicy::parse(&format!(
             r#"
@@ -2904,8 +2976,8 @@ reason = "the registered owner approving a merge is the consent"
             author: "r.mehta".to_string(),
             approvers: vec!["priya@bank.com".to_string()],
             via: "gh".to_string(),
-                bootstrap: false,
-    };
+            bootstrap: false,
+        };
         let err = issuer
             .mint_with_identity(
                 &pending,
@@ -3253,6 +3325,76 @@ reason = "the registered owner approving a merge is the consent"
         let issued = issuer.approve(&pending.id, &[one, two], &registry).unwrap();
         assert!(issued.record.approval.second.is_some());
         assert!(issued.record.approval.satisfies_dual_control());
+    }
+
+    #[test]
+    fn the_same_human_cannot_approve_both_sides_when_the_bar_says_otherwise() {
+        // W8.5. Distinct from dual control, which asks for two approvers on one side. This asks
+        // that the provider's approver and the consumer's are different people — one approval each
+        // is normal, and the point is that no single person decides alone that A may call B.
+        use wc_core::contract::{ApprovalRef, MergeApproval, Side};
+
+        let merge = |side: Side, author: &str, approver: &str| MergeApproval {
+            side,
+            repo: "bank/x".to_string(),
+            sha: "abc".to_string(),
+            request_id: "1".to_string(),
+            author: author.to_string(),
+            approvers: vec![approver.to_string()],
+            via: "gh".to_string(),
+            bootstrap: false,
+        };
+
+        // Built through the policy rather than as a literal, so the test also proves the zone
+        // bar's term actually reaches the pending request. A literal would pass with the
+        // plumbing removed.
+        let tmp = TmpDir::new("distinct");
+        let pol = policy_distinct_approvers();
+        let mut store = seeded(&tmp, Tier::ONE);
+        let mut evidence = Evidence::open(tmp.evidence()).unwrap();
+        let key = signer();
+        let mut issuer = Issuer::new(
+            &mut store,
+            &mut evidence,
+            &pol,
+            &key,
+            "https://connect.internal",
+            NOW,
+            Actor::Human { id: priya() },
+        );
+        let mut pending = match issuer.request(&input(&["get_balance"])).unwrap() {
+            Outcome::AwaitingApproval(p) => p,
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            pending.require_distinct_approvers,
+            "the zone bar's term must reach the pending request"
+        );
+
+        // Same human on both sides, written differently. Notation is not identity.
+        let both = ApprovalRef::reviewed_merge(vec![
+            merge(Side::Source, "dev-a", "human:S.Iyer"),
+            merge(Side::Target, "dev-b", "s.iyer"),
+        ])
+        .unwrap();
+        let err = Issuer::merge_evidence_cannot_stand_in_for(&pending, &both)
+            .expect_err("one person holding both hats is one party agreeing twice");
+        assert_eq!(err.code(), Code::APPROVERS_NOT_DISTINCT);
+        assert!(err.detail().contains("s.iyer"), "{}", err.detail());
+
+        // Different people: allowed.
+        let apart = ApprovalRef::reviewed_merge(vec![
+            merge(Side::Source, "dev-a", "s.iyer"),
+            merge(Side::Target, "dev-b", "p.rao"),
+        ])
+        .unwrap();
+        Issuer::merge_evidence_cannot_stand_in_for(&pending, &apart)
+            .expect("two distinct humans satisfy it");
+
+        // And with the bar off, the same human is fine — this is a zone decision, not a law.
+        pending.require_distinct_approvers = false;
+        Issuer::merge_evidence_cannot_stand_in_for(&pending, &both)
+            .expect("inside one zone, one accountable owner on both sides is defensible");
     }
 
     // --- denial and lapse ---

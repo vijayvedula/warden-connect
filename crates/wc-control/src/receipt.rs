@@ -206,8 +206,8 @@ mod tests {
                     // and mutation testing could not tell the sort from its absence.
                     approvers: vec!["zoe@bank".to_string(), "owner@bank".to_string()],
                     via: "gh".to_string(),
-                                bootstrap: false,
-            }],
+                    bootstrap: false,
+                }],
             },
             policy_version: "live@v1".to_string(),
             iat: 1_787_000_000,

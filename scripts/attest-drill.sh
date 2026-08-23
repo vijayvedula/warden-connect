@@ -49,11 +49,6 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 CONNECT="$REPO/target/release/connect"
 MEDIATE="$REPO/target/release/connect-mediate"
-[ -x "$CONNECT" ] || CONNECT="$REPO/target/debug/connect"
-[ -x "$MEDIATE" ] || MEDIATE="$REPO/target/debug/connect-mediate"
-for b in "$CONNECT" "$MEDIATE"; do
-    [ -x "$b" ] || { echo "no $b; run cargo build --release --workspace" >&2; exit 2; }
-done
 command -v openssl >/dev/null || { echo "need openssl" >&2; exit 2; }
 python3 -c "import cryptography" 2>/dev/null || {
     echo "need python3 with cryptography (pip install 'cryptography>=42')" >&2; exit 2; }
@@ -73,6 +68,20 @@ if ! cargo build --release --workspace --quiet 2>&1; then
     echo "the workspace does not build; the drill would be testing nothing" >&2
     exit 2
 fi
+
+# Resolved AFTER the build, not before it.
+#
+# The check used to run first, and on a clean checkout neither binary exists yet — so the drill
+# refused with "run cargo build --release --workspace" immediately after being told to build. It
+# passed everywhere a previous build had left a target directory behind, which is every developer
+# machine and no fresh CI runner. Failing on the very thing the next line does is the giveaway.
+CONNECT="$REPO/target/release/connect"
+MEDIATE="$REPO/target/release/connect-mediate"
+[ -x "$CONNECT" ] || CONNECT="$REPO/target/debug/connect"
+[ -x "$MEDIATE" ] || MEDIATE="$REPO/target/debug/connect-mediate"
+for b in "$CONNECT" "$MEDIATE"; do
+    [ -x "$b" ] || { echo "no $b after a successful build — check the workspace layout" >&2; exit 2; }
+done
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

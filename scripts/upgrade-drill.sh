@@ -125,7 +125,11 @@ import base64, json, sys
 q = json.loads(sys.stdin.read())
 if q.get("op") == "merge_evidence":
     print(json.dumps({"merged": True, "ref": "refs/heads/main", "protected": True,
-                      "request_id": "77", "approvers": ["s.iyer"], "author": "r.mehta"}))
+                      # Both parties are owned by drill@org here, and neither manifest declares
+                      # an [approval] yet, so W8.4's bootstrap makes the registered owner the
+                      # approver. `base_sha` is what lets that list be read at all.
+                      "request_id": "77", "approvers": ["drill@org"], "author": "r.mehta",
+                      "base_sha": "ba5e000"}))
 elif q.get("op") == "file":
     print(json.dumps({"content_b64": base64.b64encode(open(q["path"], "rb").read()).decode()}))
 else:
