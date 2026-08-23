@@ -56,15 +56,30 @@ merge_evidence)
   #
   # `merged_at` is converted by jq too, which removes the `date -u -d` GNU dependency that silently
   # yielded 0 on macOS.
-  pr=$(gh api "repos/$repo/commits/$sha/pulls" \
-        -H "Accept: application/vnd.github+json" \
-        -q '[.[] | select(.merged_at != null)][0]
+  # A FAILED CALL IS NOT AN ANSWER.
+  #
+  # This used to be `... 2>/dev/null) || pr=""`, so a 404 — wrong repo form, no access, repo does
+  # not exist — produced the same empty string as "no merged pull request", and the shim then
+  # printed {"merged":false,"ref":""}. warden-connect refused with "the pipeline asserted
+  # refs/heads/main but scm reports it merged onto ", which sends an operator to look at their
+  # branch when the real fault was `--repo payments-mcp` instead of `owner/payments-mcp`.
+  #
+  # The `file` op already carries this lesson in its own comment. `merge_evidence` did not.
+  # Exiting non-zero is the protocol's way to say the host could not be asked; warden-connect
+  # surfaces that separately from a verdict.
+  if ! probe=$(gh api "repos/$repo/commits/$sha/pulls" -H "Accept: application/vnd.github+json" 2>&1); then
+    printf 'gh could not read repos/%s/commits/%s/pulls\n%s\n' "$repo" "$sha" "$probe" >&2
+    printf 'repo must be OWNER/REPO for this host, and the token needs access to it\n' >&2
+    exit 3
+  fi
+  pr=$(printf '%s' "$probe" \
+        | jq -r '[.[] | select(.merged_at != null)][0]
             | [ (.number|tostring),
                 .base.ref,
                 (.user.login // ""),
                 ((.merged_at // "") | if . == "" then 0 else fromdateiso8601 end | tostring),
                 (.base.sha // "")
-              ] | @tsv' 2>/dev/null) || pr=""
+              ] | @tsv')
   if [ -z "$pr" ]; then
     printf '{"merged":false,"ref":"","protected":false}\n'
     exit 0
@@ -78,8 +93,13 @@ merge_evidence)
 
   # Approvers as a JSON array straight from jq, so an empty result is `[]` and not `[""]`. The old
   # `join` produced a single empty string, which `is_reviewed_merge` had to defend against.
-  approvers=$(gh api "repos/$repo/pulls/$num/reviews" \
-        -q '[.[] | select(.state=="APPROVED") | .user.login] | unique' 2>/dev/null) || approvers="[]"
+  # Same rule: a call that failed is not "nobody approved". That would refuse for the wrong
+  # reason and read as a review problem.
+  if ! reviews=$(gh api "repos/$repo/pulls/$num/reviews" 2>&1); then
+    printf 'gh could not read repos/%s/pulls/%s/reviews\n%s\n' "$repo" "$num" "$reviews" >&2
+    exit 3
+  fi
+  approvers=$(printf '%s' "$reviews" | jq -c '[.[] | select(.state=="APPROVED") | .user.login] | unique')
   [ -n "$approvers" ] || approvers="[]"
   approvers=$(printf '%s' "$approvers" | tr -d ' \n')
 
