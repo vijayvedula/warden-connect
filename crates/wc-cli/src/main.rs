@@ -5834,6 +5834,26 @@ fn bundle_export(args: &Args) -> Result<()> {
         }
     }
 
+    // Refused, not warned. This was a warning printed AFTER the file was written, with exit 0 —
+    // so an air-gap transfer shipped a bundle short of live contracts and was told it worked. The
+    // path bug that produced it is fixed (`tenant::TenantPaths::artifacts`), but the reporting was
+    // the reason it went unnoticed: a bundle that omits a live contract addressed to this mediator
+    // is not a smaller bundle, it is a wrong one, and the agent that stops working in an
+    // air-gapped site has no way to ask why.
+    if !missing.is_empty() {
+        return Err(WcError::with_detail(
+            Code::EXPORT_FAILED,
+            format!(
+                "{} live contract(s) addressed to {mediator} have no stored artifact, so this \
+                 bundle would be short of them: {}. Nothing was written. They were minted \
+                 without persisting an artifact, or the artifacts directory is not the one this \
+                 tenant writes to",
+                missing.len(),
+                missing.join(" ")
+            ),
+        ));
+    }
+
     let jwks =
         match args.get("keyring") {
             Some(path) => wc_control::keys::Keyring::load(std::path::Path::new(path))?.jwks()?,
@@ -5882,14 +5902,6 @@ fn bundle_export(args: &Args) -> Result<()> {
         bundle.body.exp,
         human_duration(ttl)
     );
-    if !missing.is_empty() {
-        eprintln!(
-            "connect: warning: {} live contract(s) had no stored artifact and are NOT in this \
-             bundle: {}",
-            missing.len(),
-            missing.join(" ")
-        );
-    }
     eprintln!(
         "connect: the whole bundle stops working at its expiry, whatever the contracts inside say"
     );

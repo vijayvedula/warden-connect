@@ -167,6 +167,12 @@ pub struct TenantPaths {
     /// in writing.
     pub set_acks: PathBuf,
     /// Issued contract artifacts.
+    ///
+    /// Derived from [`Self::state`] rather than from `base`, because [`crate::store::Store`] writes
+    /// them under its own state directory and this is the only other reader. It was
+    /// `base/artifacts` while the writer used `state/contracts`, so the two never met: `bundle
+    /// export` found nothing, reported `0 contract(s)` with the shortfall as a *warning*, and
+    /// exited 0. An air-gap transfer would have shipped an empty bundle and been told it worked.
     pub artifacts: PathBuf,
 }
 
@@ -175,14 +181,17 @@ impl TenantPaths {
     #[must_use]
     pub fn new(root: &Path, tenant: &TenantId) -> TenantPaths {
         let base = root.join("tenants").join(tenant.as_str());
+        let state = base.join("state");
         TenantPaths {
             tenant: tenant.clone(),
-            state: base.join("state"),
+            // One expression, so the two cannot drift again. `store::ARTIFACT_DIR` is the same
+            // name the writer uses, and a test asserts the two agree.
+            artifacts: state.join(crate::store::ARTIFACT_DIR),
+            state,
             evidence: base.join("evidence"),
             revocations: base.join("revocations.jsonl"),
             acks: base.join("acks.json"),
             set_acks: base.join("set-acks.json"),
-            artifacts: base.join("artifacts"),
             base,
         }
     }
@@ -640,5 +649,40 @@ mod tests {
         let paths = binding.paths(Path::new("/r"));
         assert_eq!(paths.tenant.as_str(), "apac");
         assert_eq!(paths.state, Path::new("/r/tenants/apac/state"));
+    }
+    #[test]
+    fn the_artifacts_path_is_the_one_the_store_writes_to() {
+        // The bug this replaces: TenantPaths said `base/artifacts`, Store wrote
+        // `base/state/contracts`. Both were self-consistent, so every test that built each side
+        // from its own helper passed while `bundle export` silently found nothing.
+        //
+        // Asserted against a real Store rather than against a second literal, because a literal
+        // here is how the two came to disagree in the first place.
+        let tmp = std::env::temp_dir().join(format!("wc-artpath-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let id = TenantId::new("default").unwrap();
+        let paths = TenantPaths::new(&tmp, &id);
+        std::fs::create_dir_all(&paths.state).unwrap();
+
+        let (store, _) = crate::store::Store::open(&paths.state).unwrap();
+        let written = store
+            .write_artifact("conn_deadbeef", "warden:mediator:local", "eyJ.a.b")
+            .unwrap();
+
+        assert_eq!(
+            written.parent().unwrap(),
+            paths.artifacts.as_path(),
+            "the store wrote somewhere `paths().artifacts` does not point"
+        );
+        assert!(
+            crate::store::read_artifact_from(
+                &paths.artifacts,
+                "conn_deadbeef",
+                "warden:mediator:local"
+            )
+            .is_some(),
+            "an artifact written by the store must be readable at the path the CLI derives"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
