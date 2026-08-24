@@ -1231,6 +1231,12 @@ pub type StateLog = Log<Event>;
 /// The conventional state-log name inside a tenant's `state/` directory.
 pub const STATE_LOG_NAME: &str = "events";
 
+/// The directory, under a tenant's state root, where issued artifacts are kept.
+///
+/// Named rather than spelled twice: [`crate::tenant::TenantPaths`] derives its `artifacts` from
+/// this, and they were two different literals before.
+pub const ARTIFACT_DIR: &str = "contracts";
+
 /// Read one issued artifact from an artifacts directory, without opening the store.
 ///
 /// A free function because reading an artifact needs a path and nothing else, and routing it
@@ -1354,7 +1360,7 @@ impl Store {
             Store {
                 projection,
                 log,
-                artifacts: dir.join("contracts"),
+                artifacts: dir.join(ARTIFACT_DIR),
                 dir,
                 anomalies: Vec::new(),
             },
@@ -1377,7 +1383,7 @@ impl Store {
     fn assemble(dir: PathBuf, lock: crate::lock::LockGuard) -> Result<(Store, RebuildReport)> {
         let (projection, report) = Projection::rebuild(&dir, STATE_LOG_NAME)?;
         let log = StateLog::with_lock(&dir, STATE_LOG_NAME, lock)?;
-        let artifacts = dir.join("contracts");
+        let artifacts = dir.join(ARTIFACT_DIR);
         Ok((
             Store {
                 projection,
