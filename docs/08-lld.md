@@ -8,7 +8,7 @@
 | | |
 |---|---|
 | **Version** | v0.1.1 · Rust 2021 · MSRV 1.89 |
-| **Scale** | 5 crates · 64 modules · 82 error codes · 1,285 tests |
+| **Scale** | 5 crates · 64 modules · 82 error codes · 1,286 tests |
 | **Companion** | [07-hld.md](07-hld.md) for the model · [use-cases/](use-cases/) for the flows |
 
 ---
@@ -541,6 +541,17 @@ TOML at `warden/contracts/<cid>.toml`. Human-readable, digest-bound, and
 
 `bundle export` / `bundle verify` move a contract set across an air gap without a
 network path between the planes.
+
+The artifacts directory is derived once, in `tenant::TenantPaths`, from the state root plus
+`store::ARTIFACT_DIR`. It used to be spelled twice — `base/artifacts` in `TenantPaths`,
+`state/contracts` in `Store` — and each side was self-consistent, so every test that built both
+from its own helper agreed with itself. Only a real tenant disagreed, and `bundle export` reported
+zero contracts on an estate that had them. The test now asserts the path against a real `Store`
+write rather than against a second literal.
+
+**A missing artifact refuses.** It was a warning printed *after* the file was written, exit 0 — so
+an air-gap transfer would ship a bundle short of live contracts and be told it worked. A bundle
+that omits a live contract addressed to that mediator is not a smaller bundle, it is a wrong one.
 
 ---
 
