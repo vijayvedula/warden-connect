@@ -30,7 +30,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use wc_mediator::rpc::Request;
-use wc_mediator::upstream::{StdioUpstream, Upstream};
+use wc_mediator::upstream::{
+    check_upstream_url, parse_upstream_header, HttpUpstream, StdioUpstream, Upstream,
+};
 
 // Warden core is an ADAPTER now, not a dependency. Standalone is the default build: a
 // deployment that wants connection enforcement without Warden core's per-action policy gets
@@ -181,49 +183,97 @@ fn build_trust(args: &[String]) -> Result<KeySource, String> {
     Ok(KeySource::Rotating(Box::new(source)))
 }
 
-const USAGE: &str = "\
-connect-mediate — the warden-connect inline mediator
+const USAGE: &str = r#"connect-mediate — the warden-connect inline mediator
 
 USAGE
-  connect-mediate --upstream \"<command>\" --mediator-id ID --issuer-id URL \\  --caller SPIFFE_ID --callee SPIFFE_ID \\ \
-   (--issuer-pub PEM --kid KID | --jwks-url URL | --jwks-file F) \\  [--contracts URL --token \
-   TOKEN] | [--contract FILE ...]  UPSTREAM  --upstream CMD the real MCP server to spawn \
-   --upstream-timeout N seconds (default: 30)  WARDEN CORE (optional; requires the `warden-proxy` \
-   build feature)  Omit all of these and connect-mediate runs STANDALONE: contract, surface pin, \
-   ceilings and revocation only, with no Warden core and no warden.policy.toml.  Standalone is \
-   the default — passing these without the feature is an error  rather than a silently ignored \
-   flag.  --policy FILE warden policy; giving it selects Warden-core mode  --audit FILE audit \
-   chain (default: .warden/audit.jsonl)  --approvals FILE held-call state (default: \
-   .warden/approvals.json)  --agent NAME agent label for audit rows (default: the caller id) \
-   CONNECT  --mediator-id ID this mediator's id; must equal each contract's aud  --issuer-id URL \
-   the control plane this mediator obeys; must equal each  contract's iss. Required, and not \
-   defaulted: a default  would be the one value every estate shares, which is the  same as not \
-   checking. It matters once a keyring can hold  two planes' keys — a JWKS copied between \
-   environments, a  federation import — because aud is then the only boundary  left, and aud is \
-   commonly templated to the same string in  every plane  --caller SPIFFE_ID the authenticated \
-   calling party  --callee SPIFFE_ID the authenticated called party  --issuer-pub PEM the \
-   contract issuer's public key  --kid KID the key id it is registered under  --alg \
-   ES256|ES384|EdDSA (default: ES256)  --jwks-url URL the issuer's published key set, instead of \
-   a PEM;  re-fetched on the TTL, so rotating the issuer key is  a publish rather than a redeploy \
-   of every mediator  --jwks-file FILE a key set on disk — a SPIRE bundle or a mounted  ConfigMap \
-   — re-read on the same TTL  --jwks-ttl N seconds between key-set reads (default: 300)  --jwks- \
-   max-stale N how long a cached key set is still served while the  fetch is failing, before \
-   verification stops  (default: 3600); a set that can no longer be  refreshed is a set nobody \
-   can withdraw a key from  --contracts URL control plane to pull contract sets from  --token \
-   TOKEN bearer token with the connect.mediator role  --contract FILE a contract artifact to load \
-   directly (repeatable);  the air-gapped alternative to --contracts  --refresh N seconds between \
-   pulls (default: 5)  --observe record findings instead of denying  --decision-log LEVEL \
-   off|notable|all (default: notable). One JSON object per  decision on stderr, carrying cid, \
-   WC-* code and mode.  `notable` is denials and observe-mode findings; `all`  adds allows, which \
-   in front of a busy agent is a lot.  Counters are kept at every level, so turning the log  down \
-   costs detail rather than visibility  --metrics-file PATH write the Prometheus exposition here \
-   for a textfile  collector. This process has no listener by design, so  there is no /metrics to \
-   scrape  --any-zone permit any zone pair (observe deployments only)  --peer-mode MODE \
-   configured|mtls|mesh|jwt-svid (default: configured)  only `configured` applies to this stdio \
-   sidecar; the  others need a listening transport (§8.6.6)  Peer identity is supplied by \
-   configuration here, which is correct for a sidecar owning one agent and one upstream — and is \
-   recorded as configuration, not as a handshake. mTLS, mesh and JWT-SVID modes live in \
-   `wc_mediator::peer` for the shared-gateway topology, where a flag is not an identity.";
+  connect-mediate (--upstream CMD | --upstream-url URL) \
+                  --mediator-id ID --issuer-id URL \
+                  --caller SPIFFE_ID --callee SPIFFE_ID \
+                  (--issuer-pub PEM --kid KID | --jwks-url URL | --jwks-file F) \
+                  ([--contracts URL --token TOKEN] | [--contract FILE ...])
+
+UPSTREAM
+  Exactly one of --upstream or --upstream-url. Both is an error: two upstreams is
+  two beliefs about what is being mediated, and resolving that by precedence would
+  mediate a server the operator did not point at. Every gate, the catalogue filter
+  and the ceilings apply identically either way — the transport changes where the
+  server lives, not what is enforced.
+
+  --upstream CMD           the real MCP server, spawned as a child over stdio
+  --upstream-url URL       a remote MCP server over Streamable HTTP; the response
+                           may be application/json or text/event-stream, and an
+                           Mcp-Session-Id handed back at initialize is echoed on
+                           every later request
+  --upstream-header 'N: V' header to send upstream, e.g. an Authorization for the
+                           provider's own gateway (repeatable)
+  --upstream-allow-plaintext
+                           permit http:// to a host other than loopback. Refused
+                           by default: tool calls and their arguments would cross
+                           the network in the clear, and the mediator's decisions
+                           are worth no more than the channel carrying them. Pass
+                           it when something on this host terminates TLS
+  --upstream-timeout N     seconds (default: 30)
+
+WARDEN CORE (optional; requires the `warden-proxy` build feature)
+  Omit all of these and connect-mediate runs STANDALONE: contract, surface pin,
+  ceilings and revocation only, with no Warden core and no warden.policy.toml.
+  Standalone is the default — passing these without the feature is an error
+  rather than a silently ignored flag.
+
+  --policy FILE            warden policy; giving it selects Warden-core mode
+  --audit FILE             audit chain (default: .warden/audit.jsonl)
+  --approvals FILE         held-call state (default: .warden/approvals.json)
+  --agent NAME             agent label for audit rows (default: the caller id)
+
+CONNECT
+  --mediator-id ID         this mediator's id; must equal each contract's aud
+  --issuer-id URL          the control plane this mediator obeys; must equal each
+                           contract's iss. Required, and not defaulted: a default
+                           would be the one value every estate shares, which is
+                           the same as not checking. It matters once a keyring can
+                           hold two planes' keys — a JWKS copied between
+                           environments, a federation import — because aud is then
+                           the only boundary left, and aud is commonly templated
+                           to the same string in every plane
+  --caller SPIFFE_ID       the authenticated calling party
+  --callee SPIFFE_ID       the authenticated called party
+  --issuer-pub PEM         the contract issuer's public key
+  --kid KID                the key id it is registered under
+  --alg ES256|ES384|EdDSA  (default: ES256)
+  --jwks-url URL           the issuer's published key set, instead of a PEM;
+                           re-fetched on the TTL, so rotating the issuer key is a
+                           publish rather than a redeploy of every mediator
+  --jwks-file FILE         a key set on disk — a SPIRE bundle or a mounted
+                           ConfigMap — re-read on the same TTL
+  --jwks-ttl N             seconds between key-set reads (default: 300)
+  --jwks-max-stale N       how long a cached key set is still served while the
+                           fetch is failing, before verification stops
+                           (default: 3600); a set that can no longer be refreshed
+                           is a set nobody can withdraw a key from
+  --contracts URL          control plane to pull contract sets from
+  --token TOKEN            bearer token with the connect.mediator role
+  --contract FILE          a contract artifact to load directly (repeatable); the
+                           air-gapped alternative to --contracts
+  --refresh N              seconds between pulls (default: 5)
+  --observe                record findings instead of denying
+  --decision-log LEVEL     off|notable|all (default: notable). One JSON object per
+                           decision on stderr, carrying cid, WC-* code and mode.
+                           `notable` is denials and observe-mode findings; `all`
+                           adds allows, which in front of a busy agent is a lot.
+                           Counters are kept at every level, so turning the log
+                           down costs detail rather than visibility
+  --metrics-file PATH      write the Prometheus exposition here for a textfile
+                           collector. This process has no listener by design, so
+                           there is no /metrics to scrape
+  --any-zone               permit any zone pair (observe deployments only)
+  --peer-mode MODE         configured|mtls|mesh|jwt-svid (default: configured)
+                           only `configured` applies to this stdio sidecar; the
+                           others need a listening transport (§8.6.6)
+
+  Peer identity is supplied by configuration here, which is correct for a sidecar
+  owning one agent and one upstream — and is recorded as configuration, not as a
+  handshake. mTLS, mesh and JWT-SVID modes live in `wc_mediator::peer` for the
+  shared-gateway topology, where a flag is not an identity."#;
 
 /// Which half of the family is in force, decided from the flags alone.
 ///
@@ -587,15 +637,48 @@ fn run() -> Result<(), String> {
         }
     );
 
-    let upstream_cmd = required(&args, "upstream")?;
-    let upstream_timeout: u64 = flag(&args, "upstream-timeout")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(30);
-    let real = StdioUpstream::spawn(&upstream_cmd, Duration::from_secs(upstream_timeout))
-        .map_err(|e| format!("spawn upstream: {e}"))?;
+    // --- upstream: a spawned stdio child, or a remote MCP server over Streamable HTTP ---
+    //
+    // Both are the same seam. `MediatedUpstream` decorates whichever one is built, so every gate,
+    // the catalogue filter and the ceilings apply identically — the transport does not change what
+    // is enforced, only where the server lives.
+    let upstream_timeout = Duration::from_secs(
+        flag(&args, "upstream-timeout")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30),
+    );
+    let real: Box<dyn Upstream + Send> =
+        match (flag(&args, "upstream"), flag(&args, "upstream-url")) {
+            // Two upstreams is two different beliefs about what is being mediated. Picking one by
+            // precedence would mediate a server the operator did not mean to point at.
+            (Some(_), Some(_)) => {
+                return Err("--upstream and --upstream-url are mutually exclusive".to_string());
+            }
+            (None, None) => return Err("--upstream or --upstream-url is required".to_string()),
+            (Some(cmd), None) => Box::new(
+                StdioUpstream::spawn(&cmd, upstream_timeout)
+                    .map_err(|e| format!("spawn upstream: {e}"))?,
+            ),
+            (None, Some(url)) => {
+                check_upstream_url(&url, present(&args, "upstream-allow-plaintext"))?;
+                let mut http = HttpUpstream::new(&url, upstream_timeout);
+                for (i, _) in args
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| *a == "--upstream-header")
+                {
+                    let raw = args
+                        .get(i + 1)
+                        .ok_or_else(|| "--upstream-header expects a value".to_string())?;
+                    let (name, value) = parse_upstream_header(raw)?;
+                    http = http.with_header(name, value);
+                }
+                Box::new(http)
+            }
+        };
 
-    let mediated = MediatedUpstream::new(Box::new(real), Arc::clone(&cache), cfg)
-        .with_ceilings(Ceilings::new());
+    let mediated =
+        MediatedUpstream::new(real, Arc::clone(&cache), cfg).with_ceilings(Ceilings::new());
 
     eprintln!(
         "connect-mediate: mediating {caller} → {callee} as {mediator_id} ({:?}, {})",

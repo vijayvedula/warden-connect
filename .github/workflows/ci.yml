@@ -104,6 +104,17 @@ jobs:
           python3 -m pip install --quiet 'cryptography>=42'
           ./scripts/attest-drill.sh   # builds the workspace itself
 
+      # The drill above is stdio only. "The transport does not change what is enforced" is a
+      # claim about a control, and worth nothing until the control has been watched refusing
+      # something over that transport — so this runs the same contract, pin and surface ceiling
+      # against a REMOTE MCP server over Streamable HTTP, and again with an SSE response body
+      # where the result sits behind a progress notification.
+      - name: HTTP-mode drill — the same gates over Streamable HTTP and SSE
+        working-directory: warden-connect
+        run: |
+          python3 -m pip install --quiet 'cryptography>=42'
+          ./scripts/http-mode-drill.sh   # builds the workspace itself
+
       # `iss` was carried in every contract, printed by `connect verify`, and never checked.
       # With one plane's keys in a keyring that is harmless; the moment two planes' keys share
       # one — a copied JWKS, a federation import — `aud` is the only boundary left, and `aud` is

@@ -356,6 +356,20 @@ because it is what exposes it.
 | **Sidecar** | One mediator per agent | Enforcement at the edge; highest fidelity, highest cost |
 | **Observe-only** | In the path, refusing nothing | Stage ① — inventory before enforcement |
 
+Orthogonal to placement is **where the tool server is**. The mediator forwards
+to a spawned stdio child (`--upstream CMD`) or to a remote server over MCP
+Streamable HTTP (`--upstream-url URL`) — the latter being the common shape once
+a team wraps an existing API as an MCP server. Both are the same `Upstream`
+trait behind the same decorator, so the gates, the catalogue filter and the
+ceilings are identical on either; the transport decides where the server lives,
+not what is enforced. LLD §8.6.7.
+
+What is **not** yet built is the mediator as an HTTP *listener* — the shared
+gateway topology, where one mediator fronts many callers. That is what
+`PeerSource::{Mtls, Mesh, JwtSvid}` exists for, and until a listening transport
+constructs them, peer identity comes from configuration and only the sidecar
+topology is honest (§7.13).
+
 ---
 
 ## 7.10 The adoption ladder
@@ -400,10 +414,11 @@ design started at rung 4 — which is why nobody could adopt it.
 | # | Question | Current stance |
 |---|---|---|
 | 1 | Does `terms.delegation.max_depth` bind anything today? | **No.** It is carried, narrowed and federated correctly, but no chain exists to measure against it. This is the hole [warden-delegate](#) is designed to fill |
-| 2 | Are ADO and Bitbucket at parity with GitHub? | Merge parsing is; the `repos` and `open_pr` shim operations are GitHub-only so far |
+| 2 | Are ADO and Bitbucket at parity with GitHub? | Merge parsing is; the `repos` and `open_pr` shim operations are GitHub-only so far. **The GitHub path is the only one exercised end to end against a live host** — the full two-party flow, two accounts, two repos. The Azure DevOps shim and its guide are **written but not tested against a live Azure DevOps organisation**, and the Bitbucket shim is not tested either. Both should be read as templates until someone runs them |
 | 3 | Cluster-scale behaviour | Unverified — needs a real cluster |
 | 4 | Independent security review | Not yet done, and it must be done by someone who did not build it |
 | 5 | What happens to a contract when the basis of its approval changes? | **Undesigned.** See below |
+| 6 | Is the mediator ready for the shared-gateway topology? | **No.** The HTTP *upstream* is built and drilled (§8.6.7); the HTTP *listener* is not, so peer identity is still configuration and a mediator cannot yet front more than one caller honestly |
 
 ---
 

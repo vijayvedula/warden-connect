@@ -63,8 +63,15 @@ else
 fi
 sh_step "attestation, real verifiers"     "cargo test -p wc-e2e --test attest"
 for d in attest custody upgrade oidc catalogue distribution containment rotation \
-         adoption inventory proposal scale; do
-    [ -f "scripts/$d-drill.sh" ] && step "drill · $d" bash "scripts/$d-drill.sh"
+         adoption inventory proposal scale http-mode; do
+    # A named drill that is not on disk FAILS. This was `[ -f ... ] &&`, which skipped silently
+    # — so a typo in this list, or a renamed script, meant the drill simply never ran and the
+    # run stayed green. The list is the claim about what is covered; it has to be checked.
+    if [ -f "scripts/$d-drill.sh" ]; then
+        step "drill · $d" bash "scripts/$d-drill.sh"
+    else
+        step "drill · $d (scripts/$d-drill.sh is missing)" false
+    fi
 done
 step "drill · scm parse"                  bash scripts/scm/parse-drill.sh
 sh_step "conformance kit, through the harness" "cargo build -p warden-connect-cli --quiet && ./scripts/conformance.sh"
