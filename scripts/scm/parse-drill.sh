@@ -158,6 +158,38 @@ else
     bad "     a self-approval was not reported faithfully (author=$SELF_A approvers=$SELF_R)"
 fi
 
+# --- azure: `protected` means a REVIEW policy ---------------------------------
+# It used to count ANY enabled policy scoped to the ref, so a build-validation policy alone made
+# the ref read as guarded — and `protected` is the field that says a merge onto it is evidence of
+# review. Detected by `minimumApproverCount`, not by a policy-type GUID: the behaviour is what is
+# being asserted, and a GUID is a second spelling of it that can drift.
+bold "azure branch policy"
+az_prot() {
+    jq -r --arg ref refs/heads/main '
+      [ .[]
+        | select(.isEnabled and (.isBlocking // false))
+        | select((.settings.minimumApproverCount // 0) >= 1)
+        | select([ (.settings.scope // [])[] | .refName ] | index($ref))
+      ] | if length > 0 then "true" else "false" end'
+}
+azpol() { printf '[{"isEnabled":%s,"isBlocking":%s,"settings":{"minimumApproverCount":%s,"scope":[{"refName":"%s"}]}}]' "$1" "$2" "$3" "$4"; }
+
+got="$(azpol true true 1 refs/heads/main | az_prot)"
+[ "$got" = "true" ]  && ok "a blocking review policy on this ref guards it" \
+                     || bad "a blocking review policy was not counted — got $got"
+got="$(printf '[{"isEnabled":true,"isBlocking":true,"settings":{"scope":[{"refName":"refs/heads/main"}]}}]' | az_prot)"
+[ "$got" = "false" ] && ok "     a BUILD policy alone is not evidence of review" \
+                     || bad "     a build policy was counted as a review guard — got $got"
+got="$(azpol true false 1 refs/heads/main | az_prot)"
+[ "$got" = "false" ] && ok "     a non-blocking policy suggests, it does not require" \
+                     || bad "     a non-blocking policy was counted — got $got"
+got="$(azpol false true 1 refs/heads/main | az_prot)"
+[ "$got" = "false" ] && ok "     a disabled policy is a comment" \
+                     || bad "     a disabled policy was counted — got $got"
+got="$(azpol true true 1 refs/heads/develop | az_prot)"
+[ "$got" = "false" ] && ok "     a policy on another ref does not guard this one" \
+                     || bad "     a policy on develop was counted for main — got $got"
+
 echo
 if [ "$fail" -eq 0 ]; then
     bold "EVERY EXTRACTION CORRECT"

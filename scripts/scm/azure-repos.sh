@@ -40,15 +40,37 @@ file)
     --output tsv 2>/dev/null | base64 | tr -d '\n' | awk '{printf "{\"content_b64\":\"%s\"}\n", $0}'
   ;;
 merge_evidence)
-  pr=$(az repos pr list --repository "$name" --project "$proj" --org "$ORG_URL" \
-        --status completed --query "[?lastMergeCommit.commitId=='$sha'] | [0]" -o json 2>/dev/null) || pr=null
+  # A FAILED CALL IS NOT AN ANSWER. This was `2>/dev/null) || pr=null`, so a 401, a wrong
+  # org/project/repo, or a missing extension produced the same `null` as "no completed pull
+  # request" — and the shim then reported {"merged":false}. warden-connect refuses with
+  # WC-1001 and sends an operator to look at their branch. Same defect as the GitHub shim
+  # carried until 0b35539; the `file` verb in this file already had the lesson in a comment.
+  if ! pr=$(az repos pr list --repository "$name" --project "$proj" --org "$ORG_URL" \
+        --status completed --query "[?lastMergeCommit.commitId=='$sha'] | [0]" -o json 2>&1); then
+    printf 'az could not list pull requests for %s\n%s\n' "$repo" "$pr" >&2
+    printf 'repo must be ORG/PROJECT/REPO, and AZURE_DEVOPS_EXT_PAT must have Code (read) and Policy (read)\n' >&2
+    exit 3
+  fi
   [ -n "$pr" ] || pr=null
   if [ "$pr" = "null" ]; then printf '{"merged":false,"ref":"","protected":false}\n'; exit 0; fi
   target=$(printf '%s' "$pr" | jq -r '(.targetRefName // "") | sub("^refs/heads/"; "")')
-  # A branch policy is Azure's guard. Any enabled policy scoped to the target counts.
-  if az repos policy list --project "$proj" --org "$ORG_URL" \
-        --query "[?isEnabled && settings.scope[?refName=='refs/heads/$target']] | length(@)" -o tsv 2>/dev/null \
-        | grep -qv '^0$'; then prot=true; else prot=false; fi
+
+  # A REVIEW policy, not any policy. This used to count any enabled policy scoped to the ref,
+  # so a build-validation policy alone made the ref read as guarded — and `protected` is what
+  # says a merge onto it is evidence of review. Detected by `minimumApproverCount` rather than
+  # by a policy-type GUID: the behaviour is the thing being asserted, and a GUID is a second
+  # spelling of it that can drift.
+  if ! policies=$(az repos policy list --project "$proj" --org "$ORG_URL" -o json 2>&1); then
+    printf 'az could not list branch policies for %s\n%s\n' "$proj" "$policies" >&2
+    printf 'the PAT needs Policy (read)\n' >&2
+    exit 3
+  fi
+  prot=$(printf '%s' "$policies" | jq -r --arg ref "refs/heads/$target" '
+    [ .[]
+      | select(.isEnabled and (.isBlocking // false))
+      | select((.settings.minimumApproverCount // 0) >= 1)
+      | select([ (.settings.scope // [])[] | .refName ] | index($ref))
+    ] | if length > 0 then "true" else "false" end')
   jq -n --argjson pr "$pr" --arg prot "$prot" -f "$JQDIR/azure-repos-merge.jq"
   ;;
 *) echo "unknown op: $op" >&2; exit 2 ;;
