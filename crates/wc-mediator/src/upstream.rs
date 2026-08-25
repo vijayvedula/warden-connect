@@ -1,12 +1,19 @@
 //! The upstream a mediated call is forwarded to.
 //!
 //! [`Upstream`] is the seam the whole mediator is built on: [`crate::gate::MediatedUpstream`]
-//! is a decorator over it, so the eleven checks apply to anything that can answer a JSON-RPC
-//! frame. Two methods, which is why inverting the Warden dependency was a small change rather
-//! than a rewrite (see [`crate::rpc`]).
+//! is a decorator over it, so the 14 verification gates (HLD §7.4) apply to anything that can
+//! answer a JSON-RPC frame. Two methods, which is why inverting the Warden dependency was a
+//! small change rather than a rewrite (see [`crate::rpc`]).
 //!
-//! [`StdioUpstream`] is the real one: an MCP server spawned as a child process, speaking
-//! newline-delimited JSON-RPC over its stdin and stdout.
+//! There are two implementations, and the choice is a transport, not a posture — the same
+//! decorator wraps either, so the gates, the catalogue filter and the ceilings are the same code
+//! on both paths:
+//!
+//! * [`StdioUpstream`] — an MCP server spawned as a child process, speaking newline-delimited
+//!   JSON-RPC over its stdin and stdout. One agent, one server, one sidecar.
+//! * [`HttpUpstream`] — a remote MCP server over Streamable HTTP, answering with either
+//!   `application/json` or `text/event-stream`. This is the shape an organisation ends up with
+//!   once a team wraps an existing API as an MCP server, and such a server cannot be spawned.
 //!
 //! # What this is defensive about, and why
 //!
@@ -450,5 +457,695 @@ mod tests {
                 .expect("the request after a notification must still be answered")["ok"],
             json!(true)
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP upstream
+// ---------------------------------------------------------------------------
+
+/// An MCP server reached over HTTP rather than spawned as a child process.
+///
+/// MCP's Streamable HTTP transport is a `POST` of one JSON-RPC frame to a single endpoint. The
+/// response is either `application/json` — one frame, which is what a `tools/list` or a
+/// `tools/call` returns — or `text/event-stream`, when the server chooses to stream. Both are
+/// handled here; the stream is reduced to the frame that carries this request's `id`, because the
+/// gate decides per frame and an agent asked one question.
+///
+/// # Why this exists
+///
+/// [`StdioUpstream`] covers the case where the server runs beside the agent. Most MCP servers in
+/// an organisation are an HTTP facade over an existing API, and those cannot be spawned — so
+/// without this, the mediator has nothing to decorate and the ceiling is unenforceable for the
+/// majority of the estate.
+///
+/// # What it is defensive about
+///
+/// The same three bounds as the stdio path, for the same reasons: a response-size cap, a per-call
+/// timeout, and no shared state that one bad call can poison. There is no restart, because there
+/// is no process — a failed request is a failed request, and the next one is independent.
+///
+/// Sessions: `Mcp-Session-Id` is echoed back on every later request once a server has issued one.
+/// A server that expects a session and never receives it answers every call as though the
+/// handshake had not happened, which presents as the mediator being broken.
+pub struct HttpUpstream {
+    url: String,
+    /// Extra headers, for a bearer token or a mesh identity the operator wants forwarded.
+    headers: Vec<(String, String)>,
+    /// Issued by the server on `initialize`, echoed on everything after it.
+    session: Option<String>,
+    /// Built once. `client.rs` builds one per call, which is right for a pull every few
+    /// seconds and wrong here: this is the hot path, and an agent per call means a connection
+    /// pool per call — so every tool call would pay a fresh TCP and TLS handshake.
+    agent: ureq::Agent,
+}
+
+impl HttpUpstream {
+    /// An upstream at `url`, with a per-call timeout.
+    #[must_use]
+    pub fn new(url: impl Into<String>, timeout: Duration) -> HttpUpstream {
+        HttpUpstream {
+            url: url.into(),
+            headers: Vec::new(),
+            session: None,
+            agent: ureq::Agent::config_builder()
+                .timeout_global(Some(timeout))
+                .max_redirects(0)
+                // Statuses are read here, so "the server said 403" and "the server is
+                // unreachable" stay distinguishable — the same reason `client.rs` does it.
+                .http_status_as_error(false)
+                .build()
+                .into(),
+        }
+    }
+
+    /// Forward a header on every request. Repeatable.
+    #[must_use]
+    pub fn with_header(
+        mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> HttpUpstream {
+        self.headers.push((name.into(), value.into()));
+        self
+    }
+
+    /// One frame out, one frame back.
+    fn post(&mut self, req: &Request) -> Result<Response, String> {
+        let body = serde_json::to_string(req).map_err(|e| format!("encode: {e}"))?;
+        let mut call = self
+            .agent
+            .post(&self.url)
+            .header("content-type", "application/json")
+            // Both are advertised because a server may answer either, and one that sees only
+            // `application/json` is entitled to refuse a request it would have streamed.
+            .header("accept", "application/json, text/event-stream");
+        for (k, v) in &self.headers {
+            call = call.header(k.as_str(), v.as_str());
+        }
+        if let Some(sid) = &self.session {
+            call = call.header("mcp-session-id", sid.as_str());
+        }
+
+        let mut resp = call.send(&body).map_err(|e| format!("unreachable: {e}"))?;
+        let status = resp.status().as_u16();
+
+        // A session id is issued once and echoed for the life of the connection.
+        if let Some(sid) = resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+        {
+            self.session = Some(sid.to_string());
+        }
+
+        let ctype = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        let text = resp
+            .body_mut()
+            .with_config()
+            .limit(MAX_UPSTREAM_LINE as u64)
+            .read_to_string()
+            .map_err(|e| format!("read: {e}"))?;
+
+        if status == 202 && text.trim().is_empty() {
+            return match &req.id {
+                // A notification. 202 with no body is exactly the documented answer, there is no
+                // id to answer on, and `notify` — the only caller that sends one — discards this.
+                None => Ok(Response::error(None, 0, "accepted")),
+                // A request. The frame was accepted and the answer will never arrive on this
+                // channel, so the call has failed. Manufacturing a response here would hand the
+                // gate a protocol violation dressed as a result.
+                Some(_) => Err(
+                    "upstream returned 202 with no body for a request; the response \
+                                will never arrive on this channel"
+                        .to_string(),
+                ),
+            };
+        }
+        if !(200..300).contains(&status) {
+            return Err(format!(
+                "upstream returned {status}: {}",
+                first_line(&text, 200)
+            ));
+        }
+
+        let frame = if ctype.contains("text/event-stream") {
+            sse_frame_for(&text, req.id.as_ref())
+                .ok_or_else(|| "event stream carried no frame for this request".to_string())?
+        } else {
+            text
+        };
+        serde_json::from_str::<Response>(&frame).map_err(|e| format!("decode: {e}"))
+    }
+}
+
+/// Split one `--upstream-header` value into a name and a value.
+///
+/// The separator is the FIRST colon: header values legitimately contain colons (a `Host` with a
+/// port, a bearer token that is itself a URL), and splitting on the last one would silently move
+/// part of the value into the name, producing a header the operator did not write.
+pub fn parse_upstream_header(raw: &str) -> Result<(String, String), String> {
+    let (name, value) = raw
+        .split_once(':')
+        .ok_or_else(|| format!("--upstream-header expects 'Name: value', got {raw:?}"))?;
+    let name = name.trim();
+    let value = value.trim();
+    if name.is_empty() {
+        return Err(format!("--upstream-header has an empty name: {raw:?}"));
+    }
+    // A name with whitespace or a control character is not a header; sent verbatim it would let a
+    // crafted flag inject a second header line into the request.
+    if name
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || c == ':')
+        || value.chars().any(|c| c.is_control())
+    {
+        return Err(format!("--upstream-header is not a valid header: {raw:?}"));
+    }
+    Ok((name.to_string(), value.to_string()))
+}
+
+/// Decide whether an upstream URL may be used, given whether plaintext was explicitly allowed.
+///
+/// `https` is always fine. Plaintext `http` to loopback is the local development case and is
+/// allowed. Plaintext to anything else is REFUSED unless the operator opted in: the mediator's
+/// whole job is to be the thing that decides what a tool call may do, and shipping those calls
+/// over a network in the clear hands that decision to anyone on the path. Refusing beats a
+/// warning nobody reads.
+pub fn check_upstream_url(url: &str, allow_plaintext: bool) -> Result<(), String> {
+    let host = if let Some(rest) = url.strip_prefix("https://") {
+        let _ = rest;
+        return Ok(());
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        rest
+    } else {
+        return Err(format!(
+            "--upstream-url must be http:// or https://, got {url:?}"
+        ));
+    };
+
+    // Authority ends at the path, query, or fragment; strip any userinfo and the port.
+    let authority = host
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("");
+    let hostname = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""), // [::1]:8080
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    if hostname.is_empty() {
+        return Err(format!("--upstream-url has no host: {url:?}"));
+    }
+
+    let loopback = hostname.eq_ignore_ascii_case("localhost")
+        || hostname == "::1"
+        || hostname
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if loopback || allow_plaintext {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing plaintext http:// to {hostname}: tool calls and their arguments would \
+             cross the network in the clear. Use https://, or pass --upstream-allow-plaintext \
+             if a proxy on this host terminates TLS."
+        ))
+    }
+}
+
+/// Pull the JSON-RPC response for `id` out of an SSE body.
+///
+/// An SSE body is `field: value` lines in blocks separated by a blank line, and a single logical
+/// payload may span several `data:` lines — they are joined with a newline, not concatenated. A
+/// server is free to interleave notifications and progress events with the answer, so matching on
+/// `id` is what keeps a `tools/call` result from being satisfied by a progress notification: a
+/// notification carries no `id` and can never satisfy a request.
+///
+/// Returns `None` when the stream ends with no frame for `id`.
+#[must_use]
+pub fn sse_frame_for(body: &str, id: Option<&serde_json::Value>) -> Option<String> {
+    let mut data: Vec<String> = Vec::new();
+    let mut out: Option<String> = None;
+
+    let flush = |data: &mut Vec<String>, out: &mut Option<String>| {
+        if data.is_empty() || out.is_some() {
+            data.clear();
+            return;
+        }
+        let payload = data.join("\n");
+        data.clear();
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&payload) else {
+            return;
+        };
+        // A frame with no `id` is a notification, never an answer.
+        match (id, v.get("id")) {
+            (Some(want), Some(got)) if want == got => *out = Some(payload),
+            (None, _) => *out = Some(payload),
+            _ => {}
+        }
+    };
+
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            flush(&mut data, &mut out);
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            data.push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
+        }
+        // Every other field — `event:`, `id:`, `retry:`, a `:` comment — is not payload.
+    }
+    flush(&mut data, &mut out);
+    out
+}
+
+fn first_line(s: &str, cap: usize) -> String {
+    let line = s.lines().next().unwrap_or_default();
+    line.chars().take(cap).collect()
+}
+
+impl Upstream for HttpUpstream {
+    fn request(&mut self, req: &Request) -> Response {
+        match self.post(req) {
+            Ok(r) => r,
+            Err(why) => Response::error(req.id.clone(), -32000, why),
+        }
+    }
+
+    fn notify(&mut self, req: &Request) {
+        // A notification's failure is not reportable — there is no id to answer on — but it must
+        // not take the process with it either.
+        let _ = self.post(req);
+    }
+}
+
+#[cfg(test)]
+mod http_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use serde_json::json;
+
+    /// Bodies are built from lines rather than written as escaped literals: an SSE field must
+    /// start at column 0, so a stray indent in a test fixture produces a body no server would
+    /// send and a failure that says nothing about the parser.
+    fn body(lines: &[&str]) -> String {
+        let mut s = lines.join("\n");
+        s.push('\n');
+        s
+    }
+
+    fn sse(b: &str, id: i64) -> Option<String> {
+        sse_frame_for(b, Some(&json!(id)))
+    }
+
+    #[test]
+    fn a_single_data_line_is_the_frame() {
+        let b = body(&[
+            "event: message",
+            r#"data: {"jsonrpc":"2.0","id":7,"result":{}}"#,
+            "",
+        ]);
+        let v: serde_json::Value = serde_json::from_str(&sse(&b, 7).expect("frame")).unwrap();
+        assert_eq!(v["id"], json!(7));
+    }
+
+    #[test]
+    fn multiple_data_lines_reassemble_into_one_payload() {
+        let b = body(&[
+            r#"data: {"jsonrpc":"2.0","#,
+            r#"data:  "id":7,"#,
+            r#"data:  "result":{"ok":true}}"#,
+            "",
+        ]);
+        let v: serde_json::Value = serde_json::from_str(&sse(&b, 7).expect("frame")).unwrap();
+        assert_eq!(v["result"]["ok"], json!(true));
+    }
+
+    #[test]
+    fn data_lines_are_joined_with_a_newline_not_concatenated() {
+        // The spec builds the payload by appending each `data:` value **followed by a newline**,
+        // then dropping the trailing one. For JSON that is usually indistinguishable from
+        // concatenation, because JSON ignores whitespace between tokens — so the case that tells
+        // them apart is a token split mid-way. Joined, this is invalid JSON and correctly yields
+        // nothing; concatenated, it would silently reassemble into `{"name":1}` and the mediator
+        // would accept a frame the server never sent.
+        let b = body(&[
+            r#"data: {"jsonrpc":"2.0","id":1,"na"#,
+            r#"data: me":1}"#,
+            "",
+        ]);
+        assert!(
+            sse(&b, 1).is_none(),
+            "a token split across data lines was reassembled as if the newline were not there"
+        );
+    }
+
+    #[test]
+    fn a_progress_notification_does_not_satisfy_a_request() {
+        // The failure this exists to prevent: the first block is a notification with no id, and
+        // answering the call with it hands the agent something that is not the answer.
+        let b = body(&[
+            r#"data: {"jsonrpc":"2.0","method":"notifications/progress","params":{}}"#,
+            "",
+            r#"data: {"jsonrpc":"2.0","id":9,"result":{"tools":[]}}"#,
+            "",
+        ]);
+        let v: serde_json::Value =
+            serde_json::from_str(&sse(&b, 9).expect("frame for id 9")).unwrap();
+        assert_eq!(v["id"], json!(9));
+        assert!(v.get("result").is_some(), "took the notification instead");
+    }
+
+    #[test]
+    fn a_frame_for_another_id_is_not_taken() {
+        let b = body(&[r#"data: {"jsonrpc":"2.0","id":1,"result":{}}"#, ""]);
+        assert!(sse(&b, 2).is_none(), "id 1 answered a request for id 2");
+    }
+
+    #[test]
+    fn comments_and_other_fields_are_not_payload() {
+        let b = body(&[
+            ": keep-alive",
+            "event: message",
+            "id: 42",
+            "retry: 3000",
+            r#"data: {"jsonrpc":"2.0","id":3,"result":{}}"#,
+            "",
+        ]);
+        assert!(
+            sse(&b, 3).is_some(),
+            "a comment or an id: field was read as payload"
+        );
+    }
+
+    #[test]
+    fn the_first_matching_frame_wins() {
+        let b = body(&[
+            r#"data: {"jsonrpc":"2.0","id":5,"result":{"n":1}}"#,
+            "",
+            r#"data: {"jsonrpc":"2.0","id":5,"result":{"n":2}}"#,
+            "",
+        ]);
+        let v: serde_json::Value = serde_json::from_str(&sse(&b, 5).unwrap()).unwrap();
+        assert_eq!(v["result"]["n"], json!(1));
+    }
+
+    #[test]
+    fn a_body_with_no_terminating_blank_line_still_yields_its_frame() {
+        // Real servers close the stream without a trailing blank line. Requiring one would make
+        // the last frame — usually the answer — invisible.
+        let b = r#"data: {"jsonrpc":"2.0","id":4,"result":{}}"#;
+        assert!(sse(b, 4).is_some(), "a frame at EOF was dropped");
+    }
+
+    #[test]
+    fn unparseable_data_is_skipped_rather_than_returned() {
+        let b = body(&[
+            "data: not json",
+            "",
+            r#"data: {"jsonrpc":"2.0","id":8,"result":{}}"#,
+            "",
+        ]);
+        let v: serde_json::Value = serde_json::from_str(&sse(&b, 8).unwrap()).unwrap();
+        assert_eq!(v["id"], json!(8));
+    }
+
+    #[test]
+    fn an_indented_field_is_not_a_field() {
+        // SSE fields start at column 0. Being lenient here would accept bodies no server sends
+        // and mask a genuinely malformed stream.
+        let b = body(&[r#"  data: {"jsonrpc":"2.0","id":1,"result":{}}"#, ""]);
+        assert!(sse(&b, 1).is_none());
+    }
+}
+
+#[cfg(test)]
+mod flag_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::{check_upstream_url, parse_upstream_header};
+
+    #[test]
+    fn a_header_splits_on_the_first_colon_so_values_may_contain_colons() {
+        let (n, v) = parse_upstream_header("Authorization: Bearer https://idp/x:9443").unwrap();
+        assert_eq!(n, "Authorization");
+        assert_eq!(v, "Bearer https://idp/x:9443");
+    }
+
+    #[test]
+    fn a_header_name_and_value_are_trimmed() {
+        assert_eq!(
+            parse_upstream_header("  X-Tenant :  acme  ").unwrap(),
+            ("X-Tenant".to_string(), "acme".to_string())
+        );
+    }
+
+    #[test]
+    fn a_header_without_a_colon_is_refused() {
+        assert!(parse_upstream_header("Authorization Bearer x").is_err());
+    }
+
+    #[test]
+    fn a_header_with_an_empty_name_is_refused() {
+        assert!(parse_upstream_header(": value").is_err());
+    }
+
+    #[test]
+    fn a_header_carrying_a_newline_cannot_inject_a_second_header() {
+        // Sent verbatim this would append `X-Real-Ip: 10.0.0.1` as its own header line.
+        assert!(parse_upstream_header("X-Fwd: a\r\nX-Real-Ip: 10.0.0.1").is_err());
+        assert!(parse_upstream_header("X-Fwd\nX-Real-Ip: 1: a").is_err());
+    }
+
+    #[test]
+    fn https_is_always_allowed() {
+        assert!(check_upstream_url("https://mcp.corp.example/rpc", false).is_ok());
+    }
+
+    #[test]
+    fn plaintext_to_loopback_is_allowed_for_local_development() {
+        for url in [
+            "http://localhost:8931/mcp",
+            "http://127.0.0.1:8931/mcp",
+            "http://127.3.2.1/mcp",
+            "http://[::1]:8931/mcp",
+            "http://LocalHost/mcp",
+        ] {
+            assert!(check_upstream_url(url, false).is_ok(), "{url}");
+        }
+    }
+
+    #[test]
+    fn plaintext_off_host_is_refused_unless_it_is_opted_into() {
+        let url = "http://mcp.corp.example/rpc";
+        let why = check_upstream_url(url, false).expect_err("should refuse");
+        assert!(why.contains("mcp.corp.example"), "{why}");
+        assert!(check_upstream_url(url, true).is_ok());
+    }
+
+    #[test]
+    fn a_loopback_lookalike_in_the_userinfo_does_not_pass_the_check() {
+        // `localhost` here is a username, not the host — the request goes to evil.example.
+        assert!(check_upstream_url("http://localhost@evil.example/rpc", false).is_err());
+        assert!(check_upstream_url("http://127.0.0.1@evil.example/rpc", false).is_err());
+    }
+
+    #[test]
+    fn a_loopback_lookalike_in_the_path_does_not_pass_the_check() {
+        assert!(check_upstream_url("http://evil.example/localhost", false).is_err());
+        assert!(check_upstream_url("http://evil.example/?h=127.0.0.1", false).is_err());
+        assert!(check_upstream_url("http://evil.example#127.0.0.1", false).is_err());
+    }
+
+    #[test]
+    fn a_non_http_scheme_is_refused_rather_than_guessed_at() {
+        for url in [
+            "ws://h/rpc",
+            "file:///etc/passwd",
+            "mcp.corp.example/rpc",
+            "",
+        ] {
+            assert!(check_upstream_url(url, true).is_err(), "{url}");
+        }
+    }
+
+    #[test]
+    fn a_url_with_no_host_is_refused() {
+        assert!(check_upstream_url("http:///rpc", true).is_err());
+        assert!(check_upstream_url("http://:8080/rpc", true).is_err());
+    }
+}
+
+/// Tests that need a real socket: the two behaviours a canned-body test cannot reach.
+#[cfg(test)]
+mod http_socket_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    /// Serve `replies` in order, one per request, keeping each connection alive so a client that
+    /// reuses one is visibly different from a client that does not. Returns the URL and a counter
+    /// of ACCEPTED CONNECTIONS — which is the thing under test, not the request count.
+    fn serve(replies: Vec<String>) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let conns = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&conns);
+        std::thread::spawn(move || {
+            let mut left = replies.into_iter();
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                seen.fetch_add(1, Ordering::SeqCst);
+                // Stay on this connection until the client stops asking or the replies run out.
+                loop {
+                    if !read_one_request(&mut stream) {
+                        break;
+                    }
+                    match left.next() {
+                        Some(reply) => {
+                            if stream.write_all(reply.as_bytes()).is_err() {
+                                break;
+                            }
+                            let _ = stream.flush();
+                        }
+                        None => return,
+                    }
+                }
+            }
+        });
+        (url, conns)
+    }
+
+    /// Read one request off `stream`, headers then body. False when the peer has gone.
+    fn read_one_request(stream: &mut TcpStream) -> bool {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut len = 0usize;
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => return false,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+            let lower = line.to_ascii_lowercase();
+            if let Some(v) = lower.strip_prefix("content-length:") {
+                len = v.trim().parse().unwrap_or(0);
+            }
+            if line == "\r\n" || line == "\n" {
+                break;
+            }
+        }
+        let mut body = vec![0u8; len];
+        std::io::Read::read_exact(&mut reader, &mut body).is_ok()
+    }
+
+    fn http(status: &str, ctype: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: {ctype}\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn req(id: i64, method: &str) -> Request {
+        Request {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(id)),
+            method: method.to_string(),
+            params: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn one_connection_is_reused_across_calls() {
+        // An agent per call would build a connection pool per call, so every tool call on the hot
+        // path would pay a fresh TCP — and against an https gateway, a fresh TLS — handshake.
+        let (url, conns) = serve(vec![
+            http(
+                "200 OK",
+                "application/json",
+                r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+            ),
+            http(
+                "200 OK",
+                "application/json",
+                r#"{"jsonrpc":"2.0","id":2,"result":{}}"#,
+            ),
+            http(
+                "200 OK",
+                "application/json",
+                r#"{"jsonrpc":"2.0","id":3,"result":{}}"#,
+            ),
+        ]);
+        let mut up = HttpUpstream::new(&url, Duration::from_secs(5));
+        for id in 1..=3 {
+            let r = up.request(&req(id, "tools/call"));
+            assert!(r.error.is_none(), "call {id} failed: {:?}", r.error);
+        }
+        assert_eq!(
+            conns.load(Ordering::SeqCst),
+            1,
+            "three calls opened more than one connection; the agent is not being reused"
+        );
+    }
+
+    #[test]
+    fn a_202_with_no_body_fails_a_request_rather_than_answering_it() {
+        // 202-with-no-body is the documented answer to a NOTIFICATION. Against a request it means
+        // the answer will never arrive on this channel, and synthesising a result would hand the
+        // gate a protocol violation dressed as a response.
+        let (url, _) = serve(vec![
+            "HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\n\r\n".to_string()
+        ]);
+        let mut up = HttpUpstream::new(&url, Duration::from_secs(5));
+        let r = up.request(&req(1, "tools/call"));
+        let err = r
+            .error
+            .expect("a 202 to a request must not read as a result");
+        assert!(
+            err.message.contains("202"),
+            "the refusal does not name the cause: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_session_id_from_the_first_response_is_echoed_on_the_next_request() {
+        // Asserted here as well as in the drill because this is the unit that has to remember it.
+        let (url, _) = serve(vec![
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nmcp-session-id: s-42\r\ncontent-length: {}\r\n\r\n{}",
+                r#"{"jsonrpc":"2.0","id":1,"result":{}}"#.len(),
+                r#"{"jsonrpc":"2.0","id":1,"result":{}}"#
+            ),
+            http("200 OK", "application/json", r#"{"jsonrpc":"2.0","id":2,"result":{}}"#),
+        ]);
+        let mut up = HttpUpstream::new(&url, Duration::from_secs(5));
+        up.request(&req(1, "initialize"));
+        assert_eq!(up.session.as_deref(), Some("s-42"));
+        let r = up.request(&req(2, "tools/call"));
+        assert!(r.error.is_none(), "{:?}", r.error);
+    }
+
+    #[test]
+    fn a_non_2xx_status_is_reported_as_a_failure_not_parsed() {
+        let (url, _) = serve(vec![http("403 Forbidden", "text/plain", "no")]);
+        let mut up = HttpUpstream::new(&url, Duration::from_secs(5));
+        let err = up
+            .request(&req(1, "tools/call"))
+            .error
+            .expect("a 403 must not read as a result");
+        assert!(err.message.contains("403"), "{}", err.message);
     }
 }

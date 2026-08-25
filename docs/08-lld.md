@@ -141,7 +141,7 @@ plane through a linked library.
 | `peer` | Where peer identity actually comes from | 8.6.6 |
 | `drain` | What happens to in-flight work when a revocation lands | 8.6.5 |
 | `client` | Pull a contract set from the control plane, acknowledge it | 8.6.2 |
-| `upstream` | The upstream a mediated call is forwarded to | 8.6.1 |
+| `upstream` | The two transports: a spawned stdio child, or a remote server over Streamable HTTP | 8.6.7 |
 | `mcp` | The few MCP shapes the mediation path needs | 8.9.1 |
 | `rpc` | JSON-RPC 2.0 — the wire format MCP uses over stdio | 8.9.1 |
 | `obs` | Decision log and the metric families the mediator owns | 8.14 |
@@ -410,6 +410,57 @@ revocation lands: `drain` or `abort`, per policy.
 Peer identity comes from the established transport — mTLS or SVID — never from a
 header. A header claiming peer identity is rejected (`WC-4020`). This is what
 makes gates 6 and 7 meaningful.
+
+### 8.6.7 `upstream` — the two transports
+
+The mediator decorates an `Upstream`, and there are two implementations of that
+trait. Both sit behind the same `MediatedUpstream`, so the 14 gates, the
+catalogue filter and the ceilings are the same code on either path — the
+transport decides where the server lives, not what is enforced.
+
+| | flag | topology |
+|---|---|---|
+| `StdioUpstream` | `--upstream CMD` | the MCP server is spawned as a child; one agent, one server, one sidecar |
+| `HttpUpstream` | `--upstream-url URL` | the MCP server is remote, over MCP Streamable HTTP; the common shape once a team wraps an existing API |
+
+`HttpUpstream` POSTs one JSON-RPC frame per request and accepts either response
+content type. `application/json` is one frame. `text/event-stream` is parsed by
+`sse_frame_for`, which matters more than it looks:
+
+* A single logical payload may span several `data:` lines. They are joined with
+  a **newline**, per the spec — not concatenated. For JSON the two are usually
+  indistinguishable, because JSON ignores whitespace between tokens; they differ
+  when a token is split across lines, where joining correctly yields invalid
+  JSON and concatenation would silently reassemble a frame the server never
+  sent.
+* Frames are matched on `id`. A server may interleave progress notifications and
+  log events ahead of the answer, and a notification carries no `id`, so it can
+  never satisfy a request. Taking the first frame instead would report a
+  progress event as the result of a `tools/call`.
+* `Mcp-Session-Id` returned at `initialize` is echoed on every later request. A
+  stateful server rejects everything after `initialize` without it.
+
+Two configuration refusals, both at startup:
+
+* `--upstream` and `--upstream-url` together is an **error**. Two upstreams is
+  two beliefs about what is being mediated, and picking one by precedence would
+  mediate a server the operator did not point at.
+* Plaintext `http://` to anything other than loopback is **refused** unless
+  `--upstream-allow-plaintext` is passed. The mediator's decisions are worth no
+  more than the channel carrying them; loopback is the development case, and the
+  opt-out exists for a sidecar proxy that terminates TLS on the same host.
+
+`--upstream-header 'Name: value'` (repeatable) forwards a header — typically an
+`Authorization` for the provider's own gateway. The name/value split is on the
+**first** colon, because values legitimately contain colons; a name carrying
+whitespace or a control character is refused rather than sent, since verbatim it
+would inject a second header line.
+
+`scripts/http-mode-drill.sh` runs a contract, the surface pin and the surface
+ceiling against a real HTTP MCP server in **enforce** mode — over
+`application/json`, then over `text/event-stream` with the result behind a
+progress notification, then against a server that refuses any request not
+echoing the session id.
 
 ---
 
