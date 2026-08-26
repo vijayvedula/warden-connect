@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use warden_connect_gateway::{BodyAction, Filter};
+use warden_connect_gateway::{BodyAction, Filter, FilterCfg, PinLedger, Verdict};
 use wc_core::canon::{self, Limits, SurfaceKind};
 use wc_core::contract::{
     mint, verify_artifact, Algorithm, Assurance, ContractPayload, IssuerKey, IssuerKeys, Party,
@@ -127,14 +127,22 @@ fn admitted(items: &[&str]) -> wc_core::contract::Admitted {
     }
 }
 
+fn cfg(pins: Option<Arc<PinLedger>>, pin_max_age: u64) -> FilterCfg {
+    FilterCfg {
+        mode: Mode::Enforce,
+        callee: callee(),
+        pins,
+        pin_max_age,
+    }
+}
+
 fn filter_for(tools: &[&str], catalogue: &Value) -> Filter {
     Filter::new(
         Some(admitted(tools)),
-        Mode::Enforce,
         Some(contract(tools, catalogue)),
-        callee(),
-        NOW,
         None,
+        NOW,
+        &cfg(None, 0),
     )
 }
 
@@ -201,7 +209,7 @@ fn a_reworded_description_moves_the_pin() {
 fn a_stream_with_no_contract_does_not_silently_pass_a_catalogue() {
     // No contract means no admitted connection, so there is nothing to filter against and the
     // request never reaches the catalogue phase in the first place.
-    let mut f = Filter::new(None, Mode::Enforce, None, callee(), NOW, None);
+    let mut f = Filter::new(None, None, None, NOW, &cfg(None, 0));
     assert_eq!(
         f.on_request("tools/list", &json!({})),
         warden_connect_gateway::Verdict::Refuse {
@@ -209,4 +217,183 @@ fn a_stream_with_no_contract_does_not_silently_pass_a_catalogue() {
             detail: "no contract for this caller and callee".to_string()
         }
     );
+}
+
+// ---------------------------------------------------------------------------
+// The ledger: gate 8 for streams that carry no catalogue of their own
+// ---------------------------------------------------------------------------
+
+fn filter_with_ledger(
+    tools: &[&str],
+    catalogue: &Value,
+    ledger: &Arc<PinLedger>,
+    max_age: u64,
+    now: u64,
+) -> Filter {
+    let mut a = admitted(tools);
+    a.jti = Jti::new("cx_84be0011").unwrap();
+    Filter::new(
+        Some(a),
+        Some(contract(tools, catalogue)),
+        None,
+        now,
+        &cfg(Some(Arc::clone(ledger)), max_age),
+    )
+}
+
+fn a_call() -> (String, Value) {
+    (
+        "tools/call".to_string(),
+        json!({"name": "get_balance", "arguments": {}}),
+    )
+}
+
+#[test]
+fn a_tool_call_is_refused_until_a_catalogue_has_pinned_the_contract() {
+    // The gap this closes: a client that never calls tools/list was never checked against the
+    // pin at all, so the callee could have changed its surface and nothing would notice.
+    let ledger = Arc::new(PinLedger::new());
+    let mut f = filter_with_ledger(&["get_balance"], &served(), &ledger, 0, NOW);
+    let (m, p) = a_call();
+    match f.on_request(&m, &p) {
+        Verdict::Refuse { code, .. } => assert_eq!(code, Code::SURFACE_UNOBTAINABLE),
+        Verdict::Forward => panic!("an unpinned contract admitted a tool call"),
+    }
+
+    // A catalogue passes on another stream, on the same contract.
+    let mut lister = filter_with_ledger(&["get_balance"], &served(), &ledger, 0, NOW);
+    assert!(matches!(
+        run(&mut lister, &served()),
+        BodyAction::Rewrite(_)
+    ));
+
+    // Now the tool call is admitted — the evidence reaches every stream on that contract.
+    let mut after = filter_with_ledger(&["get_balance"], &served(), &ledger, 0, NOW);
+    assert_eq!(after.on_request(&m, &p), Verdict::Forward);
+}
+
+#[test]
+fn a_mismatched_catalogue_does_not_mark_the_contract_pinned() {
+    // Otherwise one bad catalogue would unlock every later tool call on that contract.
+    let ledger = Arc::new(PinLedger::new());
+    let mut lister = filter_with_ledger(&["get_balance"], &served(), &ledger, 0, NOW);
+    let moved = json!({"tools":[
+        {"name":"get_balance","description":"Read an account balance CHANGED."},
+        {"name":"list_transactions","description":"List recent transactions."},
+        {"name":"wire_funds","description":"Move money between accounts."}
+    ]});
+    assert!(matches!(
+        run(&mut lister, &moved),
+        BodyAction::Refuse { .. }
+    ));
+    assert!(
+        ledger.verified_at("cx_84be0011").is_none(),
+        "a mismatched catalogue marked the contract pinned"
+    );
+}
+
+#[test]
+fn a_pin_verified_too_long_ago_stops_counting() {
+    let ledger = Arc::new(PinLedger::new());
+    let mut lister = filter_with_ledger(&["get_balance"], &served(), &ledger, 60, NOW);
+    assert!(matches!(
+        run(&mut lister, &served()),
+        BodyAction::Rewrite(_)
+    ));
+
+    // Inside the window.
+    let mut fresh = filter_with_ledger(&["get_balance"], &served(), &ledger, 60, NOW + 59);
+    assert_eq!(fresh.on_request(&a_call().0, &a_call().1), Verdict::Forward);
+
+    // Past it.
+    let mut stale = filter_with_ledger(&["get_balance"], &served(), &ledger, 60, NOW + 61);
+    assert!(matches!(
+        stale.on_request(&a_call().0, &a_call().1),
+        Verdict::Refuse {
+            code: Code::SURFACE_UNOBTAINABLE,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_max_age_of_zero_means_a_pin_never_expires() {
+    let ledger = Arc::new(PinLedger::new());
+    let mut lister = filter_with_ledger(&["get_balance"], &served(), &ledger, 0, NOW);
+    assert!(matches!(
+        run(&mut lister, &served()),
+        BodyAction::Rewrite(_)
+    ));
+    let mut much_later =
+        filter_with_ledger(&["get_balance"], &served(), &ledger, 0, NOW + 10_000_000);
+    assert_eq!(
+        much_later.on_request(&a_call().0, &a_call().1),
+        Verdict::Forward
+    );
+}
+
+#[test]
+fn no_ledger_means_the_requirement_is_off_entirely() {
+    // The documented escape for an estate whose clients never list tools. Everything else is
+    // still enforced; only gate 8 on catalogue-less streams is given up.
+    let mut f = Filter::new(
+        Some(admitted(&["get_balance"])),
+        Some(contract(&["get_balance"], &served())),
+        None,
+        NOW,
+        &cfg(None, 0),
+    );
+    assert_eq!(f.on_request(&a_call().0, &a_call().1), Verdict::Forward);
+}
+
+#[test]
+fn the_ledger_does_not_let_one_contract_vouch_for_another() {
+    // Keyed by jti, not by callee. Two contracts over different subsets of the same callee
+    // carry different digests, and verifying one says nothing about the other.
+    let ledger = Arc::new(PinLedger::new());
+    ledger.record("cx_a_different_contract", NOW);
+    let mut f = filter_with_ledger(&["get_balance"], &served(), &ledger, 0, NOW);
+    assert!(matches!(
+        f.on_request(&a_call().0, &a_call().1),
+        Verdict::Refuse {
+            code: Code::SURFACE_UNOBTAINABLE,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_detected_mismatch_revokes_an_earlier_verification() {
+    // The order that matters: verified, then the callee drifts, then a client lists and gets
+    // WC-3108. If the earlier record survived, tool calls would keep flowing on a contract
+    // whose callee has demonstrably moved — drift detected and then ignored.
+    let ledger = Arc::new(PinLedger::new());
+    let mut lister = filter_with_ledger(&["get_balance"], &served(), &ledger, 0, NOW);
+    assert!(matches!(
+        run(&mut lister, &served()),
+        BodyAction::Rewrite(_)
+    ));
+    assert!(ledger.verified_at("cx_84be0011").is_some());
+
+    let moved = json!({"tools":[
+        {"name":"get_balance","description":"Read an account balance CHANGED."},
+        {"name":"list_transactions","description":"List recent transactions."},
+        {"name":"wire_funds","description":"Move money between accounts."}
+    ]});
+    let mut again = filter_with_ledger(&["get_balance"], &served(), &ledger, 0, NOW + 1);
+    assert!(matches!(run(&mut again, &moved), BodyAction::Refuse { .. }));
+    assert!(
+        ledger.verified_at("cx_84be0011").is_none(),
+        "a detected mismatch left the earlier verification standing"
+    );
+
+    // And a tool call is refused from now on.
+    let mut after = filter_with_ledger(&["get_balance"], &served(), &ledger, 0, NOW + 2);
+    assert!(matches!(
+        after.on_request(&a_call().0, &a_call().1),
+        Verdict::Refuse {
+            code: Code::SURFACE_UNOBTAINABLE,
+            ..
+        }
+    ));
 }

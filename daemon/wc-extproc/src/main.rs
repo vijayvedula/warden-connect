@@ -32,7 +32,7 @@ use envoy_types::pb::envoy::service::ext_proc::v3::{
 };
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{transport::Server, Request, Response, Status, Streaming};
-use warden_connect_gateway::{BodyAction, BodyMode, Filter, Verdict};
+use warden_connect_gateway::{BodyAction, BodyMode, Filter, FilterCfg, PinLedger, Verdict};
 
 /// The caller's SPIFFE id, or `None` when identity could not be established.
 ///
@@ -216,6 +216,10 @@ struct Verifier<C: Contracts> {
     /// and it outlives the `&self` borrow that started it.
     contracts: std::sync::Arc<C>,
     mode: wc_core::error::Mode,
+    /// What has been pinned. `None` when `--allow-unpinned` was passed.
+    pins: Option<std::sync::Arc<PinLedger>>,
+    /// Seconds a pin verification stays good; zero means it never expires.
+    pin_max_age: u64,
     /// Ceilings per contract, keyed by the artifact id.
     ///
     /// Keyed by `jti` rather than by caller or route: the terms belong to the contract, and two
@@ -265,6 +269,8 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
         let contracts_mode = self.mode;
         let mesh = self.mesh_trust.clone();
         let limits = std::sync::Arc::clone(&self.limits);
+        let pins = self.pins.clone();
+        let pin_max_age = self.pin_max_age;
 
         let admitted_slot = std::sync::Arc::new(std::sync::Mutex::new(None));
 
@@ -321,14 +327,13 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                         // With no callee there is nothing for gate 8 to bind a digest to, so the
                         // filter is built with no contract and refuses the stream.
                         let bound = callee_id.unwrap_or_else(placeholder_callee);
-                        filter = Some(Filter::new(
-                            admitted,
-                            contracts_mode,
-                            contract,
-                            bound,
-                            now(),
-                            ceilings,
-                        ));
+                        let cfg = FilterCfg {
+                            mode: contracts_mode,
+                            callee: bound,
+                            pins: pins.clone(),
+                            pin_max_age,
+                        };
+                        filter = Some(Filter::new(admitted, contract, ceilings, now(), &cfg));
                         cont_headers()
                     }
                     Some(processing_request::Request::RequestBody(b)) => {
@@ -339,11 +344,15 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                             // established at all, so this fails closed rather than assuming.
                             Filter::new(
                                 None,
-                                contracts_mode,
                                 None,
-                                placeholder_callee(),
+                                None,
                                 now(),
-                                None,
+                                &FilterCfg {
+                                    mode: contracts_mode,
+                                    callee: placeholder_callee(),
+                                    pins: None,
+                                    pin_max_age: 0,
+                                },
                             )
                         });
                         on_request_body(f, &b)
@@ -546,16 +555,23 @@ REFRESH, WITHDRAWAL AND THE DEPLOY GATE
   fully hand over, and treating that as current is how a withdrawn contract keeps
   working. A withdrawn contract is simply absent from the next set.
 
-THE PIN, AND WHAT THIS DOES NOT YET DO
+THE PIN
   Gate 8 compares the callee's presented surface against the digest the contract
-  pinned. This filter runs it whenever a `tools/list` response passes, and refuses
-  the catalogue on a mismatch (WC-3108).
-  What it does NOT do is check the pin on a stream that carries no catalogue. A
-  client that calls `tools/call` without ever calling `tools/list` is not pinned on
-  that request. The mediator closes this by fetching a catalogue itself; a filter
-  cannot fetch anything, so closing it here needs per-SESSION state keyed on
-  Mcp-Session-Id, which is not built. Everything else still applies on those
-  streams: the surface ceiling, the ceilings and revocation.
+  pinned. It runs whenever a `tools/list` response passes and refuses the catalogue
+  on a mismatch (WC-3108).
+  A stream carrying only a `tools/call` has no catalogue to check, and a filter
+  cannot fetch one the way the inline mediator does. So verifications are recorded
+  PER CONTRACT and a tool call is refused until some stream on that contract has
+  carried a catalogue — the first request of any MCP session, in practice. Not per
+  session: a stateless server issues no Mcp-Session-Id and every stream would be
+  unverifiable. Not per callee: the pinned digest covers exactly the contracted
+  items, so two contracts over different subsets of one callee have different
+  digests and neither vouches for the other.
+
+  --allow-unpinned     give that up. Everything else still applies on such streams
+                       — the surface ceiling, the ceilings, revocation — but the
+                       callee's surface is unchecked on them
+  --pin-max-age N      seconds a verification stays good (default 0, never expires)
 
 ENVOY MUST BE CONFIGURED WITH
   failure_mode_allow: false     this process being unreachable has to deny, not allow
@@ -706,6 +722,19 @@ fn run() -> Result<Started, String> {
         "--mesh-origin is required: an unconfigured mesh trust believes no \
          x-forwarded-client-cert from any origin, so every request would be refused",
     )?;
+    // Gate 8 runs when a catalogue passes. A stream carrying only a `tools/call` cannot be
+    // pinned, so by default such a call is refused until some stream on the same contract HAS
+    // carried one — which for any client following the MCP lifecycle is the first request of the
+    // session. `--allow-unpinned` gives that up, deliberately and visibly.
+    let pins = if args.iter().any(|a| a == "--allow-unpinned") {
+        None
+    } else {
+        Some(std::sync::Arc::new(PinLedger::new()))
+    };
+    let pin_max_age: u64 = flag(&args, "pin-max-age")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
     let mesh_trust = if mesh_origin.starts_with('/') {
         wc_mediator::peer::MeshTrust::socket(mesh_origin.clone())
     } else {
@@ -721,6 +750,16 @@ fn run() -> Result<Started, String> {
     );
     eprintln!("wc-extproc: mediator {mediator_id}, issuer {issuer_id} ({mode:?})");
     eprintln!("wc-extproc: XFCC believed only from {mesh_origin}");
+    match (&pins, pin_max_age) {
+        (None, _) => eprintln!(
+            "wc-extproc: WARNING --allow-unpinned, so a tools/call on a stream that carries no \
+             catalogue is NOT checked against the contract's pinned surface"
+        ),
+        (Some(_), 0) => eprintln!(
+            "wc-extproc: pin required before any tools/call; verification does not expire"
+        ),
+        (Some(_), n) => eprintln!("wc-extproc: pin required, re-verified every {n}s"),
+    }
     eprintln!(
         "wc-extproc: Envoy must set failure_mode_allow=false and allow_mode_override=true; \
          without the second, catalogues are never filtered"
@@ -744,6 +783,8 @@ fn run() -> Result<Started, String> {
             mode,
             routes: std::sync::Arc::new(routes),
             limits: std::sync::Arc::new(Limits::default()),
+            pins,
+            pin_max_age,
             mesh_trust,
         },
         addr,
@@ -1029,6 +1070,8 @@ mod tests {
             )),
             // Loopback TCP, which is the origin the test client connects from.
             limits: std::sync::Arc::new(Limits::default()),
+            pins: None,
+            pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 addrs: vec!["127.0.0.1".to_string()],
@@ -1200,6 +1243,8 @@ mod tests {
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
             limits: std::sync::Arc::new(Limits::default()),
+            pins: None,
+            pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 // Not the loopback the test client connects from.
@@ -1240,6 +1285,8 @@ mod tests {
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
             limits: std::sync::Arc::new(Limits::default()),
+            pins: None,
+            pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 addrs: Vec::new(),
@@ -1312,6 +1359,8 @@ mod tests {
                 routes::Routes::load(&path).unwrap(),
             ))),
             limits: std::sync::Arc::new(Limits::default()),
+            pins: None,
+            pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 addrs: vec!["127.0.0.1".to_string()],
@@ -1429,6 +1478,8 @@ mod tests {
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
             limits: std::sync::Arc::new(Limits::default()),
+            pins: None,
+            pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 addrs: vec!["127.0.0.1".to_string()],

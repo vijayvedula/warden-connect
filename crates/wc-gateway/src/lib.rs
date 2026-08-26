@@ -86,6 +86,87 @@ pub enum BodyAction {
     },
 }
 
+/// When each contract's pin was last verified.
+///
+/// Gate 8 can only run when a catalogue passes, and a filter cannot fetch one. Without a record
+/// of what has been verified, a caller that issues `tools/call` and never `tools/list` is never
+/// pinned at all — the callee could have changed its surface an hour ago.
+///
+/// # Keyed by contract, not by session and not by callee
+///
+/// Per SESSION is the obvious choice and it is wrong twice: a stateless MCP server issues no
+/// `Mcp-Session-Id`, so every stream would be its own unverifiable session; and a session is not
+/// what the pin is a property of.
+///
+/// Per CALLEE is also wrong. The pinned digest covers exactly the CONTRACTED items, so two
+/// contracts over different subsets of one callee carry different digests — and a ledger keyed
+/// by callee would let contract X's verification vouch for contract Y, which was never checked.
+///
+/// So it is keyed by `jti`. Any stream on that contract that carries a catalogue verifies it for
+/// every other stream on the same contract, which is exactly as far as the evidence reaches.
+#[derive(Debug, Default)]
+pub struct PinLedger {
+    verified: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+}
+
+impl PinLedger {
+    /// A ledger with nothing verified.
+    #[must_use]
+    pub fn new() -> PinLedger {
+        PinLedger::default()
+    }
+
+    /// Record that this contract's pin matched what the callee presented.
+    pub fn record(&self, jti: &str, at: u64) {
+        let mut m = match self.verified.lock() {
+            Ok(m) => m,
+            // A poisoned lock means a thread panicked holding it. The records are still valid
+            // and dropping them would only refuse more, so the poison is stepped over.
+            Err(p) => p.into_inner(),
+        };
+        m.insert(jti.to_string(), at);
+    }
+
+    /// Drop any record for this contract, so a tool call on it is refused until a catalogue
+    /// matches again.
+    pub fn forget(&self, jti: &str) {
+        let mut m = match self.verified.lock() {
+            Ok(m) => m,
+            Err(p) => p.into_inner(),
+        };
+        m.remove(jti);
+    }
+
+    /// When this contract's pin was last verified, if ever.
+    #[must_use]
+    pub fn verified_at(&self, jti: &str) -> Option<u64> {
+        let m = match self.verified.lock() {
+            Ok(m) => m,
+            Err(p) => p.into_inner(),
+        };
+        m.get(jti).copied()
+    }
+}
+
+/// What every stream on this verifier shares.
+///
+/// Split from [`Filter::new`]'s arguments because the two halves have different lifetimes and
+/// different owners: these four are deployment configuration, decided once at startup, while
+/// the admitted connection, its contract and its ceilings belong to one stream. The argument
+/// list had grown to eight and every call site had to be edited whenever a control was added,
+/// which is how a caller ends up passing `None` in the wrong position.
+#[derive(Clone)]
+pub struct FilterCfg {
+    /// Enforce or observe.
+    pub mode: wc_core::error::Mode,
+    /// The callee the pin is bound to. Configuration, never from the request.
+    pub callee: wc_core::model::EntityId,
+    /// What has been pinned. `None` disables the requirement entirely.
+    pub pins: Option<std::sync::Arc<PinLedger>>,
+    /// Seconds a pin verification stays good. Zero means it never expires.
+    pub pin_max_age: u64,
+}
+
 /// Per-stream state. One [`Filter`] per HTTP stream; nothing is shared between streams, which is
 /// what makes scaling out a matter of adding instances.
 #[derive(Debug)]
@@ -119,6 +200,10 @@ pub struct Filter {
     ceilings: Option<std::sync::Arc<wc_mediator::ceiling::Ceilings>>,
     /// Held for the life of the stream; released when this filter is dropped.
     slot: Option<wc_mediator::ceiling::OwnedSlot>,
+    /// What has been pinned, shared across streams. `None` disables the requirement.
+    pins: Option<std::sync::Arc<PinLedger>>,
+    /// Seconds a pin verification stays good. Zero means it never expires.
+    pin_max_age: u64,
     /// What this stream turned out to be, learned at the request phase and needed at the
     /// response phase — the two are different Envoy callbacks and `mode_override` is only
     /// honoured in the second.
@@ -149,22 +234,23 @@ impl Filter {
     #[must_use]
     pub fn new(
         admitted: Option<wc_core::contract::Admitted>,
-        mode: wc_core::error::Mode,
         contract: Option<std::sync::Arc<wc_core::contract::VerifiedContract>>,
-        callee: wc_core::model::EntityId,
-        now: u64,
         ceilings: Option<std::sync::Arc<wc_mediator::ceiling::Ceilings>>,
+        now: u64,
+        cfg: &FilterCfg,
     ) -> Filter {
         Filter {
             admitted,
             contract,
-            callee,
+            callee: cfg.callee.clone(),
             limits: wc_core::canon::Limits::default(),
             now,
             ceilings,
             slot: None,
+            pins: cfg.pins.clone(),
+            pin_max_age: cfg.pin_max_age,
             kind: StreamKind::Unknown,
-            mode,
+            mode: cfg.mode,
         }
     }
 
@@ -204,6 +290,38 @@ impl Filter {
                     code: Code::TOOL_UNCONTRACTED,
                     detail: format!("{tool} is not in the contracted surface"),
                 };
+            }
+
+            // Gate 8, for a stream that carries no catalogue of its own. Before the ceilings
+            // for the same reason the surface check is: `reserve` records the call, and a call
+            // that is about to be refused must not consume the caller's budget.
+            if let Some(pins) = &self.pins {
+                let jti = admitted.jti.as_str();
+                match pins.verified_at(jti) {
+                    None => {
+                        return Verdict::Refuse {
+                            code: Code::SURFACE_UNOBTAINABLE,
+                            detail: "this contract's pin has not been verified: no tools/list \
+                                     has passed through, so the callee's surface is unchecked"
+                                .to_string(),
+                        }
+                    }
+                    Some(at)
+                        if self.pin_max_age > 0
+                            && self.now.saturating_sub(at) > self.pin_max_age =>
+                    {
+                        return Verdict::Refuse {
+                            code: Code::SURFACE_UNOBTAINABLE,
+                            detail: format!(
+                                "this contract's pin was last verified {}s ago, beyond the {}s \
+                                 bound; the callee's surface may have moved since",
+                                self.now.saturating_sub(at),
+                                self.pin_max_age
+                            ),
+                        }
+                    }
+                    Some(_) => {}
+                }
             }
 
             // The contract's terms, which until now were carried and enforced by nothing on
@@ -296,10 +414,22 @@ impl Filter {
                 }
             };
             if let Err(e) = contract.check_pin(&presented) {
+                // A mismatch REVOKES any earlier verification. Refusing only this catalogue
+                // would leave the recorded pin standing, so tool calls would keep flowing on a
+                // contract whose callee has demonstrably moved — the drift detected and then
+                // ignored, which is worse than not looking.
+                if let (Some(pins), Some(a)) = (&self.pins, &self.admitted) {
+                    pins.forget(a.jti.as_str());
+                }
                 return BodyAction::Refuse {
                     code: e.code(),
                     detail: e.detail().to_string(),
                 };
+            }
+            // Recorded only on a match. A mismatch must not mark the contract pinned, or one
+            // bad catalogue would unlock every later tool call on it.
+            if let (Some(pins), Some(a)) = (&self.pins, &self.admitted) {
+                pins.record(a.jti.as_str(), self.now);
             }
         }
 
@@ -351,6 +481,16 @@ mod tests {
         }
     }
 
+    /// The shared configuration these tests use: enforce, no pin requirement.
+    fn cfg(mode: Mode) -> FilterCfg {
+        FilterCfg {
+            mode,
+            callee: callee(),
+            pins: None,
+            pin_max_age: 0,
+        }
+    }
+
     fn callee() -> wc_core::model::EntityId {
         wc_core::model::EntityId::new("spiffe://bank.example/ns/aws/sa/payments-mcp").unwrap()
     }
@@ -358,14 +498,7 @@ mod tests {
     /// A live stream with no contract carried, so these exercise the phase machine alone.
     /// Gate 8 needs a real minted contract and lives in `tests/pin.rs`.
     fn live(items: &[&str]) -> Filter {
-        Filter::new(
-            Some(admitted(items)),
-            Mode::Enforce,
-            None,
-            callee(),
-            0,
-            None,
-        )
+        Filter::new(Some(admitted(items)), None, None, 0, &cfg(Mode::Enforce))
     }
 
     fn call(tool: &str) -> (String, Value) {
@@ -407,11 +540,10 @@ mod tests {
         a.terms = terms;
         Filter::new(
             Some(a),
-            Mode::Enforce,
             None,
-            callee(),
-            0,
             Some(std::sync::Arc::clone(c)),
+            0,
+            &cfg(Mode::Enforce),
         )
     }
 
@@ -526,14 +658,14 @@ mod tests {
     fn no_contract_refuses_in_enforce_and_forwards_in_observe() {
         let (m, p) = call("anything");
         assert!(matches!(
-            Filter::new(None, Mode::Enforce, None, callee(), 0, None).on_request(&m, &p),
+            Filter::new(None, None, None, 0, &cfg(Mode::Enforce)).on_request(&m, &p),
             Verdict::Refuse {
                 code: Code::NO_CONTRACT,
                 ..
             }
         ));
         assert_eq!(
-            Filter::new(None, Mode::Observe, None, callee(), 0, None).on_request(&m, &p),
+            Filter::new(None, None, None, 0, &cfg(Mode::Observe)).on_request(&m, &p),
             Verdict::Forward
         );
     }
