@@ -134,6 +134,7 @@ fn filter_for(tools: &[&str], catalogue: &Value) -> Filter {
         Some(contract(tools, catalogue)),
         callee(),
         NOW,
+        None,
     )
 }
 
@@ -200,7 +201,7 @@ fn a_reworded_description_moves_the_pin() {
 fn a_stream_with_no_contract_does_not_silently_pass_a_catalogue() {
     // No contract means no admitted connection, so there is nothing to filter against and the
     // request never reaches the catalogue phase in the first place.
-    let mut f = Filter::new(None, Mode::Enforce, None, callee(), NOW);
+    let mut f = Filter::new(None, Mode::Enforce, None, callee(), NOW, None);
     assert_eq!(
         f.on_request("tools/list", &json!({})),
         warden_connect_gateway::Verdict::Refuse {

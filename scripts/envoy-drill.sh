@@ -104,7 +104,7 @@ callee_zone = "internal.*"
 decision = "require_approval"
 approver_role = "drill.operator"
 ttl_max = "7d"
-terms = { evidence_sink = "ocsf://siem", evidence_delivery = "fail-safe" }
+terms = { evidence_sink = "ocsf://siem", evidence_delivery = "fail-safe", max_calls_per_hour = 3, max_concurrent = 2 }
 reason = "the drill approves by hand"
 P
 for k in issuer approver; do
@@ -378,6 +378,32 @@ else:
     absent) bad "8 · the verifier never appeared in connect distribution at all" ;;
     *) bad "8 · the verifier appears but has not caught up: $GATE" ;;
   esac
+fi
+
+# --- 9 · the rate ceiling, through Envoy ----------------------------------------
+# The policy rule caps this contract at 3 calls/hour and phase 1b already spent one. Rather
+# than count exactly — brittle if a phase above changes — call until a refusal arrives and
+# assert both that it arrives AND that at least one call succeeded first. A ceiling that
+# refused everything from the start would pass a refusal-only check.
+allowed=0; refused=""
+for _ in $(seq 1 8); do
+  R=$(call '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"get_balance","arguments":{}}}')
+  if printf '%s' "$R" | grep -q "executed get_balance"; then
+    allowed=$((allowed + 1))
+  elif printf '%s' "$R" | grep -q "WC-4003"; then
+    refused="yes"; break
+  else
+    refused="other"; printf '%s\n' "$R" | sed 's/^/       /' | head -1; break
+  fi
+done
+if [ "$refused" = "yes" ] && [ "$allowed" -ge 1 ]; then
+  ok "9 · the rate ceiling holds across separate streams ($allowed allowed, then WC-4003)"
+elif [ "$refused" = "yes" ]; then
+  bad "9 · the ceiling refused every call, including the first"
+elif [ -z "$refused" ]; then
+  bad "9 · 8 calls admitted against a ceiling of 3 — the ceiling counts nothing across streams"
+else
+  bad "9 · the ceiling phase ended on an unexpected refusal"
 fi
 
 echo

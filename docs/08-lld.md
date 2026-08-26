@@ -429,6 +429,28 @@ Breaching a ceiling denies the call and notifies the owner — it does **not**
 invalidate the contract. `drain` decides what happens to in-flight work when a
 revocation lands: `drain` or `abort`, per policy.
 
+**What is actually enforced, and where.** All three are implemented in
+`ceiling.rs`; they are not all wired to a caller, and the difference matters more
+than the implementation.
+
+| Ceiling | Code | Inline mediator | Gateway (E5) |
+|---|---|---|---|
+| rate | `WC-4003` | enforced | enforced |
+| concurrency | `WC-4005` | **not wired** — `Ceilings::enter` has no caller | enforced, slot held for the stream |
+| spend | `WC-4004` | **not wired** | **not enforceable** |
+
+Spend is not a wiring gap. `Ceilings::charge` needs an amount, and nothing in the
+data plane produces one: an MCP response carries no cost, and the mediator has no
+price list. Enforcing it needs a cost signal that does not exist yet, so the term
+is carried, narrowed and federated correctly and bounds nothing at runtime.
+Recorded here rather than left to be discovered from a contract that looked
+capped.
+
+At the gateway the counters are keyed by the contract's `jti` and shared across
+HTTP streams. Per-stream counters would reset on every request, and a contract
+reading `max_calls_per_hour = 10` would admit ten calls *per request* — a ceiling
+that reads as configured and counts nothing.
+
 ### 8.6.6 `peer`
 
 Peer identity comes from the established transport — mTLS or SVID — never from a
