@@ -54,10 +54,22 @@ fn resolve_caller(
         callee,
     };
     let presented = wc_mediator::peer::Presented::mesh(xfcc, origin.clone());
-    source
-        .resolve(&presented)
-        .ok()
-        .map(|p| p.identity.caller.as_str().to_string())
+    match source.resolve(&presented) {
+        Ok(p) => Some(p.identity.caller.as_str().to_string()),
+        // Logged, not swallowed. An identity that failed to resolve and a caller with no
+        // contract both end as "refused", and an operator staring at WC-4001 has no way to tell
+        // a spoofing attempt from a missing contract without this line. The origin is named
+        // because a mesh-trust mismatch is the most common cause and the hardest to guess.
+        Err(e) => {
+            eprintln!(
+                "wc-extproc: peer identity not established from {}: {} {}",
+                origin.describe(),
+                e.code(),
+                e.detail()
+            );
+            None
+        }
+    }
 }
 
 /// Where the callee for a stream comes from.
@@ -171,7 +183,9 @@ fn cont_headers() -> ProcessingResponse {
 }
 
 struct Verifier<C: Contracts> {
-    contracts: C,
+    /// Behind an `Arc` because the processing loop runs detached: it must own what it reads,
+    /// and it outlives the `&self` borrow that started it.
+    contracts: std::sync::Arc<C>,
     mode: wc_core::error::Mode,
     /// Where `x-forwarded-client-cert` may be believed from. An empty configuration trusts
     /// nothing, which is `MeshTrust`'s deliberate default and the right one: "we forgot to
@@ -182,7 +196,7 @@ struct Verifier<C: Contracts> {
     /// Never from the request. A caller that could name its own callee could name one it holds a
     /// contract for while the traffic goes elsewhere, and the verifier would check the wrong
     /// service's contract.
-    routes: CalleeSource,
+    routes: std::sync::Arc<CalleeSource>,
 }
 
 #[tonic::async_trait]
@@ -222,82 +236,96 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
         let mut filter: Option<Filter> = None;
         let slot = std::sync::Arc::clone(&admitted_slot);
 
-        while let Some(msg) = inbound.next().await {
-            let msg = msg?;
-            // `msg.request` is consumed by the match below, and the attributes sit beside it.
-            let msg_attrs = ProcessingRequest {
-                attributes: msg.attributes.clone(),
-                ..Default::default()
-            };
-            let out = match msg.request {
-                Some(processing_request::Request::RequestHeaders(h)) => {
-                    // The callee is whatever route Envoy chose, looked up in the operator's
-                    // table. An unmapped route yields no callee, so no contract resolves and
-                    // the stream is refused — a route nobody mapped is not a route that is
-                    // exempt.
-                    let cluster = attribute(&msg_attrs, "xds.cluster_name");
-                    let route = attribute(&msg_attrs, "xds.route_name");
-                    let callee_id = self.routes.callee(cluster.as_deref(), route.as_deref());
-                    let caller = resolve_caller(&h, &mesh, &origin);
-                    let resolved = match (&callee_id, &caller) {
-                        (Some(cid), Some(_)) => {
-                            self.contracts.resolve(caller.as_deref(), cid.as_str())
+        // The processing loop MUST run detached, and the response stream must be returned to
+        // Envoy now. Returning it after draining the inbound stream — which is what this did
+        // first — means Envoy never receives a ProcessingResponse for the request phase, so it
+        // waits for a verdict that only arrives when the stream closes, times out and fails the
+        // request. Against the in-process test client it looked correct: that client sends a
+        // fixed set of messages and closes, which ends the loop and delivers everything at once.
+        // A real Envoy holds the stream open and this deadlocked every request.
+        let contracts = std::sync::Arc::clone(&self.contracts);
+        let routes = std::sync::Arc::clone(&self.routes);
+        tokio::spawn(async move {
+            while let Some(msg) = inbound.next().await {
+                // A transport error ends this stream. There is nothing to answer and nothing
+                // to answer on; Envoy sees the stream close and fails the request closed.
+                let Ok(msg) = msg else { break };
+                // `msg.request` is consumed by the match below, and the attributes sit beside it.
+                let msg_attrs = ProcessingRequest {
+                    attributes: msg.attributes.clone(),
+                    ..Default::default()
+                };
+                let out = match msg.request {
+                    Some(processing_request::Request::RequestHeaders(h)) => {
+                        // The callee is whatever route Envoy chose, looked up in the operator's
+                        // table. An unmapped route yields no callee, so no contract resolves and
+                        // the stream is refused — a route nobody mapped is not a route that is
+                        // exempt.
+                        let cluster = attribute(&msg_attrs, "xds.cluster_name");
+                        let route = attribute(&msg_attrs, "xds.route_name");
+                        let callee_id = routes.callee(cluster.as_deref(), route.as_deref());
+                        let caller = resolve_caller(&h, &mesh, &origin);
+                        let resolved = match (&callee_id, &caller) {
+                            (Some(cid), Some(_)) => {
+                                contracts.resolve(caller.as_deref(), cid.as_str())
+                            }
+                            _ => None,
+                        };
+                        let (admitted, contract) = match resolved {
+                            Some(r) => (Some(r.admitted), Some(r.contract)),
+                            None => (None, None),
+                        };
+                        *slot.lock().expect("slot") = admitted.clone();
+                        // With no callee there is nothing for gate 8 to bind a digest to, so the
+                        // filter is built with no contract and refuses the stream.
+                        let bound = callee_id.unwrap_or_else(placeholder_callee);
+                        filter = Some(Filter::new(
+                            admitted,
+                            contracts_mode,
+                            contract,
+                            bound,
+                            now(),
+                        ));
+                        cont_headers()
+                    }
+                    Some(processing_request::Request::RequestBody(b)) => {
+                        let f = filter.get_or_insert_with(|| {
+                            // No pin and no contract: this stream is refused outright.
+                            // No headers phase was sent. Configuring the filter to skip it and then
+                            // trusting the body is how a caller reaches the upstream with no identity
+                            // established at all, so this fails closed rather than assuming.
+                            Filter::new(None, contracts_mode, None, placeholder_callee(), now())
+                        });
+                        on_request_body(f, &b)
+                    }
+                    Some(processing_request::Request::ResponseHeaders(h)) => {
+                        let ct = header(&h, "content-type").unwrap_or_default().to_string();
+                        match filter.as_mut() {
+                            Some(f) => on_response_headers(f, &ct),
+                            None => immediate_refusal(
+                                wc_core::error::Code::NO_CONTRACT,
+                                "no request phase was observed for this stream",
+                            ),
                         }
-                        _ => None,
-                    };
-                    let (admitted, contract) = match resolved {
-                        Some(r) => (Some(r.admitted), Some(r.contract)),
-                        None => (None, None),
-                    };
-                    *slot.lock().expect("slot") = admitted.clone();
-                    // With no callee there is nothing for gate 8 to bind a digest to, so the
-                    // filter is built with no contract and refuses the stream.
-                    let bound = callee_id.unwrap_or_else(placeholder_callee);
-                    filter = Some(Filter::new(
-                        admitted,
-                        contracts_mode,
-                        contract,
-                        bound,
-                        now(),
-                    ));
-                    cont_headers()
-                }
-                Some(processing_request::Request::RequestBody(b)) => {
-                    let f = filter.get_or_insert_with(|| {
-                        // No pin and no contract: this stream is refused outright.
-                        // No headers phase was sent. Configuring the filter to skip it and then
-                        // trusting the body is how a caller reaches the upstream with no identity
-                        // established at all, so this fails closed rather than assuming.
-                        Filter::new(None, contracts_mode, None, placeholder_callee(), now())
-                    });
-                    on_request_body(f, &b)
-                }
-                Some(processing_request::Request::ResponseHeaders(h)) => {
-                    let ct = header(&h, "content-type").unwrap_or_default().to_string();
-                    match filter.as_mut() {
-                        Some(f) => on_response_headers(f, &ct),
+                    }
+                    Some(processing_request::Request::ResponseBody(b)) => match filter.as_mut() {
+                        Some(f) => on_response_body(f, &b),
                         None => immediate_refusal(
                             wc_core::error::Code::NO_CONTRACT,
                             "no request phase was observed for this stream",
                         ),
-                    }
+                    },
+                    // Trailers and anything this build does not know: continue without inspecting.
+                    // A trailer cannot carry a tool call, and refusing an unknown phase would deny
+                    // traffic on an Envoy newer than this binary.
+                    _ => ProcessingResponse::default(),
+                };
+                if tx.send(Ok(out)).await.is_err() {
+                    break;
                 }
-                Some(processing_request::Request::ResponseBody(b)) => match filter.as_mut() {
-                    Some(f) => on_response_body(f, &b),
-                    None => immediate_refusal(
-                        wc_core::error::Code::NO_CONTRACT,
-                        "no request phase was observed for this stream",
-                    ),
-                },
-                // Trailers and anything this build does not know: continue without inspecting.
-                // A trailer cannot carry a tool call, and refusing an unknown phase would deny
-                // traffic on an Envoy newer than this binary.
-                _ => ProcessingResponse::default(),
-            };
-            if tx.send(Ok(out)).await.is_err() {
-                break;
             }
-        }
+        });
+
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 }
@@ -353,10 +381,31 @@ fn on_response_headers(filter: &mut Filter, content_type: &str) -> ProcessingRes
     if let Some((code, detail)) = refusal {
         return immediate_refusal(code, detail);
     }
+    // When the body is going to be replaced, `content-length` must go with it. Envoy forwards
+    // the header it already has, so a rewritten catalogue — always a different length from the
+    // one the server sent — arrives truncated or padded and the client cannot parse it. Removing
+    // it makes Envoy fall back to chunked encoding and send what the filter actually produced.
+    //
+    // Found by the Envoy drill: gate 8 passed, which proved the body was being buffered and
+    // inspected, while the filtered catalogue came back unparseable. No amount of testing
+    // against a simulated proxy would have shown this.
+    let headers = if body_mode == BodySendMode::Buffered {
+        HeadersResponse {
+            response: Some(CommonResponse {
+                header_mutation: Some(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HeaderMutation {
+                        remove_headers: vec!["content-length".to_string()],
+                        ..Default::default()
+                    },
+                ),
+                ..Default::default()
+            }),
+        }
+    } else {
+        HeadersResponse::default()
+    };
     ProcessingResponse {
-        response: Some(processing_response::Response::ResponseHeaders(
-            HeadersResponse::default(),
-        )),
+        response: Some(processing_response::Response::ResponseHeaders(headers)),
         // Set here and nowhere else. An override sent from the body phase is silently ignored by
         // Envoy, so a filter that decided there would buffer nothing and filter nothing while
         // appearing to work.
@@ -585,9 +634,9 @@ fn run() -> Result<(Verifier<ContractSet>, std::net::SocketAddr), String> {
     let addr: std::net::SocketAddr = listen.parse().map_err(|e| format!("--listen: {e}"))?;
     Ok((
         Verifier {
-            contracts: set,
+            contracts: std::sync::Arc::new(set),
             mode,
-            routes,
+            routes: std::sync::Arc::new(routes),
             mesh_trust,
         },
         addr,
@@ -606,7 +655,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The route table is polled rather than watched: a filesystem notification API is another
     // dependency and another failure mode, and a table that lands a few seconds late is not a
     // safety property — an unmapped route denies until it is mapped.
-    if let CalleeSource::Table(r) = &verifier.routes {
+    if let CalleeSource::Table(r) = verifier.routes.as_ref() {
         let r = std::sync::Arc::clone(r);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -770,9 +819,11 @@ mod tests {
     /// Start a server on an ephemeral port; return its address.
     async fn serve(tools: &str) -> String {
         let v = Verifier {
-            contracts: one_contract(tools),
+            contracts: std::sync::Arc::new(one_contract(tools)),
             mode: wc_core::error::Mode::Enforce,
-            routes: CalleeSource::Single(wc_core::model::EntityId::new(CALLEE).unwrap()),
+            routes: std::sync::Arc::new(CalleeSource::Single(
+                wc_core::model::EntityId::new(CALLEE).unwrap(),
+            )),
             // Loopback TCP, which is the origin the test client connects from.
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
@@ -939,9 +990,11 @@ mod tests {
         // hold a contract; it arrives from an origin the operator did not configure, and must
         // be refused anyway — otherwise any process that can reach this port asserts any id.
         let v = Verifier {
-            contracts: one_contract("summarize_statement"),
+            contracts: std::sync::Arc::new(one_contract("summarize_statement")),
             mode: wc_core::error::Mode::Enforce,
-            routes: CalleeSource::Single(wc_core::model::EntityId::new(CALLEE).unwrap()),
+            routes: std::sync::Arc::new(CalleeSource::Single(
+                wc_core::model::EntityId::new(CALLEE).unwrap(),
+            )),
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 // Not the loopback the test client connects from.
@@ -976,9 +1029,11 @@ mod tests {
         // MeshTrust's deliberate default. A daemon started without --mesh-origin would refuse
         // everything, which is why that flag is required rather than optional.
         let v = Verifier {
-            contracts: one_contract("summarize_statement"),
+            contracts: std::sync::Arc::new(one_contract("summarize_statement")),
             mode: wc_core::error::Mode::Enforce,
-            routes: CalleeSource::Single(wc_core::model::EntityId::new(CALLEE).unwrap()),
+            routes: std::sync::Arc::new(CalleeSource::Single(
+                wc_core::model::EntityId::new(CALLEE).unwrap(),
+            )),
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 addrs: Vec::new(),
@@ -1045,9 +1100,11 @@ mod tests {
         let path = dir.join("routes.toml");
         std::fs::write(&path, table).unwrap();
         let v = Verifier {
-            contracts: one_contract(tools),
+            contracts: std::sync::Arc::new(one_contract(tools)),
             mode: wc_core::error::Mode::Enforce,
-            routes: CalleeSource::Table(std::sync::Arc::new(routes::Routes::load(&path).unwrap())),
+            routes: std::sync::Arc::new(CalleeSource::Table(std::sync::Arc::new(
+                routes::Routes::load(&path).unwrap(),
+            ))),
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 addrs: vec!["127.0.0.1".to_string()],
