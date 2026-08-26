@@ -35,10 +35,34 @@ Three rules govern everything below.
 |---|---|
 | Asymmetric signatures only | No HMAC anywhere. `ALG_NOT_ASYMMETRIC` (`WC-3101`) rejects at parse |
 | Locally-derived input may only narrow | The narrowing algebra in §8.7.1 is total; there is no widening operator |
-| No async runtime | Threads and blocking I/O. No `tokio`, no `async fn` in any crate |
+| No async runtime | Threads and blocking I/O. No `tokio`, no `async fn` in any **embeddable** crate — see below |
 | Dependency ceilings | `scripts/dep-count.sh` fails CI when a crate exceeds its budget |
 | Deterministic canonical form | `wc-core::canon` (`wcs1`), depth-bounded at 32 |
 | Errors carry codes, not prose | `WcError { code, detail, source }`; the code is the contract |
+
+### The async-runtime constraint, stated precisely
+
+The claim used to read "no `async fn` in any crate". That was true until the `ext_proc` verifier
+needed a gRPC server, and it is better narrowed deliberately than left quietly false.
+
+What the ban protects is one property: `wc-core` and its dependents are linked into processes
+this project does not own — warden's proxy under the `warden-proxy` feature, a provider's Python
+server through a PyO3 wheel, a gateway filter in someone's data path. A crate that brings its own
+runtime is unembeddable there, and inside a host that already has one it is a second runtime in
+the same process.
+
+| | Embeddable crates (`crates/*`) | Daemons (`daemon/*`) |
+|---|---|---|
+| Linked into a process it does not own | yes | no |
+| Owns its own `main` | no | yes |
+| Async runtime | **banned** — `deny.toml`, and `dep-count.sh` greps `cargo tree --workspace` | permitted |
+| Gated by | dependency ceilings + the ban list | its own `dep-count.sh` clause |
+
+`daemon/` is excluded from the workspace in the root `Cargo.toml`, which is what keeps
+`cargo tree --workspace` answering the question the ban is about. The boundary is asserted from
+the daemon's side: `dep-count.sh` runs `cargo tree --invert tokio` against each daemon and fails
+if any `warden-connect-*` crate appears, which is the signal that a runtime has crossed back into
+the embeddable surface. Verified by adding `tokio` to `wc-gateway` and watching both clauses fire.
 
 ---
 
