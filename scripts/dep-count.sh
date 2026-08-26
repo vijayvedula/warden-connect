@@ -33,6 +33,11 @@ check() {
 check warden-connect-core      85
 check warden-connect-control  115
 check warden-connect-mediator 116
+# The gateway decision core. Sync and transport-free ON PURPOSE: §8.3 rules out an async
+# runtime for anything embeddable, and this crate is linked into a filter that runs in
+# somebody else's data path. The ext_proc daemon that drives it is a separate artifact with
+# its own gate — a ceiling here is what stops tokio arriving through this door.
+check warden-connect-gateway  117
 
 # The categories §8.3 rules out are enforced by deny.toml's ban list; this is the
 # belt-and-braces version for anything that arrives transitively under a new name.
