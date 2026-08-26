@@ -44,6 +44,16 @@ pub trait Contracts: Send + Sync + 'static {
 /// A contract set held in memory and refreshed by whatever installed it.
 pub struct ContractSet {
     cache: Arc<Cache>,
+    /// When the set was last known good, as a unix time.
+    ///
+    /// A verifier that keeps serving a cached set forever cannot be contained: `connect revoke`
+    /// lands in the control plane and never reaches here, and the only remaining containment is
+    /// contract expiry. So the age is tracked and [`ContractSet::stale`] refuses once it passes
+    /// the bound.
+    last_good: Arc<std::sync::atomic::AtomicU64>,
+    /// Seconds the set may go without a successful refresh before every call is refused.
+    /// Zero disables the bound, which is right only when there is no refresh source at all.
+    max_stale: u64,
     zones: Arc<dyn wc_core::contract::ZoneRule + Send + Sync>,
     mode: wc_core::error::Mode,
     now: fn() -> u64,
@@ -54,6 +64,13 @@ impl ContractSet {
     ///
     /// Verification happens here, once, not per request: a contract that does not verify is not
     /// in the snapshot at all, so the hot path cannot reach one.
+    ///
+    /// Eight parameters, which clippy dislikes and which is right here: every one is a distinct
+    /// authority — who the contracts must be addressed to, which plane they must come from,
+    /// which zone pairs are allowed, and how stale the set may get. Bundling them into a config
+    /// struct would hide that the caller has to decide all eight, and the value of the lint is
+    /// the reminder, not the count.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_artifacts(
         artifacts: &[String],
         trust: &mut KeySource,
@@ -62,6 +79,7 @@ impl ContractSet {
         zones: Arc<dyn wc_core::contract::ZoneRule + Send + Sync>,
         mode: wc_core::error::Mode,
         now: fn() -> u64,
+        max_stale: u64,
     ) -> Result<ContractSet, String> {
         let mediator_id = mediator_id.into();
         let issuer = issuer.into();
@@ -78,6 +96,8 @@ impl ContractSet {
         cache.install(snapshot);
         Ok(ContractSet {
             cache,
+            last_good: Arc::new(std::sync::atomic::AtomicU64::new(at)),
+            max_stale,
             zones,
             mode,
             now,
@@ -91,8 +111,48 @@ impl ContractSet {
     }
 }
 
+impl ContractSet {
+    /// The cache the refresh loop installs into.
+    #[must_use]
+    pub fn cache(&self) -> Arc<Cache> {
+        Arc::clone(&self.cache)
+    }
+
+    /// Record a successful refresh.
+    pub fn mark_fresh(&self, at: u64) {
+        self.last_good
+            .store(at, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether the set is too old to be trusted, and by how long.
+    ///
+    /// Checked on the resolve path rather than by the refresh loop, because the loop may not be
+    /// running at all — a thread that panicked would otherwise leave a permanently fresh set.
+    #[must_use]
+    pub fn stale(&self) -> Option<u64> {
+        if self.max_stale == 0 {
+            return None;
+        }
+        let last = self.last_good.load(std::sync::atomic::Ordering::SeqCst);
+        let age = (self.now)().saturating_sub(last);
+        (age > self.max_stale).then_some(age)
+    }
+}
+
 impl Contracts for ContractSet {
     fn resolve(&self, caller: Option<&str>, callee: &str) -> Option<Resolved> {
+        // A set nobody has been able to refresh is a set a revocation cannot reach. Refusing
+        // is the only honest answer: the alternative is admitting calls on a contract that may
+        // have been withdrawn an hour ago.
+        if let Some(age) = self.stale() {
+            eprintln!(
+                "wc-extproc: refusing every call — the contract set is {age}s old and the \
+                 staleness bound is {}s. A revocation cannot have reached this process.",
+                self.max_stale
+            );
+            return None;
+        }
+
         // No identity, no contract. This is the line that decides an unauthenticated caller is
         // not a permitted one, and it is first so nothing below can accidentally reach past it.
         //
@@ -151,8 +211,24 @@ mod tests {
     const CALLER: &str = "spiffe://org/ns/agents/sa/recon-bot";
     const CALLEE: &str = "spiffe://org/ns/tools/sa/payments-mcp";
 
+    use std::cell::Cell;
+
+    thread_local! {
+        /// A clock the tests can move. Staleness is a function of time, and a test that slept
+        /// for it would be slow and flaky in equal measure.
+        ///
+        /// THREAD-LOCAL, not a static: the harness runs these in parallel, and a shared clock
+        /// would let one test's time travel decide another test's staleness. Every set is built
+        /// and resolved on its own test's thread, so a per-thread clock is exact.
+        static CLOCK: Cell<u64> = const { Cell::new(T_NOW) };
+    }
+
     fn now() -> u64 {
-        T_NOW
+        CLOCK.with(Cell::get)
+    }
+
+    fn set_clock(v: u64) {
+        CLOCK.with(|c| c.set(v));
     }
 
     /// One signed artifact for (CALLER, CALLEE) contracting `get_balance`.
@@ -211,6 +287,24 @@ mod tests {
         .unwrap()
     }
 
+    fn set_with_bound(max_stale: u64) -> ContractSet {
+        set_clock(T_NOW);
+        let mut keys = c::IssuerKeys::new();
+        keys.add_ec_pem(KID, PUB, c::Algorithm::ES256).unwrap();
+        let mut trust = wc_mediator::jwks::KeySource::Pinned(keys);
+        ContractSet::from_artifacts(
+            &[artifact()],
+            &mut trust,
+            MED,
+            ISS,
+            Arc::new(wc_core::contract::AnyZone),
+            wc_core::error::Mode::Enforce,
+            now,
+            max_stale,
+        )
+        .expect("the set should build")
+    }
+
     fn set() -> ContractSet {
         let mut keys = c::IssuerKeys::new();
         keys.add_ec_pem(KID, PUB, c::Algorithm::ES256).unwrap();
@@ -223,6 +317,7 @@ mod tests {
             Arc::new(wc_core::contract::AnyZone),
             wc_core::error::Mode::Enforce,
             now,
+            0,
         )
         .expect("the set should build")
     }
@@ -273,6 +368,52 @@ mod tests {
     }
 
     #[test]
+    fn a_set_past_its_staleness_bound_refuses_every_call() {
+        // The control that makes withdrawal meaningful. A verifier serving a cached set forever
+        // cannot be contained: `connect revoke` lands in the control plane and never arrives.
+        let s = set_with_bound(60);
+        assert!(
+            s.resolve(Some(CALLER), CALLEE).is_some(),
+            "fresh set should resolve"
+        );
+
+        set_clock(T_NOW + 61);
+        assert!(
+            s.resolve(Some(CALLER), CALLEE).is_none(),
+            "a set older than its bound still admitted a call"
+        );
+
+        // A successful refresh clears it.
+        s.mark_fresh(T_NOW + 61);
+        assert!(
+            s.resolve(Some(CALLER), CALLEE).is_some(),
+            "marking the set fresh did not clear the refusal"
+        );
+        set_clock(T_NOW);
+    }
+
+    #[test]
+    fn a_bound_of_zero_never_goes_stale() {
+        // Disk-only mode: the set is immutable and its containment is contract expiry. A bound
+        // would refuse a correctly-configured air-gapped deployment.
+        let s = set_with_bound(0);
+        set_clock(T_NOW + 10_000_000);
+        assert!(s.resolve(Some(CALLER), CALLEE).is_some());
+        assert_eq!(s.stale(), None);
+        set_clock(T_NOW);
+    }
+
+    #[test]
+    fn staleness_is_checked_on_the_resolve_path_not_by_a_timer() {
+        // If a refresh thread panicked, a timer-driven check would stop running and the set
+        // would look permanently fresh. Asking on resolve cannot be skipped that way.
+        let s = set_with_bound(30);
+        set_clock(T_NOW + 31);
+        assert_eq!(s.stale(), Some(31));
+        set_clock(T_NOW);
+    }
+
+    #[test]
     fn an_artifact_for_a_different_mediator_does_not_verify() {
         // aud is a boundary, not decoration.
         let mut keys = c::IssuerKeys::new();
@@ -286,6 +427,7 @@ mod tests {
             Arc::new(wc_core::contract::AnyZone),
             wc_core::error::Mode::Enforce,
             now,
+            0,
         )
         .unwrap();
         assert_eq!(s.len(), 0, "a contract addressed elsewhere was installed");
@@ -304,6 +446,7 @@ mod tests {
             Arc::new(wc_core::contract::AnyZone),
             wc_core::error::Mode::Enforce,
             now,
+            0,
         )
         .unwrap();
         assert_eq!(s.len(), 0, "a contract from another plane was installed");

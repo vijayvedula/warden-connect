@@ -471,12 +471,30 @@ USAGE
   --issuer-id URL      the control plane it obeys; must equal each contract's iss
   --issuer-pub PEM     the contract issuer's public key
   --kid KID            the key id it is registered under
-  --contract FILE      a contract artifact to load (repeatable)
+  --contract FILE      a contract artifact to load (repeatable); the air-gapped
+                       alternative to --contracts
+  --contracts URL      control plane to pull the contract set from
+  --token TOKEN        bearer token with the connect.mediator role
+  --refresh N          seconds between pulls (default: 5)
+  --max-stale N        seconds the set may go without a SUCCESSFUL refresh before
+                       every call is refused (default: 3600; only with --contracts).
+                       A verifier that serves a cached set forever cannot be
+                       contained: a withdrawal lands in the control plane and never
+                       reaches here, so refusing is the only honest answer once the
+                       set is too old to vouch for
   --mesh-origin PATH   the unix socket Envoy connects from, if XFCC is only to be
                        believed from there. Omit only when Envoy is on loopback and
                        nothing else can reach this port
   --any-zone           permit any zone pair (observe deployments only)
   --observe            record findings instead of denying
+
+REFRESH, WITHDRAWAL AND THE DEPLOY GATE
+  With --contracts the set is re-pulled on --refresh and the acknowledgement goes to
+  the same endpoint a mediator uses, so `connect distribution` sees this verifier
+  once its --mediator-id is in the mediators file. Only a CLEAN refresh counts as
+  fresh: a partial one leaves this process holding a set the control plane did not
+  fully hand over, and treating that as current is how a withdrawn contract keeps
+  working. A withdrawn contract is simply absent from the next set.
 
 THE PIN, AND WHAT THIS DOES NOT YET DO
   Gate 8 compares the callee's presented surface against the digest the contract
@@ -519,7 +537,23 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-fn run() -> Result<(Verifier<ContractSet>, std::net::SocketAddr), String> {
+/// Everything `main` needs to start serving.
+struct Started {
+    verifier: Verifier<ContractSet>,
+    addr: std::net::SocketAddr,
+    /// Where to pull contracts from, if anywhere.
+    pull_from: Option<String>,
+    pull_token: String,
+    refresh_secs: u64,
+    /// The trust the refresh loop verifies with. It MOVES into the loop rather than being
+    /// rebuilt from the PEM there: a rebuilt copy would refresh contracts every tick against
+    /// keys that never rotate, so `--jwks-url` would look configured and never arrive.
+    refresh_trust: wc_mediator::jwks::KeySource,
+    mediator_id: String,
+    issuer_id: String,
+}
+
+fn run() -> Result<Started, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{}", usage());
@@ -586,6 +620,16 @@ fn run() -> Result<(Verifier<ContractSet>, std::net::SocketAddr), String> {
             std::sync::Arc::new(wc_core::contract::SameTrustLevel)
         };
 
+    // A pull source makes staleness meaningful; without one the set is immutable and its only
+    // containment is contract expiry, so the bound is off and a warning says so.
+    let pulling = flag(&args, "contracts").is_some();
+    let max_stale: u64 = if pulling {
+        flag(&args, "max-stale")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600)
+    } else {
+        0
+    };
     let set = ContractSet::from_artifacts(
         &artifacts,
         &mut trust,
@@ -594,9 +638,10 @@ fn run() -> Result<(Verifier<ContractSet>, std::net::SocketAddr), String> {
         zones,
         mode,
         now,
+        max_stale,
     )?;
     let loaded = set.len();
-    if loaded == 0 {
+    if loaded == 0 && !artifacts.is_empty() {
         return Err(format!(
             "{} contract artifact(s) were read and none verified against kid {kid}; \
              check --mediator-id matches their aud and --issuer-id their iss",
@@ -632,26 +677,122 @@ fn run() -> Result<(Verifier<ContractSet>, std::net::SocketAddr), String> {
     );
 
     let addr: std::net::SocketAddr = listen.parse().map_err(|e| format!("--listen: {e}"))?;
-    Ok((
-        Verifier {
+    let pull_from = flag(&args, "contracts");
+    let pull_token = match (&pull_from, flag(&args, "token")) {
+        (Some(_), Some(t)) => t,
+        (Some(_), None) => return Err("--contracts requires --token".to_string()),
+        (None, Some(_)) => return Err("--token is only used with --contracts".to_string()),
+        (None, None) => String::new(),
+    };
+    let refresh_secs: u64 = flag(&args, "refresh")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+
+    Ok(Started {
+        verifier: Verifier {
             contracts: std::sync::Arc::new(set),
             mode,
             routes: std::sync::Arc::new(routes),
             mesh_trust,
         },
         addr,
-    ))
+        pull_from,
+        pull_token,
+        refresh_secs,
+        refresh_trust: trust,
+        mediator_id,
+        issuer_id,
+    })
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (verifier, addr) = match run() {
+    let Started {
+        verifier,
+        addr,
+        pull_from,
+        pull_token,
+        refresh_secs,
+        refresh_trust,
+        mediator_id,
+        issuer_id,
+    } = match run() {
         Ok(v) => v,
         Err(why) => {
             eprintln!("wc-extproc: {why}");
             std::process::exit(1);
         }
     };
+    // --- the refresh loop -----------------------------------------------------------------
+    // A plain thread, not a tokio task: `ControlPlaneClient` is blocking (ureq), and putting a
+    // blocking pull on the async runtime would stall the reactor that is answering Envoy.
+    if let Some(url) = pull_from {
+        let client = wc_mediator::client::ControlPlaneClient::new(&url, &mediator_id, &pull_token);
+        let cache = verifier.contracts.cache();
+        let set = std::sync::Arc::clone(&verifier.contracts);
+        let (med, iss) = (mediator_id.clone(), issuer_id.clone());
+        std::thread::spawn(move || {
+            let mut trust = refresh_trust;
+            let mut seq = 0u64;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(refresh_secs));
+                let at = now();
+                let (keys, key_failure) = trust.keys(at);
+                if let Some(e) = key_failure {
+                    eprintln!("wc-extproc: issuer key set refresh failed: {e}");
+                }
+                let keys = match keys {
+                    // Contracts are not pulled in this state: pulling them would mean verifying
+                    // against a trust set this process has already decided it cannot vouch for.
+                    // The staleness bound is what eventually turns this into a refusal.
+                    Err(e) => {
+                        eprintln!("wc-extproc: not refreshing contracts — {e}");
+                        continue;
+                    }
+                    Ok(keys) => keys,
+                };
+                let trusted = wc_mediator::cache::Trust {
+                    keys,
+                    mediator_id: &med,
+                    issuer: &iss,
+                };
+                match wc_mediator::client::refresh(&client, &cache, &trusted, seq, at) {
+                    Ok(report) => {
+                        seq = report.seq;
+                        // Only a clean refresh counts as fresh. A partial one leaves this
+                        // process holding a set the control plane did not fully hand over, and
+                        // treating that as current is how a withdrawn contract keeps working.
+                        if report.is_clean() {
+                            set.mark_fresh(at);
+                        } else {
+                            eprintln!(
+                                "wc-extproc: refresh not clean — {} missing, {} rejected, \
+                                 acked={}; the set is NOT marked fresh",
+                                report.missing.len(),
+                                report.rejected.len(),
+                                report.acked
+                            );
+                        }
+                        if !report.removed.is_empty() {
+                            eprintln!(
+                                "wc-extproc: {} contract(s) withdrawn by the control plane",
+                                report.removed.len()
+                            );
+                        }
+                    }
+                    Err(e) => eprintln!("wc-extproc: refresh failed, keeping last set: {e}"),
+                }
+            }
+        });
+    } else {
+        // The same warning `connect-mediate` prints, for the same reason: with no pull source a
+        // quarantine cannot reach this process and containment is contract expiry alone.
+        eprintln!(
+            "wc-extproc: WARNING no --contracts, so contracts came from disk and a withdrawal \
+             cannot reach this process. Containment here is contract expiry only"
+        );
+    }
+
     // The route table is polled rather than watched: a filesystem notification API is another
     // dependency and another failure mode, and a table that lands a few seconds late is not a
     // safety property — an unmapped route denies until it is mapped.
