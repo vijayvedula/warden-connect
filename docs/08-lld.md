@@ -436,8 +436,21 @@ than the implementation.
 | Ceiling | Code | Inline mediator | Gateway (E5) |
 |---|---|---|---|
 | rate | `WC-4003` | enforced | enforced |
-| concurrency | `WC-4005` | **not wired** — `Ceilings::enter` has no caller | enforced, slot held for the stream |
+| concurrency | `WC-4005` | enforced, but only the **zero** case can fire — see below | enforced at any value, slot held for the stream |
 | spend | `WC-4004` | **not wired** | **not enforceable** |
+
+**Why concurrency is nearly inert inline.** In-flight calls through one
+`MediatedUpstream` are structurally at most one: `Upstream::request` takes
+`&mut self`, `standalone_loop` is single-threaded, and warden's gateway holds its
+upstream in a `Mutex<Box<dyn Upstream + Send>>`. So a ceiling of 2, or 200, can
+never be reached on that path.
+
+It is wired anyway for the value that *can* be reached. The narrowing algebra
+takes the `min` of both sides, so either party can drive `max_concurrent` to 0
+and mean it — a way to suspend a connection without revoking it. The gateway
+refused that; the inline path forwarded it. Same contract, two answers, and
+conformance vectors do not catch it because they cover the checks and not the
+terms.
 
 Spend is not a wiring gap. `Ceilings::charge` needs an amount, and nothing in the
 data plane produces one: an MCP response carries no cost, and the mediator has no

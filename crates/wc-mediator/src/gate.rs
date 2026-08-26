@@ -720,6 +720,29 @@ impl MediatedUpstream {
             return self.tool_denial(req, e.code(), e.detail());
         }
 
+        // Concurrency (`WC-4005`), held across the upstream call and released when this scope
+        // ends. On THIS path the in-flight count is structurally at most one: `Upstream::request`
+        // takes `&mut self`, the standalone loop is single-threaded, and warden's gateway holds
+        // its upstream behind a `Mutex` — so a ceiling of 2 or 200 can never be reached here and
+        // this check exists for the value that CAN be: zero. The narrowing algebra takes the
+        // `min` of both sides, so a provider or a consumer can drive `max_concurrent` to 0 and
+        // mean it, and until now the inline path ignored that while the gateway refused it.
+        // Same contract, two answers, which is the divergence conformance vectors do not cover
+        // because they cover the checks and not the terms.
+        //
+        // One consequence worth stating: because nothing here can be concurrent, whether the
+        // slot is HELD across the call or dropped immediately is unobservable on this path, and
+        // no test here can tell the two apart — mutating it to drop early survives, correctly.
+        // It is held because that is what the ceiling means and because this path may not always
+        // be serial; the hold is covered where it can be, in the gateway filter.
+        let _slot = match self.ceilings.enter(&admitted.terms) {
+            Ok(slot) => slot,
+            Err(e) => {
+                self.log.denials.push((tool.clone(), e.code()));
+                return self.tool_denial(req, e.code(), e.detail());
+            }
+        };
+
         // The allow path. Timed around the upstream call so `latency_us` is the cost of
         // the whole mediated hop, which is the number §7.10's per-call budget is about.
         let started = std::time::Instant::now();
