@@ -18,10 +18,11 @@
 //! Envoy must be configured with `failure_mode_allow: false`. If this process is unreachable the
 //! traffic is denied, which is the only safe reading of "the verifier is not there".
 
-mod xfcc;
+mod contracts;
 
 use std::pin::Pin;
 
+use contracts::{ContractSet, Contracts};
 use envoy_types::pb::envoy::r#type::v3::HttpStatus;
 use envoy_types::pb::envoy::service::ext_proc::v3::{
     external_processor_server::{ExternalProcessor, ExternalProcessorServer},
@@ -31,6 +32,32 @@ use envoy_types::pb::envoy::service::ext_proc::v3::{
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{transport::Server, Request, Response, Status, Streaming};
 use warden_connect_gateway::{BodyAction, BodyMode, Filter, Verdict};
+
+/// The caller's SPIFFE id, or `None` when identity could not be established.
+///
+/// Delegated to `wc_mediator::peer` rather than parsed here. An earlier version of this file
+/// read the XFCC header directly: it parsed the identity correctly and never checked which
+/// origin the header arrived from, which is the half that makes it believable. A second
+/// implementation of identity is also exactly the divergence this component exists to avoid.
+fn resolve_caller(
+    h: &HttpHeaders,
+    trust: &wc_mediator::peer::MeshTrust,
+    origin: &wc_mediator::peer::Origin,
+) -> Option<String> {
+    let xfcc = header(h, "x-forwarded-client-cert")?;
+    // `resolve` needs a callee to build a `Peer`; only the caller half is read back, and the
+    // real callee is configuration held on the Verifier.
+    let callee = wc_core::model::EntityId::new("spiffe://placeholder/ns/x/sa/callee").ok()?;
+    let source = wc_mediator::peer::PeerSource::Mesh {
+        trust: trust.clone(),
+        callee,
+    };
+    let presented = wc_mediator::peer::Presented::mesh(xfcc, origin.clone());
+    source
+        .resolve(&presented)
+        .ok()
+        .map(|p| p.identity.caller.as_str().to_string())
+}
 
 /// Header lookup, case-insensitive, over Envoy's header map.
 fn header<'a>(h: &'a HttpHeaders, name: &str) -> Option<&'a str> {
@@ -91,20 +118,13 @@ fn cont_headers() -> ProcessingResponse {
     }
 }
 
-/// Where a contract for this stream comes from.
-///
-/// Increment 2 loads one admitted connection from configuration so the phase loop can be
-/// exercised end to end. The real source is a per-cluster contract set pulled by `client.rs`,
-/// keyed on (caller, callee) — that is the next increment, and it changes this trait's
-/// implementation and nothing else in this file.
-trait Contracts: Send + Sync + 'static {
-    /// The admitted connection for this caller and callee, if there is one.
-    fn resolve(&self, caller: Option<&str>, callee: &str) -> Option<wc_core::contract::Admitted>;
-}
-
 struct Verifier<C: Contracts> {
     contracts: C,
     mode: wc_core::error::Mode,
+    /// Where `x-forwarded-client-cert` may be believed from. An empty configuration trusts
+    /// nothing, which is `MeshTrust`'s deliberate default and the right one: "we forgot to
+    /// configure it" must not look identical to "it is configured".
+    mesh_trust: wc_mediator::peer::MeshTrust,
     /// The callee this listener fronts. Taken from configuration, never from the request: a
     /// caller that could name its own callee could pick a contract it was not given.
     callee: String,
@@ -119,11 +139,33 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
         &self,
         request: Request<Streaming<ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
+        // The origin of the gRPC connection Envoy made to this process. `PeerSource::Mesh`
+        // refuses an XFCC header that did not arrive from the configured origin, which is the
+        // half of mesh identity that makes it authentication rather than a request field.
+        //
+        // The PORT is dropped deliberately. `MeshTrust` compares the origin string exactly, and
+        // a client's source port is ephemeral — so keeping it would mean no configured TCP
+        // origin could ever match, and mesh trust would refuse every request while looking
+        // configured. The origin of a connection is the peer host; the source port is not an
+        // identity. For a UDS deployment the origin is the socket path, which is stable.
+        let origin = match request.remote_addr() {
+            Some(a) => wc_mediator::peer::Origin::Tcp {
+                addr: a.ip().to_string(),
+            },
+            None => wc_mediator::peer::Origin::Stdio,
+        };
         let mut inbound = request.into_inner();
         let (tx, rx) = tokio::sync::mpsc::channel(8);
 
         let contracts_mode = self.mode;
         let callee = self.callee.clone();
+        let mesh = self.mesh_trust.clone();
+        // The callee the pin is bound to. From configuration, so a caller cannot name it.
+        let callee_id = match wc_core::model::EntityId::new(&callee) {
+            Ok(id) => id,
+            Err(_) => return Err(Status::internal("--callee is not a valid entity id")),
+        };
+
         // One admitted connection resolved per stream. Peer identity arrives on the header
         // phase, so the resolve happens there rather than here.
         let resolve = |caller: Option<&str>| self.contracts.resolve(caller, &callee);
@@ -138,19 +180,29 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
             let msg = msg?;
             let out = match msg.request {
                 Some(processing_request::Request::RequestHeaders(h)) => {
-                    let caller =
-                        header(&h, "x-forwarded-client-cert").and_then(xfcc::spiffe_from_xfcc);
-                    let admitted = resolve(caller.as_deref());
+                    let caller = resolve_caller(&h, &mesh, &origin);
+                    let resolved = resolve(caller.as_deref());
+                    let (admitted, contract) = match resolved {
+                        Some(r) => (Some(r.admitted), Some(r.contract)),
+                        None => (None, None),
+                    };
                     *slot.lock().expect("slot") = admitted.clone();
-                    filter = Some(Filter::new(admitted, contracts_mode));
+                    filter = Some(Filter::new(
+                        admitted,
+                        contracts_mode,
+                        contract,
+                        callee_id.clone(),
+                        now(),
+                    ));
                     cont_headers()
                 }
                 Some(processing_request::Request::RequestBody(b)) => {
                     let f = filter.get_or_insert_with(|| {
+                        // No pin and no contract: this stream is refused outright.
                         // No headers phase was sent. Configuring the filter to skip it and then
                         // trusting the body is how a caller reaches the upstream with no identity
                         // established at all, so this fails closed rather than assuming.
-                        Filter::new(None, contracts_mode)
+                        Filter::new(None, contracts_mode, None, callee_id.clone(), now())
                     });
                     on_request_body(f, &b)
                 }
@@ -283,45 +335,45 @@ fn on_response_body(filter: &mut Filter, body: &HttpBody) -> ProcessingResponse 
     }
 }
 
-/// A single admitted connection, from configuration.
-///
-/// The stand-in for the per-cluster contract set, so the phase loop can be run against a real
-/// Envoy before the puller exists. It resolves for one caller and refuses every other, which is
-/// the correct shape: a caller with no contract gets nothing.
-struct OneContract {
-    caller: String,
-    admitted: wc_core::contract::Admitted,
-}
-
-impl Contracts for OneContract {
-    fn resolve(&self, caller: Option<&str>, _callee: &str) -> Option<wc_core::contract::Admitted> {
-        // Absent identity resolves to nothing. This is the line that decides an unauthenticated
-        // caller is not a permitted one.
-        match caller {
-            Some(c) if c == self.caller => Some(self.admitted.clone()),
-            _ => None,
-        }
-    }
-}
-
 fn usage() -> &'static str {
     "\
 wc-extproc — the warden-connect Envoy ext_proc verifier
 
 USAGE
-  wc-extproc --listen ADDR --callee SPIFFE_ID --caller SPIFFE_ID --tools a,b [--observe]
+  wc-extproc --listen ADDR --callee SPIFFE_ID --mediator-id ID --issuer-id URL \\
+             (--issuer-pub PEM --kid KID) --contract FILE [--contract FILE ...]
 
-  --listen ADDR      where to serve gRPC, e.g. 127.0.0.1:9002 or unix:/run/wc.sock
-  --callee SPIFFE_ID the party this listener fronts, from configuration
-  --caller SPIFFE_ID the caller this build admits (stand-in for the contract set)
-  --tools a,b        the contracted surface for that caller
-  --observe          record findings instead of denying
+  --listen ADDR        where to serve gRPC, e.g. 127.0.0.1:9002
+  --callee SPIFFE_ID   the party this listener fronts. From CONFIGURATION, never from
+                       the request: a caller that could name its own callee could pick
+                       a contract it was not given
+  --mediator-id ID     this verifier's id; must equal each contract's aud
+  --issuer-id URL      the control plane it obeys; must equal each contract's iss
+  --issuer-pub PEM     the contract issuer's public key
+  --kid KID            the key id it is registered under
+  --contract FILE      a contract artifact to load (repeatable)
+  --mesh-origin PATH   the unix socket Envoy connects from, if XFCC is only to be
+                       believed from there. Omit only when Envoy is on loopback and
+                       nothing else can reach this port
+  --any-zone           permit any zone pair (observe deployments only)
+  --observe            record findings instead of denying
+
+THE PIN, AND WHAT THIS DOES NOT YET DO
+  Gate 8 compares the callee's presented surface against the digest the contract
+  pinned. This filter runs it whenever a `tools/list` response passes, and refuses
+  the catalogue on a mismatch (WC-3108).
+  What it does NOT do is check the pin on a stream that carries no catalogue. A
+  client that calls `tools/call` without ever calling `tools/list` is not pinned on
+  that request. The mediator closes this by fetching a catalogue itself; a filter
+  cannot fetch anything, so closing it here needs per-SESSION state keyed on
+  Mcp-Session-Id, which is not built. Everything else still applies on those
+  streams: the surface ceiling, the ceilings and revocation.
 
 ENVOY MUST BE CONFIGURED WITH
   failure_mode_allow: false     this process being unreachable has to deny, not allow
-  allow_mode_override: true     without it the catalogue is never buffered and never filtered
+  allow_mode_override: true     without it the catalogue is never buffered or filtered
   request_body_mode: BUFFERED   the tool name is in the body
-  and the filter scoped to MCP routes only, or every body in the mesh is buffered and parsed."
+  and the filter scoped to MCP routes only, or every body in the mesh is buffered."
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {
@@ -338,51 +390,129 @@ fn flag(args: &[String], name: &str) -> Option<String> {
     None
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn run() -> Result<(Verifier<ContractSet>, std::net::SocketAddr), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{}", usage());
-        return Ok(());
+        std::process::exit(0);
     }
 
     let listen = flag(&args, "listen").ok_or("--listen is required")?;
     let callee = flag(&args, "callee").ok_or("--callee is required")?;
-    let caller = flag(&args, "caller").ok_or("--caller is required")?;
-    let tools = flag(&args, "tools").ok_or("--tools is required")?;
+    let mediator_id = flag(&args, "mediator-id").ok_or("--mediator-id is required")?;
+    let issuer_id = flag(&args, "issuer-id").ok_or("--issuer-id is required")?;
+    let pem = flag(&args, "issuer-pub").ok_or("--issuer-pub is required")?;
+    let kid = flag(&args, "kid").ok_or("--kid is required")?;
+
     let mode = if args.iter().any(|a| a == "--observe") {
         wc_core::error::Mode::Observe
     } else {
         wc_core::error::Mode::Enforce
     };
+    let artifacts: Vec<String> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| *a == "--contract")
+        .filter_map(|(i, _)| args.get(i + 1))
+        .map(|p| std::fs::read_to_string(p).map(|t| t.trim().to_string()))
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|e| format!("read contract: {e}"))?;
+    if artifacts.is_empty() {
+        // Starting with no contract source means denying everything while looking healthy,
+        // which is the failure that takes longest to diagnose.
+        return Err(
+            "--contract is required; with no contract set this verifier denies \
+                    every call while appearing to run"
+                .to_string(),
+        );
+    }
 
-    let admitted = wc_core::contract::Admitted {
-        cid: wc_core::model::Cid::new("conn_0000dead")?,
-        jti: wc_core::model::Jti::new("jti_0000dead")?,
-        items: tools.split(',').map(|s| s.trim().to_string()).collect(),
-        resources: Vec::new(),
-        terms: wc_core::contract::Terms::default(),
-        exp: u64::MAX,
-        findings: Vec::new(),
-    };
+    let pem_bytes = std::fs::read(&pem).map_err(|e| format!("read issuer key: {e}"))?;
+    let mut keys = wc_core::contract::IssuerKeys::new();
+    keys.add_ec_pem(&kid, &pem_bytes, wc_core::contract::Algorithm::ES256)
+        .map_err(|e| format!("issuer key: {e}"))?;
+    let mut trust = wc_mediator::jwks::KeySource::Pinned(keys);
 
-    let verifier = Verifier {
-        contracts: OneContract {
-            caller: caller.clone(),
-            admitted,
-        },
+    let zones: std::sync::Arc<dyn wc_core::contract::ZoneRule + Send + Sync> =
+        if args.iter().any(|a| a == "--any-zone") {
+            std::sync::Arc::new(wc_core::contract::AnyZone)
+        } else {
+            std::sync::Arc::new(wc_core::contract::SameTrustLevel)
+        };
+
+    let set = ContractSet::from_artifacts(
+        &artifacts,
+        &mut trust,
+        &mediator_id,
+        &issuer_id,
+        zones,
         mode,
-        callee: callee.clone(),
+        now,
+    )?;
+    let loaded = set.len();
+    if loaded == 0 {
+        return Err(format!(
+            "{} contract artifact(s) were read and none verified against kid {kid}; \
+             check --mediator-id matches their aud and --issuer-id their iss",
+            artifacts.len()
+        ));
+    }
+
+    // Required, not optional. An unset `MeshTrust` accepts NO origin, so a daemon started
+    // without this refuses every request — and a flag whose absence silently denies everything
+    // is worse than one that refuses to start.
+    let mesh_origin = flag(&args, "mesh-origin").ok_or(
+        "--mesh-origin is required: an unconfigured mesh trust believes no \
+         x-forwarded-client-cert from any origin, so every request would be refused",
+    )?;
+    let mesh_trust = if mesh_origin.starts_with('/') {
+        wc_mediator::peer::MeshTrust::socket(mesh_origin.clone())
+    } else {
+        wc_mediator::peer::MeshTrust {
+            socket: None,
+            addrs: vec![mesh_origin.clone()],
+        }
     };
 
-    eprintln!("wc-extproc: serving ext_proc on {listen}");
-    eprintln!("wc-extproc: fronting {callee}, admitting {caller} for [{tools}] ({mode:?})");
+    eprintln!(
+        "wc-extproc: {loaded} contract(s) verified, {} read",
+        artifacts.len()
+    );
+    eprintln!("wc-extproc: fronting {callee} as {mediator_id}, issuer {issuer_id} ({mode:?})");
+    eprintln!("wc-extproc: XFCC believed only from {mesh_origin}");
     eprintln!(
         "wc-extproc: Envoy must set failure_mode_allow=false and allow_mode_override=true; \
          without the second, catalogues are never filtered"
     );
 
-    let addr: std::net::SocketAddr = listen.parse()?;
+    let addr: std::net::SocketAddr = listen.parse().map_err(|e| format!("--listen: {e}"))?;
+    Ok((
+        Verifier {
+            contracts: set,
+            mode,
+            callee,
+            mesh_trust,
+        },
+        addr,
+    ))
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (verifier, addr) = match run() {
+        Ok(v) => v,
+        Err(why) => {
+            eprintln!("wc-extproc: {why}");
+            std::process::exit(1);
+        }
+    };
+    eprintln!("wc-extproc: serving ext_proc on {addr}");
     Server::builder()
         .add_service(ExternalProcessorServer::new(verifier))
         .serve(addr)
@@ -402,24 +532,136 @@ mod tests {
     use envoy_types::pb::envoy::extensions::filters::http::ext_proc::v3::processing_mode::BodySendMode;
     use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_client::ExternalProcessorClient;
 
-    /// Start a server on an ephemeral port; return its address.
-    async fn serve(tools: &str) -> String {
+    const PRIV: &[u8] = include_bytes!("../../../fixtures/keys/test_issuer_es256_priv.pem");
+    const PUB: &[u8] = include_bytes!("../../../fixtures/keys/test_issuer_es256_pub.pem");
+    const KID: &str = "wc-test-es256";
+    const MED: &str = "warden:mediator:extproc-test";
+    const ISS: &str = "https://connect.internal";
+    const T_NOW: u64 = 1_800_000_000;
+    const CALLER: &str = "spiffe://org/ns/agents/sa/recon-bot";
+    const CALLEE: &str = "spiffe://org/ns/tools/sa/payments-mcp";
+
+    /// One real contract, resolved for one caller. A minted-and-verified artifact rather than a
+    /// hand-built `Admitted`, so gate 8 has something to compare against and the phase loop is
+    /// driven by the same objects production uses.
+    struct OneContract {
+        caller: String,
+        resolved: std::sync::Arc<wc_core::contract::VerifiedContract>,
+        admitted: wc_core::contract::Admitted,
+    }
+
+    impl Contracts for OneContract {
+        fn resolve(&self, caller: Option<&str>, _callee: &str) -> Option<contracts::Resolved> {
+            match caller {
+                Some(c) if c == self.caller => Some(contracts::Resolved {
+                    admitted: self.admitted.clone(),
+                    contract: std::sync::Arc::clone(&self.resolved),
+                }),
+                _ => None,
+            }
+        }
+    }
+
+    /// The catalogue the stub callee presents, and what a contract pins against.
+    fn served() -> serde_json::Value {
+        serde_json::json!({"tools":[
+            {"name":"summarize_statement","description":"a"},
+            {"name":"initiate_payment","description":"b"}
+        ]})
+    }
+
+    fn one_contract(tools: &str) -> OneContract {
+        use wc_core::contract as c;
+        let callee = wc_core::model::EntityId::new(CALLEE).unwrap();
+        let pin = wc_core::canon::pin(
+            wc_core::canon::SurfaceKind::McpTools,
+            &callee,
+            &served(),
+            &wc_core::canon::Limits::default(),
+            T_NOW,
+        )
+        .unwrap();
+        let surface = c::Surface {
+            tools: tools.split(',').map(|s| s.to_string()).collect(),
+            skills: Vec::new(),
+            resources: Vec::new(),
+        };
+        let digest = pin.surface_digest(&surface.items()).unwrap();
+        let mut payload = c::ContractPayload::new(
+            wc_core::model::Cid::new("conn_7f3a91c4").unwrap(),
+            wc_core::model::Jti::new("cx_84be0011").unwrap(),
+            ISS,
+            MED,
+            c::Party {
+                id: wc_core::model::EntityId::new(CALLER).unwrap(),
+                zone: wc_core::model::ZoneId::new("internal.ops").unwrap(),
+                tier: wc_core::model::Tier::TWO,
+                card: None,
+                manifest: None,
+                surface_digest: None,
+            },
+            c::Party {
+                id: callee,
+                zone: wc_core::model::ZoneId::new("internal.payments").unwrap(),
+                tier: wc_core::model::Tier::TWO,
+                card: None,
+                manifest: Some(pin.manifest.clone()),
+                surface_digest: Some(digest),
+            },
+        );
+        payload.iat = T_NOW - 100;
+        payload.nbf = T_NOW - 100;
+        payload.exp = T_NOW + 3_600;
+        payload.surface = surface;
+        payload.terms = c::Terms::default();
+        payload.assurance = c::Assurance::default();
+
+        let jws = c::mint(
+            &payload,
+            &c::IssuerKey::ec_pem(KID, PRIV, c::Algorithm::ES256).unwrap(),
+        )
+        .unwrap();
+        let mut keys = c::IssuerKeys::new();
+        keys.add_ec_pem(KID, PUB, c::Algorithm::ES256).unwrap();
+        let verified = c::verify_artifact(
+            &jws,
+            &c::VerifyOpts {
+                keys: &keys,
+                mediator_id: MED,
+                expected_iss: Some(ISS),
+                now: T_NOW,
+                leeway: 0,
+                revoked: &c::NoRevocations,
+            },
+        )
+        .unwrap();
         let admitted = wc_core::contract::Admitted {
-            cid: wc_core::model::Cid::new("conn_0000dead").unwrap(),
-            jti: wc_core::model::Jti::new("jti_0000dead").unwrap(),
+            cid: wc_core::model::Cid::new("conn_7f3a91c4").unwrap(),
+            jti: wc_core::model::Jti::new("cx_84be0011").unwrap(),
             items: tools.split(',').map(|s| s.to_string()).collect(),
             resources: Vec::new(),
-            terms: wc_core::contract::Terms::default(),
+            terms: c::Terms::default(),
             exp: u64::MAX,
             findings: Vec::new(),
         };
+        OneContract {
+            caller: CALLER.to_string(),
+            resolved: std::sync::Arc::new(verified),
+            admitted,
+        }
+    }
+
+    /// Start a server on an ephemeral port; return its address.
+    async fn serve(tools: &str) -> String {
         let v = Verifier {
-            contracts: OneContract {
-                caller: "spiffe://bank.example/ns/laptop/sa/recon-bot".to_string(),
-                admitted,
-            },
+            contracts: one_contract(tools),
             mode: wc_core::error::Mode::Enforce,
-            callee: "spiffe://bank.example/ns/aws/sa/payments-mcp".to_string(),
+            callee: CALLEE.to_string(),
+            // Loopback TCP, which is the origin the test client connects from.
+            mesh_trust: wc_mediator::peer::MeshTrust {
+                socket: None,
+                addrs: vec!["127.0.0.1".to_string()],
+            },
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -490,7 +732,7 @@ mod tests {
         got
     }
 
-    const XFCC: &str = "By=spiffe://c/x;URI=spiffe://bank.example/ns/laptop/sa/recon-bot";
+    const XFCC: &str = "By=spiffe://c/x;URI=spiffe://org/ns/agents/sa/recon-bot";
 
     fn immediate(r: &ProcessingResponse) -> Option<&ImmediateResponse> {
         match &r.response {
@@ -545,7 +787,7 @@ mod tests {
         let got = exchange(
             &addr,
             vec![
-                req_headers("By=spiffe://c/x;URI=spiffe://bank.example/ns/laptop/sa/somebody-else"),
+                req_headers("By=spiffe://c/x;URI=spiffe://org/ns/agents/sa/somebody-else"),
                 req_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"summarize_statement","arguments":{}}}"#),
             ],
         )
@@ -573,6 +815,111 @@ mod tests {
             immediate(&got[1]).is_some(),
             "a caller with no established identity was admitted"
         );
+    }
+
+    #[tokio::test]
+    async fn xfcc_from_an_untrusted_origin_is_not_believed() {
+        // The half of mesh identity that is not parsing. The header names a caller who DOES
+        // hold a contract; it arrives from an origin the operator did not configure, and must
+        // be refused anyway — otherwise any process that can reach this port asserts any id.
+        let v = Verifier {
+            contracts: one_contract("summarize_statement"),
+            mode: wc_core::error::Mode::Enforce,
+            callee: CALLEE.to_string(),
+            mesh_trust: wc_mediator::peer::MeshTrust {
+                socket: None,
+                // Not the loopback the test client connects from.
+                addrs: vec!["10.9.9.9".to_string()],
+            },
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(ExternalProcessorServer::new(v))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        let got = exchange(
+            &addr,
+            vec![
+                req_headers(XFCC),
+                req_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"summarize_statement","arguments":{}}}"#),
+            ],
+        )
+        .await;
+        assert!(
+            immediate(&got[1]).is_some(),
+            "an XFCC header from an unconfigured origin was believed"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unconfigured_mesh_trust_believes_nothing() {
+        // MeshTrust's deliberate default. A daemon started without --mesh-origin would refuse
+        // everything, which is why that flag is required rather than optional.
+        let v = Verifier {
+            contracts: one_contract("summarize_statement"),
+            mode: wc_core::error::Mode::Enforce,
+            callee: CALLEE.to_string(),
+            mesh_trust: wc_mediator::peer::MeshTrust {
+                socket: None,
+                addrs: Vec::new(),
+            },
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(ExternalProcessorServer::new(v))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        let got = exchange(
+            &addr,
+            vec![
+                req_headers(XFCC),
+                req_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"summarize_statement","arguments":{}}}"#),
+            ],
+        )
+        .await;
+        assert!(
+            immediate(&got[1]).is_some(),
+            "an empty mesh trust admitted a caller"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pin_mismatch_refuses_the_catalogue() {
+        // Gate 8 through the daemon: the callee serves a surface the contract did not pin.
+        let addr = serve("summarize_statement").await;
+        let moved = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"summarize_statement","description":"CHANGED"},{"name":"initiate_payment","description":"b"}]}}"#;
+        let got = exchange(
+            &addr,
+            vec![
+                req_headers(XFCC),
+                req_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#),
+                ProcessingRequest {
+                    request: Some(processing_request::Request::ResponseHeaders(hdrs(&[(
+                        "content-type",
+                        "application/json",
+                    )]))),
+                    ..Default::default()
+                },
+                ProcessingRequest {
+                    request: Some(processing_request::Request::ResponseBody(HttpBody {
+                        body: moved.as_bytes().to_vec(),
+                        end_of_stream: true,
+                    })),
+                    ..Default::default()
+                },
+            ],
+        )
+        .await;
+        let i = immediate(&got[3]).expect("a moved surface was served to the agent");
+        assert!(String::from_utf8_lossy(&i.body).contains("WC-3108"));
     }
 
     #[tokio::test]
