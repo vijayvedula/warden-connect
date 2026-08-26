@@ -530,6 +530,19 @@ USAGE
   --issuer-id URL      the control plane it obeys; must equal each contract's iss
   --issuer-pub PEM     the contract issuer's public key
   --kid KID            the key id it is registered under
+  --alg ES256|ES384|EdDSA  (default: ES256)
+  --jwks-url URL       the issuer's published key set instead of a PEM, re-fetched
+                       on the TTL — so rotating the issuer key is a publish rather
+                       than a redeploy of every gateway
+  --jwks-file FILE     a key set on disk, re-read on the same TTL
+  --jwks-ttl N         seconds between key-set reads (default: 300)
+  --jwks-max-stale N   how long a cached set is still served while the fetch is
+                       failing, before verification stops (default: 3600). A set
+                       that can no longer be refreshed is a set nobody can
+                       withdraw a key from
+                       Exactly one of --issuer-pub, --jwks-url, --jwks-file.
+                       --kid and --alg apply to the PEM only: a key set carries
+                       its own, and accepting them would suggest they narrow it
   --contract FILE      a contract artifact to load (repeatable); the air-gapped
                        alternative to --contracts
   --contracts URL      control plane to pull the contract set from
@@ -647,8 +660,6 @@ fn run() -> Result<Started, String> {
     };
     let mediator_id = flag(&args, "mediator-id").ok_or("--mediator-id is required")?;
     let issuer_id = flag(&args, "issuer-id").ok_or("--issuer-id is required")?;
-    let pem = flag(&args, "issuer-pub").ok_or("--issuer-pub is required")?;
-    let kid = flag(&args, "kid").ok_or("--kid is required")?;
 
     let mode = if args.iter().any(|a| a == "--observe") {
         wc_core::error::Mode::Observe
@@ -673,11 +684,43 @@ fn run() -> Result<Started, String> {
         );
     }
 
-    let pem_bytes = std::fs::read(&pem).map_err(|e| format!("read issuer key: {e}"))?;
-    let mut keys = wc_core::contract::IssuerKeys::new();
-    keys.add_ec_pem(&kid, &pem_bytes, wc_core::contract::Algorithm::ES256)
-        .map_err(|e| format!("issuer key: {e}"))?;
-    let mut trust = wc_mediator::jwks::KeySource::Pinned(keys);
+    // The same rules the inline mediator applies, from the same function: one source, `--kid`
+    // and `--alg` refused beside a key set, and the set LOADED AT STARTUP so a bad URL is a
+    // startup failure rather than a process that reports healthy and denies everything.
+    let secs = |name: &str| -> Result<Option<u64>, String> {
+        match flag(&args, name) {
+            None => Ok(None),
+            Some(v) => v
+                .parse()
+                .map(Some)
+                .map_err(|_| format!("--{name} {v:?} is not a number of seconds")),
+        }
+    };
+    let (issuer_pub, kid, alg) = (
+        flag(&args, "issuer-pub"),
+        flag(&args, "kid"),
+        flag(&args, "alg"),
+    );
+    let (jwks_url, jwks_file) = (flag(&args, "jwks-url"), flag(&args, "jwks-file"));
+    let spec = wc_mediator::jwks::TrustSpec {
+        issuer_pub: issuer_pub.as_deref(),
+        kid: kid.as_deref(),
+        alg: alg.as_deref(),
+        jwks_url: jwks_url.as_deref(),
+        jwks_file: jwks_file.as_deref(),
+        jwks_ttl: secs("jwks-ttl")?,
+        jwks_max_stale: secs("jwks-max-stale")?,
+    };
+    let (mut trust, key_report) = wc_mediator::jwks::build_trust(&spec, now())?;
+    if let Some(report) = &key_report {
+        if !report.is_complete() {
+            eprintln!(
+                "wc-extproc: key set skipped {} key(s): {}",
+                report.skipped.len(),
+                report.skipped.join("; ")
+            );
+        }
+    }
 
     let zones: std::sync::Arc<dyn wc_core::contract::ZoneRule + Send + Sync> =
         if args.iter().any(|a| a == "--any-zone") {
@@ -709,7 +752,8 @@ fn run() -> Result<Started, String> {
     let loaded = set.len();
     if loaded == 0 && !artifacts.is_empty() {
         return Err(format!(
-            "{} contract artifact(s) were read and none verified against kid {kid}; \
+            "{} contract artifact(s) were read and none verified against the configured \
+             issuer trust; \
              check --mediator-id matches their aud and --issuer-id their iss",
             artifacts.len()
         ));

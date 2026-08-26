@@ -177,6 +177,13 @@ cluster = "payments-mcp"
 callee = "$CALLEE"
 R
 
+# The issuer key as a published SET, so the verifier runs its rotating trust source. A pinned
+# PEM would leave `--jwks-*` untested by anything but unit tests.
+"$C" keys add --kid issuer-1 --public issuer.pub.pem --keyring ring.toml >/dev/null 2>&1
+"$C" keys jwks --keyring ring.toml --out jwks.json >/dev/null 2>&1
+[ -s jwks.json ] || { echo "setup: could not publish the issuer key set" >&2; exit 2; }
+step "trust     jwks.json ($(python3 -c 'import json;print(len(json.load(open("jwks.json"))["keys"]))') key)"
+
 cat > tokens.toml <<T
 [[client]]
 token = "tok_envoy_drill_0123456789"
@@ -220,7 +227,7 @@ start_verifier() {   # $1 = mesh origin
   : > verify.log
   "$VERIFY" --listen "0.0.0.0:$GRPC_PORT" --routes routes.toml \
     --mediator-id "$MED" --issuer-id "$ISS" \
-    --issuer-pub issuer.pub.pem --kid issuer-1 \
+    --jwks-file jwks.json \
     --contract "$CONTRACT" --mesh-origin "$1" \
     --contracts "http://127.0.0.1:$API_PORT" --token tok_envoy_drill_0123456789 \
     --refresh 2 --max-stale 3600 >>verify.log 2>&1 &
