@@ -19,6 +19,7 @@
 //! traffic is denied, which is the only safe reading of "the verifier is not there".
 
 mod contracts;
+mod routes;
 
 use std::pin::Pin;
 
@@ -57,6 +58,57 @@ fn resolve_caller(
         .resolve(&presented)
         .ok()
         .map(|p| p.identity.caller.as_str().to_string())
+}
+
+/// Where the callee for a stream comes from.
+enum CalleeSource {
+    /// One upstream, named on the command line.
+    Single(wc_core::model::EntityId),
+    /// A table on disk, reloaded when it changes.
+    Table(std::sync::Arc<routes::Routes>),
+}
+
+impl CalleeSource {
+    /// The callee this route fronts, or `None` if the route is not mapped.
+    fn callee(
+        &self,
+        cluster: Option<&str>,
+        route: Option<&str>,
+    ) -> Option<wc_core::model::EntityId> {
+        match self {
+            CalleeSource::Single(id) => Some(id.clone()),
+            CalleeSource::Table(r) => r.table().lookup(cluster, route).cloned(),
+        }
+    }
+}
+
+/// A callee id for a stream whose route is unmapped.
+///
+/// Never used to admit anything: the filter it is handed to has no contract, so every frame on
+/// that stream is refused. It exists because `Filter` needs an entity to bind a pin to, and an
+/// `Option` there would be a second way to express "no contract".
+fn placeholder_callee() -> wc_core::model::EntityId {
+    wc_core::model::EntityId::new("spiffe://unmapped.invalid/ns/x/sa/unmapped")
+        .expect("the placeholder callee is a valid id")
+}
+
+/// A named attribute out of `ProcessingRequest.attributes`.
+///
+/// The map is keyed by the filter that produced the values, and the attribute names sit inside
+/// the `Struct`. Rather than assume the outer key, every entry is searched for the field — the
+/// namespace has changed between Envoy versions and hard-coding it would make the route lookup
+/// fail silently, which fails closed but reads as a missing route rather than a config skew.
+fn attribute(req: &ProcessingRequest, name: &str) -> Option<String> {
+    for st in req.attributes.values() {
+        if let Some(v) = st.fields.get(name) {
+            if let Some(envoy_types::pb::google::protobuf::value::Kind::StringValue(s)) = &v.kind {
+                if !s.is_empty() {
+                    return Some(s.clone());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Header lookup, case-insensitive, over Envoy's header map.
@@ -125,9 +177,12 @@ struct Verifier<C: Contracts> {
     /// nothing, which is `MeshTrust`'s deliberate default and the right one: "we forgot to
     /// configure it" must not look identical to "it is configured".
     mesh_trust: wc_mediator::peer::MeshTrust,
-    /// The callee this listener fronts. Taken from configuration, never from the request: a
-    /// caller that could name its own callee could pick a contract it was not given.
-    callee: String,
+    /// How a route maps to the callee it fronts.
+    ///
+    /// Never from the request. A caller that could name its own callee could name one it holds a
+    /// contract for while the traffic goes elsewhere, and the verifier would check the wrong
+    /// service's contract.
+    routes: CalleeSource,
 }
 
 #[tonic::async_trait]
@@ -158,17 +213,8 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
 
         let contracts_mode = self.mode;
-        let callee = self.callee.clone();
         let mesh = self.mesh_trust.clone();
-        // The callee the pin is bound to. From configuration, so a caller cannot name it.
-        let callee_id = match wc_core::model::EntityId::new(&callee) {
-            Ok(id) => id,
-            Err(_) => return Err(Status::internal("--callee is not a valid entity id")),
-        };
 
-        // One admitted connection resolved per stream. Peer identity arrives on the header
-        // phase, so the resolve happens there rather than here.
-        let resolve = |caller: Option<&str>| self.contracts.resolve(caller, &callee);
         let admitted_slot = std::sync::Arc::new(std::sync::Mutex::new(None));
 
         // The filter for this stream. `Filter::new` is given the admitted connection once the
@@ -178,20 +224,40 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
 
         while let Some(msg) = inbound.next().await {
             let msg = msg?;
+            // `msg.request` is consumed by the match below, and the attributes sit beside it.
+            let msg_attrs = ProcessingRequest {
+                attributes: msg.attributes.clone(),
+                ..Default::default()
+            };
             let out = match msg.request {
                 Some(processing_request::Request::RequestHeaders(h)) => {
+                    // The callee is whatever route Envoy chose, looked up in the operator's
+                    // table. An unmapped route yields no callee, so no contract resolves and
+                    // the stream is refused — a route nobody mapped is not a route that is
+                    // exempt.
+                    let cluster = attribute(&msg_attrs, "xds.cluster_name");
+                    let route = attribute(&msg_attrs, "xds.route_name");
+                    let callee_id = self.routes.callee(cluster.as_deref(), route.as_deref());
                     let caller = resolve_caller(&h, &mesh, &origin);
-                    let resolved = resolve(caller.as_deref());
+                    let resolved = match (&callee_id, &caller) {
+                        (Some(cid), Some(_)) => {
+                            self.contracts.resolve(caller.as_deref(), cid.as_str())
+                        }
+                        _ => None,
+                    };
                     let (admitted, contract) = match resolved {
                         Some(r) => (Some(r.admitted), Some(r.contract)),
                         None => (None, None),
                     };
                     *slot.lock().expect("slot") = admitted.clone();
+                    // With no callee there is nothing for gate 8 to bind a digest to, so the
+                    // filter is built with no contract and refuses the stream.
+                    let bound = callee_id.unwrap_or_else(placeholder_callee);
                     filter = Some(Filter::new(
                         admitted,
                         contracts_mode,
                         contract,
-                        callee_id.clone(),
+                        bound,
                         now(),
                     ));
                     cont_headers()
@@ -202,7 +268,7 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                         // No headers phase was sent. Configuring the filter to skip it and then
                         // trusting the body is how a caller reaches the upstream with no identity
                         // established at all, so this fails closed rather than assuming.
-                        Filter::new(None, contracts_mode, None, callee_id.clone(), now())
+                        Filter::new(None, contracts_mode, None, placeholder_callee(), now())
                     });
                     on_request_body(f, &b)
                 }
@@ -344,9 +410,14 @@ USAGE
              (--issuer-pub PEM --kid KID) --contract FILE [--contract FILE ...]
 
   --listen ADDR        where to serve gRPC, e.g. 127.0.0.1:9002
-  --callee SPIFFE_ID   the party this listener fronts. From CONFIGURATION, never from
-                       the request: a caller that could name its own callee could pick
-                       a contract it was not given
+  --callee SPIFFE_ID   the single party this listener fronts
+  --routes FILE        a route table, for a listener fronting several. Reloaded when
+                       the file changes; a file that does not validate is NOT installed
+                       and the previous table keeps serving
+                       Exactly one of --callee or --routes. The callee comes from
+                       CONFIGURATION and the route Envoy chose, never from the request:
+                       a caller that could name its own callee could name one it holds
+                       a contract for while the traffic goes somewhere else
   --mediator-id ID     this verifier's id; must equal each contract's aud
   --issuer-id URL      the control plane it obeys; must equal each contract's iss
   --issuer-pub PEM     the contract issuer's public key
@@ -373,6 +444,9 @@ ENVOY MUST BE CONFIGURED WITH
   failure_mode_allow: false     this process being unreachable has to deny, not allow
   allow_mode_override: true     without it the catalogue is never buffered or filtered
   request_body_mode: BUFFERED   the tool name is in the body
+  request_attributes:           with --routes, the route lookup needs what Envoy chose
+    - xds.cluster_name          after routing. Without these the attribute is absent,
+    - xds.route_name            no route matches, and EVERY request is refused
   and the filter scoped to MCP routes only, or every body in the mesh is buffered."
 }
 
@@ -404,7 +478,24 @@ fn run() -> Result<(Verifier<ContractSet>, std::net::SocketAddr), String> {
     }
 
     let listen = flag(&args, "listen").ok_or("--listen is required")?;
-    let callee = flag(&args, "callee").ok_or("--callee is required")?;
+    // One upstream or many, and never both: two answers to "what is the callee" is two beliefs
+    // about what is being verified, and resolving that by precedence would check the wrong
+    // service's contract.
+    let routes = match (flag(&args, "callee"), flag(&args, "routes")) {
+        (Some(_), Some(_)) => return Err("--callee and --routes are mutually exclusive".into()),
+        (None, None) => return Err("--callee or --routes is required".into()),
+        (Some(c), None) => CalleeSource::Single(
+            wc_core::model::EntityId::new(&c).map_err(|e| format!("--callee {c:?}: {e}"))?,
+        ),
+        (None, Some(path)) => {
+            let r = routes::Routes::load(&path)?;
+            eprintln!(
+                "wc-extproc: route table {path} ({} key(s))",
+                r.table().len()
+            );
+            CalleeSource::Table(std::sync::Arc::new(r))
+        }
+    };
     let mediator_id = flag(&args, "mediator-id").ok_or("--mediator-id is required")?;
     let issuer_id = flag(&args, "issuer-id").ok_or("--issuer-id is required")?;
     let pem = flag(&args, "issuer-pub").ok_or("--issuer-pub is required")?;
@@ -484,7 +575,7 @@ fn run() -> Result<(Verifier<ContractSet>, std::net::SocketAddr), String> {
         "wc-extproc: {loaded} contract(s) verified, {} read",
         artifacts.len()
     );
-    eprintln!("wc-extproc: fronting {callee} as {mediator_id}, issuer {issuer_id} ({mode:?})");
+    eprintln!("wc-extproc: mediator {mediator_id}, issuer {issuer_id} ({mode:?})");
     eprintln!("wc-extproc: XFCC believed only from {mesh_origin}");
     eprintln!(
         "wc-extproc: Envoy must set failure_mode_allow=false and allow_mode_override=true; \
@@ -496,7 +587,7 @@ fn run() -> Result<(Verifier<ContractSet>, std::net::SocketAddr), String> {
         Verifier {
             contracts: set,
             mode,
-            callee,
+            routes,
             mesh_trust,
         },
         addr,
@@ -512,6 +603,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
+    // The route table is polled rather than watched: a filesystem notification API is another
+    // dependency and another failure mode, and a table that lands a few seconds late is not a
+    // safety property — an unmapped route denies until it is mapped.
+    if let CalleeSource::Table(r) = &verifier.routes {
+        let r = std::sync::Arc::clone(r);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                tick.tick().await;
+                match r.reload_if_changed() {
+                    routes::Reload::Unchanged => {}
+                    routes::Reload::Installed(n) => {
+                        eprintln!("wc-extproc: route table reloaded, {n} key(s)");
+                    }
+                    // Loud, because the operator edited the file and it did not take. The
+                    // previous table is still serving, so this is not an outage yet — but the
+                    // next thing they do will be based on believing the edit landed.
+                    routes::Reload::Failed(why) => {
+                        eprintln!("wc-extproc: route table NOT reloaded, previous kept: {why}");
+                    }
+                }
+            }
+        });
+    }
+
     eprintln!("wc-extproc: serving ext_proc on {addr}");
     Server::builder()
         .add_service(ExternalProcessorServer::new(verifier))
@@ -656,7 +772,7 @@ mod tests {
         let v = Verifier {
             contracts: one_contract(tools),
             mode: wc_core::error::Mode::Enforce,
-            callee: CALLEE.to_string(),
+            routes: CalleeSource::Single(wc_core::model::EntityId::new(CALLEE).unwrap()),
             // Loopback TCP, which is the origin the test client connects from.
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
@@ -825,7 +941,7 @@ mod tests {
         let v = Verifier {
             contracts: one_contract("summarize_statement"),
             mode: wc_core::error::Mode::Enforce,
-            callee: CALLEE.to_string(),
+            routes: CalleeSource::Single(wc_core::model::EntityId::new(CALLEE).unwrap()),
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 // Not the loopback the test client connects from.
@@ -862,7 +978,7 @@ mod tests {
         let v = Verifier {
             contracts: one_contract("summarize_statement"),
             mode: wc_core::error::Mode::Enforce,
-            callee: CALLEE.to_string(),
+            routes: CalleeSource::Single(wc_core::model::EntityId::new(CALLEE).unwrap()),
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 addrs: Vec::new(),
@@ -920,6 +1036,118 @@ mod tests {
         .await;
         let i = immediate(&got[3]).expect("a moved surface was served to the agent");
         assert!(String::from_utf8_lossy(&i.body).contains("WC-3108"));
+    }
+
+    /// Serve with a route table rather than a single callee.
+    async fn serve_routed(tools: &str, table: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("wc-rt-{}-{:p}", std::process::id(), table));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("routes.toml");
+        std::fs::write(&path, table).unwrap();
+        let v = Verifier {
+            contracts: one_contract(tools),
+            mode: wc_core::error::Mode::Enforce,
+            routes: CalleeSource::Table(std::sync::Arc::new(routes::Routes::load(&path).unwrap())),
+            mesh_trust: wc_mediator::peer::MeshTrust {
+                socket: None,
+                addrs: vec!["127.0.0.1".to_string()],
+            },
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(ExternalProcessorServer::new(v))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    /// RequestHeaders carrying the attributes Envoy reports after routing.
+    fn req_headers_routed(xfcc: &str, cluster: &str) -> ProcessingRequest {
+        use envoy_types::pb::google::protobuf::{value::Kind, Struct, Value};
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            "xds.cluster_name".to_string(),
+            Value {
+                kind: Some(Kind::StringValue(cluster.to_string())),
+            },
+        );
+        let mut attributes = std::collections::HashMap::new();
+        attributes.insert(
+            "envoy.filters.http.ext_proc".to_string(),
+            Struct {
+                fields: fields.into_iter().collect(),
+            },
+        );
+        ProcessingRequest {
+            request: Some(processing_request::Request::RequestHeaders(hdrs(&[(
+                "x-forwarded-client-cert",
+                xfcc,
+            )]))),
+            attributes,
+            ..Default::default()
+        }
+    }
+
+    const TABLE: &str =
+        "[[route]]\ncluster = \"payments\"\ncallee = \"spiffe://org/ns/tools/sa/payments-mcp\"\n";
+
+    #[tokio::test]
+    async fn a_mapped_route_resolves_its_callee_and_allows_the_call() {
+        let addr = serve_routed("summarize_statement", TABLE).await;
+        let got = exchange(
+            &addr,
+            vec![
+                req_headers_routed(XFCC, "payments"),
+                req_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"summarize_statement","arguments":{}}}"#),
+            ],
+        )
+        .await;
+        assert!(
+            immediate(&got[1]).is_none(),
+            "a mapped route was refused: {:?}",
+            immediate(&got[1]).map(|i| String::from_utf8_lossy(&i.body).to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unmapped_route_is_refused() {
+        // A route nobody mapped is not a route that is exempt.
+        let addr = serve_routed("summarize_statement", TABLE).await;
+        let got = exchange(
+            &addr,
+            vec![
+                req_headers_routed(XFCC, "some-other-cluster"),
+                req_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"summarize_statement","arguments":{}}}"#),
+            ],
+        )
+        .await;
+        assert!(
+            immediate(&got[1]).is_some(),
+            "an unmapped cluster was allowed to reach its upstream"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_absent_route_attribute_is_refused() {
+        // Envoy configured without `request_attributes` sends no attribute at all. That must
+        // deny rather than fall through to some default callee.
+        let addr = serve_routed("summarize_statement", TABLE).await;
+        let got = exchange(
+            &addr,
+            vec![
+                req_headers(XFCC),
+                req_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"summarize_statement","arguments":{}}}"#),
+            ],
+        )
+        .await;
+        assert!(
+            immediate(&got[1]).is_some(),
+            "a stream with no route attribute was admitted"
+        );
     }
 
     #[tokio::test]
