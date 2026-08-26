@@ -734,6 +734,69 @@ fn the_rate_ceiling_denies_without_revoking() {
     assert!(f.mediated.admitted().is_some());
 }
 
+#[test]
+fn a_concurrency_ceiling_of_zero_denies_on_the_inline_path_too() {
+    // `WC-4005` had no caller on this path at all. The in-flight count here is structurally at
+    // most one — `Upstream::request` takes `&mut self`, the standalone loop is single-threaded,
+    // and warden's gateway holds its upstream behind a Mutex — so a ceiling of 2 could never be
+    // reached and its absence looked harmless.
+    //
+    // Zero is the value that makes it not harmless. The narrowing algebra takes the `min` of
+    // both sides, so either party can drive `max_concurrent` to 0 and mean it. The gateway
+    // refused that; this path forwarded it. Same contract, two answers.
+    let mut f = build(
+        &["get_balance"],
+        DECLARED,
+        |p| p,
+        Mode::Enforce,
+        Terms {
+            max_concurrent: Some(0),
+            ..Default::default()
+        },
+    );
+    f.mediated.request(&initialize());
+    f.mediated.request(&tools_list());
+
+    let denied = f.mediated.request(&call("get_balance"));
+    let message = tool_error(&denied).expect("a ceiling breach is a tool error");
+    assert!(message.contains("WC-4005"), "{message}");
+    assert_eq!(
+        f.recorder.calls().len(),
+        0,
+        "a call was forwarded against a ceiling of zero"
+    );
+    // Denied, not contained: a ceiling breach is a signal, not a compromise.
+    assert!(f.mediated.admitted().is_some());
+}
+
+#[test]
+fn a_concurrency_slot_is_released_between_sequential_calls() {
+    // The failure a held slot would cause: take one, never release it, and the SECOND call on
+    // the same connection is refused against a ceiling of one. Serial callers must not exhaust
+    // a concurrency ceiling.
+    let mut f = build(
+        &["get_balance"],
+        DECLARED,
+        |p| p,
+        Mode::Enforce,
+        Terms {
+            max_concurrent: Some(1),
+            ..Default::default()
+        },
+    );
+    f.mediated.request(&initialize());
+    f.mediated.request(&tools_list());
+
+    for i in 1..=3 {
+        let r = f.mediated.request(&call("get_balance"));
+        assert!(
+            r.error.is_none() && tool_error(&r).is_none(),
+            "sequential call {i} was refused; the previous slot was not released"
+        );
+    }
+    assert_eq!(f.recorder.calls().len(), 3);
+}
+
 // ---------------------------------------------------------------------------
 // Other catalogues and pass-through
 // ---------------------------------------------------------------------------
