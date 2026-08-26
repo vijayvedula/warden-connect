@@ -1,6 +1,9 @@
 .DS_Store
 /target
 /fuzz/target
+# `daemon/*` are separate workspaces, each with its own target dir. `/target` above is
+# root-anchored and does not reach them.
+/daemon/*/target
 /fuzz/Cargo.lock
 /fuzz/artifacts
 

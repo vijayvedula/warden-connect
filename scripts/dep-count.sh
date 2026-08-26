@@ -39,6 +39,35 @@ check warden-connect-mediator 116
 # its own gate — a ceiling here is what stops tokio arriving through this door.
 check warden-connect-gateway  117
 
+# The daemons in `daemon/` are OUTSIDE this workspace, so nothing above measures them and the
+# ban below cannot see them. That is the point — they own their own `main` and are linked into
+# nothing, so §8.2's "no async runtime" does not apply. What DOES have to hold is the boundary:
+# a daemon may depend on the workspace crates, and none of them may acquire an async runtime
+# through that edge. Asserted from the daemon's own side, because the check above cannot.
+for d in daemon/*/; do
+  [ -f "$d/Cargo.toml" ] || continue
+  name=$(basename "$d")
+  if ! cargo metadata --manifest-path "$d/Cargo.toml" --format-version 1 --no-deps \
+        >/dev/null 2>&1; then
+    echo "FAIL  daemon/$name does not resolve; it is unbuilt, not exempt"
+    fail=1
+    continue
+  fi
+  # Every workspace crate this daemon pulls in must still be runtime-free. `cargo tree
+  # --invert` names what depends on tokio: if a `warden-connect-*` crate appears there, the
+  # runtime has crossed back into the embeddable surface.
+  crossed=$(cargo tree --manifest-path "$d/Cargo.toml" --edges normal --invert tokio \
+              --prefix none 2>/dev/null | sed 's/ v.*//' | grep -c '^warden-connect-' || true)
+  if [ "${crossed:-0}" -gt 0 ]; then
+    echo "FAIL  daemon/$name: a warden-connect crate now depends on tokio (§8.2)"
+    cargo tree --manifest-path "$d/Cargo.toml" --edges normal --invert tokio --prefix none \
+      2>/dev/null | sed 's/ v.*//' | grep '^warden-connect-' | sed 's/^/      /'
+    fail=1
+  else
+    echo "ok    daemon/$name  async stops at the binary"
+  fi
+done
+
 # The categories §8.3 rules out are enforced by deny.toml's ban list; this is the
 # belt-and-braces version for anything that arrives transitively under a new name.
 for banned in tokio async-std smol diesel sqlx sea-orm rusqlite openssl-sys; do
