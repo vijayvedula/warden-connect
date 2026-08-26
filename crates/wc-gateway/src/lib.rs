@@ -92,6 +92,24 @@ pub enum BodyAction {
 pub struct Filter {
     /// The connection this stream belongs to, once `initialize` has been admitted.
     admitted: Option<wc_core::contract::Admitted>,
+    /// The callee's pinned surface digest, from the contract.
+    ///
+    /// The contract itself, so gate 8 runs through `VerifiedContract::check_pin`.
+    ///
+    /// An earlier version of this carried the pinned digest and compared it to the presented
+    /// manifest. That was wrong twice: the contract pins a digest over **exactly the contracted
+    /// items**, not the whole manifest, so it mismatched whenever the callee served more tools
+    /// than were contracted — which is the normal case; and a contract carrying no digest was
+    /// treated as "gate 8 off" where `check_pin` refuses it. Calling the shared check is both
+    /// correct and the reason this crate does not reimplement any of them.
+    contract: Option<std::sync::Arc<wc_core::contract::VerifiedContract>>,
+    /// The callee id the pin is bound to. A digest is over (entity, surface), so comparing one
+    /// computed for a different entity would always mismatch.
+    callee: wc_core::model::EntityId,
+    /// Canonicalisation bounds for the presented surface.
+    limits: wc_core::canon::Limits,
+    /// Clock, injected so a test can pin it.
+    now: u64,
     /// What this stream turned out to be, learned at the request phase and needed at the
     /// response phase — the two are different Envoy callbacks and `mode_override` is only
     /// honoured in the second.
@@ -123,9 +141,16 @@ impl Filter {
     pub fn new(
         admitted: Option<wc_core::contract::Admitted>,
         mode: wc_core::error::Mode,
+        contract: Option<std::sync::Arc<wc_core::contract::VerifiedContract>>,
+        callee: wc_core::model::EntityId,
+        now: u64,
     ) -> Filter {
         Filter {
             admitted,
+            contract,
+            callee,
+            limits: wc_core::canon::Limits::default(),
+            now,
             kind: StreamKind::Unknown,
             mode,
         }
@@ -213,6 +238,36 @@ impl Filter {
                 detail: "the catalogue response is not JSON and cannot be filtered".to_string(),
             };
         };
+        // Gate 8, and the only moment a filter can run it: this is the callee's surface as
+        // actually presented. The mediator fetches a catalogue when a client skips discovery; a
+        // filter cannot, so a stream that carries none is not pinned — named in the crate docs
+        // rather than hidden.
+        if let (Some(contract), Some(result)) = (&self.contract, frame.get("result")) {
+            let presented = match wc_core::canon::pin(
+                wc_core::canon::SurfaceKind::McpTools,
+                &self.callee,
+                result,
+                &self.limits,
+                self.now,
+            ) {
+                Ok(p) => p,
+                // A surface that cannot be canonicalised cannot be compared, and an
+                // uncomparable surface is not a matching one.
+                Err(e) => {
+                    return BodyAction::Refuse {
+                        code: e.code(),
+                        detail: e.detail().to_string(),
+                    }
+                }
+            };
+            if let Err(e) = contract.check_pin(&presented) {
+                return BodyAction::Refuse {
+                    code: e.code(),
+                    detail: e.detail().to_string(),
+                };
+            }
+        }
+
         let permitted = permitted_for(admitted, catalog);
         let _stat = wc_mediator::filter::filter_catalog(catalog, &permitted, &mut frame);
         BodyAction::Rewrite(Box::new(frame))
@@ -261,8 +316,14 @@ mod tests {
         }
     }
 
+    fn callee() -> wc_core::model::EntityId {
+        wc_core::model::EntityId::new("spiffe://bank.example/ns/aws/sa/payments-mcp").unwrap()
+    }
+
+    /// A live stream with no contract carried, so these exercise the phase machine alone.
+    /// Gate 8 needs a real minted contract and lives in `tests/pin.rs`.
     fn live(items: &[&str]) -> Filter {
-        Filter::new(Some(admitted(items)), Mode::Enforce)
+        Filter::new(Some(admitted(items)), Mode::Enforce, None, callee(), 0)
     }
 
     fn call(tool: &str) -> (String, Value) {
@@ -311,14 +372,14 @@ mod tests {
     fn no_contract_refuses_in_enforce_and_forwards_in_observe() {
         let (m, p) = call("anything");
         assert!(matches!(
-            Filter::new(None, Mode::Enforce).on_request(&m, &p),
+            Filter::new(None, Mode::Enforce, None, callee(), 0).on_request(&m, &p),
             Verdict::Refuse {
                 code: Code::NO_CONTRACT,
                 ..
             }
         ));
         assert_eq!(
-            Filter::new(None, Mode::Observe).on_request(&m, &p),
+            Filter::new(None, Mode::Observe, None, callee(), 0).on_request(&m, &p),
             Verdict::Forward
         );
     }
