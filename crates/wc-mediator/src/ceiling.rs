@@ -81,6 +81,25 @@ impl Drop for Slot<'_> {
     }
 }
 
+/// A concurrency slot that owns its counter, released on drop.
+///
+/// [`Slot`] borrows the [`Ceilings`] it came from, which is right for a caller that holds the
+/// ceilings on its own stack — the inline mediator. A gateway filter cannot use it: the slot has
+/// to live for the length of an HTTP stream while the ceilings are shared between streams behind
+/// an `Arc`, and a borrow from inside an `Arc` cannot be stored beside it.
+///
+/// So this variant holds the `Arc` instead. Same counter, same release-on-drop, no lifetime.
+#[derive(Debug)]
+pub struct OwnedSlot {
+    ceilings: std::sync::Arc<Ceilings>,
+}
+
+impl Drop for OwnedSlot {
+    fn drop(&mut self) {
+        self.ceilings.concurrent.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Per-connection ceilings.
 #[derive(Debug, Default)]
 pub struct Ceilings {
@@ -178,6 +197,35 @@ impl Ceilings {
             {
                 return Ok(Some(Slot {
                     counter: &self.concurrent,
+                }));
+            }
+        }
+    }
+
+    /// Take a concurrency slot that outlives the borrow, for a caller holding the ceilings
+    /// behind an `Arc`.
+    ///
+    /// `Ok(None)` means the contract sets no concurrency ceiling, exactly as [`Ceilings::enter`]
+    /// does — and it must not be mistaken for "no slot was available", which is the `Err`.
+    pub fn enter_owned(self: &std::sync::Arc<Self>, terms: &Terms) -> Result<Option<OwnedSlot>> {
+        let Some(limit) = terms.max_concurrent else {
+            return Ok(None);
+        };
+        loop {
+            let current = self.concurrent.load(Ordering::SeqCst);
+            if current >= limit {
+                return Err(WcError::with_detail(
+                    Code::CONCURRENCY_CEILING,
+                    format!("{current} calls in flight, ceiling is {limit}"),
+                ));
+            }
+            if self
+                .concurrent
+                .compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return Ok(Some(OwnedSlot {
+                    ceilings: std::sync::Arc::clone(self),
                 }));
             }
         }
@@ -327,5 +375,81 @@ mod tests {
         assert!(c.reserve(&t, 1_000).is_err());
         assert!(c.charge(&t, 5.0, 1_000).is_ok());
         assert!(c.enter(&t).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod owned_slot_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use std::sync::Arc;
+
+    fn terms(max: Option<u32>) -> Terms {
+        Terms {
+            max_concurrent: max,
+            ..Terms::default()
+        }
+    }
+
+    #[test]
+    fn no_ceiling_yields_no_slot_and_is_not_a_refusal() {
+        let c = Arc::new(Ceilings::new());
+        assert!(c.enter_owned(&terms(None)).unwrap().is_none());
+        assert_eq!(
+            c.in_flight(),
+            0,
+            "a contract with no ceiling still counted a call"
+        );
+    }
+
+    #[test]
+    fn slots_are_released_on_drop() {
+        let c = Arc::new(Ceilings::new());
+        {
+            let _a = c.enter_owned(&terms(Some(2))).unwrap().expect("slot a");
+            let _b = c.enter_owned(&terms(Some(2))).unwrap().expect("slot b");
+            assert_eq!(c.in_flight(), 2);
+            // At the ceiling: a third must be refused, not queued.
+            let denied = c.enter_owned(&terms(Some(2))).unwrap_err();
+            assert_eq!(denied.code(), Code::CONCURRENCY_CEILING);
+        }
+        assert_eq!(c.in_flight(), 0, "slots did not release when dropped");
+        assert!(c.enter_owned(&terms(Some(2))).unwrap().is_some());
+    }
+
+    #[test]
+    fn the_owned_slot_outlives_the_borrow_that_made_it() {
+        // The whole reason this exists: a gateway holds the ceilings behind an Arc and the slot
+        // for the length of a stream. `Slot<'_>` cannot be stored that way.
+        let c = Arc::new(Ceilings::new());
+        let held: Option<OwnedSlot> = c.enter_owned(&terms(Some(1))).unwrap();
+        drop(c); // the caller's handle goes; the slot keeps its own
+        assert!(held.is_some());
+    }
+
+    #[test]
+    fn concurrent_callers_at_the_ceiling_do_not_both_get_in() {
+        // Compare-and-swap, not load-then-store. Ten threads, ceiling of three.
+        let c = Arc::new(Ceilings::new());
+        let held = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut hs = Vec::new();
+        for _ in 0..10 {
+            let c = Arc::clone(&c);
+            let held = Arc::clone(&held);
+            hs.push(std::thread::spawn(move || {
+                if let Ok(Some(slot)) = c.enter_owned(&terms(Some(3))) {
+                    held.lock().unwrap().push(slot);
+                }
+            }));
+        }
+        for h in hs {
+            h.join().unwrap();
+        }
+        assert_eq!(
+            held.lock().unwrap().len(),
+            3,
+            "more callers were admitted than the ceiling allows"
+        );
+        assert_eq!(c.in_flight(), 3);
     }
 }

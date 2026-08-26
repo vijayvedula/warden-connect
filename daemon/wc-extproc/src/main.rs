@@ -94,6 +94,35 @@ impl CalleeSource {
     }
 }
 
+/// Ceiling state per contract.
+#[derive(Default)]
+struct Limits {
+    by_jti: std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<wc_mediator::ceiling::Ceilings>>,
+    >,
+}
+
+impl Limits {
+    /// The ceilings for one contract, created on first sight.
+    ///
+    /// Nothing evicts these. A contract that expires leaves its counters behind, which is a
+    /// bounded leak — one small struct per contract this process has ever admitted — and the
+    /// safe direction: evicting on expiry would hand a caller a fresh budget by waiting.
+    fn for_contract(&self, jti: &str) -> std::sync::Arc<wc_mediator::ceiling::Ceilings> {
+        let mut map = match self.by_jti.lock() {
+            Ok(m) => m,
+            // A poisoned lock means another thread panicked holding it. The counters are still
+            // readable and a fresh map would reset every budget, so the poison is stepped over
+            // rather than allowed to become a way past the ceilings.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        std::sync::Arc::clone(
+            map.entry(jti.to_string())
+                .or_insert_with(|| std::sync::Arc::new(wc_mediator::ceiling::Ceilings::new())),
+        )
+    }
+}
+
 /// A callee id for a stream whose route is unmapped.
 ///
 /// Never used to admit anything: the filter it is handed to has no contract, so every frame on
@@ -187,6 +216,13 @@ struct Verifier<C: Contracts> {
     /// and it outlives the `&self` borrow that started it.
     contracts: std::sync::Arc<C>,
     mode: wc_core::error::Mode,
+    /// Ceilings per contract, keyed by the artifact id.
+    ///
+    /// Keyed by `jti` rather than by caller or route: the terms belong to the contract, and two
+    /// contracts between the same pair have separate budgets. Shared across streams because one
+    /// HTTP stream is one call — per-stream counters would make every ceiling count to one and
+    /// then reset.
+    limits: std::sync::Arc<Limits>,
     /// Where `x-forwarded-client-cert` may be believed from. An empty configuration trusts
     /// nothing, which is `MeshTrust`'s deliberate default and the right one: "we forgot to
     /// configure it" must not look identical to "it is configured".
@@ -228,6 +264,7 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
 
         let contracts_mode = self.mode;
         let mesh = self.mesh_trust.clone();
+        let limits = std::sync::Arc::clone(&self.limits);
 
         let admitted_slot = std::sync::Arc::new(std::sync::Mutex::new(None));
 
@@ -271,9 +308,14 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                             }
                             _ => None,
                         };
-                        let (admitted, contract) = match resolved {
-                            Some(r) => (Some(r.admitted), Some(r.contract)),
-                            None => (None, None),
+                        let (admitted, contract, ceilings) = match resolved {
+                            Some(r) => {
+                                // Keyed by the artifact id: the terms belong to the contract,
+                                // and two contracts between the same pair have separate budgets.
+                                let c = limits.for_contract(r.admitted.jti.as_str());
+                                (Some(r.admitted), Some(r.contract), Some(c))
+                            }
+                            None => (None, None, None),
                         };
                         *slot.lock().expect("slot") = admitted.clone();
                         // With no callee there is nothing for gate 8 to bind a digest to, so the
@@ -285,6 +327,7 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                             contract,
                             bound,
                             now(),
+                            ceilings,
                         ));
                         cont_headers()
                     }
@@ -294,7 +337,14 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                             // No headers phase was sent. Configuring the filter to skip it and then
                             // trusting the body is how a caller reaches the upstream with no identity
                             // established at all, so this fails closed rather than assuming.
-                            Filter::new(None, contracts_mode, None, placeholder_callee(), now())
+                            Filter::new(
+                                None,
+                                contracts_mode,
+                                None,
+                                placeholder_callee(),
+                                now(),
+                                None,
+                            )
                         });
                         on_request_body(f, &b)
                     }
@@ -693,6 +743,7 @@ fn run() -> Result<Started, String> {
             contracts: std::sync::Arc::new(set),
             mode,
             routes: std::sync::Arc::new(routes),
+            limits: std::sync::Arc::new(Limits::default()),
             mesh_trust,
         },
         addr,
@@ -877,6 +928,17 @@ mod tests {
     }
 
     fn one_contract(tools: &str) -> OneContract {
+        one_contract_with(tools, c_terms(None))
+    }
+
+    fn c_terms(max_calls: Option<u32>) -> wc_core::contract::Terms {
+        wc_core::contract::Terms {
+            max_calls_per_hour: max_calls,
+            ..wc_core::contract::Terms::default()
+        }
+    }
+
+    fn one_contract_with(tools: &str, terms: wc_core::contract::Terms) -> OneContract {
         use wc_core::contract as c;
         let callee = wc_core::model::EntityId::new(CALLEE).unwrap();
         let pin = wc_core::canon::pin(
@@ -919,7 +981,7 @@ mod tests {
         payload.nbf = T_NOW - 100;
         payload.exp = T_NOW + 3_600;
         payload.surface = surface;
-        payload.terms = c::Terms::default();
+        payload.terms = terms.clone();
         payload.assurance = c::Assurance::default();
 
         let jws = c::mint(
@@ -946,7 +1008,7 @@ mod tests {
             jti: wc_core::model::Jti::new("cx_84be0011").unwrap(),
             items: tools.split(',').map(|s| s.to_string()).collect(),
             resources: Vec::new(),
-            terms: c::Terms::default(),
+            terms,
             exp: u64::MAX,
             findings: Vec::new(),
         };
@@ -966,6 +1028,7 @@ mod tests {
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
             // Loopback TCP, which is the origin the test client connects from.
+            limits: std::sync::Arc::new(Limits::default()),
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 addrs: vec!["127.0.0.1".to_string()],
@@ -1136,6 +1199,7 @@ mod tests {
             routes: std::sync::Arc::new(CalleeSource::Single(
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
+            limits: std::sync::Arc::new(Limits::default()),
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 // Not the loopback the test client connects from.
@@ -1175,6 +1239,7 @@ mod tests {
             routes: std::sync::Arc::new(CalleeSource::Single(
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
+            limits: std::sync::Arc::new(Limits::default()),
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 addrs: Vec::new(),
@@ -1246,6 +1311,7 @@ mod tests {
             routes: std::sync::Arc::new(CalleeSource::Table(std::sync::Arc::new(
                 routes::Routes::load(&path).unwrap(),
             ))),
+            limits: std::sync::Arc::new(Limits::default()),
             mesh_trust: wc_mediator::peer::MeshTrust {
                 socket: None,
                 addrs: vec!["127.0.0.1".to_string()],
@@ -1345,6 +1411,54 @@ mod tests {
         assert!(
             immediate(&got[1]).is_some(),
             "a stream with no route attribute was admitted"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_rate_ceiling_holds_across_separate_ext_proc_streams() {
+        // Each request is its own ext_proc stream and its own Filter. If the ceilings were
+        // per-stream the third call would be admitted, and a contract saying 2/hour would
+        // permit two PER REQUEST — a ceiling that reads as configured and counts nothing.
+        let v = Verifier {
+            contracts: std::sync::Arc::new(one_contract_with(
+                "summarize_statement",
+                c_terms(Some(2)),
+            )),
+            mode: wc_core::error::Mode::Enforce,
+            routes: std::sync::Arc::new(CalleeSource::Single(
+                wc_core::model::EntityId::new(CALLEE).unwrap(),
+            )),
+            limits: std::sync::Arc::new(Limits::default()),
+            mesh_trust: wc_mediator::peer::MeshTrust {
+                socket: None,
+                addrs: vec!["127.0.0.1".to_string()],
+            },
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(ExternalProcessorServer::new(v))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"summarize_statement","arguments":{}}}"#;
+        for i in 1..=2 {
+            let got = exchange(&addr, vec![req_headers(XFCC), req_body(body)]).await;
+            assert!(
+                immediate(&got[1]).is_none(),
+                "call {i} of 2 was refused before the ceiling was reached"
+            );
+        }
+        let got = exchange(&addr, vec![req_headers(XFCC), req_body(body)]).await;
+        let i = immediate(&got[1])
+            .expect("the third call was admitted — the ceiling did not carry across streams");
+        assert!(
+            String::from_utf8_lossy(&i.body).contains("WC-4003"),
+            "{}",
+            String::from_utf8_lossy(&i.body)
         );
     }
 
