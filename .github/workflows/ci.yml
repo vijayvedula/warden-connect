@@ -104,6 +104,17 @@ jobs:
           python3 -m pip install --quiet 'cryptography>=42'
           ./scripts/attest-drill.sh   # builds the workspace itself
 
+      # The verifier's own tests drive a simulated proxy: real gRPC, real protos, messages this
+      # project constructs. That left the parts only Envoy can confirm, and two of them were
+      # broken — the response stream was returned after draining the inbound one (deadlocking
+      # every real request), and a rewritten body kept the server's content-length (so a
+      # filtered catalogue arrived unparseable). Both passed every simulated test.
+      - name: Envoy ext_proc drill — enforcement through a real proxy
+        working-directory: warden-connect
+        run: |
+          python3 -m pip install --quiet 'cryptography>=42'
+          ./scripts/envoy-drill.sh
+
       # `daemon/` is outside the workspace, so `cargo test --workspace` does not reach it and a
       # broken daemon would be invisible to every other step in this file. Its own gate lives in
       # dep-count.sh; this is the build and test.

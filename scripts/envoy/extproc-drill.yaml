@@ -1,0 +1,87 @@
+static_resources:
+  listeners:
+  - name: mcp
+    address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+    filter_chains:
+    # mTLS, so ENVOY sets x-forwarded-client-cert from a verified client certificate rather
+    # than a caller asserting its own. Envoy SANITIZES an inbound XFCC by default, which is
+    # correct and is why a drill that let the client send its own header would be testing
+    # nothing: the verifier would receive no identity and refuse everything.
+    - transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          require_client_certificate: true
+          common_tls_context:
+            tls_certificates:
+            - certificate_chain: { filename: /certs/server.crt }
+              private_key: { filename: /certs/server.key }
+            validation_context:
+              trusted_ca: { filename: /certs/ca.crt }
+      filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: mcp
+          # SANITIZE_SET: drop whatever arrived and set it from the verified peer certificate.
+          # `uri: true` puts the SPIFFE id in the URI= element, which is what the verifier reads.
+          forward_client_cert_details: SANITIZE_SET
+          set_current_client_cert_details:
+            uri: true
+          route_config:
+            name: local
+            virtual_hosts:
+            - name: mcp
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/mcp" }
+                name: mcp-route
+                route: { cluster: payments-mcp }
+              # A second route to a cluster the verifier's table does not map, so the drill can
+              # prove that an unmapped route is refused rather than defaulted.
+              - match: { prefix: "/other" }
+                name: other-route
+                route: { cluster: unmapped-mcp }
+          http_filters:
+          - name: envoy.filters.http.ext_proc
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+              grpc_service:
+                envoy_grpc: { cluster_name: wc_verify }
+                timeout: 5s
+              failure_mode_allow: false
+              allow_mode_override: true
+              processing_mode:
+                request_header_mode: SEND
+                request_body_mode: BUFFERED
+                response_header_mode: SEND
+                response_body_mode: NONE
+              request_attributes:
+              - xds.cluster_name
+              - xds.route_name
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+  - name: payments-mcp
+    type: STRICT_DNS
+    load_assignment:
+      cluster_name: payments-mcp
+      endpoints:
+      - lb_endpoints:
+        - endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8931 } } }
+  - name: unmapped-mcp
+    type: STRICT_DNS
+    load_assignment:
+      cluster_name: unmapped-mcp
+      endpoints:
+      - lb_endpoints:
+        - endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8931 } } }
+  - name: wc_verify
+    type: STRICT_DNS
+    http2_protocol_options: {}
+    load_assignment:
+      cluster_name: wc_verify
+      endpoints:
+      - lb_endpoints:
+        - endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 9002 } } }
