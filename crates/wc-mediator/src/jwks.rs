@@ -382,8 +382,8 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     // Same fixture coordinates as `wc_core::contract::jwks_ingest`.
-    const ES_X: &str = "ktLmuZwwCcx63nhx-fgvx5T_Ct8I8DC4aqxfFwViT70";
-    const ES_Y: &str = "87OFL3uLtI_CltSCX5g8X4GsnwH-4RasPaKAs8US2Co";
+    pub(super) const ES_X: &str = "ktLmuZwwCcx63nhx-fgvx5T_Ct8I8DC4aqxfFwViT70";
+    pub(super) const ES_Y: &str = "87OFL3uLtI_CltSCX5g8X4GsnwH-4RasPaKAs8US2Co";
     const ED_X: &str = "YlwgW8bKk8qBVesuj5HmIg03RABJ9CrwNCBu5WeKrAI";
     const NOW: u64 = 1_785_312_500;
 
@@ -631,5 +631,272 @@ mod tests {
         ));
         let mut src = JwksSource::file(&f.0);
         assert_eq!(src.load(NOW).unwrap().added, vec!["ed-1".to_string()]);
+    }
+}
+
+/// The flags that choose where issuer trust comes from, already looked up.
+///
+/// Values rather than an argument slice, so the two binaries that need this — the inline
+/// mediator and the gateway verifier — share the RULES without sharing a flag parser. The rules
+/// are the valuable part: exactly one source, `--kid`/`--alg` refused alongside a key set, and
+/// the set loaded at startup rather than on the first request.
+#[derive(Debug, Default)]
+pub struct TrustSpec<'a> {
+    /// A pinned PEM.
+    pub issuer_pub: Option<&'a str>,
+    /// The key id that PEM is registered under. Only meaningful with `issuer_pub`.
+    pub kid: Option<&'a str>,
+    /// Its algorithm; `ES256` when absent. Only meaningful with `issuer_pub`.
+    pub alg: Option<&'a str>,
+    /// A published key set.
+    pub jwks_url: Option<&'a str>,
+    /// A key set on disk.
+    pub jwks_file: Option<&'a str>,
+    /// Seconds between key-set reads.
+    pub jwks_ttl: Option<u64>,
+    /// Seconds a cached set is still served while the fetch is failing.
+    pub jwks_max_stale: Option<u64>,
+}
+
+/// Resolve issuer trust: one pinned PEM, or a key set that rotates.
+///
+/// Returns the source and, for a key set, what loading it skipped — the caller logs that,
+/// because a partly-loaded set is usable and worth saying out loud.
+///
+/// # Errors
+///
+/// No source, more than one source, `--kid`/`--alg` beside a key set, an unreadable PEM, an
+/// algorithm this project does not accept, or a key set that will not load. The ambiguous case
+/// is refused rather than resolved by precedence: an operator who passes two sources has two
+/// different beliefs about where trust comes from, and silently honouring one means trusting
+/// something they did not think they were.
+pub fn build_trust(
+    spec: &TrustSpec<'_>,
+    now: u64,
+) -> std::result::Result<(KeySource, Option<JwksReport>), String> {
+    let chosen = [
+        spec.issuer_pub.map(|_| "--issuer-pub"),
+        spec.jwks_url.map(|_| "--jwks-url"),
+        spec.jwks_file.map(|_| "--jwks-file"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+
+    match chosen.as_slice() {
+        [] => Err(
+            "no issuer trust: pass --issuer-pub PEM --kid KID, or --jwks-url URL, \
+                   or --jwks-file FILE"
+                .to_string(),
+        ),
+        [_] => Ok(()),
+        many => Err(format!(
+            "{} were all given; issuer trust has one source, and choosing for you would \
+             mean verifying against a key set you did not mean",
+            many.join(" and ")
+        )),
+    }?;
+
+    if let Some(pem_path) = spec.issuer_pub {
+        let kid = spec
+            .kid
+            .ok_or_else(|| "--kid is required with --issuer-pub".to_string())?;
+        let pem = std::fs::read(pem_path).map_err(|e| format!("read {pem_path}: {e}"))?;
+        let mut keys = IssuerKeys::new();
+        match spec.alg.unwrap_or("ES256") {
+            "ES256" => keys.add_ec_pem(kid, &pem, wc_core::contract::Algorithm::ES256),
+            "ES384" => keys.add_ec_pem(kid, &pem, wc_core::contract::Algorithm::ES384),
+            "EdDSA" | "Ed25519" => keys.add_ed_pem(kid, &pem),
+            other => return Err(format!("{other:?} is not an accepted contract algorithm")),
+        }
+        .map_err(|e| e.to_string())?;
+        return Ok((KeySource::Pinned(keys), None));
+    }
+
+    // `--kid` and `--alg` name one key; a key set names its own, so accepting them together
+    // would suggest they narrow it. They do not.
+    for (given, name) in [(spec.kid, "kid"), (spec.alg, "alg")] {
+        if given.is_some() {
+            return Err(format!(
+                "--{name} applies to --issuer-pub only; a key set carries its own kid \
+                 and algorithm, so this flag would have no effect"
+            ));
+        }
+    }
+
+    let mut source = match (spec.jwks_url, spec.jwks_file) {
+        (Some(url), _) => JwksSource::url(url),
+        (_, Some(file)) => JwksSource::file(file),
+        _ => unreachable!("one source was chosen above"),
+    };
+    if let Some(ttl) = spec.jwks_ttl {
+        source = source.with_ttl(ttl);
+    }
+    if let Some(max) = spec.jwks_max_stale {
+        source = source.with_max_stale(max);
+    }
+
+    // Loaded here so a bad URL is a startup failure. Deferring it to the first request would
+    // mean the process starts, reports healthy, and denies everything.
+    let report = source
+        .load(now)
+        .map_err(|e| format!("issuer key set unusable, refusing to start: {e}"))?;
+    Ok((KeySource::Rotating(Box::new(source)), Some(report)))
+}
+
+#[cfg(test)]
+mod trust_spec_tests {
+    //! The selection rules, tested once for both binaries that apply them.
+    //!
+    //! They were a private function inside `connect-mediate` and had no direct coverage: the
+    //! rules were exercised only by starting the binary. Sharing them with the gateway verifier
+    //! made that worth fixing — a rule two processes depend on should not be checked by neither.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    const PUB: &[u8] = include_bytes!("../../../fixtures/keys/test_issuer_es256_pub.pem");
+
+    /// A PEM on disk at a path unique to the CALLER.
+    ///
+    /// The first version keyed the path on the process id alone. Four tests call this, the
+    /// harness runs them in parallel, and they raced on one file: a truncated read while another
+    /// thread was writing made the PEM unparseable about one run in three. The `who` argument is
+    /// what makes each test's file its own.
+    fn pem_on_disk(who: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("wc-trust-{}-{who}.pem", std::process::id()));
+        std::fs::write(&p, PUB).unwrap();
+        p
+    }
+
+    #[test]
+    fn a_pinned_pem_needs_a_kid() {
+        let p = pem_on_disk("a_pinned_pem_needs_a_kid");
+        let spec = TrustSpec {
+            issuer_pub: p.to_str(),
+            ..TrustSpec::default()
+        };
+        let e = build_trust(&spec, 0).unwrap_err();
+        assert!(e.contains("--kid"), "{e}");
+    }
+
+    #[test]
+    fn a_pinned_pem_with_a_kid_resolves() {
+        let p = pem_on_disk("a_pinned_pem_with_a_kid_resolves");
+        let spec = TrustSpec {
+            issuer_pub: p.to_str(),
+            kid: Some("wc-test-es256"),
+            ..TrustSpec::default()
+        };
+        let (source, report) = build_trust(&spec, 0).unwrap();
+        assert!(matches!(source, KeySource::Pinned(_)));
+        assert!(
+            report.is_none(),
+            "a pinned PEM is not a key set and has no report"
+        );
+    }
+
+    #[test]
+    fn no_source_at_all_is_refused() {
+        let e = build_trust(&TrustSpec::default(), 0).unwrap_err();
+        assert!(e.contains("no issuer trust"), "{e}");
+    }
+
+    #[test]
+    fn two_sources_are_refused_rather_than_resolved_by_precedence() {
+        // An operator who passes two has two different beliefs about where trust comes from.
+        let p = pem_on_disk("two_sources_are_refused_rather_than_resolved_by_precedence");
+        let spec = TrustSpec {
+            issuer_pub: p.to_str(),
+            kid: Some("wc-test-es256"),
+            jwks_url: Some("https://example.invalid/jwks.json"),
+            ..TrustSpec::default()
+        };
+        let e = build_trust(&spec, 0).unwrap_err();
+        assert!(e.contains("one source"), "{e}");
+        assert!(
+            e.contains("--issuer-pub") && e.contains("--jwks-url"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn kid_and_alg_are_refused_beside_a_key_set() {
+        // They name one key; a key set names its own. Accepting them would suggest they narrow
+        // it, and they do not.
+        for (kid, alg, want) in [(Some("k"), None, "--kid"), (None, Some("ES256"), "--alg")] {
+            let spec = TrustSpec {
+                jwks_file: Some("/nonexistent.json"),
+                kid,
+                alg,
+                ..TrustSpec::default()
+            };
+            let e = build_trust(&spec, 0).unwrap_err();
+            assert!(e.contains(want), "{e}");
+            assert!(e.contains("no effect"), "{e}");
+        }
+    }
+
+    #[test]
+    fn an_algorithm_this_project_does_not_accept_is_refused() {
+        // No HMAC, anywhere. A symmetric algorithm here would mean the verifier could mint.
+        let p = pem_on_disk("an_algorithm_this_project_does_not_accept_is_refused");
+        let spec = TrustSpec {
+            issuer_pub: p.to_str(),
+            kid: Some("k"),
+            alg: Some("HS256"),
+            ..TrustSpec::default()
+        };
+        let e = build_trust(&spec, 0).unwrap_err();
+        assert!(e.contains("not an accepted contract algorithm"), "{e}");
+    }
+
+    #[test]
+    fn an_unreadable_pem_is_a_startup_failure() {
+        let spec = TrustSpec {
+            issuer_pub: Some("/nonexistent/issuer.pem"),
+            kid: Some("k"),
+            ..TrustSpec::default()
+        };
+        assert!(build_trust(&spec, 0).is_err());
+    }
+
+    #[test]
+    fn a_key_set_that_will_not_load_refuses_to_start() {
+        // Deferring the load to the first request would mean the process starts, reports
+        // healthy, and denies everything — the failure that takes longest to diagnose.
+        let spec = TrustSpec {
+            jwks_file: Some("/nonexistent/jwks.json"),
+            ..TrustSpec::default()
+        };
+        let e = build_trust(&spec, 0).unwrap_err();
+        assert!(e.contains("refusing to start"), "{e}");
+    }
+
+    #[test]
+    fn a_key_set_on_disk_resolves_and_rotates() {
+        let dir = std::env::temp_dir().join(format!("wc-jwks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("jwks.json");
+        // A real key, not an empty document: an empty set is correctly refused as "0 keys and
+        // none usable", which the first version of this test discovered the hard way.
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"keys":[{{"kty":"EC","crv":"P-256","x":"{}","y":"{}","kid":"k1"}}]}}"#,
+                super::tests::ES_X,
+                super::tests::ES_Y
+            ),
+        )
+        .unwrap();
+        let spec = TrustSpec {
+            jwks_file: path.to_str(),
+            jwks_ttl: Some(30),
+            jwks_max_stale: Some(90),
+            ..TrustSpec::default()
+        };
+        let (source, report) = build_trust(&spec, 0).unwrap();
+        assert!(matches!(source, KeySource::Rotating(_)));
+        assert!(report.is_some(), "a key set must report what it loaded");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

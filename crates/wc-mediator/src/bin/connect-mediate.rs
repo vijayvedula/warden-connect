@@ -40,14 +40,13 @@ use wc_mediator::upstream::{
 #[cfg(feature = "warden-proxy")]
 use warden::{approvals::Approvals, audit::AuditLog, gateway::Gateway, policy::PolicyConfig};
 
-use wc_core::contract::{Algorithm, IssuerKeys};
 use wc_core::error::Mode;
 use wc_core::model::EntityId;
 use wc_mediator::cache::Cache;
 use wc_mediator::ceiling::Ceilings;
 use wc_mediator::client::{self, ControlPlaneClient};
 use wc_mediator::gate::{GateCfg, MediatedUpstream};
-use wc_mediator::jwks::{JwksSource, KeySource};
+use wc_mediator::jwks::KeySource;
 
 fn main() -> std::process::ExitCode {
     match run() {
@@ -95,92 +94,41 @@ fn now() -> u64 {
 /// and silently honouring one of them means the mediator is trusting something its
 /// operator did not think it was.
 fn build_trust(args: &[String]) -> Result<KeySource, String> {
-    let pem_path = flag(args, "issuer-pub");
-    let url = flag(args, "jwks-url");
-    let file = flag(args, "jwks-file");
-
-    let chosen = [
-        pem_path.as_ref().map(|_| "--issuer-pub"),
-        url.as_ref().map(|_| "--jwks-url"),
-        file.as_ref().map(|_| "--jwks-file"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-
-    match chosen.as_slice() {
-        [] => Err(
-            "no issuer trust: pass --issuer-pub PEM --kid KID, or --jwks-url URL, \
-                   or --jwks-file FILE"
-                .to_string(),
-        ),
-        [_] => Ok(()),
-        many => Err(format!(
-            "{} were all given; issuer trust has one source, and choosing for you would \
-             mean verifying against a key set you did not mean",
-            many.join(" and ")
-        )),
-    }?;
-
-    if let Some(pem_path) = pem_path {
-        let kid = required(args, "kid")?;
-        let pem = std::fs::read(&pem_path).map_err(|e| format!("read {pem_path}: {e}"))?;
-        let mut keys = IssuerKeys::new();
-        match flag(args, "alg")
-            .unwrap_or_else(|| "ES256".to_string())
-            .as_str()
-        {
-            "ES256" => keys.add_ec_pem(&kid, &pem, Algorithm::ES256),
-            "ES384" => keys.add_ec_pem(&kid, &pem, Algorithm::ES384),
-            "EdDSA" | "Ed25519" => keys.add_ed_pem(&kid, &pem),
-            other => return Err(format!("{other:?} is not an accepted contract algorithm")),
+    let ttl = |name: &str| -> Result<Option<u64>, String> {
+        match flag(args, name) {
+            None => Ok(None),
+            Some(v) => v
+                .parse()
+                .map(Some)
+                .map_err(|_| format!("--{name} {v:?} is not a number of seconds")),
         }
-        .map_err(|e| e.to_string())?;
-        return Ok(KeySource::Pinned(keys));
-    }
-
-    // `--kid` and `--alg` name one key; a key set names its own, so accepting them
-    // together would suggest they narrow it. They do not.
-    for ignored in ["kid", "alg"] {
-        if flag(args, ignored).is_some() {
-            return Err(format!(
-                "--{ignored} applies to --issuer-pub only; a key set carries its own kid \
-                 and algorithm, so this flag would have no effect"
-            ));
-        }
-    }
-
-    let mut source = match (url, file) {
-        (Some(url), _) => JwksSource::url(&url),
-        (_, Some(file)) => JwksSource::file(file),
-        _ => unreachable!("one source was chosen above"),
     };
-    if let Some(ttl) = flag(args, "jwks-ttl") {
-        source = source.with_ttl(
-            ttl.parse()
-                .map_err(|_| format!("--jwks-ttl {ttl:?} is not a number of seconds"))?,
-        );
+    let (issuer_pub, kid, alg) = (
+        flag(args, "issuer-pub"),
+        flag(args, "kid"),
+        flag(args, "alg"),
+    );
+    let (url, file) = (flag(args, "jwks-url"), flag(args, "jwks-file"));
+    let spec = wc_mediator::jwks::TrustSpec {
+        issuer_pub: issuer_pub.as_deref(),
+        kid: kid.as_deref(),
+        alg: alg.as_deref(),
+        jwks_url: url.as_deref(),
+        jwks_file: file.as_deref(),
+        jwks_ttl: ttl("jwks-ttl")?,
+        jwks_max_stale: ttl("jwks-max-stale")?,
+    };
+    let (source, report) = wc_mediator::jwks::build_trust(&spec, now())?;
+    if let Some(report) = report {
+        if !report.is_complete() {
+            eprintln!(
+                "connect-mediate: key set skipped {} key(s): {}",
+                report.skipped.len(),
+                report.skipped.join("; ")
+            );
+        }
     }
-    if let Some(max) = flag(args, "jwks-max-stale") {
-        source = source.with_max_stale(
-            max.parse()
-                .map_err(|_| format!("--jwks-max-stale {max:?} is not a number of seconds"))?,
-        );
-    }
-
-    // Load once here so a bad URL is a startup failure. Deferring it to the first
-    // request would mean the process starts, reports healthy, and denies everything.
-    let report = source
-        .load(now())
-        .map_err(|e| format!("issuer key set unusable, refusing to start: {e}"))?;
-    if !report.is_complete() {
-        eprintln!(
-            "connect-mediate: key set skipped {} key(s): {}",
-            report.skipped.len(),
-            report.skipped.join("; ")
-        );
-    }
-    Ok(KeySource::Rotating(Box::new(source)))
+    Ok(source)
 }
 
 const USAGE: &str = r#"connect-mediate — the warden-connect inline mediator
