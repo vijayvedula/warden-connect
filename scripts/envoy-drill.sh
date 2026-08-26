@@ -49,6 +49,7 @@ UP_PORT=8931; GRPC_PORT=9002; ENVOY_PORT=10000
 CID_FILE="$WORK/envoy.cid"
 cleanup() {
   [ -f "$CID_FILE" ] && docker rm -f "$(cat "$CID_FILE")" >/dev/null 2>&1
+  [ -n "${PLANE_PID:-}" ] && kill "$PLANE_PID" 2>/dev/null
   [ -n "${VERIFY_PID:-}" ] && kill "$VERIFY_PID" 2>/dev/null
   [ -n "${UP_PID:-}" ] && kill "$UP_PID" 2>/dev/null
   wait 2>/dev/null
@@ -176,6 +177,16 @@ cluster = "payments-mcp"
 callee = "$CALLEE"
 R
 
+cat > tokens.toml <<T
+[[client]]
+token = "tok_envoy_drill_0123456789"
+roles = ["connect.read", "connect.mediator"]
+T
+cat > mediators.toml <<M
+[[mediator]]
+id = "$MED"
+M
+
 # --- processes --------------------------------------------------------------------
 export UPSTREAM_LOG="$WORK/upstream.log"; : > "$UPSTREAM_LOG"
 start_upstream() {
@@ -191,13 +202,28 @@ start_upstream() {
   done
   echo "the upstream did not start" >&2; return 1
 }
+API_PORT=8841
+start_plane() {
+  [ -n "${PLANE_PID:-}" ] && { kill "$PLANE_PID" 2>/dev/null; wait "$PLANE_PID" 2>/dev/null; }
+  "$C" serve --listen "127.0.0.1:$API_PORT" --issuer-key issuer.priv.pem --kid issuer-1 \
+    --tokens tokens.toml --approvers approvers.toml >>serve.log 2>&1 &
+  PLANE_PID=$!
+  for _ in $(seq 1 80); do
+    curl -sf -o /dev/null "http://127.0.0.1:$API_PORT/healthz" && return 0
+    sleep 0.25
+  done
+  echo "the control plane did not start" >&2; tail -5 serve.log >&2; return 1
+}
+
 start_verifier() {   # $1 = mesh origin
   [ -n "${VERIFY_PID:-}" ] && { kill "$VERIFY_PID" 2>/dev/null; wait "$VERIFY_PID" 2>/dev/null; }
   : > verify.log
   "$VERIFY" --listen "0.0.0.0:$GRPC_PORT" --routes routes.toml \
     --mediator-id "$MED" --issuer-id "$ISS" \
     --issuer-pub issuer.pub.pem --kid issuer-1 \
-    --contract "$CONTRACT" --mesh-origin "$1" >>verify.log 2>&1 &
+    --contract "$CONTRACT" --mesh-origin "$1" \
+    --contracts "http://127.0.0.1:$API_PORT" --token tok_envoy_drill_0123456789 \
+    --refresh 2 --max-stale 3600 >>verify.log 2>&1 &
   VERIFY_PID=$!
   for _ in $(seq 1 40); do
     grep -q "serving ext_proc" verify.log && return 0
@@ -214,6 +240,7 @@ call() {   # $1 = json body; prints the response
 }
 
 start_upstream || exit 2
+start_plane || exit 2
 start_verifier "203.0.113.9" || exit 2   # deliberately wrong, for phase 1a
 
 docker rm -f wc-envoy-drill >/dev/null 2>&1
@@ -323,6 +350,34 @@ if grep -q "EXECUTED get_balance" "$UPSTREAM_LOG"; then
   bad "7 · with the verifier DOWN the call was forwarded — failure_mode_allow is not false"
 else
   ok "7 · with the verifier down, traffic is denied rather than allowed"
+fi
+
+# --- 8 · the verifier appears to the deploy gate ---------------------------------
+start_verifier "$ORIGIN" >/dev/null 2>&1
+sleep 5   # two refresh intervals, so at least one ack has been sent
+if grep -qE "refresh failed|not refreshing" verify.log; then
+  bad "8 · the verifier could not pull from the control plane"
+  grep -E "refresh failed|not refreshing" verify.log | tail -2 | sed 's/^/       /'
+else
+  # Not "did the command return something" — that is true whether or not this verifier ever
+  # spoke. The assertion is that THIS mediator id appears with a non-zero acked sequence and
+  # is caught up, which is only possible if the ack actually arrived.
+  GATE=$("$C" distribution --mediators mediators.toml --json 2>/dev/null \
+    | python3 -c '
+import json,sys
+d = json.load(sys.stdin)
+m = next((x for x in d.get("mediators", []) if x.get("mediator") == sys.argv[1]), None)
+if m is None:
+    print("absent")
+elif not m.get("caught_up") or not m.get("acked_seq"):
+    print("stale acked_seq=%s caught_up=%s" % (m.get("acked_seq"), m.get("caught_up")))
+else:
+    print("ok seq=%s" % m["acked_seq"])' "$MED" 2>/dev/null)
+  case "${GATE:-absent}" in
+    ok*) ok "8 · the verifier acks as a mediator: \`connect distribution\` sees it, $GATE" ;;
+    absent) bad "8 · the verifier never appeared in connect distribution at all" ;;
+    *) bad "8 · the verifier appears but has not caught up: $GATE" ;;
+  esac
 fi
 
 echo
