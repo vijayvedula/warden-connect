@@ -418,7 +418,7 @@ design started at rung 4 — which is why nobody could adopt it.
 | 3 | Cluster-scale behaviour | Unverified — needs a real cluster |
 | 4 | Independent security review | Not yet done, and it must be done by someone who did not build it |
 | 5 | What happens to a contract when the basis of its approval changes? | **Undesigned.** See below |
-| 6 | Is the mediator ready for the shared-gateway topology? | **Partly.** The Envoy `ext_proc` verifier (E5) is built and drilled against a real proxy: mesh identity, the surface ceiling, the pin, route mapping, rate and concurrency ceilings, contract refresh and fail-closed. The inline mediator's own listener is still not built |
+| 6 | Is the mediator ready for the shared-gateway topology? | **Partly.** The Envoy `ext_proc` verifier (E5) is built and drilled against a real proxy: mesh identity, the surface ceiling, gate 8 including streams that carry no catalogue, route mapping, rate and concurrency ceilings, contract refresh with a staleness bound, and fail-closed. The inline mediator's own listener is still not built |
 | 7 | Does `terms.max_spend_usd_per_day` bind anything? | **No,** and it cannot yet. `Ceilings::charge` needs an amount and nothing in the data plane produces one — an MCP response carries no cost and there is no price list. Carried, narrowed and federated correctly; bounds nothing at runtime. LLD §8.6.5 |
 
 ---

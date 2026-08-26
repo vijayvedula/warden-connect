@@ -446,6 +446,30 @@ is carried, narrowed and federated correctly and bounds nothing at runtime.
 Recorded here rather than left to be discovered from a contract that looked
 capped.
 
+**Gate 8 on a stream that carries no catalogue.** The pin can only be checked
+when a `tools/list` response passes, and a filter cannot fetch one the way the
+inline mediator does (`verify_pin_lazily`). So the gateway records verifications
+and refuses a `tools/call` on a contract that has never been pinned.
+
+| Keyed by | Why not |
+|---|---|
+| session | a stateless MCP server issues no `Mcp-Session-Id`, so every stream would be its own unverifiable session |
+| callee | the digest covers exactly the **contracted items**, so two contracts over different subsets of one callee have different digests and neither vouches for the other |
+| **contract (`jti`)** | correct: any stream on that contract that carries a catalogue verifies it for every other stream on it, which is as far as the evidence reaches |
+
+Two properties that took a second pass to get right:
+
+* A **detected mismatch revokes** the recorded verification. Refusing only that
+  catalogue would leave the pin standing and tool calls flowing on a contract
+  whose callee has demonstrably moved — drift detected and then ignored.
+* The ledger is **in memory**, so a verifier restart drops it and the first tool
+  call after a restart is refused until some client lists. Fail-closed and
+  self-healing within one MCP handshake, but it reads as an outage if nobody has
+  written it down. Drill phase 9 depends on this and says so.
+
+`--allow-unpinned` gives the requirement up; everything else still applies on
+those streams. `--pin-max-age N` re-requires verification every N seconds.
+
 At the gateway the counters are keyed by the contract's `jti` and shared across
 HTTP streams. Per-stream counters would reset on every request, and a contract
 reading `max_calls_per_hour = 10` would admit ten calls *per request* — a ceiling

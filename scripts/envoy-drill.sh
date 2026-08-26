@@ -273,11 +273,44 @@ if [ -z "$ORIGIN" ]; then
 else
   step "envoy connects from $ORIGIN"
   start_verifier "$ORIGIN" || exit 2
+
+  # A tool call BEFORE any catalogue has passed. Gate 8 has nothing to compare against on such
+  # a stream, so it is refused — and the code has to be the unpinned one, not WC-4001: the
+  # difference proves identity resolved and the PIN gate is what stopped it.
   OUT=$(call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_balance","arguments":{}}}')
-  if printf '%s' "$OUT" | grep -q "executed get_balance"; then
-    ok "1b · with the right origin, identity resolves and the contract admits"
+  if printf '%s' "$OUT" | grep -q "WC-1002"; then
+    ok "1b · a tool call before any catalogue is refused: the pin is unverified"
+  elif printf '%s' "$OUT" | grep -q "executed get_balance"; then
+    bad "1b · an UNPINNED tool call was admitted — the callee's surface was never checked"
   else
-    bad "1b · the contracted call was refused with the correct origin"
+    bad "1b · refused for the wrong reason (expected WC-1002)"
+    printf '%s\n' "$OUT" | sed 's/^/       /' | head -2
+  fi
+
+  # The catalogue: identity, the contract, mode_override AND the pin, in one request. This is
+  # the first thing any client following the MCP lifecycle does.
+  OUT=$(call '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
+  SEEN=$(printf '%s' "$OUT" | python3 -c '
+import json,sys
+try:
+    print(",".join(sorted(t["name"] for t in json.load(sys.stdin)["result"]["tools"])))
+except Exception:
+    print("<unparsed>")' 2>/dev/null)
+  if [ "$SEEN" = "get_balance" ]; then
+    ok "1c · tools/list filtered to the contracted tool — mode_override is honoured, pin verified"
+  elif [ "$SEEN" = "get_balance,wire_funds" ]; then
+    bad "1c · the catalogue came through UNFILTERED: Envoy never buffered the response body."
+    echo "       allow_mode_override, or the mode_override at ResponseHeaders, is not working." >&2
+  else
+    bad "1c · unexpected catalogue: $SEEN"
+    printf '%s\n' "$OUT" | sed 's/^/       /' | head -2
+  fi
+
+  OUT=$(call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_balance","arguments":{}}}')
+  if printf '%s' "$OUT" | grep -q "executed get_balance"; then
+    ok "1d · once pinned, the contracted call executes"
+  else
+    bad "1d · the contracted call was refused after the pin was verified"
     printf '%s\n' "$OUT" | sed 's/^/       /' | head -2
     grep -E "WC-|refus" verify.log | tail -3 | sed 's/^/       /'
   fi
@@ -298,25 +331,6 @@ else
   ok "3 · the upstream never saw it: no request left Envoy for a denied call"
 fi
 
-# --- 4 · the catalogue, which is where mode_override is proved --------------------
-OUT=$(call '{"jsonrpc":"2.0","id":3,"method":"tools/list"}')
-SEEN=$(printf '%s' "$OUT" | python3 -c '
-import json,sys
-try:
-    d=json.load(sys.stdin)
-    print(",".join(sorted(t["name"] for t in d["result"]["tools"])))
-except Exception:
-    print("<unparsed>")' 2>/dev/null)
-if [ "$SEEN" = "get_balance" ]; then
-  ok "4 · tools/list filtered to the contracted tool — mode_override is honoured"
-elif [ "$SEEN" = "get_balance,wire_funds" ]; then
-  bad "4 · the catalogue came through UNFILTERED: Envoy never buffered the response body."
-  echo "       allow_mode_override, or the mode_override at ResponseHeaders, is not working." >&2
-else
-  bad "4 · unexpected catalogue: $SEEN"
-  printf '%s\n' "$OUT" | sed 's/^/       /' | head -2
-fi
-
 # --- 5 · gate 8 ------------------------------------------------------------------
 start_upstream UPSTREAM_DRIFT=1 || exit 2
 OUT=$(call '{"jsonrpc":"2.0","id":4,"method":"tools/list"}')
@@ -326,7 +340,21 @@ else
   bad "5 · a drifted surface was served"
   printf '%s\n' "$OUT" | sed 's/^/       /' | head -2
 fi
+# Drift detected must REVOKE the earlier verification, not merely refuse that one catalogue.
+# Otherwise tool calls keep flowing on a contract whose callee has demonstrably moved.
+OUT=$(call '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_balance","arguments":{}}}')
+if printf '%s' "$OUT" | grep -q "WC-1002"; then
+  ok "5b · the detected drift revoked the pin: tool calls are refused until it matches again"
+elif printf '%s' "$OUT" | grep -q "executed get_balance"; then
+  bad "5b · tool calls still flow after drift was detected — the stale verification survived"
+else
+  bad "5b · refused for the wrong reason after drift"
+  printf '%s\n' "$OUT" | sed 's/^/       /' | head -2
+fi
+
 start_upstream || exit 2
+# Re-pin against the restored surface, so the phases below start from a known state.
+call '{"jsonrpc":"2.0","id":6,"method":"tools/list"}' >/dev/null
 
 # --- 6 · an unmapped route -------------------------------------------------------
 # The route table maps only `payments-mcp`. Envoy's second route sends /other to a cluster
@@ -385,6 +413,11 @@ fi
 # than count exactly — brittle if a phase above changes — call until a refusal arrives and
 # assert both that it arrives AND that at least one call succeeded first. A ceiling that
 # refused everything from the start would pass a refusal-only check.
+# The verifier was restarted in phase 8 and the pin ledger is IN MEMORY, so nothing is
+# verified again. That is fail-closed and self-healing — the first client to list tools
+# restores it — but it does mean the first tool call after any restart is refused. Worth
+# knowing before someone reads it as an outage.
+call '{"jsonrpc":"2.0","id":8,"method":"tools/list"}' >/dev/null
 allowed=0; refused=""
 for _ in $(seq 1 8); do
   R=$(call '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"get_balance","arguments":{}}}')
