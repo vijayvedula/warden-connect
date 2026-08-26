@@ -1,0 +1,13 @@
+[package]
+name = "warden-connect-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Phase-shaped contract enforcement for a gateway filter (E5). No transport, no async."
+
+[dependencies]
+warden-connect-core = { path = "../wc-core" }
+warden-connect-mediator = { path = "../wc-mediator" }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/wc-core", "crates/wc-control", "crates/wc-cli",
-    "crates/wc-e2e", "crates/wc-mediator"]
+    "crates/wc-e2e", "crates/wc-mediator", "crates/wc-gateway"]
 
 [workspace.package]
 version = "0.1.1"
