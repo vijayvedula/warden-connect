@@ -2,7 +2,8 @@
 
 | Document | What it is |
 |---|---|
-| [explainer.html](explainer.html) | **Start here.** A 21-slide self-building deck: the problem, the model, the lifecycle, the capabilities. Open it in a browser |
+| [contract-and-enforcement.html](contract-and-enforcement.html) | **For CTOs, CIOs and enterprise architects.** Why a contract and an enforcement point are only a control together — the algebra as three toggleable ceilings, where the checkpoint goes and who can remove it, and an honest ledger of what does and does not bind |
+| [explainer.html](explainer.html) | A 21-slide self-building deck: the problem, the model, the lifecycle, the capabilities. Open it in a browser |
 | [07-hld.md](07-hld.md) | High-level design — the plane split, the contract, the algebra, the trust model |
 | [08-lld.md](08-lld.md) | Low-level design — every crate, every module, every check, the build order |
 | [use-cases/](use-cases/) | Ten use cases, one file each, with a sequence diagram per use case |
