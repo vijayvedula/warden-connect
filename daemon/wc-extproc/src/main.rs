@@ -18,8 +18,7 @@
 //! Envoy must be configured with `failure_mode_allow: false`. If this process is unreachable the
 //! traffic is denied, which is the only safe reading of "the verifier is not there".
 
-mod contracts;
-mod routes;
+use warden_connect_gateway::{contracts, routes};
 
 use std::pin::Pin;
 

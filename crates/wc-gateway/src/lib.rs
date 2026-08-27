@@ -37,6 +37,9 @@
 use serde_json::Value;
 use wc_core::error::Code;
 
+pub mod contracts;
+pub mod routes;
+
 /// What may happen to a request frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {

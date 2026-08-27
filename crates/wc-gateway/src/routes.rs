@@ -110,6 +110,15 @@ impl Table {
     pub fn len(&self) -> usize {
         self.by_cluster.len() + self.by_route.len()
     }
+
+    /// Whether the table matches on nothing.
+    ///
+    /// An empty table resolves no callee, so every request is refused `WC-4001`. A binding
+    /// should report this at load, where it is one line, rather than per request.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// A table on disk, reloaded when the file changes.

@@ -14,7 +14,8 @@
 //!
 //! What that leaves is a real hole, and it is named rather than papered over: a caller that
 //! issues `tools/call` and never `tools/list` is never checked against the pin. The mediator
-//! closes it by fetching the catalogue itself; a filter cannot. See [`PinPolicy`].
+//! closes it by fetching the catalogue itself; a filter cannot. What bounds the hole is
+//! [`crate::PinLedger`] and `FilterCfg::pin_max_age`, not a policy type.
 
 use std::sync::Arc;
 
@@ -120,6 +121,15 @@ impl ContractSet {
     #[must_use]
     pub fn len(&self) -> usize {
         self.cache.snapshot().len()
+    }
+
+    /// Whether the set holds no contract at all.
+    ///
+    /// A binding that starts with an empty set refuses every request, which is correct and
+    /// almost never intended — say so at startup rather than in the access log.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
