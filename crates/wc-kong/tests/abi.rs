@@ -26,6 +26,15 @@ const MEDIATOR: &str = "warden:mediator:kong-test";
 const ISS: &str = "https://connect.internal";
 const CALLER: &str = "spiffe://org/ns/agents/sa/recon-bot-7";
 const CALLEE: &str = "spiffe://org/ns/tools/sa/payments-mcp";
+const TOOL_CALL: &str =
+    r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_balance"}}"#;
+
+/// A verified peer certificate whose single URI SAN is `CALLER`.
+const CERT: &str = include_str!("../../../fixtures/keys/test_peer_spiffe.pem");
+/// Two spiffe URI SANs — not a valid SVID.
+const CERT_TWO: &str = include_str!("../../../fixtures/keys/test_peer_two_uris.pem");
+/// A URI SAN that is not a spiffe id.
+const CERT_HTTPS: &str = include_str!("../../../fixtures/keys/test_peer_not_spiffe.pem");
 
 fn now() -> u64 {
     std::time::SystemTime::now()
@@ -122,6 +131,7 @@ fn setup(name: &str, tools: &[&str], service: &str) -> String {
         "kid": KID,
         "mediator_id": MEDIATOR,
         "issuer_id": ISS,
+        "identity": "tls",
         "mode": "enforce"
     })
     .to_string()
@@ -148,8 +158,15 @@ fn init(cfg: &str) -> Result<*mut wc_kong::config::Handle, String> {
     Ok(h)
 }
 
-fn peer(service: &str, caller: Option<&str>) -> String {
-    json!({ "caller": caller, "service": service }).to_string()
+/// A peer as Lua would report it: nginx verified the chain, and here is the chain.
+fn peer(service: &str, cert: Option<&str>) -> String {
+    json!({
+        "tls_verify": cert.map(|_| "SUCCESS"),
+        "cert_pem": cert,
+        "remote": "10.0.0.7",
+        "service": service
+    })
+    .to_string()
 }
 
 /// Drive one request frame through a fresh stream and return (verdict, body, code).
@@ -212,7 +229,7 @@ fn no_contracts_refuses_to_start_rather_than_denying_everything_quietly() {
     let cfg = json!({
         "contracts": [], "routes": rpath.to_str().unwrap(),
         "issuer_pub": PUB_PATH, "kid": KID,
-        "mediator_id": MEDIATOR, "issuer_id": ISS
+        "mediator_id": MEDIATOR, "issuer_id": ISS, "identity": "tls"
     })
     .to_string();
     let e = init(&cfg).unwrap_err();
@@ -234,7 +251,7 @@ fn a_missing_contract_file_names_the_path() {
     let cfg = json!({
         "contracts": ["/nonexistent/nope.jws"], "routes": rpath.to_str().unwrap(),
         "issuer_pub": PUB_PATH, "kid": KID,
-        "mediator_id": MEDIATOR, "issuer_id": ISS
+        "mediator_id": MEDIATOR, "issuer_id": ISS, "identity": "tls"
     })
     .to_string();
     let e = init(&cfg).unwrap_err();
@@ -273,7 +290,7 @@ fn a_tool_call_before_any_catalogue_is_refused_because_the_pin_is_unverified() {
     let h = init(&setup("prepin", &["get_balance"], "payments")).unwrap();
     let (v, body, code) = request(
         h,
-        &peer("payments", Some(CALLER)),
+        &peer("payments", Some(CERT)),
         r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_balance"}}"#,
     );
     assert_eq!(v, WC_REFUSE);
@@ -287,7 +304,7 @@ fn a_tool_call_before_any_catalogue_is_refused_because_the_pin_is_unverified() {
 #[test]
 fn a_contracted_tool_is_forwarded_once_the_pin_is_verified() {
     let h = init(&setup("forward", &["get_balance", "list_transactions"], "payments")).unwrap();
-    let p = peer("payments", Some(CALLER));
+    let p = peer("payments", Some(CERT));
     verify_pin(h, &p);
     let (v, body, _) = request(
         h,
@@ -302,7 +319,7 @@ fn a_contracted_tool_is_forwarded_once_the_pin_is_verified() {
 #[test]
 fn an_uncontracted_tool_is_refused_with_the_code_lua_can_label() {
     let h = init(&setup("uncontracted", &["get_balance"], "payments")).unwrap();
-    let p = peer("payments", Some(CALLER));
+    let p = peer("payments", Some(CERT));
     verify_pin(h, &p);
     let (v, body, code) = request(
         h,
@@ -321,7 +338,7 @@ fn an_unmapped_route_refuses_and_does_not_fall_through() {
     let h = init(&setup("unmapped", &["get_balance"], "payments")).unwrap();
     let (v, _, code) = request(
         h,
-        &peer("some-other-service", Some(CALLER)),
+        &peer("some-other-service", Some(CERT)),
         r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_balance"}}"#,
     );
     assert_eq!(v, WC_REFUSE);
@@ -347,7 +364,7 @@ fn a_batch_is_refused_through_the_abi_too() {
     let h = init(&setup("batch", &["get_balance"], "payments")).unwrap();
     let (v, body, _) = request(
         h,
-        &peer("payments", Some(CALLER)),
+        &peer("payments", Some(CERT)),
         r#"[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_balance"}}]"#,
     );
     assert_eq!(v, WC_REFUSE);
@@ -360,7 +377,7 @@ fn a_batch_is_refused_through_the_abi_too() {
 #[test]
 fn an_unreadable_body_is_refused_rather_than_read_as_no_tool_call() {
     let h = init(&setup("nobody", &["get_balance"], "payments")).unwrap();
-    let p = peer("payments", Some(CALLER));
+    let p = peer("payments", Some(CERT));
     let mut err = WcOut {
         ptr: std::ptr::null_mut(),
         len: 0,
@@ -398,7 +415,7 @@ fn a_catalogue_request_buffers_and_its_response_is_filtered_to_the_contract() {
         "payments",
     ))
     .unwrap();
-    let p = peer("payments", Some(CALLER));
+    let p = peer("payments", Some(CERT));
     let mut err = WcOut {
         ptr: std::ptr::null_mut(),
         len: 0,
@@ -477,7 +494,7 @@ fn two_streams_on_one_contract_share_their_ceilings() {
     // the registry hands the same Arc twice, because per-stream counters would make a rate
     // ceiling count per request and mean nothing.
     let h = init(&setup("share", &["get_balance"], "payments")).unwrap();
-    let p = peer("payments", Some(CALLER));
+    let p = peer("payments", Some(CERT));
     let mut err = WcOut {
         ptr: std::ptr::null_mut(),
         len: 0,
@@ -558,4 +575,157 @@ fn the_c_header_agrees_with_the_rust_it_describes() {
         std::mem::size_of::<*mut u8>() + std::mem::size_of::<usize>() + 8,
         "wc_out layout changed; wc_kong.h and the Lua ffi.cdef must change with it"
     );
+}
+
+// --- identity ------------------------------------------------------------
+//
+// Increment 2's `Peer` had a `caller` field, which meant anything able to reach the Lua plugin
+// could state an identity. These are the tests that field could not have had.
+
+/// A verified certificate for a different workload.
+const CERT_OTHER: &str = include_str!("../../../fixtures/keys/test_peer_other_spiffe.pem");
+
+fn cfg_with(name: &str, extra: Value) -> String {
+    let mut v: Value = serde_json::from_str(&setup(name, &["get_balance"], "payments")).unwrap();
+    let obj = v.as_object_mut().unwrap();
+    for (k, val) in extra.as_object().unwrap() {
+        if val.is_null() {
+            obj.remove(k);
+        } else {
+            obj.insert(k.clone(), val.clone());
+        }
+    }
+    v.to_string()
+}
+
+#[test]
+fn config_without_an_identity_source_refuses_to_start() {
+    let e = init(&cfg_with("noident", json!({ "identity": null }))).unwrap_err();
+    assert!(e.contains("identity"), "got {e}");
+}
+
+#[test]
+fn xfcc_without_a_mesh_origin_refuses_to_start() {
+    let e = init(&cfg_with("xfccnoorigin", json!({ "identity": "xfcc" }))).unwrap_err();
+    assert!(e.contains("mesh_origin"), "got {e}");
+}
+
+/// Two configured sources would mean an attacker who can suppress one selects the other.
+#[test]
+fn tls_with_a_mesh_origin_refuses_to_start_rather_than_ignoring_one() {
+    let e = init(&cfg_with(
+        "bothsources",
+        json!({ "identity": "tls", "mesh_origin": "/tmp/mesh.sock" }),
+    ))
+    .unwrap_err();
+    assert!(e.contains("Pick one source"), "got {e}");
+}
+
+#[test]
+fn an_unverified_chain_is_not_an_identity_however_good_the_certificate_looks() {
+    let h = init(&setup("unverified", &["get_balance"], "payments")).unwrap();
+    for verdict in ["NONE", "FAILED:self signed certificate", ""] {
+        let p = json!({
+            "tls_verify": verdict, "cert_pem": CERT,
+            "remote": "10.0.0.7", "service": "payments"
+        })
+        .to_string();
+        let (v, _, code) = request(h, &p, TOOL_CALL);
+        assert_eq!(v, WC_REFUSE, "ssl_client_verify={verdict:?} must not admit");
+        assert_eq!(code, 4001);
+    }
+    unsafe { wc_free(h) };
+}
+
+#[test]
+fn a_verified_certificate_carrying_two_spiffe_ids_is_refused() {
+    let h = init(&setup("twoids", &["get_balance"], "payments")).unwrap();
+    let (v, _, code) = request(h, &peer("payments", Some(CERT_TWO)), TOOL_CALL);
+    assert_eq!(v, WC_REFUSE);
+    assert_eq!(code, 4001);
+    unsafe { wc_free(h) };
+}
+
+#[test]
+fn a_verified_certificate_whose_uri_is_not_a_spiffe_id_is_refused() {
+    let h = init(&setup("httpsid", &["get_balance"], "payments")).unwrap();
+    let (v, _, code) = request(h, &peer("payments", Some(CERT_HTTPS)), TOOL_CALL);
+    assert_eq!(v, WC_REFUSE);
+    assert_eq!(code, 4001);
+    unsafe { wc_free(h) };
+}
+
+/// The point of the whole increment: a certificate that is valid, verified and *someone else's*
+/// resolves to no contract.
+#[test]
+fn a_different_verified_identity_gets_no_contract() {
+    let h = init(&setup("otherid", &["get_balance"], "payments")).unwrap();
+    let p = peer("payments", Some(CERT_OTHER));
+    // Not even the catalogue, which is the frame a client sends first.
+    let (v, _, code) = request(h, &p, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
+    assert_eq!(v, WC_REFUSE);
+    assert_eq!(code, 4001);
+    unsafe { wc_free(h) };
+}
+
+/// An earlier draft built the XFCC origin out of the configured `mesh_origin`, so the origin was
+/// always the trusted one and the mesh check never failed — any client able to set the header
+/// could assert any identity. This is the test that fails if that comes back.
+#[test]
+fn an_xfcc_header_from_an_untrusted_origin_is_refused() {
+    let cfg = cfg_with(
+        "xfccorigin",
+        json!({ "identity": "xfcc", "mesh_origin": "/run/mesh/sidecar.sock" }),
+    );
+    let h = init(&cfg).unwrap();
+    let xfcc = format!("URI={CALLER}");
+    for remote in [
+        "10.0.0.7",                    // some TCP peer
+        "unix:/tmp/attacker.sock",     // a different socket
+        "unix:",                       // no path at all
+    ] {
+        let p = json!({ "xfcc": xfcc, "remote": remote, "service": "payments" }).to_string();
+        let (v, _, code) = request(h, &p, TOOL_CALL);
+        assert_eq!(v, WC_REFUSE, "an XFCC from {remote} must not be believed");
+        assert_eq!(code, 4001);
+    }
+    unsafe { wc_free(h) };
+}
+
+#[test]
+fn an_xfcc_header_from_the_trusted_socket_is_believed() {
+    let cfg = cfg_with(
+        "xfccgood",
+        json!({ "identity": "xfcc", "mesh_origin": "/run/mesh/sidecar.sock" }),
+    );
+    let h = init(&cfg).unwrap();
+    let p = json!({
+        "xfcc": format!("URI={CALLER}"),
+        "remote": "unix:/run/mesh/sidecar.sock",
+        "service": "payments"
+    })
+    .to_string();
+    // Reaches the pin gate rather than the contract gate, which is how we know identity
+    // resolved: WC-1002 is only reachable once a contract has been found.
+    let (v, body, code) = request(h, &p, TOOL_CALL);
+    assert_eq!(v, WC_REFUSE);
+    assert_eq!(code, 1002, "expected the pin gate, not WC-4001. got {body}");
+    unsafe { wc_free(h) };
+}
+
+/// And with `identity = "tls"` the header is not read at all, so setting it changes nothing.
+#[test]
+fn under_tls_identity_an_xfcc_header_is_ignored_not_used_as_a_fallback() {
+    let h = init(&setup("nofallback", &["get_balance"], "payments")).unwrap();
+    let p = json!({
+        "tls_verify": "NONE",
+        "xfcc": format!("URI={CALLER}"),
+        "remote": "unix:/run/mesh/sidecar.sock",
+        "service": "payments"
+    })
+    .to_string();
+    let (v, _, code) = request(h, &p, TOOL_CALL);
+    assert_eq!(v, WC_REFUSE, "a suppressed certificate must not promote the header");
+    assert_eq!(code, 4001);
+    unsafe { wc_free(h) };
 }

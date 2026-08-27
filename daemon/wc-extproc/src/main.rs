@@ -45,41 +45,15 @@ fn resolve_caller(
     trust: &wc_mediator::peer::MeshTrust,
     origin: &wc_mediator::peer::Origin,
 ) -> Option<String> {
-    let Some(xfcc) = header(h, "x-forwarded-client-cert") else {
-        // Silent until now. An absent header and a header from the wrong origin both ended as
-        // WC-4001, which names the contract and says nothing about identity — so an operator
-        // whose Envoy is not setting XFCC had no way to tell that from a missing contract.
-        eprintln!(
-            "wc-extproc: no x-forwarded-client-cert on this request from {}. Envoy sets it only \
-             with `forward_client_cert_details: SANITIZE_SET` and a verified client certificate",
-            origin.describe()
-        );
-        return None;
-    };
     // `resolve` needs a callee to build a `Peer`; only the caller half is read back, and the
     // real callee is configuration held on the Verifier.
     let callee = wc_core::model::EntityId::new("spiffe://placeholder/ns/x/sa/callee").ok()?;
-    let source = wc_mediator::peer::PeerSource::Mesh {
-        trust: trust.clone(),
-        callee,
-    };
-    let presented = wc_mediator::peer::Presented::mesh(xfcc, origin.clone());
-    match source.resolve(&presented) {
-        Ok(p) => Some(p.identity.caller.as_str().to_string()),
-        // Logged, not swallowed. An identity that failed to resolve and a caller with no
-        // contract both end as "refused", and an operator staring at WC-4001 has no way to tell
-        // a spoofing attempt from a missing contract without this line. The origin is named
-        // because a mesh-trust mismatch is the most common cause and the hardest to guess.
-        Err(e) => {
-            eprintln!(
-                "wc-extproc: peer identity not established from {}: {} {}",
-                origin.describe(),
-                e.code(),
-                e.detail()
-            );
-            None
-        }
-    }
+    warden_connect_gateway::adapter::caller_from_xfcc(
+        header(h, "x-forwarded-client-cert"),
+        trust,
+        origin,
+        &callee,
+    )
 }
 
 /// Where the callee for a stream comes from.

@@ -3,7 +3,8 @@
 use std::ffi::{c_char, c_int};
 
 use warden_connect_gateway::adapter::{
-    binding, parse_request_frame, placeholder_callee, refusal_frame,
+    binding, caller_from_tls, caller_from_xfcc, parse_request_frame, placeholder_callee,
+    refusal_frame,
 };
 use warden_connect_gateway::contracts::Contracts;
 use warden_connect_gateway::{BodyAction, BodyMode, Filter, FilterCfg, Verdict};
@@ -122,6 +123,26 @@ fn refuse(out: *mut WcOut, code: wc_core::error::Code, detail: &str) -> c_int {
         ),
     );
     WC_REFUSE
+}
+
+/// Where the request arrived from, as the plugin observed it.
+///
+/// Never derived from configuration: see `Peer::remote`. An absent value is an address that
+/// matches no trusted origin, which is a refusal, not loopback.
+fn origin_of(remote: Option<&str>) -> wc_mediator::peer::Origin {
+    match remote {
+        Some(r) => match r.strip_prefix("unix:") {
+            Some(path) => wc_mediator::peer::Origin::UnixSocket {
+                path: path.to_string(),
+            },
+            None => wc_mediator::peer::Origin::Tcp {
+                addr: r.to_string(),
+            },
+        },
+        None => wc_mediator::peer::Origin::Tcp {
+            addr: String::new(),
+        },
+    }
 }
 
 /// One stream. Never shared between requests.
@@ -270,9 +291,25 @@ pub unsafe extern "C" fn wc_stream_new(
             );
         }
 
+        // Identity from evidence, by the source the operator declared. Never both: falling
+        // back would let whoever can suppress one source choose the other.
+        let bound = callee.clone().unwrap_or_else(placeholder_callee);
+        let caller = match handle.identity {
+            crate::config::IdentitySource::Tls => caller_from_tls(
+                peer.tls_verify.as_deref(),
+                peer.cert_pem.as_deref(),
+                peer.remote.as_deref(),
+                &bound,
+            ),
+            crate::config::IdentitySource::Xfcc => {
+                let origin = origin_of(peer.remote.as_deref());
+                caller_from_xfcc(peer.xfcc.as_deref(), &handle.mesh, &origin, &bound)
+            }
+        };
+
         let resolved = callee
             .as_ref()
-            .and_then(|c| handle.contracts.resolve(peer.caller.as_deref(), c.as_str()));
+            .and_then(|c| handle.contracts.resolve(caller.as_deref(), c.as_str()));
         let ceilings = resolved
             .as_ref()
             .map(|r| handle.ceilings.for_contract(r.admitted.jti.as_str()));
@@ -283,7 +320,7 @@ pub unsafe extern "C" fn wc_stream_new(
 
         let cfg = FilterCfg {
             mode: handle.mode,
-            callee: callee.unwrap_or_else(placeholder_callee),
+            callee: bound,
             pins: handle.pins.clone(),
             pin_max_age: handle.pin_max_age,
         };
