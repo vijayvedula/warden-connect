@@ -23,6 +23,7 @@ use wc_core::contract::{AdmitCtx, Admitted};
 use wc_core::model::EntityId;
 use wc_core::model::Pin;
 use wc_mediator::cache::{Cache, Snapshot, Trust};
+use crate::adapter::binding;
 use wc_mediator::jwks::KeySource;
 
 /// An admitted connection and the contract it came from.
@@ -99,10 +100,10 @@ impl ContractSet {
         // and meaning one — a walkthrough lost an afternoon to exactly that.
         for sh in &snapshot.shadowed {
             eprintln!(
-                "wc-extproc: WARNING contract {} is UNREACHABLE — {} covers the same pair \
+                "{}: WARNING contract {} is UNREACHABLE — {} covers the same pair \
                  ({} -> {}) and this filter resolves by pair, never by cid. Put the tools you \
                  need in ONE contract",
-                sh.cid, sh.shadowed_by, sh.caller, sh.callee
+                binding(), sh.cid, sh.shadowed_by, sh.caller, sh.callee
             );
         }
         let cache = Arc::new(Cache::new());
@@ -168,9 +169,9 @@ impl Contracts for ContractSet {
         // have been withdrawn an hour ago.
         if let Some(age) = self.stale() {
             eprintln!(
-                "wc-extproc: refusing every call — the contract set is {age}s old and the \
+                "{}: refusing every call — the contract set is {age}s old and the \
                  staleness bound is {}s. A revocation cannot have reached this process.",
-                self.max_stale
+                binding(), self.max_stale
             );
             return None;
         }
@@ -188,7 +189,8 @@ impl Contracts for ContractSet {
             Ok(c) => c,
             Err(e) => {
                 eprintln!(
-                    "wc-extproc: no contract for {caller} -> {callee}: {} {}",
+                    "{}: no contract for {caller} -> {callee}: {} {}",
+                    binding(),
                     e.code(),
                     e.detail()
                 );
@@ -218,7 +220,8 @@ impl Contracts for ContractSet {
             Ok(a) => a,
             Err(e) => {
                 eprintln!(
-                    "wc-extproc: contract {} found for {caller} -> {callee} but NOT admitted: {} {}",
+                    "{}: contract {} found for {caller} -> {callee} but NOT admitted: {} {}",
+                    binding(),
                     contract.payload.cid.as_str(),
                     e.code(),
                     e.detail()

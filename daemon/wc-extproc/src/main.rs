@@ -18,6 +18,7 @@
 //! Envoy must be configured with `failure_mode_allow: false`. If this process is unreachable the
 //! traffic is denied, which is the only safe reading of "the verifier is not there".
 
+use warden_connect_gateway::adapter::{placeholder_callee, refusal_frame, Registry};
 use warden_connect_gateway::{contracts, routes};
 
 use std::pin::Pin;
@@ -103,45 +104,6 @@ impl CalleeSource {
     }
 }
 
-/// Ceiling state per contract.
-#[derive(Default)]
-struct Limits {
-    by_jti: std::sync::Mutex<
-        std::collections::HashMap<String, std::sync::Arc<wc_mediator::ceiling::Ceilings>>,
-    >,
-}
-
-impl Limits {
-    /// The ceilings for one contract, created on first sight.
-    ///
-    /// Nothing evicts these. A contract that expires leaves its counters behind, which is a
-    /// bounded leak — one small struct per contract this process has ever admitted — and the
-    /// safe direction: evicting on expiry would hand a caller a fresh budget by waiting.
-    fn for_contract(&self, jti: &str) -> std::sync::Arc<wc_mediator::ceiling::Ceilings> {
-        let mut map = match self.by_jti.lock() {
-            Ok(m) => m,
-            // A poisoned lock means another thread panicked holding it. The counters are still
-            // readable and a fresh map would reset every budget, so the poison is stepped over
-            // rather than allowed to become a way past the ceilings.
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        std::sync::Arc::clone(
-            map.entry(jti.to_string())
-                .or_insert_with(|| std::sync::Arc::new(wc_mediator::ceiling::Ceilings::new())),
-        )
-    }
-}
-
-/// A callee id for a stream whose route is unmapped.
-///
-/// Never used to admit anything: the filter it is handed to has no contract, so every frame on
-/// that stream is refused. It exists because `Filter` needs an entity to bind a pin to, and an
-/// `Option` there would be a second way to express "no contract".
-fn placeholder_callee() -> wc_core::model::EntityId {
-    wc_core::model::EntityId::new("spiffe://unmapped.invalid/ns/x/sa/unmapped")
-        .expect("the placeholder callee is a valid id")
-}
-
 /// A named attribute out of `ProcessingRequest.attributes`.
 ///
 /// The map is keyed by the filter that produced the values, and the attribute names sit inside
@@ -179,21 +141,6 @@ fn header<'a>(h: &'a HttpHeaders, name: &str) -> Option<&'a str> {
     })
 }
 
-/// A JSON-RPC error frame, shaped the way the mediator shapes a refusal so an agent sees the
-/// same thing whichever enforcement point refused it.
-fn refusal_body(code: wc_core::error::Code, detail: &str) -> String {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": serde_json::Value::Null,
-        "error": {
-            "code": -32001,
-            "message": format!("BLOCKED by warden-connect: {code} {detail}"),
-            "data": { "code": code.to_string(), "summary": detail }
-        }
-    })
-    .to_string()
-}
-
 fn immediate_refusal(code: wc_core::error::Code, detail: &str) -> ProcessingResponse {
     ProcessingResponse {
         response: Some(processing_response::Response::ImmediateResponse(
@@ -202,7 +149,7 @@ fn immediate_refusal(code: wc_core::error::Code, detail: &str) -> ProcessingResp
                 // failure as "the server is broken" and a JSON-RPC error as a refused call. The
                 // agent needs to be able to tell those apart.
                 status: Some(HttpStatus { code: 200 }),
-                body: refusal_body(code, detail).into_bytes(),
+                body: refusal_frame(code, detail).into_bytes(),
                 details: code.to_string(),
                 ..Default::default()
             },
@@ -235,7 +182,7 @@ struct Verifier<C: Contracts> {
     /// contracts between the same pair have separate budgets. Shared across streams because one
     /// HTTP stream is one call — per-stream counters would make every ceiling count to one and
     /// then reset.
-    limits: std::sync::Arc<Limits>,
+    limits: std::sync::Arc<Registry>,
     /// Where `x-forwarded-client-cert` may be believed from. An empty configuration trusts
     /// nothing, which is `MeshTrust`'s deliberate default and the right one: "we forgot to
     /// configure it" must not look identical to "it is configured".
@@ -417,28 +364,12 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
 /// one is either not JSON-RPC — in which case it is not a request this filter should be passing
 /// to an MCP server — or truncated because the buffer filled, which is the same answer.
 fn on_request_body(filter: &mut Filter, body: &HttpBody) -> ProcessingResponse {
-    let Ok(frame) = serde_json::from_slice::<serde_json::Value>(&body.body) else {
-        return immediate_refusal(
-            wc_core::error::Code::FRAME_MALFORMED,
-            "the request body is not a JSON-RPC frame",
-        );
+    let (method, params) = match warden_connect_gateway::adapter::parse_request_frame(&body.body) {
+        Ok(f) => f,
+        Err((code, detail)) => return immediate_refusal(code, detail),
     };
-    // A batch carries several calls, some of which this filter would allow and some not. There
-    // is no partial answer to give, and letting the array through would forward the ones it
-    // would have refused, so an array is refused whole.
-    if frame.is_array() {
-        return immediate_refusal(
-            wc_core::error::Code::FRAME_MALFORMED,
-            "a JSON-RPC batch cannot be verified per call; send one frame per request",
-        );
-    }
-    let method = frame.get("method").and_then(|m| m.as_str()).unwrap_or("");
-    let params = frame
-        .get("params")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
 
-    match filter.on_request(method, &params) {
+    match filter.on_request(&method, &params) {
         Verdict::Forward => ProcessingResponse {
             response: Some(processing_response::Response::RequestBody(
                 BodyResponse::default(),
@@ -655,6 +586,10 @@ struct Started {
 }
 
 fn run() -> Result<Started, String> {
+    // Name this binding before anything shared can emit a diagnostic. `contracts` and `routes`
+    // live in wc-gateway now and are used by more than one binary; a line that says
+    // "wc-extproc:" has to say it because this process set it, not because it was baked in.
+    warden_connect_gateway::adapter::set_binding("wc-extproc");
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{}", usage());
@@ -848,7 +783,7 @@ fn run() -> Result<Started, String> {
             contracts: std::sync::Arc::new(set),
             mode,
             routes: std::sync::Arc::new(routes),
-            limits: std::sync::Arc::new(Limits::default()),
+            limits: std::sync::Arc::new(Registry::default()),
             pins,
             pin_max_age,
             mesh_trust,
@@ -1135,7 +1070,7 @@ mod tests {
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
             // Loopback TCP, which is the origin the test client connects from.
-            limits: std::sync::Arc::new(Limits::default()),
+            limits: std::sync::Arc::new(Registry::default()),
             pins: None,
             pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
@@ -1308,7 +1243,7 @@ mod tests {
             routes: std::sync::Arc::new(CalleeSource::Single(
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
-            limits: std::sync::Arc::new(Limits::default()),
+            limits: std::sync::Arc::new(Registry::default()),
             pins: None,
             pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
@@ -1350,7 +1285,7 @@ mod tests {
             routes: std::sync::Arc::new(CalleeSource::Single(
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
-            limits: std::sync::Arc::new(Limits::default()),
+            limits: std::sync::Arc::new(Registry::default()),
             pins: None,
             pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
@@ -1424,7 +1359,7 @@ mod tests {
             routes: std::sync::Arc::new(CalleeSource::Table(std::sync::Arc::new(
                 routes::Routes::load(&path).unwrap(),
             ))),
-            limits: std::sync::Arc::new(Limits::default()),
+            limits: std::sync::Arc::new(Registry::default()),
             pins: None,
             pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
@@ -1543,7 +1478,7 @@ mod tests {
             routes: std::sync::Arc::new(CalleeSource::Single(
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
-            limits: std::sync::Arc::new(Limits::default()),
+            limits: std::sync::Arc::new(Registry::default()),
             pins: None,
             pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {

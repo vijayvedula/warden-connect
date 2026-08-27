@@ -1,0 +1,20 @@
+[package]
+name = "warden-connect-kong"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "C ABI over the warden-connect gateway filter, for a Kong Lua plugin via LuaJIT FFI."
+
+[lib]
+name = "wc_kong"
+# cdylib is what Kong's LuaJIT FFI loads; rlib is what the tests link, so the ABI is exercised
+# by the same calls Lua will make rather than by a Rust-shaped wrapper around it.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+warden-connect-core = { path = "../wc-core" }
+warden-connect-gateway = { path = "../wc-gateway" }
+warden-connect-mediator = { path = "../wc-mediator" }
+serde = { workspace = true }
+serde_json = { workspace = true }
