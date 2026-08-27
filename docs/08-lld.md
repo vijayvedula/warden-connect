@@ -74,8 +74,12 @@ warden-connect/
 │   ├── wc-core/          shared types, the artifact, the codes   (9 modules)
 │   ├── wc-control/       the control plane                      (39 modules)
 │   ├── wc-mediator/      the data plane                         (13 modules)
+│   ├── wc-gateway/       the PEP decision core + shared wiring   (4 modules)
+│   ├── wc-kong/          C ABI over wc-gateway, for LuaJIT FFI   (2 modules)
 │   ├── wc-cli/           the `connect` binary                    (3 modules)
 │   └── wc-e2e/           end-to-end and property tests
+├── daemon/
+│   └── wc-extproc/       Envoy ext_proc binding. OUTSIDE the workspace (§8.2)
 ├── docs/                 this document, the HLD, the use cases, the explainer
 ├── fixtures/contracts/   conformance vectors
 ├── scripts/              drills, dependency ceilings, SCM shims
@@ -170,6 +174,41 @@ plane through a linked library.
 | `rpc` | JSON-RPC 2.0 — the wire format MCP uses over stdio | 8.9.1 |
 | `obs` | Decision log and the metric families the mediator owns | 8.14 |
 | `lib` | Composition root |
+
+`peer` also owns `spiffe_from_cert_pem` — a dependency-free DER walk to a
+certificate's URI SAN. It lives in the identity module rather than in the
+binding that needed it, because a security-critical parser buried in a binding
+is a parser that escapes review. §8.6b.4.
+
+### `wc-gateway` — 4 modules
+
+The PEP decision core. Sync and transport-free on purpose; the `dep-count.sh`
+ceiling is what stops an async runtime arriving through this door (§8.2).
+
+| Module | Responsibility | § |
+|---|---|---|
+| `lib` | `Filter`, `Verdict`, `BodyMode`, `BodyAction`, `PinLedger`, `FilterCfg` | 8.6b.1 |
+| `adapter` | What every binding needs so that no binding reimplements it | 8.6b.1 |
+| `contracts` | `ContractSet`, `Resolved`, the staleness bound, the shadowed-contract warning | 8.6b.1 |
+| `routes` | Route key → callee. One table serves Envoy's cluster and Kong's service | 8.6b.2 |
+
+### `wc-kong` — 3 modules
+
+| Module | Responsibility | § |
+|---|---|---|
+| `abi` | The eleven `extern "C"` symbols, every one panic-isolated | 8.6b.3 |
+| `config` | `Config`, `Handle`, `Peer`, `IdentitySource`, `CeilingScope` | 8.6b.4 |
+| `lib` | The `panic = abort` build guard, and the crate's re-exports | 8.6b.3 |
+
+Ships with `include/wc_kong.h` (hand-written, tested against the Rust) and
+`lua/kong/plugins/warden-connect/` (`handler`, `schema`, `wcffi`).
+
+### `daemon/wc-extproc`
+
+Outside the workspace, because it owns `main` and may carry tokio (§8.2). Three
+modules: the `ext_proc` service, plus thin wiring over `wc-gateway::contracts`
+and `::routes`, which used to live here and were lifted when a second binding
+needed them.
 
 ---
 
@@ -547,6 +586,173 @@ echoing the session id.
 
 ---
 
+## 8.6b Enforcement-point bindings
+
+Two proxies now run the same decision. The split that makes that possible, and
+the parts of it that are easy to get wrong, are here.
+
+### 8.6b.1 The three layers
+
+| Layer | Crate | Holds |
+|---|---|---|
+| **Decision** | `wc-gateway::Filter` | every verdict. `on_request` → `Verdict`, `on_response_headers` → `BodyMode`, `on_response_body` → `BodyAction` |
+| **Shared wiring** | `wc-gateway::adapter`, `::contracts`, `::routes` | the parts that must be *identical* across bindings, not merely similar |
+| **Binding** | `daemon/wc-extproc`, `crates/wc-kong` | transport. Gathers evidence, moves bytes, holds no policy |
+
+`wc-gateway` is where the Kong build paid for itself. It did **not** survive a
+second binding unchanged — it had to grow by five, because each was about to be
+written twice:
+
+| Lifted into `adapter` | Why it cannot be per-binding |
+|---|---|
+| `refusal_frame` | an agent must see the same refusal whichever PEP refused it |
+| `Registry` | a rate ceiling counted per binding is a different ceiling |
+| `placeholder_callee` | the "no contract" path must not become a second way to say it |
+| `parse_request_frame` | **refusing a JSON-RPC batch is a security property.** A binding that parsed the frame itself would pass every test it wrote and stop enforcing whenever a client batched |
+| `caller_from_tls` / `caller_from_xfcc` | where identity comes from is not a per-binding opinion |
+
+`set_binding` is there for a smaller reason with the same shape: `contracts`
+and `routes` were lifted out of the Envoy daemon still saying `wc-extproc:` in
+four diagnostics, which would have sent a Kong operator to a binary they do not
+run.
+
+### 8.6b.2 The two bindings
+
+| | `wc-extproc` (Envoy) | `wc-kong` (Kong) |
+|---|---|---|
+| Mechanism | gRPC `ext_proc` service, own process | `cdylib` loaded by LuaJIT FFI, in the nginx worker |
+| Hops added | 1 (loopback gRPC) | 0 |
+| Identity | XFCC, origin-checked | peer certificate URI SAN, or XFCC |
+| Route key | `xds.cluster_name` / `xds.route_name` | `kong.router.get_service().name` / `get_route().name` |
+| Buffering decided at | **response** headers, via `mode_override` | **request** phase, via `enable_buffering()` |
+| Ceiling scope | per verifier process | per nginx **worker** |
+| Async runtime | tokio, allowed because it owns `main` | none — the ceiling in `dep-count.sh` forbids it |
+
+One route table serves both: Kong's *service* name occupies the `cluster`
+column of `routes.toml`, because it is the same slot.
+
+**Buffering is the one place Kong is the better shape.** Envoy honours
+`mode_override` only from a header phase, so the filter cannot know whether to
+buffer until the response headers arrive — by which time the request body that
+would have said "this is a catalogue" is gone. Kong decides before it proxies,
+so `wc_on_request` answers `WC_BUFFER` directly from the request frame.
+
+### 8.6b.3 The C ABI
+
+Eleven symbols, verified present in the built library by the ABI suite. JSON for
+configuration and peer evidence rather than
+`#[repr(C)]` structs: a struct layout has to be kept in step with a hand-written
+`ffi.cdef`, and a field added on one side is a silent misread on the other.
+
+| Symbol | Returns |
+|---|---|
+| `wc_init(cfg_json)` | handle, or `NULL` with the reason. Refuses to start on bad config |
+| `wc_free`, `wc_contract_count`, `wc_version` | lifecycle |
+| `wc_stream_new(handle, peer_json)` | a stream. **Never `NULL` for "no contract"** — that is a verdict, not an error |
+| `wc_on_request` | `FORWARD` \| `REFUSE` \| `BUFFER` |
+| `wc_on_response_headers` | `BUFFER` \| `SKIP` \| `REFUSE` |
+| `wc_on_response_body` | `PASS` \| `REWRITE` \| `REFUSE` |
+| `wc_refusal(code, detail)` | the frame for the one case the plugin must answer alone |
+| `wc_out_free` | Rust allocates every buffer; Lua never frees Rust memory |
+
+Rules, all of them fail-closed:
+
+| Rule | Why |
+|---|---|
+| every entry point wrapped in `catch_unwind` | a panic unwinding into LuaJIT is undefined behaviour |
+| `#[cfg(panic = "abort")] compile_error!` | under `panic = abort` the boundary silently is not there and a panic takes the worker down. A safety argument that evaporates on a profile switch is not one |
+| a null pointer is `WC_ERR_BADARG`, never a dereference | Lua can and will pass one |
+| every negative return means refuse | there is no path in `handler.lua` that forwards a frame the library did not approve |
+| a worker that cannot start exits **503**, not 200 | no library verdict exists; a JSON-RPC refusal would be claiming one |
+
+`wc_refusal` exists because a caught panic leaves no verdict body and the client
+is still owed an answer. Without it the Lua side would carry a hardcoded JSON
+string — a second refusal format that nothing keeps in step.
+
+### 8.6b.4 The peer, and what is not in it
+
+`Peer` carries evidence, never an assertion. There is no `caller` field: a
+field in which Lua states an identity is a field in which anything reaching Lua
+states an identity.
+
+| `identity` | Evidence | Gate |
+|---|---|---|
+| `tls` | `ssl_client_raw_cert` | `ssl_client_verify` must be exactly `SUCCESS` |
+| `xfcc` | the header | `remote` must match `mesh_origin` |
+
+Required, with no default, and **configuring both is a startup error.** Falling
+back from one source to the other is worse than guessing: it means whoever can
+suppress one source selects the other.
+
+`spiffe_from_cert_pem` (`wc_mediator::peer`) is a dependency-free DER walk to
+the URI SAN. It verifies nothing, and that ordering is the whole safety
+argument: the chain, expiry and CA are the terminator's job, so a mis-parse
+yields a *wrong* identity — which resolves to no contract — and cannot yield a
+forged one. Exactly one `spiffe://` URI is accepted; zero is not an SVID, and
+more than one would let the holder pick which identity to be.
+
+Two details the tests exist for: `extnValue` is taken as the **last** element of
+the extension, because the optional `critical` BOOLEAN sits between the OID and
+the value and a fixed index reads the boolean on any certificate that marks its
+SAN critical; and indefinite length (`0x30 0x80`) is refused, because it is
+legal BER and never legal DER, and accepting it means parsing a structure the
+verifier upstream never agreed to.
+
+### 8.6b.5 Ceilings across instances
+
+`Registry` counts per process. Kong runs one worker per core, so a contract
+saying `max_calls_per_hour = 10` admits up to 40 across four workers — every
+call admitted, every call correct-looking, and nothing saying the number in the
+contract is not the number in force.
+
+Dividing by the worker count is not the fix: 3 across 4 workers becomes 0 (deny
+everything) or 1 (12 in force, still not 3). So the number stays per-worker and
+the operator states that they know it.
+
+| | |
+|---|---|
+| `ceiling_scope = "worker"` | acknowledges the multiplier. Demanded **only** when a loaded contract actually bounds a ceiling — ceremony where there is nothing to multiply is how an operator learns to paste past the warning that will one day matter |
+| `ceiling_scope = "node"` | refused as **not built**. Accepting a value that changes nothing is the same defect wearing a different hat |
+| `workers` | from `ngx.worker.count()`, not from configuration. Asking an operator to restate nginx's own number is asking them to get it wrong |
+
+At startup the library prints the arithmetic per contract — `10/hour configured
+-> up to 40/hour in force`. That line is the deliverable; the flag is the
+forcing function that makes it read. The same is true of `wc-extproc` behind
+more than one Envoy, which is why the analysis is in `adapter` and not in the
+Kong crate.
+
+### 8.6b.6 What each test layer can and cannot reach
+
+| Layer | Reaches | Cannot reach |
+|---|---|---|
+| `wc-gateway` unit + `tests/pin.rs` | every verdict, gate 8 against a minted contract | anything about a transport |
+| `wc-kong` ABI tests (39) | null handling, ownership, panic isolation, the header matching the Rust | whether Lua calls it correctly |
+| Lua suite (19, LuaJIT) | the real handler against the real cdylib, Kong stubbed; the `cdef` against the header | Kong's own phase restrictions |
+| `scripts/kong-drill.sh` (11) | real Kong, real mTLS, curl as the client, the `.so` built **for the container** | a cluster |
+
+The layers are not redundant, and the drill earned its place immediately:
+`kong.response.set_raw_body` is `body_filter`-only, so every catalogue returned
+`An unexpected error occurred` — the filter had already run and recorded the
+pin, then the rewrite raised. The stub had accepted the call in any phase, so
+the Lua suite was green. It now models the restriction and fails the way Kong
+did.
+
+The container build is itself a phase. A glibc or architecture mismatch is a
+class of failure no test on the build host can reach, and this repository is
+developed on macOS while Kong runs Linux.
+
+### 8.6b.7 Known limits
+
+| Limit | Status |
+|---|---|
+| ceilings are per worker | acknowledged, not solved. `ngx.shared.DICT` is the fix and is not built |
+| one contract per `(caller, callee)` | a second is verified, counted and unreachable — resolution is by pair and a filter never has a `cid` |
+| hot reload | **not built.** There is no `wc_reload` and no timer, so a contract set or a route table changes only when the worker restarts — and a revocation reaches this PEP no faster than that. `max_stale` would bound the exposure, but with no refresh source a bound only converts "serving a stale set" into "denying everything", so it defaults to 0 and the real containment is **contract expiry**. Set `exp` accordingly, or reload on a schedule you control |
+| `no_pin` exists | for a staged rollout only. Gate 8 is not optional, which is why the flag is spelled out rather than looking like a tuning knob |
+| `max_spend_usd_per_day` | unenforceable here as everywhere: nothing on the path produces a cost |
+
+---
+
 ## 8.7 Algorithms
 
 ### 8.7.1 The narrowing algebra
@@ -784,6 +990,30 @@ that exists was written on purpose.
 `tenant` validates tenant ids before any path is built, because a tenant id is a
 path component.
 
+### 8.13.1 The Kong plugin's configuration
+
+Passed as JSON to `wc_init` and validated there, not in Lua. `schema.lua`
+catches a shape error at `kong config` time; it is not a second validator and
+defaults nothing the library does not default.
+
+| Key | Required | Note |
+|---|---|---|
+| `contracts` | ✓ | paths to `*.jws`. Empty is a startup error, because a filter with no contract set denies everything while looking healthy |
+| `routes` | ✓ | path to `routes.toml`. A table that maps nothing is a startup error for the same reason |
+| `identity` | ✓ | `tls` \| `xfcc`. **No default** — §8.6b.4 |
+| `mesh_origin` | with `xfcc` | leading `/` means a unix socket, otherwise an address. Setting it with `identity = "tls"` is an error, not a precedence rule |
+| `issuer_pub` + `kid`, or `jwks_file`, or `jwks_url` | one of | issuer keys |
+| `mediator_id`, `issuer_id` | ✓ | who the contracts must be addressed to, and from which plane |
+| `ceiling_scope` | when a contract bounds a ceiling | `worker` acknowledges the multiplier; `node` is refused as not built |
+| `mode` | | `enforce` (default) \| `observe` |
+| `pin_max_age`, `max_stale` | | seconds; `0` means no bound |
+| `any_zone`, `no_pin` | | both default false. `no_pin` is for a staged rollout only |
+| `library_path` | | absolute path to `libwc_kong.so`, or a name for the dynamic loader |
+
+`workers` is **not** a configuration key. The handler reads
+`ngx.worker.count()`; asking an operator to restate nginx's own number is asking
+them to get it wrong.
+
 ---
 
 ## 8.14 Observability, operations, compatibility
@@ -808,7 +1038,23 @@ event be joined after the fact.
 | Conformance | Fixture vectors verify identically | `fixtures/contracts/` |
 | End-to-end | The whole loop, including federation | `wc-e2e/tests/` |
 | Drills | 12 scripted drills + `parse-drill` | `scripts/`, all in CI |
+| **ABI** | Null handling, ownership, panic isolation, and the C header matching the Rust it describes | `wc-kong/tests/abi.rs` |
+| **Lua** | The real Kong handler against the real cdylib, with Kong stubbed | `wc-kong/lua/spec/`, LuaJIT |
+| **Real proxy** | Envoy and Kong, real mTLS, the library built for the container | `scripts/envoy-drill.sh`, `scripts/kong-drill.sh` |
 | **Mutation** | That the tests would notice | standard practice here |
+
+**Three statements of one ABI can disagree.** Rust declares the C surface,
+`wc-kong/include/wc_kong.h` describes it, and `wcffi.lua`'s `cdef` restates it
+for LuaJIT. A disagreement is not a crash — it is Lua reading a field at the
+wrong offset and acting on a verdict that means something else. The header is
+compared against the Rust in `tests/abi.rs`, and the `cdef` against the header
+in `spec/abi_spec.lua`.
+
+**A stub that is more permissive than the host is a green suite and a broken
+plugin.** The Lua stub accepted `kong.response.set_raw_body` in any phase; Kong
+allows it only in `body_filter`, so every catalogue failed on the first real
+request. The stub now models the restriction. When a drill finds something a
+stub allowed, the stub is what needs the fix.
 
 **Mutation testing is not optional.** It has repeatedly exposed weak tests and
 dead code in this repository — including a drill phase that passed with its guard
@@ -836,6 +1082,8 @@ away.
 | 5 | Keyless approval by merge, and the choke point |
 | 6 | `proposal`, `receipt`, `dist` |
 | 7 | `inventory`, `portal` |
+| 8 | E5 — `wc-gateway` and the Envoy `ext_proc` binding |
+| 9 | E6 — the Kong binding: `wc-gateway` shared surface, `wc-kong` C ABI, `spiffe_from_cert_pem`, the Lua plugin, `ceiling_scope`, the Kong drill |
 
 ## 8.16b Deliberately not built: a database adapter
 
