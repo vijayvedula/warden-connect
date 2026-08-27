@@ -162,6 +162,10 @@ pub struct WcStream {
 #[no_mangle]
 pub unsafe extern "C" fn wc_init(cfg_json: *const u8, len: usize, err: *mut WcOut) -> *mut Handle {
     guard_ptr("wc_init", || {
+        // Name this binding before anything shared can emit a diagnostic. The modules in
+        // wc-gateway serve more than one binary, and a line that says which one has to say it
+        // because that binary set it.
+        warden_connect_gateway::adapter::set_binding("wc-kong");
         write_out(err, WcOut::empty());
         let Some(bytes) = slice(cfg_json, len) else {
             write_out(err, WcOut::give(b"null config".to_vec(), 8004));
@@ -219,6 +223,43 @@ pub extern "C" fn wc_version() -> *const c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0")
         .as_ptr()
         .cast::<c_char>()
+}
+
+/// Build a refusal frame for `code`, for the one case the plugin has to speak for itself.
+///
+/// A panic is caught after the filter has already failed, so there is no frame to hand back —
+/// and the plugin still owes the client an answer. Without this the Lua side would carry a
+/// hardcoded JSON string, which is a second refusal format that nothing would keep in step.
+/// An unknown code becomes `WC-8004`, because a refusal that cannot name itself is a
+/// configuration failure.
+///
+/// Always returns [`WC_REFUSE`].
+///
+/// # Safety
+/// `detail` must be null, or valid for `len` bytes. `out` must be null or writable.
+#[no_mangle]
+pub unsafe extern "C" fn wc_refusal(
+    code: c_int,
+    detail: *const u8,
+    len: usize,
+    out: *mut WcOut,
+) -> c_int {
+    let r = guard("wc_refusal", || {
+        let c = u16::try_from(code)
+            .ok()
+            .and_then(wc_core::error::Code::new)
+            .unwrap_or(wc_core::error::Code::CONFIG_INVALID);
+        let d = slice(detail, len)
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .unwrap_or_else(|| c.summary().to_string());
+        refuse(out, c, &d)
+    });
+    // Even a panic inside the refusal builder must not become "forward".
+    if r == WC_REFUSE {
+        r
+    } else {
+        WC_REFUSE
+    }
 }
 
 /// Release bytes handed out by any call here. Idempotent; safe on a zeroed [`WcOut`].
@@ -506,9 +547,18 @@ mod tests {
         let mut out = WcOut::empty();
         // SAFETY: passing null is the case under test; every entry point checks first.
         unsafe {
-            assert_eq!(wc_on_request(std::ptr::null_mut(), b"{}".as_ptr(), 2, &raw mut out), WC_ERR_BADARG);
-            assert_eq!(wc_on_response_headers(std::ptr::null_mut(), std::ptr::null(), 0, &raw mut out), WC_ERR_BADARG);
-            assert_eq!(wc_on_response_body(std::ptr::null_mut(), std::ptr::null(), 0, &raw mut out), WC_ERR_BADARG);
+            assert_eq!(
+                wc_on_request(std::ptr::null_mut(), b"{}".as_ptr(), 2, &raw mut out),
+                WC_ERR_BADARG
+            );
+            assert_eq!(
+                wc_on_response_headers(std::ptr::null_mut(), std::ptr::null(), 0, &raw mut out),
+                WC_ERR_BADARG
+            );
+            assert_eq!(
+                wc_on_response_body(std::ptr::null_mut(), std::ptr::null(), 0, &raw mut out),
+                WC_ERR_BADARG
+            );
             assert_eq!(wc_contract_count(std::ptr::null()), WC_ERR_BADARG);
             // These must simply not crash.
             wc_free(std::ptr::null_mut());
@@ -521,7 +571,9 @@ mod tests {
         let p = wc_version();
         assert!(!p.is_null());
         // SAFETY: the pointer is to a 'static concat! ending in a NUL byte.
-        let s = unsafe { std::ffi::CStr::from_ptr(p) }.to_str().expect("utf8");
+        let s = unsafe { std::ffi::CStr::from_ptr(p) }
+            .to_str()
+            .expect("utf8");
         assert_eq!(s, env!("CARGO_PKG_VERSION"));
     }
 }

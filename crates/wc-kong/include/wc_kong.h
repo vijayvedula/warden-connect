@@ -101,6 +101,10 @@ int wc_on_request(wc_stream *s, const uint8_t *body, size_t len, wc_out *out);
 int wc_on_response_headers(wc_stream *s, const uint8_t *ctype, size_t len, wc_out *out);
 int wc_on_response_body(wc_stream *s, const uint8_t *body, size_t len, wc_out *out);
 
+/* The one frame the plugin builds for itself: a caught panic leaves no verdict body,
+ * and the client is still owed an answer. Always returns WC_REFUSE. */
+int  wc_refusal(int code, const uint8_t *detail, size_t len, wc_out *out);
+
 void wc_out_free(wc_out *out);
 
 #endif /* WC_KONG_H */

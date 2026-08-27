@@ -19,11 +19,11 @@
 
 use std::sync::Arc;
 
+use crate::adapter::binding;
 use wc_core::contract::{AdmitCtx, Admitted};
 use wc_core::model::EntityId;
 use wc_core::model::Pin;
 use wc_mediator::cache::{Cache, Snapshot, Trust};
-use crate::adapter::binding;
 use wc_mediator::jwks::KeySource;
 
 /// An admitted connection and the contract it came from.
@@ -103,7 +103,11 @@ impl ContractSet {
                 "{}: WARNING contract {} is UNREACHABLE — {} covers the same pair \
                  ({} -> {}) and this filter resolves by pair, never by cid. Put the tools you \
                  need in ONE contract",
-                binding(), sh.cid, sh.shadowed_by, sh.caller, sh.callee
+                binding(),
+                sh.cid,
+                sh.shadowed_by,
+                sh.caller,
+                sh.callee
             );
         }
         let cache = Arc::new(Cache::new());
@@ -171,7 +175,8 @@ impl Contracts for ContractSet {
             eprintln!(
                 "{}: refusing every call — the contract set is {age}s old and the \
                  staleness bound is {}s. A revocation cannot have reached this process.",
-                binding(), self.max_stale
+                binding(),
+                self.max_stale
             );
             return None;
         }
