@@ -172,15 +172,19 @@ impl Handle {
                 addrs: vec![p.to_string()],
             },
             (IdentitySource::Xfcc, None) => {
-                return Err("identity = \"xfcc\" requires mesh_origin: without it no header \
+                return Err(
+                    "identity = \"xfcc\" requires mesh_origin: without it no header \
                             is believed from anywhere and every request is refused"
-                    .to_string())
+                        .to_string(),
+                )
             }
             (IdentitySource::Tls, Some(_)) => {
-                return Err("mesh_origin is set but identity = \"tls\", so no header is read. \
+                return Err(
+                    "mesh_origin is set but identity = \"tls\", so no header is read. \
                             Pick one source; a PEP that tries both lets an attacker who can \
                             suppress one select the other"
-                    .to_string())
+                        .to_string(),
+                )
             }
             (IdentitySource::Tls, None) => wc_mediator::peer::MeshTrust::default(),
         };
@@ -197,10 +201,12 @@ impl Handle {
         // holds paths, and because a multi-kilobyte JWS crossing the FFI per worker start is
         // bytes nobody needs to move.
         if cfg.contracts.is_empty() {
-            return Err("contracts is empty; with no contract set this filter denies every \
+            return Err(
+                "contracts is empty; with no contract set this filter denies every \
                         call while looking healthy, which is the failure that takes longest \
                         to diagnose"
-                .to_string());
+                    .to_string(),
+            );
         }
         let artifacts: Vec<String> = cfg
             .contracts

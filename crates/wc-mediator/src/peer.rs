@@ -653,8 +653,12 @@ fn verify_svid(
 /// [`Code::IDENTITY_UNVERIFIABLE`] when the certificate carries no usable SPIFFE URI SAN, naming which of
 /// the three cases it was so an operator can tell "wrong certificate" from "wrong CA".
 pub fn spiffe_from_cert_pem(pem: &str) -> Result<String> {
-    let der = first_certificate_der(pem)
-        .ok_or_else(|| WcError::with_detail(Code::IDENTITY_UNVERIFIABLE, "no CERTIFICATE block in the peer PEM"))?;
+    let der = first_certificate_der(pem).ok_or_else(|| {
+        WcError::with_detail(
+            Code::IDENTITY_UNVERIFIABLE,
+            "no CERTIFICATE block in the peer PEM",
+        )
+    })?;
     let uris = uri_sans(&der).ok_or_else(|| {
         WcError::with_detail(
             Code::IDENTITY_UNVERIFIABLE,
@@ -689,7 +693,10 @@ fn first_certificate_der(pem: &str) -> Option<Vec<u8>> {
     const E: &str = "-----END CERTIFICATE-----";
     let start = pem.find(B)? + B.len();
     let end = pem[start..].find(E)? + start;
-    let body: String = pem[start..end].chars().filter(|c| !c.is_whitespace()).collect();
+    let body: String = pem[start..end]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     wc_core::util::base64_decode(&body)
 }
 
@@ -719,7 +726,9 @@ fn tlv(b: &[u8]) -> Option<Tlv<'_>> {
         }
         let mut len = 0usize;
         for i in 0..n {
-            len = len.checked_mul(256)?.checked_add(usize::from(*b.get(2 + i)?))?;
+            len = len
+                .checked_mul(256)?
+                .checked_add(usize::from(*b.get(2 + i)?))?;
         }
         (len, 2 + n)
     };
@@ -1301,9 +1310,14 @@ mod x509_tests {
 
     #[test]
     fn a_pem_with_no_certificate_block_is_refused() {
-        let e = spiffe_from_cert_pem("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----")
-            .expect_err("not a certificate");
-        assert!(e.detail().contains("no CERTIFICATE block"), "{}", e.detail());
+        let e =
+            spiffe_from_cert_pem("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----")
+                .expect_err("not a certificate");
+        assert!(
+            e.detail().contains("no CERTIFICATE block"),
+            "{}",
+            e.detail()
+        );
     }
 
     // --- the parser against bytes nobody generated -------------------------

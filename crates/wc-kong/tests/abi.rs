@@ -191,7 +191,9 @@ fn request(h: *mut wc_kong::config::Handle, p: &str, frame: &str) -> (i32, Strin
         String::new()
     } else {
         // SAFETY: filled by the call above.
-        unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(out.ptr, out.len)).into_owned() }
+        unsafe {
+            String::from_utf8_lossy(std::slice::from_raw_parts(out.ptr, out.len)).into_owned()
+        }
     };
     let code = out.code;
     unsafe {
@@ -205,7 +207,12 @@ fn request(h: *mut wc_kong::config::Handle, p: &str, frame: &str) -> (i32, Strin
 
 #[test]
 fn a_handle_opens_and_counts_what_it_verified() {
-    let h = init(&setup("open", &["get_balance", "list_transactions"], "payments")).unwrap();
+    let h = init(&setup(
+        "open",
+        &["get_balance", "list_transactions"],
+        "payments",
+    ))
+    .unwrap();
     // SAFETY: h is live.
     assert_eq!(unsafe { wc_contract_count(h) }, 1);
     unsafe { wc_free(h) };
@@ -263,21 +270,38 @@ fn a_missing_contract_file_names_the_path() {
 /// Verify the pin for this contract by passing a catalogue through one stream, the way any
 /// real client does when it connects.
 fn verify_pin(h: *mut wc_kong::config::Handle, p: &str) {
-    let mut err = WcOut { ptr: std::ptr::null_mut(), len: 0, code: 0 };
+    let mut err = WcOut {
+        ptr: std::ptr::null_mut(),
+        len: 0,
+        code: 0,
+    };
     // SAFETY: h is live.
     let s = unsafe { wc_stream_new(h, p.as_ptr(), p.len(), &raw mut err) };
     unsafe { wc_out_free(&raw mut err) };
     let frame = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
-    let mut out = WcOut { ptr: std::ptr::null_mut(), len: 0, code: 0 };
+    let mut out = WcOut {
+        ptr: std::ptr::null_mut(),
+        len: 0,
+        code: 0,
+    };
     let ct = "application/json";
     let body = json!({"jsonrpc":"2.0","id":1,"result": served()}).to_string();
     // SAFETY: s is live for all three phases.
     unsafe {
-        assert_eq!(wc_on_request(s, frame.as_ptr(), frame.len(), &raw mut out), WC_BUFFER);
+        assert_eq!(
+            wc_on_request(s, frame.as_ptr(), frame.len(), &raw mut out),
+            WC_BUFFER
+        );
         wc_out_free(&raw mut out);
-        assert_eq!(wc_on_response_headers(s, ct.as_ptr(), ct.len(), &raw mut out), WC_BUFFER);
+        assert_eq!(
+            wc_on_response_headers(s, ct.as_ptr(), ct.len(), &raw mut out),
+            WC_BUFFER
+        );
         wc_out_free(&raw mut out);
-        assert_eq!(wc_on_response_body(s, body.as_ptr(), body.len(), &raw mut out), WC_REWRITE);
+        assert_eq!(
+            wc_on_response_body(s, body.as_ptr(), body.len(), &raw mut out),
+            WC_REWRITE
+        );
         wc_out_free(&raw mut out);
         wc_stream_free(s);
     }
@@ -303,7 +327,12 @@ fn a_tool_call_before_any_catalogue_is_refused_because_the_pin_is_unverified() {
 /// different stream, because the ledger is keyed by contract and not by session.
 #[test]
 fn a_contracted_tool_is_forwarded_once_the_pin_is_verified() {
-    let h = init(&setup("forward", &["get_balance", "list_transactions"], "payments")).unwrap();
+    let h = init(&setup(
+        "forward",
+        &["get_balance", "list_transactions"],
+        "payments",
+    ))
+    .unwrap();
     let p = peer("payments", Some(CERT));
     verify_pin(h, &p);
     let (v, body, _) = request(
@@ -327,7 +356,10 @@ fn an_uncontracted_tool_is_refused_with_the_code_lua_can_label() {
         r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"transfer_funds"}}"#,
     );
     assert_eq!(v, WC_REFUSE);
-    assert_eq!(code, 4002, "the taxonomy code has to cross the ABI as a number");
+    assert_eq!(
+        code, 4002,
+        "the taxonomy code has to cross the ABI as a number"
+    );
     let v: Value = serde_json::from_str(&body).expect("the refusal is a JSON-RPC frame");
     assert_eq!(v["error"]["data"]["code"], "WC-4002");
     unsafe { wc_free(h) };
@@ -393,10 +425,14 @@ fn an_unreadable_body_is_refused_rather_than_read_as_no_tool_call() {
     };
     // SAFETY: s is live; a null body is the case under test.
     let v = unsafe { wc_on_request(s, std::ptr::null(), 0, &raw mut out) };
-    assert_eq!(v, WC_REFUSE, "a body nginx could not give us is not an empty one");
+    assert_eq!(
+        v, WC_REFUSE,
+        "a body nginx could not give us is not an empty one"
+    );
     // SAFETY: filled above.
-    let body =
-        unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(out.ptr, out.len)).into_owned() };
+    let body = unsafe {
+        String::from_utf8_lossy(std::slice::from_raw_parts(out.ptr, out.len)).into_owned()
+    };
     assert!(body.contains("client_body_buffer_size"), "got {body}");
     unsafe {
         wc_out_free(&raw mut out);
@@ -451,8 +487,9 @@ fn a_catalogue_request_buffers_and_its_response_is_filtered_to_the_contract() {
     let v = unsafe { wc_on_response_body(s, body.as_ptr(), body.len(), &raw mut out) };
     assert_eq!(v, WC_REWRITE, "three tools served, two contracted");
     // SAFETY: filled above.
-    let rewritten =
-        unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(out.ptr, out.len)).into_owned() };
+    let rewritten = unsafe {
+        String::from_utf8_lossy(std::slice::from_raw_parts(out.ptr, out.len)).into_owned()
+    };
     let parsed: Value = serde_json::from_str(&rewritten).expect("valid json");
     let names: Vec<&str> = parsed["result"]["tools"]
         .as_array()
@@ -544,7 +581,11 @@ fn the_c_header_agrees_with_the_rust_it_describes() {
         ("WC_ERR_BADARG", wc_kong::WC_ERR_BADARG),
         ("WC_ERR_CONFIG", wc_kong::WC_ERR_CONFIG),
     ] {
-        assert_eq!(define(name), rust, "{name} differs between wc_kong.h and Rust");
+        assert_eq!(
+            define(name),
+            rust,
+            "{name} differs between wc_kong.h and Rust"
+        );
     }
 
     for sym in [
@@ -558,6 +599,7 @@ fn the_c_header_agrees_with_the_rust_it_describes() {
         "wc_on_response_headers",
         "wc_on_response_body",
         "wc_out_free",
+        "wc_refusal",
     ] {
         assert!(
             h.contains(&format!("{sym}(")),
@@ -680,9 +722,9 @@ fn an_xfcc_header_from_an_untrusted_origin_is_refused() {
     let h = init(&cfg).unwrap();
     let xfcc = format!("URI={CALLER}");
     for remote in [
-        "10.0.0.7",                    // some TCP peer
-        "unix:/tmp/attacker.sock",     // a different socket
-        "unix:",                       // no path at all
+        "10.0.0.7",                // some TCP peer
+        "unix:/tmp/attacker.sock", // a different socket
+        "unix:",                   // no path at all
     ] {
         let p = json!({ "xfcc": xfcc, "remote": remote, "service": "payments" }).to_string();
         let (v, _, code) = request(h, &p, TOOL_CALL);
@@ -725,7 +767,51 @@ fn under_tls_identity_an_xfcc_header_is_ignored_not_used_as_a_fallback() {
     })
     .to_string();
     let (v, _, code) = request(h, &p, TOOL_CALL);
-    assert_eq!(v, WC_REFUSE, "a suppressed certificate must not promote the header");
+    assert_eq!(
+        v, WC_REFUSE,
+        "a suppressed certificate must not promote the header"
+    );
     assert_eq!(code, 4001);
     unsafe { wc_free(h) };
+}
+
+#[test]
+fn wc_refusal_builds_the_same_frame_shape_as_a_real_verdict() {
+    let mut out = WcOut {
+        ptr: std::ptr::null_mut(),
+        len: 0,
+        code: 0,
+    };
+    let d = "a panic was caught at the FFI boundary";
+    // SAFETY: d lives for the call; out is writable.
+    let v = unsafe { wc_kong::wc_refusal(8004, d.as_ptr(), d.len(), &raw mut out) };
+    assert_eq!(v, WC_REFUSE);
+    assert_eq!(out.code, 8004);
+    // SAFETY: filled above.
+    let body = unsafe {
+        String::from_utf8_lossy(std::slice::from_raw_parts(out.ptr, out.len)).into_owned()
+    };
+    let parsed: Value = serde_json::from_str(&body).expect("the fallback is a JSON-RPC frame");
+    assert_eq!(parsed["error"]["data"]["code"], "WC-8004");
+    assert_eq!(parsed["error"]["code"], -32001);
+    assert!(body.contains(d));
+    unsafe { wc_out_free(&raw mut out) };
+}
+
+/// A code the taxonomy does not know must not silently become a forward, and must not invent a
+/// code either.
+#[test]
+fn an_unknown_refusal_code_becomes_config_invalid_not_a_forward() {
+    let mut out = WcOut {
+        ptr: std::ptr::null_mut(),
+        len: 0,
+        code: 0,
+    };
+    for bad in [0, -5, 9999, 70000] {
+        // SAFETY: a null detail is explicitly allowed.
+        let v = unsafe { wc_kong::wc_refusal(bad, std::ptr::null(), 0, &raw mut out) };
+        assert_eq!(v, WC_REFUSE, "code {bad} must still refuse");
+        assert_eq!(out.code, 8004, "code {bad} must map to WC-8004");
+        unsafe { wc_out_free(&raw mut out) };
+    }
 }

@@ -363,6 +363,10 @@ mod tests {
         set_binding("first-caller");
         let seen = binding();
         set_binding("second-caller");
-        assert_eq!(binding(), seen, "the first name must win, so output cannot lie");
+        assert_eq!(
+            binding(),
+            seen,
+            "the first name must win, so output cannot lie"
+        );
     }
 }

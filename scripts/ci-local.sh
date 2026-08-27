@@ -75,6 +75,7 @@ for d in attest custody upgrade oidc catalogue distribution containment rotation
 done
 step "drill · envoy ext_proc"              bash scripts/envoy-drill.sh
 sh_step "ext_proc verifier (own workspace)" "cargo fmt --manifest-path daemon/wc-extproc/Cargo.toml --all --check && cargo clippy --manifest-path daemon/wc-extproc/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path daemon/wc-extproc/Cargo.toml"
+step "kong plugin · lua spec"              bash crates/wc-kong/lua/spec/run.sh
 step "drill · scm parse"                  bash scripts/scm/parse-drill.sh
 sh_step "conformance kit, through the harness" "cargo build -p warden-connect-cli --quiet && ./scripts/conformance.sh"
 sh_step "conformance vectors (§8.15.3)"   "cargo test -p warden-connect-core --lib conformance"
