@@ -29,7 +29,7 @@ local init_error = nil
 local CONFIG_KEYS = {
   "contracts", "routes", "identity", "mesh_origin", "issuer_pub", "jwks_file",
   "jwks_url", "kid", "mediator_id", "issuer_id", "mode", "pin_max_age",
-  "max_stale", "any_zone", "no_pin",
+  "max_stale", "any_zone", "no_pin", "ceiling_scope",
 }
 
 local function config_json(conf)
@@ -39,6 +39,10 @@ local function config_json(conf)
       t[k] = conf[k]
     end
   end
+  -- Not a configuration field: the number of workers is nginx's, and asking an operator to
+  -- restate it is asking them to get it wrong. The library uses it to report what the
+  -- configured ceilings actually come to across the fleet.
+  t.workers = ngx.worker and ngx.worker.count() or 1
   return cjson.encode(t)
 end
 

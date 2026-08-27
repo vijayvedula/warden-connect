@@ -46,6 +46,21 @@ pub enum IdentitySource {
     Xfcc,
 }
 
+/// Where ceiling counters live.
+///
+/// There is no default, and the value is only demanded when a loaded contract actually carries
+/// a finite ceiling — a set with no bounded ceiling has nothing to multiply, and requiring an
+/// acknowledgement there would be ceremony that teaches an operator to click past it.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CeilingScope {
+    /// Per nginx worker. The configured ceiling is multiplied by `worker_processes`, and
+    /// setting this is the operator saying they know that.
+    Worker,
+    /// Shared across the node. Not built — see increment 7 of the Kong plan.
+    Node,
+}
+
 /// The plugin's configuration, as JSON.
 ///
 /// JSON rather than a `#[repr(C)]` struct on purpose: a struct layout has to be kept in step
@@ -97,6 +112,12 @@ pub struct Config {
     /// Disable the surface pin entirely. Off by default, because gate 8 is not optional.
     #[serde(default)]
     pub no_pin: bool,
+    /// Where ceiling counters live. Required when any contract bounds a ceiling.
+    #[serde(default)]
+    pub ceiling_scope: Option<CeilingScope>,
+    /// How many nginx workers share this configuration — `ngx.worker.count()`.
+    #[serde(default)]
+    pub workers: Option<u32>,
 }
 
 /// One process-wide handle: the contract set, the route table, and the counters they share.
@@ -232,6 +253,52 @@ impl Handle {
             return Err(
                 "no contract verified, so every request would be refused WC-4001".to_string(),
             );
+        }
+
+        // A ceiling counted per process is a different ceiling. Say the arithmetic out loud
+        // before the first call, or refuse to start — the alternative is an operator reading
+        // `10/hour` in a contract while 40/hour is what is in force.
+        let bounded = warden_connect_gateway::adapter::bounded_ceilings(&contracts);
+        if !bounded.is_empty() {
+            let names: Vec<&str> = bounded.iter().map(|b| b.cid.as_str()).collect();
+            match (cfg.ceiling_scope, cfg.workers) {
+                (None, _) => {
+                    return Err(format!(
+                        "{} contract(s) bound a rate or concurrency ceiling ({}), and these \
+                         counters are per nginx worker: the ceiling in force is the configured \
+                         one multiplied by worker_processes. Set ceiling_scope = \"worker\" to \
+                         acknowledge that, and workers = ngx.worker.count()",
+                        bounded.len(),
+                        names.join(", ")
+                    ))
+                }
+                (Some(CeilingScope::Node), _) => {
+                    return Err(
+                        "ceiling_scope = \"node\" is not built: counters are per worker. \
+                         Accepting this value would be a setting that reads as configured and \
+                         changes nothing"
+                            .to_string(),
+                    )
+                }
+                (Some(CeilingScope::Worker), None) => {
+                    return Err(
+                        "ceiling_scope = \"worker\" requires workers = ngx.worker.count(), \
+                         or the multiplier cannot be reported"
+                            .to_string(),
+                    )
+                }
+                (Some(CeilingScope::Worker), Some(n)) => {
+                    for line in warden_connect_gateway::adapter::ceiling_notes(&bounded, n) {
+                        eprintln!("{line}");
+                    }
+                    if n == 1 {
+                        eprintln!(
+                            "wc-kong: worker_processes is 1, so the configured ceilings are the \
+                             ceilings in force. Raising it multiplies every one of them"
+                        );
+                    }
+                }
+            }
         }
 
         Ok(Handle {

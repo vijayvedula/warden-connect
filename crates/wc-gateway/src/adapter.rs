@@ -12,6 +12,7 @@
 //! | [`set_binding`] | a diagnostic that names the wrong binary sends the reader to the wrong log |
 //! | [`parse_request_frame`] | refusing a batch is a security property, not a parsing detail |
 //! | [`caller_from_tls`] / [`caller_from_xfcc`] | where identity comes from is not a per-binding opinion |
+//! | [`bounded_ceilings`] | a ceiling counted per instance is a different ceiling |
 //!
 //! The last one is here because of a real regression: `contracts` and `routes` were lifted out
 //! of the Envoy daemon carrying `eprintln!("wc-extproc: ...")`, which would have told a Kong
@@ -292,6 +293,89 @@ pub fn caller_from_xfcc(
     }
 }
 
+// ---------------------------------------------------------------------------
+// What running more than one of these does to a ceiling
+// ---------------------------------------------------------------------------
+
+/// A contract whose ceilings are finite, and therefore multiply across instances.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundedCeiling {
+    /// The connection id, for naming it to an operator.
+    pub cid: String,
+    /// The contract id the counters are keyed by.
+    pub jti: String,
+    /// Calls per hour, if bounded.
+    pub calls_per_hour: Option<u32>,
+    /// Concurrent calls, if bounded.
+    pub concurrent: Option<u32>,
+}
+
+/// Which contracts in this set carry a ceiling that a second instance would double.
+///
+/// # Why this is worth asking at startup
+///
+/// [`Registry`] counts per process. Two processes enforcing one contract each get the whole
+/// ceiling, so the effective ceiling is `configured × instances` — four nginx workers turn
+/// `max_calls_per_hour = 10` into 40, and two Envoys with a verifier each turn it into 20. The
+/// number in the contract is then not the number in force, and nothing in the access log says
+/// so: every call is admitted, every call looks correct, and the ceiling an owner agreed to is
+/// silently four times what they agreed to.
+///
+/// A contract with no finite ceiling is not listed. Warning about a multiplier on an unbounded
+/// ceiling would be noise, and noise is how a real warning gets ignored.
+#[must_use]
+pub fn bounded_ceilings(set: &crate::contracts::ContractSet) -> Vec<BoundedCeiling> {
+    let snapshot = set.cache().snapshot();
+    let mut out: Vec<BoundedCeiling> = snapshot
+        .all()
+        .filter_map(|c| {
+            let t = &c.payload.terms;
+            (t.max_calls_per_hour.is_some() || t.max_concurrent.is_some()).then(|| BoundedCeiling {
+                cid: c.payload.cid.as_str().to_string(),
+                jti: c.payload.jti.as_str().to_string(),
+                calls_per_hour: t.max_calls_per_hour,
+                concurrent: t.max_concurrent,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.cid.cmp(&b.cid));
+    out
+}
+
+/// One line per bounded contract, saying what `instances` copies make the ceiling.
+///
+/// `instances` of 1 still gets a line: the configured number is the effective one *today*, and
+/// the arithmetic that changes it is `worker_processes`, which nobody edits with this in mind.
+#[must_use]
+pub fn ceiling_notes(bounded: &[BoundedCeiling], instances: u32) -> Vec<String> {
+    let n = instances.max(1);
+    bounded
+        .iter()
+        .map(|b| {
+            let mut parts = Vec::new();
+            if let Some(c) = b.calls_per_hour {
+                parts.push(format!(
+                    "{c}/hour configured -> up to {}/hour in force",
+                    u64::from(c) * u64::from(n)
+                ));
+            }
+            if let Some(c) = b.concurrent {
+                parts.push(format!(
+                    "{c} concurrent configured -> up to {} in force",
+                    u64::from(c) * u64::from(n)
+                ));
+            }
+            format!(
+                "{}: contract {} ({}) across {n} instance(s): {}",
+                binding(),
+                b.cid,
+                b.jti,
+                parts.join(", ")
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +410,63 @@ mod tests {
         );
         assert!(!std::sync::Arc::ptr_eq(&a, &c));
         assert_eq!(r.len(), 2);
+    }
+
+    #[test]
+    fn ceiling_notes_state_the_arithmetic_not_just_the_configured_number() {
+        let b = vec![BoundedCeiling {
+            cid: "conn_a".into(),
+            jti: "cx_a".into(),
+            calls_per_hour: Some(10),
+            concurrent: Some(3),
+        }];
+        let n = ceiling_notes(&b, 4);
+        assert_eq!(n.len(), 1);
+        assert!(
+            n[0].contains("10/hour configured -> up to 40/hour in force"),
+            "{}",
+            n[0]
+        );
+        assert!(
+            n[0].contains("3 concurrent configured -> up to 12 in force"),
+            "{}",
+            n[0]
+        );
+        assert!(
+            n[0].contains("conn_a"),
+            "the line must name the contract: {}",
+            n[0]
+        );
+    }
+
+    #[test]
+    fn one_instance_still_gets_a_line_because_worker_processes_is_edited_by_someone_else() {
+        let b = vec![BoundedCeiling {
+            cid: "conn_a".into(),
+            jti: "cx_a".into(),
+            calls_per_hour: Some(10),
+            concurrent: None,
+        }];
+        let n = ceiling_notes(&b, 1);
+        assert!(n[0].contains("up to 10/hour in force"), "{}", n[0]);
+        assert!(
+            !n[0].contains("concurrent"),
+            "an absent ceiling must not be reported: {}",
+            n[0]
+        );
+    }
+
+    /// Zero instances is not zero ceiling. Clamping to one keeps the arithmetic honest rather
+    /// than reporting a ceiling of nothing.
+    #[test]
+    fn zero_instances_is_clamped_rather_than_multiplying_to_nothing() {
+        let b = vec![BoundedCeiling {
+            cid: "conn_a".into(),
+            jti: "cx_a".into(),
+            calls_per_hour: Some(10),
+            concurrent: None,
+        }];
+        assert!(ceiling_notes(&b, 0)[0].contains("up to 10/hour"));
     }
 
     #[test]

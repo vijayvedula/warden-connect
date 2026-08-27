@@ -36,6 +36,12 @@ return {
           { max_stale = { type = "number", default = 0 } },
           { any_zone = { type = "boolean", default = false } },
 
+          -- Required once any loaded contract bounds a rate or concurrency ceiling: those
+          -- counters are per worker, so the ceiling in force is the configured one times
+          -- worker_processes. "node" is refused by the library as not built, rather than
+          -- accepted as a value that changes nothing.
+          { ceiling_scope = { type = "string", one_of = { "worker", "node" } } },
+
           -- Gate 8 is not optional. This exists for a staged rollout and nothing else, so it
           -- is spelled out rather than looking like a tuning knob.
           { no_pin = { type = "boolean", default = false } },

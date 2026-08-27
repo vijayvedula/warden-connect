@@ -24,6 +24,7 @@ local function conf(over)
     issuer_pub = t.ROOT .. "/fixtures/keys/test_issuer_es256_pub.pem",
     kid = "wc-test-es256",
     mode = "enforce",
+    ceiling_scope = "worker",
   }
   for k, v in pairs(over or {}) do c[k] = v end
   return c
@@ -193,4 +194,29 @@ t.case("the response phase does nothing when nothing was buffered", function()
   t.eq(stub.phase(rec, function() h:response(c) end), "fell-through", "response")
   t.eq(rec.body_set, nil, "no rewrite")
   stub.phase(rec, function() h:log(c) end)
+end)
+
+-- --- ceilings across workers -------------------------------------------------
+
+t.case("a bounded ceiling without an acknowledgement refuses to start", function()
+  local h = fresh()
+  -- Removed explicitly: `{ ceiling_scope = nil }` is not a key in a Lua table literal, so
+  -- passing it to conf() would have changed nothing and quietly tested the opposite case.
+  local c = conf()
+  c.ceiling_scope = nil
+  local rec, how = run(h, c, req())
+  t.eq(how, "exited", "a PEP that will not start must not forward")
+  t.eq(rec.exit.status, 503, "no verdict is available")
+end)
+
+t.case("the worker count reaches the library from nginx, not from configuration", function()
+  local h = fresh()
+  local c = conf()
+  -- conf carries no `workers`; the handler must read ngx.worker.count().
+  t.eq(c.workers, nil, "workers is not an operator field")
+  -- A catalogue, not a tool call: a tool call before any tools/list is refused WC-1002 by
+  -- the pin gate, which would pass this assertion for the wrong reason.
+  local rec, how = run(h, c, req({ body = LIST, workers = 4 }))
+  t.eq(how, "fell-through", "started, so the library got a worker count")
+  t.eq(rec.exit, nil, "and the call was not refused")
 end)

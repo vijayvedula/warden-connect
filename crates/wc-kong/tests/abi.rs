@@ -52,8 +52,8 @@ fn served() -> Value {
     ]})
 }
 
-/// A signed contract over `tools`, valid now.
-fn jws(tools: &[&str]) -> String {
+/// A signed contract over `tools` with `terms`, valid now.
+fn jws_with(tools: &[&str], terms: Terms) -> String {
     let at = now();
     let callee = EntityId::new(CALLEE).unwrap();
     let pin = canon::pin(
@@ -96,7 +96,7 @@ fn jws(tools: &[&str]) -> String {
     payload.nbf = at - 100;
     payload.exp = at + 3_600;
     payload.surface = surface;
-    payload.terms = Terms::default();
+    payload.terms = terms;
     payload.assurance = Assurance::default();
     mint(
         &payload,
@@ -115,9 +115,13 @@ fn dir(name: &str) -> PathBuf {
 
 /// Config JSON for a handle whose contract covers `tools` and whose route table maps `service`.
 fn setup(name: &str, tools: &[&str], service: &str) -> String {
+    setup_terms(name, tools, service, Terms::default())
+}
+
+fn setup_terms(name: &str, tools: &[&str], service: &str, terms: Terms) -> String {
     let d = dir(name);
     let cpath = d.join("c.jws");
-    std::fs::write(&cpath, jws(tools)).unwrap();
+    std::fs::write(&cpath, jws_with(tools, terms)).unwrap();
     let rpath = d.join("routes.toml");
     std::fs::write(
         &rpath,
@@ -814,4 +818,84 @@ fn an_unknown_refusal_code_becomes_config_invalid_not_a_forward() {
         assert_eq!(out.code, 8004, "code {bad} must map to WC-8004");
         unsafe { wc_out_free(&raw mut out) };
     }
+}
+
+// --- ceilings across workers ----------------------------------------------
+//
+// Registry counts per process, and Kong runs one worker per core. A configured 10/hour is
+// 40/hour across four workers, every call is admitted, and nothing in the access log says the
+// number in the contract is not the number in force.
+
+fn bounded_terms() -> Terms {
+    Terms {
+        max_calls_per_hour: Some(10),
+        max_concurrent: Some(3),
+        ..Terms::default()
+    }
+}
+
+fn bounded_cfg(name: &str, extra: Value) -> String {
+    let base = setup_terms(name, &["get_balance"], "payments", bounded_terms());
+    let mut v: Value = serde_json::from_str(&base).unwrap();
+    let obj = v.as_object_mut().unwrap();
+    for (k, val) in extra.as_object().unwrap() {
+        if val.is_null() {
+            obj.remove(k);
+        } else {
+            obj.insert(k.clone(), val.clone());
+        }
+    }
+    v.to_string()
+}
+
+#[test]
+fn a_bounded_ceiling_without_an_acknowledgement_refuses_to_start() {
+    let e = init(&bounded_cfg("ceilnoack", json!({}))).unwrap_err();
+    assert!(e.contains("per nginx worker"), "got {e}");
+    assert!(
+        e.contains("conn_7f3a91c4"),
+        "the error must name which contract, got {e}"
+    );
+    assert!(e.contains("ceiling_scope"), "and what to set, got {e}");
+}
+
+/// Accepting a value that changes nothing is the defect this project is about.
+#[test]
+fn ceiling_scope_node_is_refused_as_not_built_rather_than_accepted() {
+    let e = init(&bounded_cfg(
+        "ceilnode",
+        json!({ "ceiling_scope": "node", "workers": 4 }),
+    ))
+    .unwrap_err();
+    assert!(e.contains("not built"), "got {e}");
+}
+
+#[test]
+fn acknowledging_the_scope_without_a_worker_count_refuses_to_start() {
+    let e = init(&bounded_cfg(
+        "ceilnoworkers",
+        json!({ "ceiling_scope": "worker" }),
+    ))
+    .unwrap_err();
+    assert!(e.contains("ngx.worker.count()"), "got {e}");
+}
+
+#[test]
+fn an_acknowledged_bounded_ceiling_starts() {
+    let h = init(&bounded_cfg(
+        "ceilok",
+        json!({ "ceiling_scope": "worker", "workers": 4 }),
+    ))
+    .unwrap();
+    // SAFETY: h is live.
+    assert_eq!(unsafe { wc_contract_count(h) }, 1);
+    unsafe { wc_free(h) };
+}
+
+/// A set with nothing to multiply must not demand the ceremony, or the acknowledgement becomes
+/// something operators learn to paste past.
+#[test]
+fn an_unbounded_contract_needs_no_acknowledgement() {
+    let h = init(&setup("ceilnone", &["get_balance"], "payments")).unwrap();
+    unsafe { wc_free(h) };
 }
