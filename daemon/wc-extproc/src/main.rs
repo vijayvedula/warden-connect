@@ -45,7 +45,17 @@ fn resolve_caller(
     trust: &wc_mediator::peer::MeshTrust,
     origin: &wc_mediator::peer::Origin,
 ) -> Option<String> {
-    let xfcc = header(h, "x-forwarded-client-cert")?;
+    let Some(xfcc) = header(h, "x-forwarded-client-cert") else {
+        // Silent until now. An absent header and a header from the wrong origin both ended as
+        // WC-4001, which names the contract and says nothing about identity — so an operator
+        // whose Envoy is not setting XFCC had no way to tell that from a missing contract.
+        eprintln!(
+            "wc-extproc: no x-forwarded-client-cert on this request from {}. Envoy sets it only \
+             with `forward_client_cert_details: SANITIZE_SET` and a verified client certificate",
+            origin.describe()
+        );
+        return None;
+    };
     // `resolve` needs a callee to build a `Peer`; only the caller half is read back, and the
     // real callee is configuration held on the Verifier.
     let callee = wc_core::model::EntityId::new("spiffe://placeholder/ns/x/sa/callee").ok()?;
@@ -307,6 +317,19 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                         let cluster = attribute(&msg_attrs, "xds.cluster_name");
                         let route = attribute(&msg_attrs, "xds.route_name");
                         let callee_id = routes.callee(cluster.as_deref(), route.as_deref());
+                        if callee_id.is_none() {
+                            // Also silent until now, and the most common cause of WC-4001 at a
+                            // gateway: the attribute never arrived, or names a cluster the table
+                            // does not map. Both are configuration, not contracts.
+                            eprintln!(
+                                "wc-extproc: no callee for this request — xds.cluster_name={:?} \
+                                 xds.route_name={:?}. An absent attribute means Envoy has no \
+                                 `request_attributes`; a present one means the route table does \
+                                 not map it",
+                                cluster.as_deref().unwrap_or("<absent>"),
+                                route.as_deref().unwrap_or("<absent>")
+                            );
+                        }
                         let caller = resolve_caller(&h, &mesh, &origin);
                         let resolved = match (&callee_id, &caller) {
                             (Some(cid), Some(_)) => {
