@@ -92,6 +92,18 @@ impl ContractSet {
             issuer: &issuer,
         };
         let snapshot = Snapshot::build(artifacts, &trusted, at);
+        // A second contract for one party pair is verified, counted and then unreachable: the
+        // resolver here never names a `cid`, so it can only ever find one per pair. Saying so at
+        // startup is the difference between "2 contracts verified" meaning two usable contracts
+        // and meaning one — a walkthrough lost an afternoon to exactly that.
+        for sh in &snapshot.shadowed {
+            eprintln!(
+                "wc-extproc: WARNING contract {} is UNREACHABLE — {} covers the same pair \
+                 ({} -> {}) and this filter resolves by pair, never by cid. Put the tools you \
+                 need in ONE contract",
+                sh.cid, sh.shadowed_by, sh.caller, sh.callee
+            );
+        }
         let cache = Arc::new(Cache::new());
         cache.install(snapshot);
         Ok(ContractSet {
