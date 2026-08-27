@@ -29,6 +29,23 @@ impl From<ModeCfg> for Mode {
     }
 }
 
+/// Where the caller's identity comes from.
+///
+/// There is no default, on purpose. Both sources are legitimate and they have different threat
+/// models, so a binding that guessed — or that silently tried one and fell back to the other —
+/// would be a PEP whose identity source an operator cannot state. Falling back is worse than
+/// guessing: it means an attacker who can suppress one source selects the other.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum IdentitySource {
+    /// Kong terminated the mTLS handshake. Identity is the peer certificate's URI SAN, and
+    /// `ssl_client_verify` must say `SUCCESS`.
+    Tls,
+    /// Kong is behind a mesh sidecar. Identity is `x-forwarded-client-cert`, believed only from
+    /// the origin named in `mesh_origin`.
+    Xfcc,
+}
+
 /// The plugin's configuration, as JSON.
 ///
 /// JSON rather than a `#[repr(C)]` struct on purpose: a struct layout has to be kept in step
@@ -56,6 +73,15 @@ pub struct Config {
     pub mediator_id: String,
     /// Which control plane they must have come from.
     pub issuer_id: String,
+    /// Where the caller's identity comes from. Required.
+    pub identity: IdentitySource,
+    /// The unix socket or address `x-forwarded-client-cert` may be believed from.
+    ///
+    /// Required with `identity = "xfcc"` and meaningless without it. An empty mesh trust accepts
+    /// nothing, so a missing value here refuses every request rather than trusting loopback —
+    /// but that would look identical to "no contract", so it is a startup error instead.
+    #[serde(default)]
+    pub mesh_origin: Option<String>,
     /// Enforce or observe.
     #[serde(default)]
     pub mode: ModeCfg,
@@ -90,6 +116,10 @@ pub struct Handle {
     pub pin_max_age: u64,
     /// Enforce or observe.
     pub mode: Mode,
+    /// Where identity comes from.
+    pub identity: IdentitySource,
+    /// Where an XFCC header may be believed from. Empty under `identity = "tls"`.
+    pub mesh: wc_mediator::peer::MeshTrust,
 }
 
 impl Handle {
@@ -125,6 +155,34 @@ impl Handle {
             Arc::new(wc_core::contract::AnyZone)
         } else {
             Arc::new(wc_core::contract::SameTrustLevel)
+        };
+
+        // Refuse at startup rather than per request: an unconfigured mesh trust accepts
+        // nothing, which is the right behaviour and indistinguishable from "no contract" in the
+        // access log.
+        let mesh = match (cfg.identity, cfg.mesh_origin.as_deref()) {
+            // A path is a unix socket; anything else is an address the sidecar connects from.
+            // `accepts` additionally requires a TCP origin to be local, so this cannot be
+            // widened into "trust any address" by configuration alone.
+            (IdentitySource::Xfcc, Some(p)) if p.starts_with('/') => {
+                wc_mediator::peer::MeshTrust::socket(p)
+            }
+            (IdentitySource::Xfcc, Some(p)) => wc_mediator::peer::MeshTrust {
+                socket: None,
+                addrs: vec![p.to_string()],
+            },
+            (IdentitySource::Xfcc, None) => {
+                return Err("identity = \"xfcc\" requires mesh_origin: without it no header \
+                            is believed from anywhere and every request is refused"
+                    .to_string())
+            }
+            (IdentitySource::Tls, Some(_)) => {
+                return Err("mesh_origin is set but identity = \"tls\", so no header is read. \
+                            Pick one source; a PEP that tries both lets an attacker who can \
+                            suppress one select the other"
+                    .to_string())
+            }
+            (IdentitySource::Tls, None) => wc_mediator::peer::MeshTrust::default(),
         };
 
         let routes = Routes::load(&cfg.routes)?;
@@ -177,23 +235,44 @@ impl Handle {
             pins: (!cfg.no_pin).then(|| Arc::new(PinLedger::new())),
             pin_max_age: cfg.pin_max_age,
             mode: cfg.mode.into(),
+            identity: cfg.identity,
+            mesh,
         })
     }
 }
 
-/// Who is calling, and where the route says it is going.
+/// What the plugin observed about the caller, and where the route says the call is going.
 ///
-/// Increment 3 replaces `caller` with the peer certificate chain and a trusted
-/// `x-forwarded-client-cert`. Until it does, this field is what the plugin was told, which is
-/// why the Lua side is not shipped yet.
+/// There is deliberately no `caller` field. A field in which Lua states an identity is a field
+/// in which anything that can reach Lua states an identity, and increment 2 shipped one only
+/// because nothing was reading certificates yet. Identity is now derived from evidence:
+/// a verified certificate, or a header from a trusted origin.
 #[derive(Debug, Deserialize)]
 pub struct Peer {
-    /// The caller's entity id.
-    pub caller: Option<String>,
-    /// Kong's service name, matched against `routes.toml`.
+    /// The TLS terminator's verdict on the client chain — nginx's `ssl_client_verify`.
+    /// `SUCCESS`, `NONE`, or `FAILED:<reason>`. Only `SUCCESS` is an identity.
+    #[serde(default)]
+    pub tls_verify: Option<String>,
+    /// The peer certificate chain, PEM, leaf first — nginx's `ssl_client_raw_cert`.
+    #[serde(default)]
+    pub cert_pem: Option<String>,
+    /// Where the request actually arrived from — nginx's `ssl_client_verify` peer, i.e.
+    /// `ngx.var.remote_addr`, or `unix:<listener path>` on a unix socket listener.
+    ///
+    /// This is *evidence*, not configuration. An earlier draft of the XFCC path built the origin
+    /// out of the configured `mesh_origin`, which made the origin always equal the trusted one
+    /// and turned the mesh check into a no-op — any client able to set the header could assert
+    /// any identity. The origin has to come from the request or it is not a check.
+    #[serde(default)]
+    pub remote: Option<String>,
+    /// `x-forwarded-client-cert`, when Kong sits behind a mesh sidecar.
+    #[serde(default)]
+    pub xfcc: Option<String>,
+    /// Kong's **service** name. Matched against the `cluster` column of `routes.toml`, which is
+    /// what Envoy calls the same slot — one route table serves both bindings.
     #[serde(default)]
     pub service: Option<String>,
-    /// Kong's route name, matched against `routes.toml`.
+    /// Kong's route name. Matched against the `route` column of `routes.toml`.
     #[serde(default)]
     pub route: Option<String>,
 }

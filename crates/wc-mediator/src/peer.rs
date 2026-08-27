@@ -623,6 +623,189 @@ fn verify_svid(
     Ok((data.claims.sub, kid))
 }
 
+// ---------------------------------------------------------------------------
+// X.509 SAN extraction
+// ---------------------------------------------------------------------------
+
+/// The SPIFFE ID out of a peer certificate's URI SAN.
+///
+/// # Where this sits in the trust chain, and what it is NOT
+///
+/// This does not verify anything. The chain, the expiry and the CA are the TLS terminator's
+/// job — nginx with `ssl_verify_client on`, Envoy with a validation context — and a binding
+/// must refuse before calling this unless that verification *succeeded*. What this does is read
+/// an identity out of a certificate somebody else has already decided to trust.
+///
+/// That ordering is the whole safety argument. A mis-parse here yields a wrong identity or no
+/// identity, and a wrong identity resolves to no contract; it cannot yield a *forged* one,
+/// because an attacker cannot get an arbitrary certificate past the verifier in the first
+/// place. Reverse the order — parse first, verify later, or never — and the same code becomes
+/// an identity forgery path.
+///
+/// # Why exactly one URI
+///
+/// The SPIFFE X.509-SVID spec allows exactly one URI SAN. Zero is not an SVID. More than one is
+/// ambiguous, and picking the first would let a certificate carrying two identities be used as
+/// whichever one the parser happened to reach first. Both are refused.
+///
+/// # Errors
+///
+/// [`Code::IDENTITY_UNVERIFIABLE`] when the certificate carries no usable SPIFFE URI SAN, naming which of
+/// the three cases it was so an operator can tell "wrong certificate" from "wrong CA".
+pub fn spiffe_from_cert_pem(pem: &str) -> Result<String> {
+    let der = first_certificate_der(pem)
+        .ok_or_else(|| WcError::with_detail(Code::IDENTITY_UNVERIFIABLE, "no CERTIFICATE block in the peer PEM"))?;
+    let uris = uri_sans(&der).ok_or_else(|| {
+        WcError::with_detail(
+            Code::IDENTITY_UNVERIFIABLE,
+            "the peer certificate could not be parsed for subjectAltName",
+        )
+    })?;
+    let mut spiffe = uris.iter().filter(|u| u.starts_with("spiffe://"));
+    let first = spiffe.next().ok_or_else(|| {
+        WcError::with_detail(
+            Code::IDENTITY_UNVERIFIABLE,
+            if uris.is_empty() {
+                "the peer certificate has no URI subjectAltName, so it is not an X.509-SVID"
+            } else {
+                "the peer certificate's URI subjectAltName is not a spiffe:// id"
+            },
+        )
+    })?;
+    if spiffe.next().is_some() {
+        return Err(WcError::with_detail(
+            Code::IDENTITY_UNVERIFIABLE,
+            "the peer certificate carries more than one spiffe:// URI subjectAltName, which is \
+             not a valid X.509-SVID and would let the holder pick an identity",
+        ));
+    }
+    Ok(first.clone())
+}
+
+/// DER of the first `CERTIFICATE` block in a PEM. The leaf, by convention of every chain
+/// serialiser: the peer's own certificate is first and its issuers follow.
+fn first_certificate_der(pem: &str) -> Option<Vec<u8>> {
+    const B: &str = "-----BEGIN CERTIFICATE-----";
+    const E: &str = "-----END CERTIFICATE-----";
+    let start = pem.find(B)? + B.len();
+    let end = pem[start..].find(E)? + start;
+    let body: String = pem[start..end].chars().filter(|c| !c.is_whitespace()).collect();
+    wc_core::util::base64_decode(&body)
+}
+
+/// One DER tag-length-value.
+struct Tlv<'a> {
+    tag: u8,
+    value: &'a [u8],
+    /// How many bytes this TLV occupied, header included.
+    total: usize,
+}
+
+/// Read one TLV at the front of `b`.
+///
+/// Refuses indefinite-length encoding (`0x80`), which is legal BER and never legal DER, and any
+/// length that runs past the buffer. Both are `None` rather than a truncated read.
+fn tlv(b: &[u8]) -> Option<Tlv<'_>> {
+    let tag = *b.first()?;
+    let l0 = *b.get(1)?;
+    let (len, hdr) = if l0 & 0x80 == 0 {
+        (usize::from(l0), 2)
+    } else {
+        let n = usize::from(l0 & 0x7F);
+        // 0x80 is indefinite length: not DER. A long form longer than a usize cannot be
+        // represented and is refused rather than wrapped.
+        if n == 0 || n > core::mem::size_of::<usize>() {
+            return None;
+        }
+        let mut len = 0usize;
+        for i in 0..n {
+            len = len.checked_mul(256)?.checked_add(usize::from(*b.get(2 + i)?))?;
+        }
+        (len, 2 + n)
+    };
+    let value = b.get(hdr..hdr.checked_add(len)?)?;
+    Some(Tlv {
+        tag,
+        value,
+        total: hdr + len,
+    })
+}
+
+/// Every TLV in `b`, in order. Stops at the first malformed one.
+fn children(b: &[u8]) -> Vec<Tlv<'_>> {
+    let mut out = Vec::new();
+    let mut rest = b;
+    while !rest.is_empty() {
+        let Some(t) = tlv(rest) else { break };
+        let step = t.total;
+        out.push(t);
+        // A zero-length step would spin. Cannot happen with a valid header, but this parser
+        // reads attacker-adjacent bytes and a loop bound is cheaper than an argument.
+        if step == 0 {
+            break;
+        }
+        rest = &rest[step..];
+    }
+    out
+}
+
+/// `id-ce-subjectAltName`, OID 2.5.29.17, as its DER content bytes.
+const OID_SAN: &[u8] = &[0x55, 0x1D, 0x11];
+
+/// Every `uniformResourceIdentifier` in the certificate's SubjectAltName.
+///
+/// Walks by tag rather than by field position: the certificate's own structure is not
+/// interpreted beyond "the first child of the outer SEQUENCE is the TBS, and somewhere in it is
+/// a `[3]` holding extensions". Nothing here needs to know what a validity period is.
+fn uri_sans(der: &[u8]) -> Option<Vec<String>> {
+    let cert = tlv(der)?;
+    if cert.tag != 0x30 {
+        return None;
+    }
+    let tbs = children(cert.value).into_iter().next()?;
+    if tbs.tag != 0x30 {
+        return None;
+    }
+    // [3] EXPLICIT Extensions. Absent is a certificate with no extensions at all, which is
+    // legal and simply has no SAN — an empty list, not a parse failure.
+    let Some(ext_holder) = children(tbs.value).into_iter().find(|t| t.tag == 0xA3) else {
+        return Some(Vec::new());
+    };
+    let extensions = children(ext_holder.value).into_iter().next()?;
+    if extensions.tag != 0x30 {
+        return None;
+    }
+    for ext in children(extensions.value) {
+        if ext.tag != 0x30 {
+            continue;
+        }
+        let parts = children(ext.value);
+        let Some(oid) = parts.first() else { continue };
+        if oid.tag != 0x06 || oid.value != OID_SAN {
+            continue;
+        }
+        // extnValue is the last element: the optional `critical` BOOLEAN sits between the OID
+        // and it, so a fixed index would read the wrong field on a critical SAN.
+        let Some(octets) = parts.last() else { continue };
+        if octets.tag != 0x04 {
+            continue;
+        }
+        let names = tlv(octets.value)?;
+        if names.tag != 0x30 {
+            return None;
+        }
+        let mut out = Vec::new();
+        for n in children(names.value) {
+            // [6] IA5String uniformResourceIdentifier, primitive.
+            if n.tag == 0x86 {
+                out.push(String::from_utf8_lossy(n.value).into_owned());
+            }
+        }
+        return Some(out);
+    }
+    Some(Vec::new())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -1062,5 +1245,116 @@ mod tests {
                 source.mode()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod x509_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    const SPIFFE: &str = include_str!("../../../fixtures/keys/test_peer_spiffe.pem");
+    const TWO: &str = include_str!("../../../fixtures/keys/test_peer_two_uris.pem");
+    const DNS: &str = include_str!("../../../fixtures/keys/test_peer_dns_only.pem");
+    const NONE: &str = include_str!("../../../fixtures/keys/test_peer_no_san.pem");
+    const HTTPS: &str = include_str!("../../../fixtures/keys/test_peer_not_spiffe.pem");
+
+    #[test]
+    fn a_spiffe_uri_san_is_read_out_of_a_real_certificate() {
+        assert_eq!(
+            spiffe_from_cert_pem(SPIFFE).expect("a valid SVID"),
+            "spiffe://org/ns/agents/sa/recon-bot-7"
+        );
+    }
+
+    /// Two identities in one certificate is not an SVID, and picking the first would let the
+    /// holder be whichever one the parser reached first.
+    #[test]
+    fn two_spiffe_uris_are_refused_rather_than_resolved_to_the_first() {
+        let e = spiffe_from_cert_pem(TWO).expect_err("ambiguous");
+        assert_eq!(e.code(), Code::IDENTITY_UNVERIFIABLE);
+        assert!(e.detail().contains("more than one"), "{}", e.detail());
+    }
+
+    #[test]
+    fn a_certificate_with_only_dns_and_ip_sans_has_no_identity_here() {
+        let e = spiffe_from_cert_pem(DNS).expect_err("not an SVID");
+        assert!(e.detail().contains("no URI"), "{}", e.detail());
+    }
+
+    #[test]
+    fn a_certificate_with_no_san_extension_at_all_parses_and_yields_nothing() {
+        let e = spiffe_from_cert_pem(NONE).expect_err("not an SVID");
+        assert_eq!(e.code(), Code::IDENTITY_UNVERIFIABLE);
+        assert!(e.detail().contains("no URI"), "{}", e.detail());
+    }
+
+    /// A URI SAN that is not a SPIFFE id must not be accepted as one — the contract's caller
+    /// field is an `EntityId`, and letting `https://` through would put an unattestable string
+    /// where an identity belongs.
+    #[test]
+    fn a_non_spiffe_uri_san_is_not_an_identity() {
+        let e = spiffe_from_cert_pem(HTTPS).expect_err("not a spiffe id");
+        assert!(e.detail().contains("not a spiffe://"), "{}", e.detail());
+    }
+
+    #[test]
+    fn a_pem_with_no_certificate_block_is_refused() {
+        let e = spiffe_from_cert_pem("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----")
+            .expect_err("not a certificate");
+        assert!(e.detail().contains("no CERTIFICATE block"), "{}", e.detail());
+    }
+
+    // --- the parser against bytes nobody generated -------------------------
+
+    #[test]
+    fn truncated_der_is_none_not_a_partial_read() {
+        let der = first_certificate_der(SPIFFE).expect("decodes");
+        for cut in [1, 2, 3, 8, 40, der.len() / 2, der.len() - 1] {
+            // Must not panic and must not invent a SAN.
+            let got = uri_sans(&der[..cut]);
+            assert!(
+                got.is_none() || got.as_deref() == Some(&[]),
+                "a truncated certificate yielded {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn indefinite_length_is_refused_because_it_is_ber_and_never_der() {
+        // 0x30 0x80 ... is a legal BER SEQUENCE and an illegal DER one. Accepting it would mean
+        // parsing a structure the verifier upstream never agreed to.
+        assert!(tlv(&[0x30, 0x80, 0x00, 0x00]).is_none());
+    }
+
+    #[test]
+    fn a_length_running_past_the_buffer_is_refused() {
+        assert!(tlv(&[0x30, 0x7F, 0x01, 0x02]).is_none());
+        assert!(tlv(&[0x30, 0x82, 0xFF, 0xFF, 0x01]).is_none());
+    }
+
+    #[test]
+    fn a_long_form_length_that_cannot_fit_a_usize_is_refused_not_wrapped() {
+        let mut b = vec![0x30, 0x8F];
+        b.extend_from_slice(&[0xFF; 15]);
+        assert!(tlv(&b).is_none());
+    }
+
+    #[test]
+    fn children_of_garbage_terminates() {
+        // The loop reads attacker-adjacent bytes; the property under test is that it stops.
+        let junk: Vec<u8> = (0u8..=255).cycle().take(4096).collect();
+        let _ = children(&junk);
+    }
+
+    /// The `critical` BOOLEAN sits between the OID and extnValue when present, so a parser that
+    /// took `parts[1]` would read the boolean as the extension value on any certificate that
+    /// marks its SAN critical — which is common when the subject is empty.
+    #[test]
+    fn extnvalue_is_taken_as_the_last_element_not_a_fixed_index() {
+        let der = first_certificate_der(SPIFFE).expect("decodes");
+        let uris = uri_sans(&der).expect("parses");
+        assert_eq!(uris, vec!["spiffe://org/ns/agents/sa/recon-bot-7"]);
     }
 }

@@ -11,6 +11,53 @@
  * Failure
  *   Negative returns are failures and every one of them means refuse the call. A panic inside
  *   the library is caught at this boundary and surfaces as WC_ERR_PANIC; the worker survives.
+ *
+ * ---------------------------------------------------------------------------
+ * wc_init config JSON
+ * ---------------------------------------------------------------------------
+ *   contracts    [string]   paths to *.jws artifacts. Empty is a startup error.
+ *   routes       string     path to routes.toml. Kong's SERVICE name matches the
+ *                           `cluster` column; its ROUTE name matches `route`.
+ *   identity     string     "tls" | "xfcc". REQUIRED, no default.
+ *   mesh_origin  string     required with "xfcc", forbidden with "tls". A leading
+ *                           '/' means a unix socket; otherwise an address.
+ *   issuer_pub   string     path to a PEM  (with kid)   ) exactly
+ *   jwks_file    string     path to a JWKS             ) one
+ *   jwks_url     string     URL of a JWKS              ) of these
+ *   kid          string     key id, required with issuer_pub
+ *   mediator_id  string     who the contracts must be addressed to
+ *   issuer_id    string     which control plane they must come from
+ *   mode         string     "enforce" (default) | "observe"
+ *   pin_max_age  number     seconds a pin verification stays good. 0 = forever.
+ *   max_stale    number     seconds the set may go unrefreshed. 0 = no bound.
+ *   any_zone     bool       allow any zone pair. Default false.
+ *   no_pin       bool       disable the surface pin. Default false. Gate 8 is not
+ *                           optional; this exists for a staged rollout only.
+ *
+ * ---------------------------------------------------------------------------
+ * wc_stream_new peer JSON
+ * ---------------------------------------------------------------------------
+ * There is no `caller` field, and there must never be one: a field in which Lua
+ * states an identity is a field in which anything reaching Lua states an identity.
+ * Identity is derived from evidence, by whichever source `identity` names.
+ *
+ *   identity = "tls"                     from Lua
+ *     tls_verify  string   ngx.var.ssl_client_verify. Only "SUCCESS" is an identity.
+ *     cert_pem    string   ngx.var.ssl_client_raw_cert. Leaf first.
+ *     remote      string   ngx.var.remote_addr
+ *
+ *   identity = "xfcc"
+ *     xfcc        string   the x-forwarded-client-cert header
+ *     remote      string   ngx.var.remote_addr, or "unix:<listener path>"
+ *
+ *   both
+ *     service     string   kong.router.get_service().name
+ *     route       string   kong.router.get_route().name
+ *
+ * `remote` is EVIDENCE and must come from the request. Deriving it from the
+ * configured mesh_origin makes the origin always equal the trusted one, which
+ * turns the mesh check into a no-op and lets any client that can set the header
+ * assert any identity.
  */
 #ifndef WC_KONG_H
 #define WC_KONG_H
