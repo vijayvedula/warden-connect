@@ -37,6 +37,7 @@
 use serde_json::Value;
 use wc_core::error::Code;
 
+pub mod adapter;
 pub mod contracts;
 pub mod routes;
 

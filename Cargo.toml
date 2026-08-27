@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/wc-core", "crates/wc-control", "crates/wc-cli",
-    "crates/wc-e2e", "crates/wc-mediator", "crates/wc-gateway"]
+    "crates/wc-e2e", "crates/wc-mediator", "crates/wc-gateway", "crates/wc-kong"]
 # `daemon/` is deliberately NOT a member. It holds standalone network daemons, which may carry
 # an async runtime; the crates above may not (§8.2). Excluding it keeps `cargo tree --workspace`
 # — which is what `scripts/dep-count.sh` greps for a banned runtime — answering the question

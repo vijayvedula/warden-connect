@@ -39,6 +39,12 @@ check warden-connect-mediator 116
 # its own gate — a ceiling here is what stops tokio arriving through this door.
 check warden-connect-gateway  117
 
+# The Kong binding. A cdylib is loaded into every nginx worker, so its tree is somebody else's
+# resident memory — the tightest reason in this file to keep a ceiling. It should stay within a
+# few crates of the gateway it wraps: a jump means the binding grew logic that belongs in
+# wc-gateway where both bindings share it.
+check warden-connect-kong     120
+
 # The daemons in `daemon/` are OUTSIDE this workspace, so nothing above measures them and the
 # ban below cannot see them. That is the point — they own their own `main` and are linked into
 # nothing, so §8.2's "no async runtime" does not apply. What DOES have to hold is the boundary:
