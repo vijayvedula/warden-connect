@@ -2,7 +2,7 @@
 
 | Document | What it is |
 |---|---|
-| [contract-and-enforcement.html](contract-and-enforcement.html) | **For CTOs, CIOs and enterprise architects.** Why a contract and an enforcement point are only a control together — the algebra as three toggleable ceilings, where the checkpoint goes and who can remove it, and an honest ledger of what does and does not bind |
+| [contract-and-enforcement.html](contract-and-enforcement.html) | **For CTOs, CIOs and enterprise architects.** A 9-chapter animated explainer, 2:41 — contract × enforcement point, and why neither is a control alone. Canvas-driven, scrubbable, with an interactive intersection and a full transcript. Open it in a browser |
 | [explainer.html](explainer.html) | A 21-slide self-building deck: the problem, the model, the lifecycle, the capabilities. Open it in a browser |
 | [07-hld.md](07-hld.md) | High-level design — the plane split, the contract, the algebra, the trust model |
 | [08-lld.md](08-lld.md) | Low-level design — every crate, every module, every check, the build order |
