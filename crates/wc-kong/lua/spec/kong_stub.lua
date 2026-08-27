@@ -22,6 +22,7 @@ function M.install(req)
   rec.EXIT = EXIT
 
   _G.ngx = {
+    worker = { count = function() return req.workers or 4 end },
     var = {
       remote_addr = req.remote_addr,
       ssl_client_verify = req.ssl_client_verify,

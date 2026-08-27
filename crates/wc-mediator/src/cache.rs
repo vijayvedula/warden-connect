@@ -202,6 +202,14 @@ impl Snapshot {
         snapshot
     }
 
+    /// Every verified contract in the set, in `cid` order.
+    ///
+    /// For asking a question *about* the set rather than resolving a call through it — which
+    /// ceilings are finite, what would expire soonest. Resolution stays on the keyed paths.
+    pub fn all(&self) -> impl Iterator<Item = &Arc<VerifiedContract>> {
+        self.by_cid.values()
+    }
+
     /// Look up by connection id.
     #[must_use]
     pub fn by_cid(&self, cid: &str) -> Option<&Arc<VerifiedContract>> {

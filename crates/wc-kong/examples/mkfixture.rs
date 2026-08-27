@@ -76,7 +76,13 @@ fn main() {
     payload.nbf = at - 100;
     payload.exp = at + 3_600;
     payload.surface = surface;
-    payload.terms = Terms::default();
+    // Bounded on purpose: the Lua suite has to exercise the acknowledgement, and a fixture
+    // with no ceiling would leave that path untested in the binding that has the problem.
+    payload.terms = Terms {
+        max_calls_per_hour: Some(10),
+        max_concurrent: Some(3),
+        ..Terms::default()
+    };
     payload.assurance = Assurance::default();
 
     let jws = mint(
