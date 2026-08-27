@@ -11,3 +11,4 @@ warden-connect-core = { path = "../wc-core" }
 warden-connect-mediator = { path = "../wc-mediator" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
