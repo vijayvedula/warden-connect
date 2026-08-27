@@ -356,6 +356,17 @@ because it is what exposes it.
 | **Sidecar** | One mediator per agent | Enforcement at the edge; highest fidelity, highest cost |
 | **Observe-only** | In the path, refusing nothing | Stage ① — inventory before enforcement |
 
+Orthogonal again is **which proxy**. The decision is one crate (`wc-gateway`)
+and each proxy is a binding over it:
+
+| Binding | Where it runs | Caller identity from | Hops added |
+|---|---|---|---|
+| `wc-extproc` | its own process, Envoy calls it over gRPC | `x-forwarded-client-cert`, origin-checked | 1, loopback |
+| `wc-kong` | a `cdylib` inside the nginx worker, driven by a Lua plugin over LuaJIT FFI | the peer certificate's URI SAN, or XFCC | 0 |
+
+Istio and Linkerd are Envoy underneath, so they are a deployment recipe for the
+first rather than a third binding. LLD §8.6b.
+
 Orthogonal to placement is **where the tool server is**. The mediator forwards
 to a spawned stdio child (`--upstream CMD`) or to a remote server over MCP
 Streamable HTTP (`--upstream-url URL`) — the latter being the common shape once
@@ -418,7 +429,8 @@ design started at rung 4 — which is why nobody could adopt it.
 | 3 | Cluster-scale behaviour | Unverified — needs a real cluster |
 | 4 | Independent security review | Not yet done, and it must be done by someone who did not build it |
 | 5 | What happens to a contract when the basis of its approval changes? | **Undesigned.** See below |
-| 6 | Is the mediator ready for the shared-gateway topology? | **Partly.** The Envoy `ext_proc` verifier (E5) is built and drilled against a real proxy: mesh identity, the surface ceiling, gate 8 including streams that carry no catalogue, route mapping, rate and concurrency ceilings, contract refresh with a staleness bound, and fail-closed. The inline mediator's own listener is still not built |
+| 6 | Is the mediator ready for the shared-gateway topology? | **Partly.** Two bindings are built and drilled against real proxies. Envoy `ext_proc` (E5): mesh identity, the surface ceiling, gate 8 including streams that carry no catalogue, route mapping, rate and concurrency ceilings, contract refresh with a staleness bound, fail-closed. Kong (E6): peer-certificate identity, catalogue filtering, six refusal classes, surface drift and pin revocation, 11/11 through a real Kong with real mTLS. The inline mediator's own listener is still not built |
+| 8 | Do the ceilings bind fleet-wide? | **No.** Counters are per process, so the effective ceiling is `configured × instances` — four nginx workers turn `10/hour` into 40. Kong refuses to start unless the operator sets `ceiling_scope = "worker"`, and prints the arithmetic per contract, so the number is stated rather than discovered. Making it actually node-wide needs shared memory and is not built. LLD §8.6b.5 |
 | 7 | Does `terms.max_spend_usd_per_day` bind anything? | **No,** and it cannot yet. `Ceilings::charge` needs an amount and nothing in the data plane produces one — an MCP response carries no cost and there is no price list. Carried, narrowed and federated correctly; bounds nothing at runtime. LLD §8.6.5 |
 
 ---
