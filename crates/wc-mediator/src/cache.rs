@@ -114,6 +114,19 @@ impl RevocationView for Revocations {
 /// `wc-control` cannot depend on this crate.
 pub use wc_core::contract::Trust;
 
+/// A contract that verified but cannot be resolved without a `cid`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShadowedContract {
+    /// The contract that lost the party-pair slot.
+    pub cid: String,
+    /// The contract that took it.
+    pub shadowed_by: String,
+    /// The caller both share.
+    pub caller: String,
+    /// The callee both share.
+    pub callee: String,
+}
+
 /// A verified contract set, immutable once built.
 #[derive(Debug, Default)]
 pub struct Snapshot {
@@ -127,6 +140,15 @@ pub struct Snapshot {
     /// Verified contracts by authenticated party pair — how a connection is found
     /// when the agent carries no `cid`.
     by_pair: HashMap<(String, String), Arc<VerifiedContract>>,
+    /// Contracts that verified but are unreachable without a `cid`, because another contract
+    /// for the same party pair took the `by_pair` slot.
+    ///
+    /// This map is one-per-pair, so a second contract between the same two parties is loaded,
+    /// counted and then never resolved for any caller that does not name a `cid`. A gateway
+    /// filter never names one — it resolves before a body has been read — so at a gateway the
+    /// shadowed contract is simply dead. Reporting it is the difference between "2 contracts
+    /// verified" meaning two usable contracts and meaning one.
+    pub shadowed: Vec<ShadowedContract>,
     /// Artifacts that failed verification when the snapshot was built, with the
     /// reason. Kept so a mediator can report *why* it has no contract, rather
     /// than only that it has none.
@@ -157,8 +179,18 @@ impl Snapshot {
                     digest_input.push_str(&cid);
                     digest_input.push('\n');
                     let shared = Arc::new(verified);
-                    snapshot.by_cid.insert(cid, Arc::clone(&shared));
-                    snapshot.by_pair.insert(pair, shared);
+                    snapshot.by_cid.insert(cid.clone(), Arc::clone(&shared));
+                    if let Some(previous) = snapshot.by_pair.insert(pair.clone(), shared) {
+                        // Last write wins, which is arbitrary — artifact order is the caller's.
+                        // Whichever lost is unreachable without a `cid`, so it is named rather
+                        // than dropped in silence.
+                        snapshot.shadowed.push(ShadowedContract {
+                            cid: previous.payload.cid.as_str().to_string(),
+                            shadowed_by: cid,
+                            caller: pair.0,
+                            callee: pair.1,
+                        });
+                    }
                 }
                 Err(e) => {
                     let label = jws.chars().take(24).collect::<String>();
@@ -442,9 +474,9 @@ mod tests {
     const PRIV: &[u8] = include_bytes!("../../../fixtures/keys/test_issuer_es256_priv.pem");
     const PUB: &[u8] = include_bytes!("../../../fixtures/keys/test_issuer_es256_pub.pem");
     const KID: &str = "wc-test-es256";
-    const MEDIATOR: &str = "warden:mediator:apac-ops";
-    const NOW: u64 = 1_785_312_500;
-    const ISS: &str = "https://connect.internal/t/apac";
+    pub(crate) const MEDIATOR: &str = "warden:mediator:apac-ops";
+    pub(crate) const NOW: u64 = 1_785_312_500;
+    pub(crate) const ISS: &str = "https://connect.internal/t/apac";
 
     /// The trust a test mediator verifies under. Named once, so a test cannot quietly
     /// stop checking `iss` — which is what the check existing at all is for.
@@ -456,7 +488,7 @@ mod tests {
         }
     }
 
-    fn keys() -> IssuerKeys {
+    pub(crate) fn keys() -> IssuerKeys {
         let mut k = IssuerKeys::new();
         k.add_ec_pem(KID, PUB, Algorithm::ES256).unwrap();
         k
@@ -736,5 +768,62 @@ mod tests {
         let snapshot = Snapshot::build(&[jws], &trusting(&IssuerKeys::new()), NOW);
         assert!(snapshot.is_empty());
         assert_eq!(snapshot.rejected[0].1, Code::SIGNATURE_INVALID);
+    }
+}
+
+#[cfg(test)]
+mod shadowed_tests {
+    //! Two contracts between the same two parties. The map is one-per-pair, so one of them is
+    //! unreachable without a `cid` — and a gateway filter never has one. This was found by a
+    //! walkthrough where `2 contract(s) verified` was followed by the wrong tool list.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::tests::{agent, contract_for, keys, server, ISS, MEDIATOR, NOW};
+    use super::{Snapshot, Trust};
+
+    #[test]
+    fn a_second_contract_for_one_pair_is_reported_as_shadowed() {
+        let a = contract_for("conn_aaaa0001", &["get_balance"], NOW + 3600);
+        let b = contract_for("conn_bbbb0002", &["wire_funds"], NOW + 3600);
+        let trust = Trust {
+            keys: &keys(),
+            mediator_id: MEDIATOR,
+            issuer: ISS,
+        };
+        let snap = Snapshot::build(&[a, b], &trust, NOW);
+
+        assert_eq!(snap.len(), 2, "both should verify");
+        assert_eq!(
+            snap.shadowed.len(),
+            1,
+            "one of two contracts for one pair must be reported unreachable"
+        );
+        let s = &snap.shadowed[0];
+        assert_eq!(
+            s.cid, "conn_aaaa0001",
+            "the first loaded is the one shadowed"
+        );
+        assert_eq!(s.shadowed_by, "conn_bbbb0002");
+
+        // And the shadowed one really is unreachable by pair, while both remain reachable by cid.
+        assert!(snap.by_cid("conn_aaaa0001").is_some());
+        assert!(snap.by_cid("conn_bbbb0002").is_some());
+        let by_pair = snap.by_pair(&agent(), &server()).unwrap();
+        assert_eq!(by_pair.payload.cid.as_str(), "conn_bbbb0002");
+    }
+
+    #[test]
+    fn one_contract_per_pair_shadows_nothing() {
+        let trust = Trust {
+            keys: &keys(),
+            mediator_id: MEDIATOR,
+            issuer: ISS,
+        };
+        let snap = Snapshot::build(
+            &[contract_for("conn_aaaa0001", &["get_balance"], NOW + 3600)],
+            &trust,
+            NOW,
+        );
+        assert_eq!(snap.len(), 1);
+        assert!(snap.shadowed.is_empty());
     }
 }
