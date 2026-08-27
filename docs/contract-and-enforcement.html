@@ -1,945 +1,880 @@
 <title>The Ceiling and the Checkpoint</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-/* ── tokens ──────────────────────────────────────────────────────────────
-   Bare :root is the complete light palette. The dark canvas overrides only
-   tokens, in both the prefers-color-scheme block and the [data-theme] block,
-   so an explicit choice wins in either direction. No colour is defined only
-   inside a media query. */
 :root{
   --ground:#F6F8FC; --panel:#FFFFFF; --panel-2:#EEF2F8; --rule:#D3DCE8;
   --ink:#0E131C; --body:#2B3646; --muted:#5E6E85; --faint:#8697AC;
-  --surface:#1E8CAB; --scope:#B4801A; --policy:#2C8B57; --refuse:#C4443F;
-  --glow:rgba(14,19,28,.06); --shadow:0 1px 2px rgba(14,19,28,.06),0 8px 24px rgba(14,19,28,.05);
-  --eff:#0E131C; --eff-fill:rgba(14,19,28,.10);
+  --s:#1E8CAB; --k:#B4801A; --p:#2C8B57; --bad:#C4443F;
+  --shadow:0 1px 2px rgba(14,19,28,.06),0 10px 30px rgba(14,19,28,.06);
 }
-@media (prefers-color-scheme:dark){
-  :root:not([data-theme="light"]){
-    --ground:#0E131C; --panel:#161D29; --panel-2:#1B2432; --rule:#2A3546;
-    --ink:#E9EEF6; --body:#C3CDDB; --muted:#8695AB; --faint:#6A7A91;
-    --surface:#58C6E6; --scope:#F0BE52; --policy:#7FD39B; --refuse:#E86F6F;
-    --glow:rgba(88,198,230,.07); --shadow:0 1px 2px rgba(0,0,0,.35),0 12px 32px rgba(0,0,0,.28);
-    --eff:#FFFFFF; --eff-fill:rgba(255,255,255,.16);
-  }
-}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --ground:#0B0F17; --panel:#141B26; --panel-2:#1A2330; --rule:#28323F;
+  --ink:#E9EEF6; --body:#C0CAD8; --muted:#8695AB; --faint:#65748A;
+  --s:#58C6E6; --k:#F0BE52; --p:#7FD39B; --bad:#E86F6F;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 14px 38px rgba(0,0,0,.3);
+}}
 :root[data-theme="dark"]{
-  --ground:#0E131C; --panel:#161D29; --panel-2:#1B2432; --rule:#2A3546;
-  --ink:#E9EEF6; --body:#C3CDDB; --muted:#8695AB; --faint:#6A7A91;
-  --surface:#58C6E6; --scope:#F0BE52; --policy:#7FD39B; --refuse:#E86F6F;
-  --glow:rgba(88,198,230,.07); --shadow:0 1px 2px rgba(0,0,0,.35),0 12px 32px rgba(0,0,0,.28);
-  --eff:#FFFFFF; --eff-fill:rgba(255,255,255,.16);
+  --ground:#0B0F17; --panel:#141B26; --panel-2:#1A2330; --rule:#28323F;
+  --ink:#E9EEF6; --body:#C0CAD8; --muted:#8695AB; --faint:#65748A;
+  --s:#58C6E6; --k:#F0BE52; --p:#7FD39B; --bad:#E86F6F;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 14px 38px rgba(0,0,0,.3);
 }
 
 *{box-sizing:border-box}
-body{
-  margin:0; background:var(--ground); color:var(--body);
-  font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-  font-size:17px; line-height:1.66; -webkit-font-smoothing:antialiased;
-}
-.wrap{max-width:1040px; margin:0 auto; padding:0 28px}
-.col{max-width:660px; margin:0 auto}
+body{margin:0;background:var(--ground);color:var(--body);
+  font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,sans-serif;font-size:16px;line-height:1.6}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+h1{font-family:Newsreader,Georgia,serif;font-weight:300;color:var(--ink);
+  font-size:clamp(30px,5vw,50px);line-height:1.06;letter-spacing:-.018em;margin:0 0 12px}
+h2{font-family:Newsreader,Georgia,serif;font-weight:400;color:var(--ink);
+  font-size:clamp(20px,2.6vw,26px);margin:0 0 14px;letter-spacing:-.01em}
+.eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.17em;
+  text-transform:uppercase;color:var(--faint);margin:0 0 12px}
+code,.mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace}
 
-/* ── type ─────────────────────────────────────────────────────────────── */
-h1,h2,h3,.disp{font-family:Newsreader,Georgia,"Times New Roman",serif; color:var(--ink); font-weight:400; text-wrap:balance}
-h1{font-size:clamp(38px,6.4vw,66px); line-height:1.06; letter-spacing:-.018em; margin:0 0 22px; font-weight:300}
-h2{font-size:clamp(26px,3.4vw,36px); line-height:1.16; letter-spacing:-.012em; margin:0 0 14px}
-h3{font-size:20px; line-height:1.3; margin:34px 0 10px; color:var(--ink); font-weight:500}
-p{margin:0 0 19px}
-.lede{font-size:19.5px; line-height:1.6; color:var(--ink)}
-em{font-style:italic}
-strong{font-weight:600; color:var(--ink)}
-a{color:var(--surface); text-decoration:none; border-bottom:1px solid color-mix(in srgb,var(--surface) 40%,transparent)}
-a:hover{border-bottom-color:var(--surface)}
-code,.mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace; font-size:.885em}
-code{background:var(--panel-2); border:1px solid var(--rule); border-radius:4px; padding:.08em .34em; color:var(--ink)}
-.eyebrow{
-  font-family:"IBM Plex Mono",monospace; font-size:11.5px; font-weight:500;
-  letter-spacing:.16em; text-transform:uppercase; color:var(--faint); margin:0 0 12px;
-}
+header{padding:clamp(46px,9vh,84px) 0 26px}
+header p.sub{font-family:"IBM Plex Mono",monospace;font-size:13.5px;color:var(--muted);margin:0;
+  letter-spacing:.01em}
+header .eq{margin-top:18px;font-family:"IBM Plex Mono",monospace;font-size:clamp(12px,2.2vw,15.5px);color:var(--ink)}
+.c-s{color:var(--s)} .c-k{color:var(--k)} .c-p{color:var(--p)} .c-b{color:var(--bad)}
+.op{color:var(--faint)}
 
-/* ── shell ────────────────────────────────────────────────────────────── */
-header.hero{padding:clamp(64px,12vh,132px) 0 clamp(48px,8vh,88px)}
-header.hero .rule{height:1px; background:var(--rule); margin:44px 0 0}
-.standfirst{font-size:20.5px; line-height:1.56; color:var(--muted); max-width:600px; font-family:Newsreader,Georgia,serif}
-.standfirst strong{color:var(--ink); font-weight:400}
+/* ── player ─────────────────────────────────────────────────────────── */
+.player{margin:26px 0 0;background:var(--panel);border:1px solid var(--rule);
+  border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+.stage{position:relative;background:var(--ground);line-height:0}
+canvas{display:block;width:100%;height:auto}
+.cap{min-height:64px;display:flex;align-items:center;justify-content:center;
+  padding:14px 22px;border-top:1px solid var(--rule);background:var(--panel-2)}
+.cap span{font-family:"IBM Plex Mono",monospace;font-size:14px;line-height:1.5;
+  color:var(--ink);text-align:center;transition:opacity .28s ease;max-width:840px}
+@media (prefers-reduced-motion:reduce){.cap span{transition:none}}
 
-.beat{padding:clamp(54px,8vh,86px) 0; border-top:1px solid var(--rule)}
-.beat:first-of-type{border-top:none}
-.beat-no{
-  font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.14em;
-  color:var(--faint); display:block; margin-bottom:10px;
-}
+.bar{display:flex;align-items:center;gap:14px;padding:11px 16px;border-top:1px solid var(--rule)}
+.btn{width:34px;height:34px;flex:0 0 auto;border-radius:7px;border:1px solid var(--rule);
+  background:var(--panel-2);color:var(--ink);cursor:pointer;display:grid;place-items:center;padding:0}
+.btn:hover{border-color:var(--muted)}
+.btn:focus-visible{outline:2px solid var(--s);outline-offset:2px}
+.btn svg{width:14px;height:14px;fill:currentColor}
+.track{flex:1 1 auto;display:flex;gap:3px;height:26px;align-items:center;cursor:pointer}
+.seg{flex:1 1 auto;height:5px;border-radius:3px;background:var(--rule);position:relative;overflow:hidden}
+.seg i{position:absolute;inset:0;transform-origin:left;transform:scaleX(0);background:var(--muted);display:block}
+.seg.on i{background:var(--s)}
+.seg.done i{transform:scaleX(1)}
+.tc{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--faint);
+  font-variant-numeric:tabular-nums;flex:0 0 auto}
 
-/* ── figures ──────────────────────────────────────────────────────────── */
-figure{
-  margin:34px 0; background:var(--panel); border:1px solid var(--rule);
-  border-radius:10px; padding:26px 24px 18px; box-shadow:var(--shadow); overflow-x:auto;
-}
-figure.wide{max-width:none}
-figure svg{display:block; width:100%; height:auto; max-width:100%; color:var(--muted)}
-figcaption{
-  font-size:14px; line-height:1.55; color:var(--muted); margin-top:16px;
-  padding-top:14px; border-top:1px solid var(--rule); font-family:Newsreader,Georgia,serif; font-style:italic;
-}
-figcaption strong{font-style:normal}
+.chapters{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));
+  gap:1px;background:var(--rule);border-top:1px solid var(--rule)}
+.ch{background:var(--panel);border:none;text-align:left;padding:11px 13px;cursor:pointer;
+  font-family:inherit;color:var(--muted);font-size:12.5px;line-height:1.35}
+.ch:hover{background:var(--panel-2)}
+.ch:focus-visible{outline:2px solid var(--s);outline-offset:-2px}
+.ch b{display:block;font-family:"IBM Plex Mono",monospace;font-size:10.5px;
+  letter-spacing:.11em;color:var(--faint);font-weight:500;margin-bottom:2px}
+.ch.on{background:var(--panel-2)} .ch.on{color:var(--ink)} .ch.on b{color:var(--s)}
 
-/* ── tables ───────────────────────────────────────────────────────────── */
-.tw{overflow-x:auto; margin:26px 0; border:1px solid var(--rule); border-radius:10px; background:var(--panel)}
-table{border-collapse:collapse; width:100%; font-size:14.5px; min-width:460px}
-th{
-  text-align:left; padding:12px 15px; font-size:11.5px; font-weight:500; letter-spacing:.11em;
-  text-transform:uppercase; color:var(--faint); border-bottom:1px solid var(--rule);
-  font-family:"IBM Plex Mono",monospace; white-space:nowrap;
-}
-td{padding:12px 15px; border-bottom:1px solid var(--rule); vertical-align:top; line-height:1.48}
+/* ── sections ───────────────────────────────────────────────────────── */
+section{padding:44px 0;border-top:1px solid var(--rule);margin-top:44px}
+.tw{overflow-x:auto;border:1px solid var(--rule);border-radius:10px;background:var(--panel);margin:0 0 18px}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:520px}
+th{text-align:left;padding:11px 14px;font-family:"IBM Plex Mono",monospace;font-size:10.5px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--faint);font-weight:500;
+  border-bottom:1px solid var(--rule);white-space:nowrap}
+td{padding:11px 14px;border-bottom:1px solid var(--rule);vertical-align:top;line-height:1.45}
 tr:last-child td{border-bottom:none}
-td:first-child{color:var(--ink); font-weight:500}
-.num{font-variant-numeric:tabular-nums}
+td:first-child{color:var(--ink);font-weight:500;font-family:"IBM Plex Mono",monospace;font-size:13px;white-space:nowrap}
+td.v{font-family:"IBM Plex Mono",monospace;font-size:11.5px;letter-spacing:.06em;white-space:nowrap}
+.ok{color:var(--p)} .warn{color:var(--k)} .no{color:var(--bad)} .off{color:var(--faint)}
 
-/* ── callouts ─────────────────────────────────────────────────────────── */
-.note{
-  margin:26px 0; padding:17px 20px; background:var(--panel); border:1px solid var(--rule);
-  border-left:2px solid var(--muted); border-radius:0 8px 8px 0; font-size:15.5px; line-height:1.6;
-}
-.note .t{
-  display:block; font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.13em;
-  text-transform:uppercase; color:var(--faint); margin-bottom:7px;
-}
-.note.key{border-left-color:var(--surface)} .note.key .t{color:var(--surface)}
-.note.bad{border-left-color:var(--refuse)} .note.bad .t{color:var(--refuse)}
-
-.algebra{
-  margin:28px 0; padding:24px 22px; background:var(--panel-2); border:1px solid var(--rule);
-  border-radius:10px; text-align:center; font-family:"IBM Plex Mono",monospace;
-  font-size:clamp(13px,2.5vw,17px); line-height:2; color:var(--ink); overflow-x:auto;
-}
-.algebra .op{color:var(--faint); padding:0 .35em}
-.t-surface{color:var(--surface)} .t-scope{color:var(--scope)} .t-policy{color:var(--policy)}
-.algebra .cap{
-  display:block; margin-top:14px; font-family:Newsreader,Georgia,serif; font-style:italic;
-  font-size:14.5px; color:var(--muted); letter-spacing:0;
-}
-
-/* ── the interactive panel ────────────────────────────────────────────── */
-.lab{
-  margin:34px 0; background:var(--panel); border:1px solid var(--rule);
-  border-radius:12px; box-shadow:var(--shadow); overflow:hidden;
-}
-.lab-hd{padding:20px 24px 0}
-.lab-hd .t{
-  font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.13em;
-  text-transform:uppercase; color:var(--faint);
-}
-.lab-body{display:grid; grid-template-columns:1.08fr .92fr; gap:8px; padding:8px 16px 0}
-@media (max-width:760px){.lab-body{grid-template-columns:1fr}}
-.lab-svg{padding:8px}
-.lab-svg svg{display:block; width:100%; height:auto; color:var(--muted)}
-
-.switches{display:flex; flex-direction:column; gap:9px; padding:16px 8px 8px}
-.sw{
-  display:flex; align-items:flex-start; gap:11px; padding:11px 13px; cursor:pointer;
-  background:var(--panel-2); border:1px solid var(--rule); border-radius:8px;
-  font-size:14px; line-height:1.42; text-align:left; color:var(--body);
-  font-family:inherit; transition:border-color .15s, background .15s;
-}
+/* ── lab ────────────────────────────────────────────────────────────── */
+.lab{display:grid;grid-template-columns:1.05fr .95fr;gap:0;border:1px solid var(--rule);
+  border-radius:12px;overflow:hidden;background:var(--panel);box-shadow:var(--shadow)}
+@media (max-width:820px){.lab{grid-template-columns:1fr}}
+.lab-l{padding:14px}
+.lab-l svg{display:block;width:100%;height:auto}
+.lab-r{border-left:1px solid var(--rule);display:flex;flex-direction:column}
+@media (max-width:820px){.lab-r{border-left:none;border-top:1px solid var(--rule)}}
+.sws{padding:14px;display:flex;flex-direction:column;gap:7px}
+.sw{display:flex;align-items:flex-start;gap:10px;padding:9px 11px;cursor:pointer;text-align:left;
+  background:var(--panel-2);border:1px solid var(--rule);border-radius:7px;font-family:inherit;
+  color:var(--body);font-size:13px;line-height:1.35}
 .sw:hover{border-color:var(--muted)}
-.sw:focus-visible{outline:2px solid var(--surface); outline-offset:2px}
-.sw .box{
-  flex:0 0 auto; width:15px; height:15px; margin-top:2px; border-radius:3px;
-  border:1.5px solid var(--faint); position:relative; transition:background .15s,border-color .15s;
-}
-.sw[aria-pressed="true"] .box{background:currentColor; border-color:currentColor}
-.sw[aria-pressed="true"] .box::after{
-  content:""; position:absolute; left:3.4px; top:.6px; width:4px; height:8px;
-  border:solid var(--panel); border-width:0 1.6px 1.6px 0; transform:rotate(42deg);
-}
-.sw .nm{display:block; font-weight:500; color:var(--ink)}
-.sw .sub{display:block; font-size:12.5px; color:var(--muted); margin-top:1px}
-.sw.s-surface[aria-pressed="true"]{color:var(--surface)}
-.sw.s-scope[aria-pressed="true"]{color:var(--scope)}
-.sw.s-policy[aria-pressed="true"]{color:var(--policy)}
-.sw.s-pep[aria-pressed="true"]{color:var(--ink)}
-.sw.s-pep{border-style:dashed}
+.sw:focus-visible{outline:2px solid var(--s);outline-offset:2px}
+.sw .bx{flex:0 0 auto;width:14px;height:14px;margin-top:2px;border-radius:3px;
+  border:1.5px solid var(--faint);position:relative}
+.sw[aria-pressed="true"] .bx{background:currentColor;border-color:currentColor}
+.sw[aria-pressed="true"] .bx::after{content:"";position:absolute;left:3.2px;top:.4px;width:3.6px;
+  height:7.4px;border:solid var(--panel);border-width:0 1.6px 1.6px 0;transform:rotate(42deg)}
+.sw .nm{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--ink);display:block}
 .sw[aria-pressed="false"] .nm{color:var(--muted)}
+.sw.a[aria-pressed="true"]{color:var(--s)} .sw.b[aria-pressed="true"]{color:var(--k)}
+.sw.c[aria-pressed="true"]{color:var(--p)} .sw.d[aria-pressed="true"]{color:var(--ink)}
+.sw.d{border-style:dashed}
+.out{border-top:1px solid var(--rule);padding:13px 14px;flex:1 1 auto;background:var(--panel-2)}
+.tl{display:flex;align-items:center;gap:9px;font-family:"IBM Plex Mono",monospace;font-size:12px;
+  padding:5px 9px;border-radius:5px;background:var(--panel);border:1px solid var(--rule);margin-bottom:4px}
+.tl .st{flex:0 0 auto;width:52px;font-size:10px;letter-spacing:.07em}
+.tl.y .st{color:var(--p)} .tl.n .st{color:var(--bad)} .tl.n .id{color:var(--muted)}
+.tl .id{color:var(--ink)}
+.tl .rc{margin-left:auto;color:var(--faint);font-size:11px}
+.vd{margin-top:9px;padding-top:9px;border-top:1px solid var(--rule);
+  font-family:"IBM Plex Mono",monospace;font-size:12.5px;line-height:1.5;color:var(--ink)}
+.vd.alarm{color:var(--bad)}
 
-.readout{border-top:1px solid var(--rule); background:var(--panel-2); padding:16px 24px 18px}
-.readout .hd{
-  font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.13em;
-  text-transform:uppercase; color:var(--faint); margin-bottom:11px;
-}
-.tools{display:flex; flex-direction:column; gap:5px; margin-bottom:0}
-.tl{
-  display:flex; align-items:center; gap:10px; font-family:"IBM Plex Mono",monospace;
-  font-size:13px; padding:6px 10px; border-radius:6px; background:var(--panel);
-  border:1px solid var(--rule);
-}
-.tl .st{flex:0 0 auto; width:58px; font-size:10.5px; letter-spacing:.08em; font-weight:500}
-.tl .nm2{color:var(--ink); flex:0 0 auto}
-.tl .why{color:var(--muted); font-size:12px; margin-left:auto; text-align:right; font-family:Newsreader,Georgia,serif; font-style:italic}
-.tl.ok{border-color:color-mix(in srgb,var(--policy) 45%,var(--rule))}
-.tl.ok .st{color:var(--policy)}
-.tl.no .st{color:var(--refuse)}
-.tl.no .nm2{color:var(--muted)}
-.verdict{
-  margin-top:14px; padding-top:13px; border-top:1px solid var(--rule);
-  font-family:Newsreader,Georgia,serif; font-size:16px; line-height:1.5; color:var(--ink);
-}
-.verdict .n{font-family:"IBM Plex Mono",monospace; font-size:15px; font-weight:500}
-.verdict.alarm{color:var(--refuse)}
-
-/* ── reveal ───────────────────────────────────────────────────────────── */
-.rv{opacity:0; transform:translateY(14px); transition:opacity .6s ease, transform .6s ease}
-.rv.in{opacity:1; transform:none}
-@media (prefers-reduced-motion:reduce){
-  .rv{opacity:1; transform:none; transition:none}
-  *{animation:none !important}
-}
-
-footer{border-top:1px solid var(--rule); padding:44px 0 72px; color:var(--muted); font-size:14.5px}
-footer .col{max-width:660px}
-.kicker{
-  font-family:Newsreader,Georgia,serif; font-size:clamp(21px,3vw,27px); line-height:1.42;
-  color:var(--ink); font-weight:300; margin:0 0 22px;
-}
-hr.soft{border:none; border-top:1px solid var(--rule); margin:38px 0}
+details{border:1px solid var(--rule);border-radius:10px;background:var(--panel);padding:0;margin-top:18px}
+summary{padding:12px 16px;cursor:pointer;font-family:"IBM Plex Mono",monospace;font-size:12px;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+summary:focus-visible{outline:2px solid var(--s);outline-offset:-2px}
+.tr{padding:0 16px 16px;font-family:"IBM Plex Mono",monospace;font-size:12.5px;line-height:1.85;color:var(--body)}
+.tr b{color:var(--s);font-weight:500}
+footer{border-top:1px solid var(--rule);margin-top:44px;padding:30px 0 60px;
+  font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--faint);line-height:1.9}
+footer a{color:var(--s);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--s) 35%,transparent)}
 </style>
 
 <div class="wrap">
-
-<header class="hero">
-  <div class="col">
-    <p class="eyebrow">warden-connect &middot; for the people who sign off on it</p>
-    <h1>The ceiling and<br>the checkpoint</h1>
-    <p class="standfirst">An agent calls a tool it was never meant to reach. Afterwards, every
-    control you bought reports green. <strong>This is how a contract and an enforcement point
-    become one control &mdash; and why either half alone is decoration.</strong></p>
-    <div class="rule"></div>
-  </div>
+<header>
+  <p class="eyebrow">warden-connect &middot; 9 chapters &middot; 2:41</p>
+  <h1>The ceiling and the checkpoint</h1>
+  <p class="sub">contract &times; enforcement point &mdash; why neither is a control alone</p>
+  <p class="eq">effective <span class="op">=</span> <span class="c-s">contract.surface</span>
+    <span class="op">&cap;</span> <span class="c-k">token.scope</span>
+    <span class="op">&cap;</span> <span class="c-p">policy_decision</span></p>
 </header>
 
-<!-- ══ 01 ══════════════════════════════════════════════════════════════ -->
-<section class="beat rv">
- <div class="col">
-  <span class="beat-no">01</span>
-  <h2>One call. Two owners. No decision.</h2>
-  <p class="lede">A reconciliation agent asks a payments service to move money. The call
-  succeeds. Who agreed that it could?</p>
-  <p>Not the payments team &mdash; nobody asked them about this particular caller. Not the
-  agent's team &mdash; they asked for a broad credential once, a year ago, and got it. Not the
-  network, which saw two internal addresses and did its job. Not the identity provider, which
-  authenticated a service account and never had an opinion about tools.</p>
-  <p>Each layer behaved correctly. The decision that mattered &mdash; <em>may this caller reach
-  this capability on this callee</em> &mdash; was never made by anyone, because no layer is
-  where that decision lives.</p>
- </div>
+<div class="player">
+  <div class="stage"><canvas id="cv" width="1200" height="675" role="img"
+       aria-label="Animated explainer. A full transcript of every caption appears below the player."></canvas></div>
+  <div class="cap"><span id="cap"></span></div>
+  <div class="bar">
+    <button class="btn" id="pp" aria-label="Play"><svg id="ppi" viewBox="0 0 16 16"><path d="M3 1.5v13l11-6.5z"/></svg></button>
+    <button class="btn" id="rs" aria-label="Restart"><svg viewBox="0 0 16 16"><path d="M8 1.6a6.4 6.4 0 1 0 6.4 6.4h-1.9A4.5 4.5 0 1 1 8 3.5v2.6l3.7-3L8 0z"/></svg></button>
+    <div class="track" id="tk"></div>
+    <span class="tc" id="tc">0:00 / 2:35</span>
+  </div>
+  <div class="chapters" id="chs"></div>
+</div>
 
- <figure class="rv">
-  <svg viewBox="0 0 860 250" role="img" aria-label="A caller reaches a callee through network, identity and gateway layers; each layer answers its own question, and none of them answers whether this pair was agreed.">
-    <defs>
-      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
-      </marker>
-    </defs>
-    <!-- endpoints -->
-    <rect x="14" y="80" width="150" height="58" rx="7" fill="none" stroke="currentColor" stroke-width="1.3"/>
-    <text x="89" y="104" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="var(--ink)">recon-bot</text>
-    <text x="89" y="122" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor">the caller</text>
-
-    <rect x="696" y="80" width="150" height="58" rx="7" fill="none" stroke="currentColor" stroke-width="1.3"/>
-    <text x="771" y="104" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="var(--ink)">payments-mcp</text>
-    <text x="771" y="122" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor">the callee</text>
-
-    <!-- the three layers it passes -->
-    <g stroke="currentColor" stroke-width="1" stroke-dasharray="3 4" opacity=".55">
-      <line x1="268" y1="46" x2="268" y2="172"/>
-      <line x1="404" y1="46" x2="404" y2="172"/>
-      <line x1="540" y1="46" x2="540" y2="172"/>
-    </g>
-    <g font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor" text-anchor="middle">
-      <text x="268" y="38">network</text>
-      <text x="404" y="38">identity</text>
-      <text x="540" y="38">gateway</text>
-    </g>
-    <g font-family="IBM Plex Sans, sans-serif" font-size="10.5" fill="currentColor" text-anchor="middle" opacity=".85">
-      <text x="268" y="190">both internal?</text>
-      <text x="268" y="204">yes</text>
-      <text x="404" y="190">token valid?</text>
-      <text x="404" y="204">yes</text>
-      <text x="540" y="190">route known?</text>
-      <text x="540" y="204">yes</text>
-    </g>
-
-    <line x1="168" y1="109" x2="690" y2="109" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar)"/>
-    <text x="430" y="100" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--refuse)">transfer_funds</text>
-
-    <!-- the unanswered question -->
-    <rect x="286" y="216" width="288" height="26" rx="5" fill="none" stroke="var(--refuse)" stroke-width="1.2" stroke-dasharray="4 3"/>
-    <text x="430" y="234" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="var(--refuse)">may this pair do this? &mdash; asked nowhere</text>
-  </svg>
-  <figcaption>Three layers, three green answers, three <strong>different questions</strong>. None
-  of them is the one the incident review will ask.</figcaption>
- </figure>
+<section>
+  <h2>Play with the intersection</h2>
+  <div class="lab">
+    <div class="lab-l">
+      <svg viewBox="0 0 560 460" role="img" aria-label="Three overlapping circles for contract surface, token scope and policy decision. Their common region is the effective permission set.">
+        <defs>
+          <clipPath id="ck"><circle cx="340" cy="188" r="106"/></clipPath>
+          <clipPath id="cp"><circle cx="280" cy="292" r="106"/></clipPath>
+        </defs>
+        <g id="gk"><g id="gp">
+          <circle id="bA" cx="220" cy="188" r="106" fill="currentColor" opacity=".14"/>
+          <rect id="bU" x="2" y="2" width="556" height="456" rx="9" fill="currentColor" opacity=".14" style="display:none"/>
+        </g></g>
+        <circle id="rS" cx="220" cy="188" r="106" fill="none" stroke="var(--s)"   stroke-width="1.7"/>
+        <circle id="rK" cx="340" cy="188" r="106" fill="none" stroke="var(--k)"   stroke-width="1.7"/>
+        <circle id="rP" cx="280" cy="292" r="106" fill="none" stroke="var(--p)"   stroke-width="1.7"/>
+        <g font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="middle">
+          <text id="lS" x="128" y="58" fill="var(--s)">contract.surface</text>
+          <text id="lK" x="432" y="58" fill="var(--k)">token.scope</text>
+          <text id="lP" x="280" y="432" fill="var(--p)">policy_decision</text>
+        </g>
+        <text id="eM" x="280" y="228" text-anchor="middle" font-family="IBM Plex Mono, monospace"
+              font-size="11" fill="var(--ink)" letter-spacing="1.5">EFFECTIVE</text>
+        <g id="pO" style="display:none">
+          <rect x="2" y="2" width="556" height="456" rx="9" fill="none" stroke="var(--bad)" stroke-width="2" stroke-dasharray="9 6"/>
+          <rect x="146" y="206" width="268" height="46" rx="6" fill="var(--panel)" stroke="var(--bad)" stroke-width="1.4"/>
+          <text x="280" y="234" text-anchor="middle" font-family="IBM Plex Mono, monospace"
+                font-size="12" fill="var(--bad)" letter-spacing="1.2">EXPRESSION UNEVALUATED</text>
+        </g>
+      </svg>
+    </div>
+    <div class="lab-r">
+      <div class="sws">
+        <button class="sw a" data-k="surface" aria-pressed="true"><span class="bx"></span><span class="nm">contract.surface</span></button>
+        <button class="sw b" data-k="scope"   aria-pressed="true"><span class="bx"></span><span class="nm">token.scope</span></button>
+        <button class="sw c" data-k="policy"  aria-pressed="true"><span class="bx"></span><span class="nm">policy_decision</span></button>
+        <button class="sw d" data-k="pep"     aria-pressed="true"><span class="bx"></span><span class="nm">enforcement point</span></button>
+      </div>
+      <div class="out">
+        <div id="tls"></div>
+        <div class="vd" id="vd"></div>
+      </div>
+    </div>
+  </div>
 </section>
 
-<!-- ══ 02 ══════════════════════════════════════════════════════════════ -->
-<section class="beat rv">
- <div class="col">
-  <span class="beat-no">02</span>
-  <h2>The token is not the agreement</h2>
-  <p class="lede">The obvious repair is to tighten the credential. It does not reach, and the
-  reason is organisational rather than technical.</p>
-  <p>A token is issued by an identity administrator to a workload. It asserts identity, and a
-  class of permitted activity. But the person who grants it has never read the callee's tool
-  list, does not know which of those tools moves money, and is not accountable when one of them
-  does. Scope is coarse because the issuer is far from the data.</p>
- </div>
+<section>
+  <h2>PEP placement</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Position</th><th>Caller identity</th><th>Bypass</th><th>Rollout</th></tr></thead>
+    <tbody>
+      <tr><td>A &middot; in-process</td><td>self-asserted, from argv/config</td><td class="v no">caller&rsquo;s team, silent</td><td>library dependency</td></tr>
+      <tr><td>B &middot; in-path</td><td>peer cert &rarr; SPIFFE ID, XFCC</td><td class="v ok">platform, visible</td><td>one filter, proxy already in path</td></tr>
+      <tr><td>C &middot; in-callee</td><td>presented credential</td><td class="v warn">callee&rsquo;s team</td><td>per-server adoption</td></tr>
+    </tbody>
+  </table></div>
 
- <div class="col">
-  <div class="tw">
-    <table>
-      <thead><tr><th>Mechanism</th><th>What it actually asserts</th><th>Who decides</th></tr></thead>
-      <tbody>
-        <tr><td>Network policy</td><td>these two addresses may exchange packets</td><td>platform</td></tr>
-        <tr><td>mTLS / SPIFFE</td><td>the peer is who it claims to be</td><td>platform</td></tr>
-        <tr><td>OAuth scope</td><td>this workload may do <em>things of this kind</em></td><td>identity admin</td></tr>
-        <tr><td>API gateway route</td><td>this path is reachable and rate-limited</td><td>platform</td></tr>
-        <tr><td>Runtime policy</td><td>under these conditions, deny</td><td>security</td></tr>
-        <tr style="background:var(--panel-2)"><td>&mdash;</td><td><strong>this caller may reach these tools on this callee</strong></td><td><strong>nobody</strong></td></tr>
-      </tbody>
-    </table>
-  </div>
+  <h2>Failure mode on unavailable input</h2>
+  <div class="tw"><table>
+    <thead><tr><th>&nbsp;</th><th>fail-open</th><th>fail-closed</th></tr></thead>
+    <tbody>
+      <tr><td>traffic</td><td class="v no">proceeds, unevaluated</td><td class="v ok">refused, WC-8001</td></tr>
+      <tr><td>deny counter</td><td class="v no">0</td><td class="v ok">n</td></tr>
+      <tr><td>signal</td><td class="v no">none</td><td class="v ok">page</td></tr>
+      <tr><td>worst case</td><td>unbounded unlogged window</td><td>outage, known cause</td></tr>
+    </tbody>
+  </table></div>
 
-  <p>Every row is a real control and each is worth having. The gap in the last row is not a
-  product gap in any of them &mdash; it is that the assertion requires <em>two</em> parties to
-  agree, and none of these mechanisms has a place to record a two-party agreement.</p>
+  <h2>Ledger</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Claim</th><th>Status</th><th>Evidence / limit</th></tr></thead>
+    <tbody>
+      <tr><td>two-party contract via SCM merge</td><td class="v ok">VERIFIED</td><td>live SCM, 2 repos, 2 reviewed merges, 1 gated term</td></tr>
+      <tr><td>in-path PEP, identity from peer cert</td><td class="v ok">VERIFIED</td><td>Envoy 1.31.10 ext_proc &middot; 2 admitted, 6 refusal classes</td></tr>
+      <tr><td>surface pin &rarr; drift refuses</td><td class="v ok">VERIFIED</td><td>WC-3108 on digest mismatch; WC-1002 on unverified pin</td></tr>
+      <tr><td>rate ceiling per contract</td><td class="v warn">IMPLEMENTED</td><td>unit + drill coverage; not load-proven</td></tr>
+      <tr><td>concurrency ceiling per contract</td><td class="v warn">IMPLEMENTED</td><td>per-process, not per-fleet</td></tr>
+      <tr><td>spend ceiling (USD/day)</td><td class="v no">CANNOT BIND</td><td>no cost signal on the data path &mdash; documentation only</td></tr>
+      <tr><td>&gt;1 contract per (caller, callee)</td><td class="v no">KNOWN LIMIT</td><td>by-pair resolution; second is verified, counted, unreachable</td></tr>
+      <tr><td>external caller or callee</td><td class="v off">OUT OF SCOPE</td><td>contract process presumes both parties follow it</td></tr>
+    </tbody>
+  </table></div>
 
-  <div class="note key">
-    <span class="t">the shape of the missing thing</span>
-    It must be authored by the two owners, not by a central admin. It must be reviewable before
-    it takes effect. It must be legible to a machine at call time. And it must not be able to
-    <em>grant</em> anything &mdash; or you have built a second, parallel entitlement system, and
-    made the problem worse.
-  </div>
- </div>
+  <details><summary>Transcript</summary><div class="tr" id="trx"></div></details>
 </section>
 
-<!-- ══ 03 ══════════════════════════════════════════════════════════════ -->
-<section class="beat rv">
- <div class="col">
-  <span class="beat-no">03</span>
-  <h2>Two declarations, one agreement</h2>
-  <p class="lede">The provider writes down what it offers and on what terms. The consumer writes
-  down what it needs. Where those overlap, and only there, a contract exists.</p>
-  <p>Both declarations are files in the two teams' own repositories &mdash; the provider's
-  <code>offer.toml</code>, the consumer's <code>needs.toml</code>. Which means the approval is
-  not a workflow anyone has to adopt. It is a pull request, reviewed by the owner who already
-  reviews that repository, and the audit trail is a merge commit that was going to exist
-  anyway.</p>
- </div>
-
- <figure class="rv wide">
-  <svg viewBox="0 0 860 300" role="img" aria-label="The provider repository's offer and the consumer repository's needs are each merged by review, and the control plane mints a signed contract covering only their overlap.">
-    <defs>
-      <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
-      </marker>
-    </defs>
-
-    <!-- provider -->
-    <rect x="20" y="30" width="228" height="96" rx="8" fill="none" stroke="var(--surface)" stroke-width="1.3"/>
-    <text x="36" y="54" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--surface)">payments-mcp</text>
-    <text x="36" y="74" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink)">warden/offer.toml</text>
-    <text x="36" y="92" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor">3 tools declared</text>
-    <text x="36" y="110" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor">2 offered to this audience</text>
-
-    <!-- consumer -->
-    <rect x="20" y="174" width="228" height="96" rx="8" fill="none" stroke="var(--surface)" stroke-width="1.3"/>
-    <text x="36" y="198" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--surface)">recon-bot</text>
-    <text x="36" y="218" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink)">warden/needs.toml</text>
-    <text x="36" y="236" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor">asks for 3</text>
-    <text x="36" y="254" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor">one of them was never offered</text>
-
-    <!-- review gates -->
-    <g>
-      <rect x="298" y="52" width="112" height="52" rx="6" fill="none" stroke="currentColor" stroke-width="1.1"/>
-      <text x="354" y="74" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="var(--ink)">reviewed</text>
-      <text x="354" y="90" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="var(--ink)">merge</text>
-      <rect x="298" y="196" width="112" height="52" rx="6" fill="none" stroke="currentColor" stroke-width="1.1"/>
-      <text x="354" y="218" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="var(--ink)">reviewed</text>
-      <text x="354" y="234" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="var(--ink)">merge</text>
-    </g>
-    <line x1="252" y1="78" x2="292" y2="78" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar2)"/>
-    <line x1="252" y1="222" x2="292" y2="222" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar2)"/>
-
-    <!-- control plane -->
-    <rect x="462" y="112" width="132" height="76" rx="8" fill="none" stroke="currentColor" stroke-width="1.3"/>
-    <text x="528" y="140" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="12" fill="var(--ink)">control plane</text>
-    <text x="528" y="158" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor">intersect</text>
-    <text x="528" y="174" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor">and sign</text>
-    <path d="M 414 78 L 440 78 L 440 140 L 456 140" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar2)"/>
-    <path d="M 414 222 L 440 222 L 440 160 L 456 160" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar2)"/>
-
-    <!-- contract -->
-    <rect x="656" y="98" width="186" height="104" rx="8" fill="none" stroke="var(--policy)" stroke-width="1.5"/>
-    <text x="672" y="124" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--policy)">contract &middot; signed</text>
-    <text x="672" y="146" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">get_balance</text>
-    <text x="672" y="164" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">list_transactions</text>
-    <text x="672" y="186" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--refuse)" text-decoration="line-through">transfer_funds</text>
-    <line x1="598" y1="150" x2="650" y2="150" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar2)"/>
-
-    <text x="749" y="228" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor">never enters a repository</text>
-    <text x="749" y="246" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor">lives beside the checkpoint</text>
-  </svg>
-  <figcaption>The consumer asked for three. The provider offered two to callers of that class.
-  The contract covers <strong>two</strong> &mdash; an intersection, computed, not negotiated in a
-  meeting.</figcaption>
- </figure>
-
- <div class="col">
-  <div class="note">
-    <span class="t">what changes for governance</span>
-    Approving a connection stops being a ticket queue and becomes the review your engineers
-    already do. The reviewer is the owner of the thing being exposed, because it is their
-    repository. Nobody has to be trained on a new tool, and the evidence an auditor wants &mdash;
-    who approved what, when &mdash; is the merge history.
-  </div>
- </div>
-</section>
-
-<!-- ══ 04 ══════════════════════════════════════════════════════════════ -->
-<section class="beat rv">
- <div class="col">
-  <span class="beat-no">04</span>
-  <h2>The algebra, and the property that matters</h2>
-  <p class="lede">What a call is permitted to do is the intersection of three independent
-  ceilings. Not a sum, not a precedence order &mdash; an intersection.</p>
-
-  <div class="algebra">
-    effective <span class="op">=</span> <span class="t-surface">contract.surface</span>
-    <span class="op">&cap;</span> <span class="t-scope">token.scope</span>
-    <span class="op">&cap;</span> <span class="t-policy">policy_decision</span>
-    <span class="cap">three ceilings; the lowest one wins, every time</span>
-  </div>
-
-  <p>Because it is an intersection, adding a contract to a system <strong>cannot make anything
-  newly possible</strong>. The most permissive contract anyone could write is bounded above by
-  what the token and the policy engine already allowed. A mistaken contract narrows the wrong
-  thing or fails to narrow &mdash; it never opens a door.</p>
-  <p>That is the property that makes the delegation safe. You can hand contract authoring to two
-  hundred product teams without giving two hundred teams the ability to grant themselves access,
-  because the artifact they author has no grant semantics at all. It is a ceiling. Its only
-  power is downward.</p>
-
-  <div class="note key">
-    <span class="t">the question to ask a vendor</span>
-    <em>Can the thing your teams author ever increase what is possible?</em> If yes, you have
-    bought a second entitlement system that must now be governed as tightly as the first. If no,
-    you have bought a constraint, and constraints compose.
-  </div>
- </div>
-
- <!-- ── the lab ───────────────────────────────────────────────────────── -->
- <div class="lab rv" id="lab">
-  <div class="lab-hd">
-    <span class="t">switch a ceiling off and watch what becomes reachable</span>
-  </div>
-  <div class="lab-body">
-   <div class="lab-svg">
-    <svg viewBox="0 0 620 480" role="img" aria-label="Three overlapping circles — contract surface, token scope and policy decision. Their common intersection is the set of calls that may proceed. Toggling a circle off widens the intersection; toggling the enforcement point off makes the whole canvas reachable.">
-      <defs>
-        <clipPath id="cB"><circle cx="372" cy="196" r="112"/></clipPath>
-        <clipPath id="cC"><circle cx="310" cy="304" r="112"/></clipPath>
-      </defs>
-
-      <!-- the effective region -->
-      <g id="gB"><g id="gC">
-        <circle id="baseA" cx="248" cy="196" r="112" fill="var(--eff-fill)"/>
-        <rect id="baseAll" x="2" y="2" width="616" height="476" rx="10" fill="var(--eff-fill)" style="display:none"/>
-      </g></g>
-
-      <!-- the three ceilings -->
-      <circle id="ringS" cx="248" cy="196" r="112" fill="none" stroke="var(--surface)" stroke-width="1.8"/>
-      <circle id="ringK" cx="372" cy="196" r="112" fill="none" stroke="var(--scope)"   stroke-width="1.8"/>
-      <circle id="ringP" cx="310" cy="304" r="112" fill="none" stroke="var(--policy)"  stroke-width="1.8"/>
-
-      <g font-family="IBM Plex Mono, monospace" font-size="12.5" text-anchor="middle">
-        <text id="labS" x="150" y="60" fill="var(--surface)">contract.surface</text>
-        <text id="labK" x="470" y="60" fill="var(--scope)">token.scope</text>
-        <text id="labP" x="310" y="452" fill="var(--policy)">policy_decision</text>
-      </g>
-
-      <!-- effective marker -->
-      <g id="effMark">
-        <text x="310" y="238" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--eff)" letter-spacing="1.4">EFFECTIVE</text>
-      </g>
-
-      <!-- enforcement off stamp -->
-      <g id="pepStamp" style="display:none">
-        <rect x="2" y="2" width="616" height="476" rx="10" fill="none" stroke="var(--refuse)" stroke-width="2" stroke-dasharray="9 6"/>
-        <rect x="176" y="212" width="268" height="56" rx="7" fill="var(--panel)" stroke="var(--refuse)" stroke-width="1.5"/>
-        <text x="310" y="236" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--refuse)" letter-spacing="1.2">NOTHING READS THIS</text>
-        <text x="310" y="255" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="var(--muted)">the contract is still signed and still merged</text>
-      </g>
-    </svg>
-   </div>
-
-   <div class="switches">
-     <button class="sw s-surface" data-k="surface" aria-pressed="true">
-       <span class="box"></span>
-       <span><span class="nm">contract.surface</span>
-       <span class="sub">the two owners agreed on these tools</span></span>
-     </button>
-     <button class="sw s-scope" data-k="scope" aria-pressed="true">
-       <span class="box"></span>
-       <span><span class="nm">token.scope</span>
-       <span class="sub">what the identity provider issued</span></span>
-     </button>
-     <button class="sw s-policy" data-k="policy" aria-pressed="true">
-       <span class="box"></span>
-       <span><span class="nm">policy_decision</span>
-       <span class="sub">runtime rules: data class, time, posture</span></span>
-     </button>
-     <button class="sw s-pep" data-k="pep" aria-pressed="true">
-       <span class="box"></span>
-       <span><span class="nm">the enforcement point</span>
-       <span class="sub">something on the path that reads all three</span></span>
-     </button>
-   </div>
-  </div>
-
-  <div class="readout">
-    <div class="hd">what <span class="mono">recon-bot</span> can reach on <span class="mono">payments-mcp</span></div>
-    <div class="tools" id="tools"></div>
-    <div class="verdict" id="verdict"></div>
-  </div>
- </div>
-
- <div class="col">
-  <p>Switch off <span class="t-scope">token.scope</span> and nothing changes &mdash; the contract
-  was already the tighter ceiling. That non-event is the clearest picture of what a ceiling is:
-  removing a constraint can only ever widen, and a term that was not binding was never doing
-  work. Switch off <span class="t-surface">contract.surface</span> and money movement appears,
-  because the contract was the only term that knew this caller had no business moving money.</p>
- </div>
-</section>
-
-<!-- ══ 05 ══════════════════════════════════════════════════════════════ -->
-<section class="beat rv">
- <div class="col">
-  <span class="beat-no">05</span>
-  <h2>Now switch off the checkpoint</h2>
-  <p class="lede">The fourth switch is different in kind from the other three, and it is the
-  whole reason this page exists.</p>
-  <p>Turn it off and the expression does not shrink or widen. It stops being evaluated. The
-  contract is still signed. It is still merged, still in the audit trail, still on the slide that
-  says connections are governed. The compliance evidence is genuine and the control is
-  imaginary.</p>
-  <p>This is the failure mode worth being afraid of, because it is invisible from every direction
-  an executive normally looks. There is no alert. Coverage dashboards count contracts, and the
-  contracts exist. The only signal that distinguishes an enforced contract from a decorative one
-  is a <em>refusal</em> &mdash; and a system that is refusing nothing looks exactly like a system
-  with nothing to refuse.</p>
-
-  <div class="note bad">
-    <span class="t">the recurring defect class</span>
-    A control that reads as configured and does nothing. Not a bug in the check &mdash; the check
-    is correct and well tested. The wiring simply never routes a call through it: a filter
-    declared but not attached to a listener, a policy loaded but keyed on a field that is always
-    absent, a verifier that fails open on a timeout it never logs.
-  </div>
-
-  <p>The operational consequence is a single question you can ask about any deployment, and it
-  admits only one good answer:</p>
-
-  <div class="algebra" style="line-height:1.7">
-    <span style="font-family:Newsreader,Georgia,serif; font-style:italic; font-size:16px; color:var(--ink)">
-    &ldquo;Show me a call this refused today.&rdquo;</span>
-    <span class="cap">a coverage number is a claim; a refusal is evidence</span>
-  </div>
- </div>
-</section>
-
-<!-- ══ 06 ══════════════════════════════════════════════════════════════ -->
-<section class="beat rv">
- <div class="col">
-  <span class="beat-no">06</span>
-  <h2>Where you put the check decides who can remove it</h2>
-  <p class="lede">There are three places to evaluate the expression, and they differ far less in
-  what they can see than in who holds the switch.</p>
-  <p>This is an ownership question wearing a topology costume. A check that runs inside the
-  caller's process is a check the caller's team can disable, redeploy without, or simply fail to
-  adopt &mdash; and the callee's owner, who is accountable for the data, has no way to know.</p>
- </div>
-
- <figure class="rv wide">
-  <svg viewBox="0 0 860 268" role="img" aria-label="Three candidate positions for the enforcement point along the path from caller to callee: inside the caller, in the network path, and inside the callee. The trust boundary sits between the caller and the network path.">
-    <defs>
-      <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
-      </marker>
-    </defs>
-
-    <!-- trust boundary -->
-    <line x1="292" y1="14" x2="292" y2="214" stroke="var(--refuse)" stroke-width="1.3" stroke-dasharray="6 5"/>
-    <text x="292" y="234" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="var(--refuse)">trust boundary</text>
-    <text x="292" y="250" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="var(--refuse)">the callee&rsquo;s assurance starts here</text>
-
-    <!-- lane -->
-    <line x1="44" y1="112" x2="812" y2="112" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar3)"/>
-
-    <!-- caller zone -->
-    <text x="150" y="34" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor">caller&rsquo;s estate</text>
-    <text x="560" y="34" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor">callee&rsquo;s estate</text>
-
-    <!-- A: in the caller -->
-    <rect x="96" y="86" width="118" height="52" rx="7" fill="var(--panel)" stroke="currentColor" stroke-width="1.3"/>
-    <text x="155" y="107" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="12" fill="var(--ink)">A &middot; in-process</text>
-    <text x="155" y="124" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="10.5" fill="currentColor">library or mediator</text>
-    <text x="155" y="164" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="var(--refuse)">caller can remove it</text>
-
-    <!-- B: in path -->
-    <rect x="386" y="80" width="130" height="64" rx="7" fill="var(--panel)" stroke="var(--policy)" stroke-width="1.8"/>
-    <text x="451" y="102" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="12" fill="var(--ink)">B &middot; in the path</text>
-    <text x="451" y="119" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="10.5" fill="currentColor">gateway or sidecar</text>
-    <text x="451" y="135" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="10.5" fill="currentColor">identity from mTLS</text>
-    <text x="451" y="170" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="var(--policy)">platform holds the switch</text>
-
-    <!-- C: in callee -->
-    <rect x="654" y="86" width="118" height="52" rx="7" fill="var(--panel)" stroke="currentColor" stroke-width="1.3"/>
-    <text x="713" y="107" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="12" fill="var(--ink)">C &middot; in the callee</text>
-    <text x="713" y="124" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="10.5" fill="currentColor">server library</text>
-    <text x="713" y="164" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor">needs every server to adopt</text>
-  </svg>
-  <figcaption>The same three ceilings, evaluated in three places. <strong>Only B sits on the far
-  side of the trust boundary</strong> from the party whose behaviour is being constrained.</figcaption>
- </figure>
-
- <div class="col">
-  <div class="tw">
-    <table>
-      <thead><tr><th>&nbsp;</th><th>Caller identity from</th><th>Who can bypass</th><th>Rollout cost</th><th>Use when</th></tr></thead>
-      <tbody>
-        <tr><td>A &middot; in-process</td><td>its own configuration &mdash; self-asserted</td><td>the caller&rsquo;s team, silently</td><td>none &mdash; a dependency</td><td>the caller is the party you are protecting, e.g. an agent you want to keep inside its lane</td></tr>
-        <tr style="background:var(--panel-2)"><td>B &middot; in the path</td><td>the peer certificate &mdash; unforgeable by the caller</td><td>the platform team, visibly</td><td>a proxy already in the path</td><td><strong>the default for internal traffic</strong></td></tr>
-        <tr><td>C &middot; in the callee</td><td>the presented credential</td><td>the callee&rsquo;s team</td><td>every server must adopt the library</td><td>no proxy exists, or the decision needs application context</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p>Choosing B is not a claim that callers are adversaries. It is a claim that assurance which
-  depends on every team's continued cooperation is not assurance you can report upward. The
-  platform already terminates mTLS and already knows both peers; putting the evaluation there
-  costs one filter and gives the callee's owner something they can rely on without auditing
-  anyone else's deployment.</p>
-
-  <div class="note">
-    <span class="t">the pragmatic position</span>
-    A and B are not exclusive, and the honest combination is to run B for assurance and A for
-    developer feedback &mdash; the in-process check fails fast at the caller with a good error
-    message, and the in-path check is the one you count.
-  </div>
- </div>
-</section>
-
-<!-- ══ 07 ══════════════════════════════════════════════════════════════ -->
-<section class="beat rv">
- <div class="col">
-  <span class="beat-no">07</span>
-  <h2>The thing you agreed to keeps moving</h2>
-  <p class="lede">A contract names tools on a callee. On Tuesday the callee ships a fourth tool.
-  Nothing about the contract changed, and everything about it is now wrong.</p>
-  <p>This is the failure that distinguishes a contract from a firewall rule. A rule about ports
-  stays true because ports do not acquire new meanings. A rule about <em>capabilities</em> is a
-  rule about an evolving surface, and the surface belongs to a team shipping every week.</p>
-  <p>The repair is that the contract records a cryptographic digest of the surface it was
-  agreed against, and the enforcement point recomputes that digest from what the server actually
-  serves. Drift is then not a monitoring problem to be noticed later. It is a refusal, now.</p>
- </div>
-
- <figure class="rv">
-  <svg viewBox="0 0 780 236" role="img" aria-label="At contract time the server's surface digest matches the digest recorded in the contract. After the server adds a tool, the recomputed digest differs and the enforcement point refuses.">
-    <defs>
-      <marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
-      </marker>
-    </defs>
-    <g font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor">
-      <text x="30" y="30">contract time</text>
-      <text x="440" y="30">tuesday&rsquo;s release</text>
-    </g>
-
-    <!-- left: match -->
-    <rect x="30" y="48" width="300" height="120" rx="8" fill="none" stroke="currentColor" stroke-width="1.2"/>
-    <text x="48" y="74" font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="currentColor">the server serves</text>
-    <text x="48" y="94" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink)">get_balance &middot; list_transactions</text>
-    <text x="48" y="112" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink)">transfer_funds</text>
-    <line x1="48" y1="126" x2="312" y2="126" stroke="currentColor" stroke-width="1" opacity=".5"/>
-    <text x="48" y="146" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--policy)">digest 84c4f100&hellip;</text>
-    <text x="48" y="162" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="var(--policy)">matches the pin &mdash; admitted</text>
-
-    <!-- right: drift -->
-    <rect x="440" y="48" width="310" height="120" rx="8" fill="none" stroke="var(--refuse)" stroke-width="1.4"/>
-    <text x="458" y="74" font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="currentColor">the server now serves</text>
-    <text x="458" y="94" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink)">get_balance &middot; list_transactions</text>
-    <text x="458" y="112" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink)">transfer_funds &middot; <tspan fill="var(--refuse)">export_ledger</tspan></text>
-    <line x1="458" y1="126" x2="732" y2="126" stroke="currentColor" stroke-width="1" opacity=".5"/>
-    <text x="458" y="146" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--refuse)">digest e6e1b8d4&hellip;</text>
-    <text x="458" y="162" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="var(--refuse)">differs &mdash; refused, WC-3108</text>
-
-    <line x1="336" y1="108" x2="432" y2="108" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar4)"/>
-    <text x="384" y="98" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="10.5" fill="currentColor">one merge</text>
-
-    <text x="390" y="206" text-anchor="middle" font-family="Newsreader, Georgia, serif" font-style="italic" font-size="13" fill="var(--muted)">the new tool never inherits the old agreement&rsquo;s trust</text>
-  </svg>
-  <figcaption>Without the pin, <code>export_ledger</code> arrives inside a connection that was
-  approved when it did not exist &mdash; and inherits an approval nobody gave it.</figcaption>
- </figure>
-
- <div class="col">
-  <div class="note">
-    <span class="t">what this costs the provider team</span>
-    Changing the surface means re-publishing the offer and re-minting affected contracts &mdash;
-    a pull request, not a negotiation. That friction is the control. Teams that resent it are
-    telling you the surface changes more often than anyone downstream is being told, which is the
-    thing you wanted to find out.
-  </div>
- </div>
-</section>
-
-<!-- ══ 08 ══════════════════════════════════════════════════════════════ -->
-<section class="beat rv">
- <div class="col">
-  <span class="beat-no">08</span>
-  <h2>One line decides whether you have a control at all</h2>
-  <p class="lede">The enforcement point depends on inputs: contracts on disk, a key set, a policy
-  file. When one is unreachable, does traffic flow?</p>
-  <p>Every proxy has this setting and most ship permissive, because a security filter that can
-  take production down is a hard sell in the room where it gets adopted. That default converts
-  your control into a control-shaped object that disappears under exactly the conditions where
-  it matters &mdash; incidents, restarts, partial outages, the moments when unusual calls
-  happen.</p>
-
-  <div class="tw">
-    <table>
-      <thead><tr><th>When the checker cannot decide</th><th>Fail open</th><th>Fail closed</th></tr></thead>
-      <tbody>
-        <tr><td>Traffic during the fault</td><td>flows, unchecked</td><td>refused</td></tr>
-        <tr><td>What the dashboard shows</td><td>green &mdash; no denials</td><td>an incident</td></tr>
-        <tr><td>Who finds out</td><td>nobody</td><td>everybody, in minutes</td></tr>
-        <tr><td>Worst case</td><td>an unbounded window with no control and no record</td><td>an outage with a clear cause</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <p>Fail-closed is the correct default and it is genuinely more expensive: it makes the
-  enforcement point a dependency of every call, which means it needs the availability engineering
-  of one. Budget for that, or accept that you have chosen fail-open and say so out loud, in the
-  document where the control is claimed.</p>
-
-  <div class="note key">
-    <span class="t">the second question to ask</span>
-    <em>What happens to traffic when the enforcement point cannot reach its inputs?</em> If the
-    answer takes more than one sentence, or if the person answering has to go and look, the
-    behaviour under fault has never been tested &mdash; and it is the only behaviour that decides
-    what the control is worth.
-  </div>
- </div>
-</section>
-
-<!-- ══ 09 ══════════════════════════════════════════════════════════════ -->
-<section class="beat rv">
- <div class="col">
-  <span class="beat-no">09</span>
-  <h2>The honest ledger</h2>
-  <p class="lede">What follows is what this model does and does not do, stated the way you would
-  want it stated if you were the one accountable for the claim.</p>
-
-  <div class="tw">
-    <table>
-      <thead><tr><th>Claim</th><th>Standing</th></tr></thead>
-      <tbody>
-        <tr><td>Two-party contract, authored in git, approved by reviewed merge</td><td><strong>Run end to end</strong> &mdash; live source control, two repositories, two merges, a provider-approved gated term</td></tr>
-        <tr><td>Enforcement in the network path, identity from the peer certificate</td><td><strong>Run end to end</strong> &mdash; a real proxy admitting contracted calls and refusing six distinct ways</td></tr>
-        <tr><td>Surface drift refuses, and revokes what was already verified</td><td><strong>Run end to end</strong></td></tr>
-        <tr><td>Rate ceilings per contract</td><td>Implemented and tested; not load-proven</td></tr>
-        <tr><td>Spend ceilings &mdash; a cost cap per day</td><td><strong>Cannot bind.</strong> Nothing on the path knows what a call costs. It is expressible in an offer and unenforceable at the checkpoint; treat it as documentation until a cost signal exists</td></tr>
-        <tr><td>More than one contract between the same two parties</td><td>The second is verified, counted, and unreachable at a gateway &mdash; resolution is by party pair. A known limit, not a subtlety</td></tr>
-        <tr><td>External callers and external callees</td><td><strong>Out of scope by design.</strong> A contract process presumes both parties follow it; partners do not. Perimeter controls own those flows</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <p>Two of those rows exist because someone followed the setup guide end to end and hit them.
-  Both were the defect class this page names in beat 05 &mdash; a second contract that verified,
-  counted, and enforced nothing, and three unrelated refusal paths that all reported the same
-  bare code, making the real cause undiagnosable. Neither was visible from the tests. Both were
-  visible within minutes of a person doing the whole thing in order.</p>
-
-  <h3>What it costs, against what it bounds</h3>
-  <div class="tw">
-    <table>
-      <thead><tr><th>Cost</th><th>Order of magnitude</th></tr></thead>
-      <tbody>
-        <tr><td>Added latency per call</td><td>one in-process filter hop; sub-millisecond against the network round trip it rides along with</td></tr>
-        <tr><td>New failure domain</td><td>real &mdash; fail-closed makes it a dependency of every contracted call</td></tr>
-        <tr><td>Per-connection human effort</td><td>two pull requests, reviewed by owners who already review those repositories</td></tr>
-        <tr><td>Per-surface-change effort</td><td>one pull request, plus re-minting affected contracts</td></tr>
-        <tr><td>Platform effort</td><td>one filter in a proxy that is already in the path, plus a control plane</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p>Against that: for every internal agent-to-service connection, a named owner approved a
-  named capability list, a machine refuses everything outside it, and the evidence of both is
-  ordinary version control history. The bound is not that nothing goes wrong. It is that when
-  something does, the set of things it could have reached was written down in advance, by the
-  person accountable for it.</p>
- </div>
-</section>
-
-</div><!-- /wrap -->
-
-<footer>
- <div class="wrap"><div class="col">
-  <p class="kicker">A contract is a claim about what should be possible.<br>
-  An enforcement point is the only thing that turns it into a fact.</p>
-  <p>Everything on this page is implemented in <strong>warden-connect</strong>. The design is in
-  <a href="07-hld.md">07-hld.md</a> and <a href="08-lld.md">08-lld.md</a>; the broader product
-  tour is <a href="explainer.html">explainer.html</a>. The setup guide that produced the two
-  defects in beat 09 walks the whole path &mdash; two repositories, one contract, and a real
-  proxy refusing.</p>
-  <hr class="soft">
-  <p style="font-size:13.5px; color:var(--faint)">The figures are drawn, not measured. The
-  digests, refusal codes and tool names are the real ones from a recorded run.</p>
- </div></div>
-</footer>
+<footer><div class="wrap" style="padding:0">
+  design: <a href="07-hld.md">07-hld.md</a> &middot; <a href="08-lld.md">08-lld.md</a> &middot;
+  product tour: <a href="explainer.html">explainer.html</a><br>
+  digests, refusal codes and tool names are from a recorded run &middot; figures are drawn, not measured
+</div></footer>
+</div>
 
 <script>
 (function(){
-  "use strict";
-  var S = {surface:true, scope:true, policy:true, pep:true};
-  var TOOLS = [
-    {n:"get_balance",       surface:1, scope:1, policy:1},
-    {n:"list_transactions", surface:1, scope:1, policy:0},
-    {n:"transfer_funds",    surface:0, scope:1, policy:1},
-    {n:"issue_refund",      surface:0, scope:0, policy:1}
-  ];
-  var WHY = {
-    surface: "not in the contract",
-    scope:   "not in the token's scope",
-    policy:  "policy refused it"
-  };
-  var TERMS = ["surface","scope","policy"];
+"use strict";
+var W=1200,H=675, cv=document.getElementById("cv"), g=cv.getContext("2d");
+var FM='"IBM Plex Mono",monospace', FS='"IBM Plex Sans",sans-serif', FD='Newsreader,Georgia,serif';
 
-  function allowed(state){
-    if (!state.pep) return TOOLS.map(function(t){ return {t:t, ok:true, why:"unchecked"}; });
-    return TOOLS.map(function(t){
-      for (var i=0;i<TERMS.length;i++){
-        var k = TERMS[i];
-        if (state[k] && !t[k]) return {t:t, ok:false, why:WHY[k]};
-      }
-      return {t:t, ok:true, why:""};
-    });
+var PAL={
+ dark :{bg:"#0B0F17",pn:"#141B26",ink:"#E9EEF6",bd:"#C0CAD8",mu:"#8695AB",fa:"#5C6B80",
+        ru:"#28323F",s:"#58C6E6",k:"#F0BE52",p:"#7FD39B",bad:"#E86F6F",eff:"#FFFFFF"},
+ light:{bg:"#F6F8FC",pn:"#FFFFFF",ink:"#0E131C",bd:"#2B3646",mu:"#5E6E85",fa:"#8697AC",
+        ru:"#D3DCE8",s:"#1E8CAB",k:"#B4801A",p:"#2C8B57",bad:"#C4443F",eff:"#0E131C"}};
+var C=PAL.dark;
+function theme(){
+  var d=document.documentElement.getAttribute("data-theme");
+  if(d==="light")return PAL.light; if(d==="dark")return PAL.dark;
+  return (window.matchMedia&&matchMedia("(prefers-color-scheme:dark)").matches)?PAL.dark:PAL.light;
+}
+
+/* ── easing + windows ─────────────────────────────────────────────── */
+function eo(x){return 1-Math.pow(1-x,3)}
+function ei(x){return x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2}
+function cl(x){return x<0?0:x>1?1:x}
+function w(t,t0,d,e){var p=cl((t-t0)/(d||1));return e?e(p):p}
+function lp(a,b,t){return a+(b-a)*t}
+
+/* ── primitives ───────────────────────────────────────────────────── */
+function rrp(x,y,ww,hh,r){
+  g.beginPath();
+  g.moveTo(x+r,y); g.lineTo(x+ww-r,y); g.arcTo(x+ww,y,x+ww,y+r,r);
+  g.lineTo(x+ww,y+hh-r); g.arcTo(x+ww,y+hh,x+ww-r,y+hh,r);
+  g.lineTo(x+r,y+hh); g.arcTo(x,y+hh,x,y+hh-r,r);
+  g.lineTo(x,y+r); g.arcTo(x,y,x+r,y,r); g.closePath();
+}
+function trace(pf,len,p,col,lw,dash){
+  if(p<=0)return; g.save(); g.strokeStyle=col; g.lineWidth=lw||1.5; g.lineCap="round";
+  if(dash){g.setLineDash(dash);}else{g.setLineDash([len,len]); g.lineDashOffset=len*(1-p);}
+  pf(); g.stroke(); g.restore();
+}
+function box(x,y,ww,hh,p,col,o){
+  o=o||{}; var r=o.r==null?7:o.r, len=2*(ww+hh)-8*r+2*Math.PI*r;
+  if(o.fill&&p>.02){g.save(); g.globalAlpha=(o.fa==null?1:o.fa)*Math.min(1,p*2); g.fillStyle=o.fill; rrp(x,y,ww,hh,r); g.fill(); g.restore();}
+  if(o.dash){g.save(); g.globalAlpha=p; g.strokeStyle=col; g.lineWidth=o.lw||1.4; g.setLineDash(o.dash); rrp(x,y,ww,hh,r); g.stroke(); g.restore(); return;}
+  trace(function(){rrp(x,y,ww,hh,r)},len,p,col,o.lw||1.4);
+}
+function circ(cx,cy,r,p,col,lw){
+  trace(function(){g.beginPath(); g.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+Math.PI*2)},Math.PI*2*r,p,col,lw||1.7);
+}
+function ln(x1,y1,x2,y2,p,col,o){
+  o=o||{}; var len=Math.hypot(x2-x1,y2-y1);
+  if(o.dash){g.save(); g.globalAlpha=p; g.strokeStyle=col; g.lineWidth=o.lw||1.2; g.setLineDash(o.dash);
+    g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2); g.stroke(); g.restore(); return;}
+  trace(function(){g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2)},len,p,col,o.lw||1.4);
+}
+function head(x,y,ang,col,a){
+  g.save(); g.globalAlpha=a==null?1:a; g.fillStyle=col; g.translate(x,y); g.rotate(ang);
+  g.beginPath(); g.moveTo(0,0); g.lineTo(-11,4.6); g.lineTo(-11,-4.6); g.closePath(); g.fill(); g.restore();
+}
+function arr(x1,y1,x2,y2,p,col,o){
+  o=o||{}; if(p<=0)return;
+  var xe=lp(x1,x2,p), ye=lp(y1,y2,p);
+  ln(x1,y1,xe,ye,1,col,{lw:o.lw||1.5,dash:o.dash});
+  head(xe,ye,Math.atan2(y2-y1,x2-x1),col,Math.min(1,p*6));
+}
+function txt(s,x,y,o){
+  o=o||{}; if(o.a!=null&&o.a<=0)return;
+  g.save(); g.globalAlpha=o.a==null?1:o.a; g.fillStyle=o.c||C.bd;
+  g.font=(o.w?o.w+" ":"")+(o.sz||13)+"px "+(o.f||FS);
+  g.textAlign=o.al||"left"; g.textBaseline=o.bl||"alphabetic";
+  g.fillText(s,x,y); g.restore();
+}
+function wr(s,x,y,p,o){var n=Math.round(s.length*cl(p)); if(n>0)txt(s.slice(0,n),x,y,o);}
+function tick(x,y,p,col,sc){
+  if(p<=0)return; sc=sc||1;
+  g.save(); g.globalAlpha=Math.min(1,p*2); g.strokeStyle=col; g.lineWidth=2*sc; g.lineCap="round";
+  g.beginPath(); g.moveTo(x-5*sc,y); g.lineTo(x-1*sc,y+4.4*sc); g.lineTo(x+6*sc,y-5*sc); g.stroke(); g.restore();
+}
+function cross(x,y,p,col,sc){
+  if(p<=0)return; sc=sc||1;
+  g.save(); g.globalAlpha=Math.min(1,p*2); g.strokeStyle=col; g.lineWidth=2*sc; g.lineCap="round";
+  g.beginPath(); g.moveTo(x-5*sc,y-5*sc); g.lineTo(x+5*sc,y+5*sc);
+  g.moveTo(x+5*sc,y-5*sc); g.lineTo(x-5*sc,y+5*sc); g.stroke(); g.restore();
+}
+function chip(cx,cy,label,p,col,o){
+  o=o||{}; if(p<=0)return; var ww=o.w||210, hh=o.h||26;
+  g.save(); g.globalAlpha=p;
+  g.fillStyle=o.bg||C.pn; rrp(cx-ww/2,cy-hh/2,ww,hh,5); g.fill();
+  g.strokeStyle=col; g.lineWidth=1.2; if(o.dash)g.setLineDash(o.dash); rrp(cx-ww/2,cy-hh/2,ww,hh,5); g.stroke();
+  g.restore();
+  txt(label,cx,cy+4,{f:FM,sz:o.sz||12,c:o.tc||C.ink,al:"center",a:p});
+}
+var HEX="0123456789abcdef";
+function scram(target,p,seed){
+  if(p>=1)return target; var out="",n=target.length, k=p*n;
+  for(var i=0;i<n;i++){
+    if(i<Math.floor(k)) out+=target[i];
+    else if(target[i]==="…"||target[i]===".") out+=target[i];
+    else out+=HEX[(i*7+Math.floor((seed+p*97)*13)+i*i)%16];
   }
+  return out;
+}
 
-  var BASE = allowed({surface:true,scope:true,policy:true,pep:true})
-               .filter(function(r){return r.ok}).map(function(r){return r.t.n});
+/* ══ scenes ═══════════════════════════════════════════════════════════ */
+var SC=[];
 
-  var elTools   = document.getElementById("tools");
-  var elVerdict = document.getElementById("verdict");
-  var gB = document.getElementById("gB"), gC = document.getElementById("gC");
-  var baseA = document.getElementById("baseA"), baseAll = document.getElementById("baseAll");
-  var rings = {surface:document.getElementById("ringS"), scope:document.getElementById("ringK"), policy:document.getElementById("ringP")};
-  var labs  = {surface:document.getElementById("labS"), scope:document.getElementById("labK"), policy:document.getElementById("labP")};
-  var stamp = document.getElementById("pepStamp"), effMark = document.getElementById("effMark");
+/* 01 ─ the call path */
+SC.push({id:"01",name:"the call path",dur:16,
+ caps:[[0,3.4,"caller → callee, one tool invocation"],
+       [3.4,8.0,"each hop evaluates its own predicate"],
+       [8.0,16,"no hop evaluates (caller, callee, tool)"]],
+ draw:function(t){
+  var LX=[430,610,790], NM=["L3/L4 policy","workload identity","route table"],
+      QQ=["5-tuple permitted","token valid","path known"];
+  var dim=1-.72*w(t,8.0,1.0,ei);
+  box(70,250,200,78,w(t,0,.9,eo),C.mu);
+  txt("recon-bot",170,282,{f:FM,sz:15,c:C.ink,al:"center",a:w(t,.7,.5)});
+  txt("caller",170,304,{f:FS,sz:12,c:C.mu,al:"center",a:w(t,.9,.5)});
+  box(930,250,200,78,w(t,.5,.9,eo),C.mu);
+  txt("payments-mcp",1030,282,{f:FM,sz:15,c:C.ink,al:"center",a:w(t,1.2,.5)});
+  txt("callee",1030,304,{f:FS,sz:12,c:C.mu,al:"center",a:w(t,1.4,.5)});
+  arr(276,289,924,289,w(t,1.8,1.5,ei),C.mu,{lw:1.6});
+  txt("tools/call · transfer_funds",600,272,{f:FM,sz:13,c:C.bad,al:"center",a:w(t,2.8,.6)});
+  g.save(); g.globalAlpha=dim;
+  for(var i=0;i<3;i++){
+    var p=w(t,3.4+i*.45,.6,eo);
+    ln(LX[i],150,LX[i],432,p,C.mu,{dash:[4,5],lw:1.1});
+    txt(NM[i],LX[i],138,{f:FM,sz:12,c:C.mu,al:"center",a:w(t,3.6+i*.45,.5)});
+    var q=w(t,5.2+i*.5,.5,eo);
+    tick(LX[i],468,q,C.p,1.15);
+    txt(QQ[i],LX[i],500,{f:FS,sz:12,c:C.mu,al:"center",a:q});
+  }
+  g.restore();
+  var r=w(t,8.6,1.2,eo);
+  box(392,548,416,58,r,C.bad,{dash:[6,5],lw:1.4});
+  wr("(caller, callee, tool) → evaluated nowhere",600,584,w(t,9.4,1.3),
+     {f:FM,sz:14,c:C.bad,al:"center"});
+ }});
 
-  function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+/* 02 ─ the missing predicate */
+SC.push({id:"02",name:"the missing predicate",dur:13,
+ caps:[[0,4.6,"existing controls, and the predicate each asserts"],
+       [4.6,13,"no artifact asserts caller × callee × capability"]],
+ draw:function(t){
+  var R=[["L3/L4 policy","5-tuple reachability"],
+         ["mTLS / SPIFFE","peer identity"],
+         ["OAuth scope","coarse activity class"],
+         ["route table","path reachable, rate-limited"],
+         ["policy engine","conditional deny"]];
+  var dim=1-.68*w(t,7.0,1.0,ei);
+  g.save(); g.globalAlpha=dim;
+  for(var i=0;i<5;i++){
+    var p=w(t,.4+i*.7,.7,eo), y=104+i*58, sx=lp(-40,0,p);
+    g.save(); g.translate(sx,0);
+    box(170,y,860,46,p,C.ru,{lw:1.2});
+    txt(R[i][0],192,y+29,{f:FM,sz:13.5,c:C.ink,a:p});
+    txt(R[i][1],1008,y+29,{f:FS,sz:13,c:C.mu,al:"right",a:p});
+    g.restore();
+  }
+  g.restore();
+  var q=w(t,4.6,1.0,eo), pu=.72+.28*Math.sin(Math.max(0,t-6)*2.4);
+  g.save(); g.globalAlpha=t>6?pu:1;
+  box(170,394,860,52,q,C.bad,{dash:[6,5],lw:1.5});
+  g.restore();
+  txt("caller × callee × capability",192,425,{f:FM,sz:14,c:C.bad,a:w(t,5.2,.6)});
+  txt("owner: none",1008,425,{f:FM,sz:13,c:C.bad,al:"right",a:w(t,5.6,.6)});
+  txt("requires two parties to agree — no mechanism above records a bilateral fact",
+      600,494,{f:FS,sz:13,c:C.mu,al:"center",a:w(t,7.6,.8)});
+ }});
 
-  function render(){
-    var rows = allowed(S);
-
-    // ── the drawing ──────────────────────────────────────────────────
-    var unbounded = !S.pep || (!S.surface && !S.scope && !S.policy);
-    baseA.style.display   = (S.surface && !unbounded) ? "" : "none";
-    baseAll.style.display = unbounded ? "" : (S.surface ? "none" : "");
-    gB.setAttribute("clip-path", (S.scope  && !unbounded) ? "url(#cB)" : "none");
-    gC.setAttribute("clip-path", (S.policy && !unbounded) ? "url(#cC)" : "none");
-    baseA.setAttribute("fill",   S.pep ? "var(--eff-fill)" : "rgba(232,111,111,.13)");
-    baseAll.setAttribute("fill", S.pep ? "var(--eff-fill)" : "rgba(232,111,111,.13)");
-
-    TERMS.forEach(function(k){
-      var on = S[k] && S.pep;
-      rings[k].setAttribute("opacity", on ? "1" : ".22");
-      rings[k].setAttribute("stroke-dasharray", S[k] ? "none" : "7 5");
-      labs[k].setAttribute("opacity", on ? "1" : ".3");
-    });
-    stamp.style.display   = S.pep ? "none" : "";
-    effMark.style.display = (S.pep && !unbounded) ? "" : "none";
-
-    // ── the readout ──────────────────────────────────────────────────
-    elTools.innerHTML = rows.map(function(r){
-      return '<div class="tl ' + (r.ok?"ok":"no") + '">' +
-             '<span class="st">' + (r.ok?"REACHABLE":"REFUSED") + '</span>' +
-             '<span class="nm2">' + esc(r.t.n) + '</span>' +
-             (r.why ? '<span class="why">' + esc(r.why) + '</span>' : '') +
-             '</div>';
-    }).join("");
-
-    var okNames = rows.filter(function(r){return r.ok}).map(function(r){return r.t.n});
-    var gained  = okNames.filter(function(n){ return BASE.indexOf(n) < 0; });
-    var off     = TERMS.filter(function(k){ return !S[k]; });
-    var msg, alarm = false;
-
-    if (!S.pep){
-      alarm = true;
-      msg = "<span class='n'>" + okNames.length + " of " + TOOLS.length + "</span> reachable. " +
-            "The contract is signed, merged and in the audit trail &mdash; and no call is " +
-            "evaluated against it. Nothing here would alert.";
-    } else if (off.length === 0){
-      msg = "<span class='n'>1 of " + TOOLS.length + "</span> reachable. All three ceilings " +
-            "agree on <code>get_balance</code> and on nothing else.";
-    } else if (gained.length === 0){
-      msg = "<span class='n'>Nothing changed.</span> " +
-            "<code>token.scope</code> was never the binding term &mdash; the contract was " +
-            "already tighter. A ceiling that is not the lowest one does no work, and removing " +
-            "it proves that.";
-    } else {
-      var pretty = gained.map(function(n){ return "<code>" + esc(n) + "</code>"; }).join(" and ");
-      msg = "<span class='n'>" + okNames.length + " of " + TOOLS.length + "</span> reachable. " +
-            "Dropping " + off.map(function(k){ return "<code>" + (k==="surface"?"contract.surface":k==="scope"?"token.scope":"policy_decision") + "</code>"; }).join(" and ") +
-            " makes " + pretty + " reachable &mdash; " +
-            (gained.indexOf("transfer_funds") >= 0
-              ? "the contract was the only term that knew this caller had no business moving money."
-              : off.length > 1
-                ? "one of the terms you removed was the only thing holding that back."
-                : "that term was the only thing holding it back.");
+/* 03 ─ offer ∩ needs */
+SC.push({id:"03",name:"offer ∩ needs",dur:18,
+ caps:[[0,3.6,"warden/offer.toml — provider: surface, audience, terms"],
+       [3.6,7.2,"warden/needs.toml — consumer: required capabilities"],
+       [7.2,12.4,"control plane: surface ∩ needs"],
+       [12.4,18,"signed JWS + cid · never committed to a repo"]],
+ draw:function(t){
+  var T=["get_balance","list_transactions","transfer_funds"], keep=[1,1,0];
+  box(70,92,320,166,w(t,.3,.9,eo),C.s);
+  txt("payments-mcp",90,120,{f:FM,sz:12,c:C.s,a:w(t,.8,.5)});
+  txt("warden/offer.toml",90,140,{f:FM,sz:12.5,c:C.ink,a:w(t,1.0,.5)});
+  box(70,330,320,166,w(t,3.6,.9,eo),C.s);
+  txt("recon-bot",90,358,{f:FM,sz:12,c:C.s,a:w(t,4.1,.5)});
+  txt("warden/needs.toml",90,378,{f:FM,sz:12.5,c:C.ink,a:w(t,4.3,.5)});
+  circ(600,290,46,w(t,7.2,.8,eo),C.mu,1.5);
+  txt("∩",600,301,{f:FM,sz:26,c:C.mu,al:"center",a:w(t,7.6,.5)});
+  var cb=w(t,12.4,1.0,eo);
+  box(790,196,340,188,cb,C.p);
+  txt("contract · signed JWS",812,226,{f:FM,sz:12.5,c:C.p,a:w(t,12.9,.5)});
+  wr("cid conn_adef2eda",812,362,w(t,13.6,1.1),{f:FM,sz:12,c:C.mu});
+  for(var i=0;i<3;i++){
+    var mv=w(t,8.0+i*.25,2.0,ei), out=w(t,10.8+i*.2,1.7,ei);
+    var oy=168+i*30, ny=406+i*30, tx, ty, a=1, col=keep[i]?C.s:C.bad;
+    var ax=lp(230,600,mv), ay=lp(oy,258+i*30,mv);
+    var bx=lp(230,600,mv), by=lp(ny,258+i*30,mv);
+    chip(ax,ay,T[i],w(t,1.4+i*.3,.5),C.s,{w:250,sz:12});
+    chip(bx,by,T[i],w(t,4.8+i*.3,.5),C.s,{w:250,sz:12});
+    if(mv>=1){
+      if(keep[i]){ tx=lp(600,960,out); ty=lp(258+i*30,262+i*34,out); col=C.p; }
+      else { tx=600; ty=258+i*30+110*out; a=1-out; col=C.bad; }
+      g.save(); g.globalAlpha=a;
+      chip(tx,ty,T[i],1,col,{w:250,sz:12,tc:a<1?C.bad:C.ink});
+      g.restore();
+      if(!keep[i]&&out>.35) txt("not offered to this audience",600,ty+34,
+        {f:FS,sz:11.5,c:C.bad,al:"center",a:(out-.35)*1.6*(1-out)*2.2});
     }
-    elVerdict.innerHTML = msg;
-    elVerdict.className = "verdict" + (alarm ? " alarm" : "");
   }
+ }});
 
-  Array.prototype.forEach.call(document.querySelectorAll(".sw"), function(b){
-    b.addEventListener("click", function(){
-      var k = b.getAttribute("data-k");
-      S[k] = !S[k];
-      b.setAttribute("aria-pressed", S[k] ? "true" : "false");
-      render();
-    });
+/* 04 ─ the algebra */
+SC.push({id:"04",name:"the algebra",dur:26,
+ caps:[[0,5.2,"effective = surface ∩ scope ∩ policy"],
+       [5.2,11.5,"three independent ceilings; the tightest binds"],
+       [11.5,16.0,"widen a non-binding ceiling → Δeffective = 0"],
+       [16.0,22.0,"drop the binding ceiling → effective grows"],
+       [22.0,26,"authoring a contract cannot increase effective"]],
+ draw:function(t){
+  var SEG=[["effective",C.ink,0],[" = ",C.fa,.5],["contract.surface",C.s,1.0],
+           [" ∩ ",C.fa,2.0],["token.scope",C.k,2.4],[" ∩ ",C.fa,3.2],
+           ["policy_decision",C.p,3.6]];
+  g.save(); g.font="20px "+FM;
+  var tot=0,i; for(i=0;i<SEG.length;i++)tot+=g.measureText(SEG[i][0]).width;
+  var x=600-tot/2;
+  var PULSE=[[-1,0],[-1,0],[5.2,6.3],[-1,0],[6.0,7.1],[-1,0],[6.8,7.9]];
+  for(i=0;i<SEG.length;i++){
+    var ww=g.measureText(SEG[i][0]).width, a=w(t,SEG[i][2],.55,eo);
+    var pu=PULSE[i][0]>0&&t>=PULSE[i][0]&&t<=PULSE[i][1];
+    txt(SEG[i][0],x,96,{f:FM,sz:20,c:SEG[i][1],a:a});
+    if(pu){g.save(); g.globalAlpha=.5*Math.sin((t-PULSE[i][0])/(PULSE[i][1]-PULSE[i][0])*Math.PI);
+      g.fillStyle=SEG[i][1]; g.fillRect(x-3,104,ww+6,2); g.restore();}
+    x+=ww;
+  }
+  g.restore();
+
+  var CS={x:500,y:332,r:118}, CK={x:700,y:332,r:118}, CP={x:600,y:470,r:118};
+  var grow=w(t,11.5,1.3,ei)-w(t,14.2,1.1,ei); CK.r=118+52*grow;
+  var drop=w(t,16.0,1.2,ei)-w(t,20.6,1.1,ei);
+  var pS=w(t,5.2,1.1,eo), pK=w(t,6.0,1.1,eo), pP=w(t,6.8,1.1,eo), fl=w(t,8.4,.9);
+
+  if(fl>0){
+    g.save(); g.globalAlpha=fl*.17;
+    if(drop<.85){g.beginPath(); g.arc(CS.x,CS.y,CS.r,0,7); g.clip();}
+    g.beginPath(); g.arc(CK.x,CK.y,CK.r,0,7); g.clip();
+    g.beginPath(); g.arc(CP.x,CP.y,CP.r,0,7); g.clip();
+    g.fillStyle=C.eff; g.fillRect(0,0,W,H); g.restore();
+  }
+  g.save(); g.globalAlpha=1-drop*.86;
+  circ(CS.x,CS.y,CS.r,pS,C.s);
+  txt("contract.surface",CS.x-CS.r-16,258,{f:FM,sz:13,c:C.s,al:"right",a:pS});
+  g.restore();
+  circ(CK.x,CK.y,CK.r,pK,C.k);
+  txt("token.scope",CK.x+CK.r+16,258,{f:FM,sz:13,c:C.k,a:pK});
+  circ(CP.x,CP.y,CP.r,pP,C.p);
+  txt("policy_decision",CP.x,CP.y+CP.r+30,{f:FM,sz:13,c:C.p,al:"center",a:pP});
+  txt("EFFECTIVE",600,372,{f:FM,sz:12,c:C.eff,al:"center",a:w(t,9.2,.8)});
+
+  var n=drop>.5?2:1;
+  txt("|effective| = "+n,600,646,{f:FM,sz:15,c:drop>.5?C.bad:C.mu,al:"center",a:w(t,10.4,.6)});
+  if(grow>.4) txt("token.scope widened · Δ = 0",600,150,
+    {f:FM,sz:13,c:C.k,al:"center",a:Math.min(1,(grow-.4)*3)});
+  if(drop>.45) txt("transfer_funds",600,410,
+    {f:FM,sz:13,c:C.bad,al:"center",a:Math.min(1,(drop-.45)*3.4)});
+ }});
+
+/* 05 ─ remove the PEP */
+SC.push({id:"05",name:"remove the PEP",dur:18,
+ caps:[[0,5.0,"the PEP evaluates all three terms, per call"],
+       [5.0,10.0,"remove it: the expression is never evaluated"],
+       [10.0,14.0,"the artifact is still signed, merged, approved"],
+       [14.0,18,"deny counter reads 0 either way"]],
+ draw:function(t){
+  var CS={x:340,y:300,r:96}, CK={x:500,y:300,r:96}, CP={x:420,y:424,r:96};
+  var dead=w(t,5.0,1.2,ei), dim=1-.7*dead;
+  g.save(); g.globalAlpha=dim*.16;
+  g.beginPath(); g.arc(CS.x,CS.y,CS.r,0,7); g.clip();
+  g.beginPath(); g.arc(CK.x,CK.y,CK.r,0,7); g.clip();
+  g.beginPath(); g.arc(CP.x,CP.y,CP.r,0,7); g.clip();
+  g.fillStyle=C.eff; g.fillRect(0,0,W,H); g.restore();
+  g.save(); g.globalAlpha=dim;
+  circ(CS.x,CS.y,CS.r,1,C.s); circ(CK.x,CK.y,CK.r,1,C.k); circ(CP.x,CP.y,CP.r,1,C.p);
+  txt("surface",CS.x-CS.r-12,238,{f:FM,sz:11.5,c:C.s,al:"right"});
+  txt("scope",CK.x+CK.r+12,238,{f:FM,sz:11.5,c:C.k});
+  txt("policy",CP.x,CP.y+CP.r+24,{f:FM,sz:11.5,c:C.p,al:"center"});
+  g.restore();
+  var pb=w(t,.6,1.0,eo);
+  if(dead<.5) box(800,262,320,132,pb,C.p,{lw:1.6});
+  else box(800,262,320,132,1,C.bad,{dash:[7,5],lw:1.6});
+  txt("PEP",960,306,{f:FM,sz:17,c:dead>.5?C.bad:C.ink,al:"center",a:w(t,1.0,.5)});
+  txt("envoy ext_proc filter",960,330,{f:FS,sz:12,c:C.mu,al:"center",a:w(t,1.2,.5)});
+  txt(dead>.5?"not in the path":"reads all 3 terms",960,356,
+      {f:FM,sz:12,c:dead>.5?C.bad:C.p,al:"center",a:w(t,1.4,.5)});
+  g.save(); g.globalAlpha=1-dead;
+  ln(CK.x+CK.r,290,796,300,w(t,1.6,.8,eo),C.mu,{dash:[3,4],lw:1});
+  ln(CK.x+CK.r,312,796,320,w(t,1.9,.8,eo),C.mu,{dash:[3,4],lw:1});
+  ln(CP.x+CP.r,424,796,344,w(t,2.2,.8,eo),C.mu,{dash:[3,4],lw:1});
+  g.restore();
+  if(dead>.4){
+    var st=w(t,7.4,1.0,eo);
+    box(14,14,W-28,H-28,st,C.bad,{dash:[10,7],lw:2,r:12});
+    txt("EXPRESSION UNEVALUATED",600,124,{f:FM,sz:16,c:C.bad,al:"center",a:st});
+  }
+  var bg=w(t,10.0,1.1,eo);
+  box(340,552,520,74,bg,C.p,{lw:1.4});
+  txt("contract conn_adef2eda",362,582,{f:FM,sz:13,c:C.ink,a:w(t,10.5,.5)});
+  var L=["signed","merged","approved"];
+  for(var i=0;i<3;i++){
+    var q=w(t,11.0+i*.35,.5,eo);
+    tick(378+i*160,606,q,C.p,.95);
+    txt(L[i],394+i*160,611,{f:FM,sz:12,c:C.p,a:q});
+  }
+  txt("deny counter: 0",1030,600,{f:FM,sz:14,c:C.bad,al:"right",a:w(t,14.2,.8)});
+ }});
+
+/* 06 ─ PEP placement */
+SC.push({id:"06",name:"PEP placement",dur:18,
+ caps:[[0,5.2,"A · in-process — identity self-asserted; caller holds the switch"],
+       [5.2,11.4,"B · in-path — identity from the peer cert; platform holds the switch"],
+       [11.4,18,"C · in-callee — requires per-server adoption"]],
+ draw:function(t){
+  var m1=w(t,5.2,1.5,ei), m2=w(t,11.4,1.5,ei);
+  var gx=lp(lp(270,610,m1),910,m2), cy=300;
+  var col=m2>.5?C.k:(m1>.5?C.p:C.bad);
+  box(60,262,180,78,w(t,0,.8,eo),C.mu);
+  txt("recon-bot",150,300,{f:FM,sz:14,c:C.ink,al:"center",a:w(t,.5,.5)});
+  txt("caller estate",150,322,{f:FS,sz:11.5,c:C.mu,al:"center",a:w(t,.6,.5)});
+  box(960,262,180,78,w(t,.3,.8,eo),C.mu);
+  txt("payments-mcp",1050,300,{f:FM,sz:14,c:C.ink,al:"center",a:w(t,.8,.5)});
+  txt("callee estate",1050,322,{f:FS,sz:11.5,c:C.mu,al:"center",a:w(t,.9,.5)});
+  ln(246,301,954,301,w(t,1.0,1.0,eo),C.mu,{lw:1.3});
+  ln(330,120,330,470,w(t,1.4,.8,eo),C.bad,{dash:[6,5],lw:1.3});
+  txt("trust boundary",330,498,{f:FM,sz:12,c:C.bad,al:"center",a:w(t,1.8,.5)});
+  txt("callee assurance starts here",330,518,{f:FS,sz:11.5,c:C.bad,al:"center",a:w(t,2.0,.5)});
+  var gp=w(t,2.2,.9,eo);
+  g.save(); g.globalAlpha=gp; g.fillStyle=C.bg; rrp(gx-78,cy-36,156,72,7); g.fill(); g.restore();
+  box(gx-78,cy-36,156,72,gp,col,{lw:1.9});
+  txt("PEP",gx,cy-4,{f:FM,sz:15,c:C.ink,al:"center",a:gp});
+  txt(m2>.5?"C · in-callee":(m1>.5?"B · in-path":"A · in-process"),gx,cy+20,
+      {f:FM,sz:11.5,c:col,al:"center",a:gp});
+  var ST=[[3.0,"identity: self-asserted from argv","bypass: caller's team, silently",C.bad],
+          [7.2,"identity: peer cert → SPIFFE ID","bypass: platform, visibly",C.p],
+          [13.2,"identity: presented credential","bypass: callee's team",C.k]];
+  for(var i=0;i<3;i++){
+    var on=(i===0?(1-m1):(i===1?m1*(1-m2):m2))*w(t,ST[i][0],.7,eo);
+    if(on<=.02)continue;
+    txt(ST[i][1],gx,410,{f:FM,sz:12.5,c:C.mu,al:"center",a:on});
+    txt(ST[i][2],gx,434,{f:FM,sz:12.5,c:ST[i][3],al:"center",a:on});
+  }
+  txt("only B sits on the callee's side of the boundary",600,600,
+      {f:FS,sz:13.5,c:C.mu,al:"center",a:m1*(1-m2)*w(t,8.6,.8)});
+ }});
+
+/* 07 ─ surface pin */
+SC.push({id:"07",name:"surface pin",dur:17,
+ caps:[[0,6.5,"the contract pins sha256 over the contracted items"],
+       [6.5,10.4,"the provider ships a new tool"],
+       [10.4,17,"recomputed digest ≠ pin → WC-3108 at the first tools/list"]],
+ draw:function(t){
+  var drift=w(t,6.5,.9,eo), sc=w(t,8.0,2.0), flip=w(t,10.4,.6,eo);
+  box(96,132,440,268,w(t,.3,.9,eo),drift>.5?C.bad:C.mu,{lw:1.4});
+  txt("served surface · tools/list",118,164,{f:FM,sz:12,c:C.mu,a:w(t,.8,.5)});
+  var T=["get_balance","list_transactions","transfer_funds"];
+  for(var i=0;i<3;i++) chip(316,208+i*34,T[i],w(t,1.6+i*.3,.5),C.mu,{w:376,sz:12.5});
+  var dy=lp(-46,0,drift);
+  if(drift>.02){g.save(); g.globalAlpha=drift;
+    chip(316,310+dy,"export_ledger",1,C.bad,{w:376,sz:12.5,tc:C.bad}); g.restore();}
+  ln(118,352,514,352,w(t,3.0,.6,eo),C.ru,{lw:1});
+  txt("sha256(contracted items)",118,374,{f:FS,sz:11.5,c:C.mu,a:w(t,3.1,.5)});
+  var dg=drift>.5?scram("e6e1b8d4…",sc,3):"84c4f100…";
+  txt(dg,514,374,{f:FM,sz:14,c:drift>.5&&sc>.9?C.bad:C.p,al:"right",a:w(t,3.2,.6)});
+  box(664,132,440,268,w(t,.6,.9,eo),C.p,{lw:1.4});
+  txt("contract · pin",686,164,{f:FM,sz:12,c:C.p,a:w(t,1.0,.5)});
+  txt("verified: false → true at first tools/list",686,192,{f:FS,sz:11.5,c:C.mu,a:w(t,3.6,.6)});
+  txt("84c4f100…",1082,374,{f:FM,sz:14,c:C.p,al:"right",a:w(t,3.8,.6)});
+  ln(686,352,1082,352,w(t,3.5,.6,eo),C.ru,{lw:1});
+  var eq=flip>.5?"≠":"=";
+  txt(eq,600,272,{f:FM,sz:34,c:flip>.5?C.bad:C.p,al:"center",a:w(t,4.6,.6)});
+  ln(540,266,586,266,w(t,4.4,.4,eo),flip>.5?C.bad:C.p,{lw:1.2});
+  ln(614,266,660,266,w(t,4.4,.4,eo),flip>.5?C.bad:C.p,{lw:1.2});
+  var st=w(t,11.4,.9,eo);
+  box(392,470,416,66,st,C.bad,{lw:1.6});
+  txt("REFUSED   WC-3108",600,502,{f:FM,sz:17,c:C.bad,al:"center",a:st});
+  txt("presented surface digest ≠ contracted",600,524,{f:FS,sz:12,c:C.mu,al:"center",a:w(t,12.0,.6)});
+  txt("the new tool never inherits the old approval",600,606,
+      {f:FS,sz:13.5,c:C.mu,al:"center",a:w(t,13.4,.8)});
+ }});
+
+/* 08 ─ failure mode */
+SC.push({id:"08",name:"failure mode",dur:15,
+ caps:[[0,3.0,"PEP inputs: contract set · JWKS · policy"],
+       [3.0,7.0,"input unavailable"],
+       [7.0,11.0,"fail-open: proceeds, unevaluated, unlogged"],
+       [11.0,15,"fail-closed: WC-8001, refused, paged"]],
+ draw:function(t){
+  var down=w(t,3.0,.7,eo), fo=w(t,7.0,1.0,eo), fc=w(t,11.0,1.0,eo);
+  box(80,286,260,102,w(t,.3,.9,eo),down>.5?C.bad:C.mu,{lw:1.4});
+  txt("contract set",210,318,{f:FM,sz:12.5,c:down>.5?C.bad:C.ink,al:"center",a:w(t,.8,.5)});
+  txt("JWKS",210,342,{f:FM,sz:12.5,c:down>.5?C.bad:C.ink,al:"center",a:w(t,.9,.5)});
+  txt("policy",210,366,{f:FM,sz:12.5,c:down>.5?C.bad:C.ink,al:"center",a:w(t,1.0,.5)});
+  cross(210,258,down,C.bad,2.1);
+  txt("unavailable",210,412,{f:FM,sz:12,c:C.bad,al:"center",a:down});
+  ln(346,337,420,337,w(t,1.4,.5,eo),C.mu,{lw:1.3});
+  box(420,300,170,74,w(t,1.2,.8,eo),C.mu,{lw:1.4});
+  txt("PEP",505,344,{f:FM,sz:16,c:C.ink,al:"center",a:w(t,1.6,.5)});
+  ln(590,330,660,196,fo,C.mu,{lw:1.2,dash:[4,4]});
+  ln(590,346,660,478,fc,C.mu,{lw:1.2,dash:[4,4]});
+  txt("fail-open",680,180,{f:FM,sz:14,c:C.bad,a:fo});
+  arr(680,214,1040,214,fo,C.bad,{lw:1.5,dash:[6,5]});
+  txt("unevaluated · unlogged",860,200,{f:FS,sz:12,c:C.bad,al:"center",a:fo});
+  var n=Math.max(0,Math.floor((t-7.6)*284));
+  txt("calls admitted: "+n.toLocaleString("en-US"),680,254,
+      {f:FM,sz:14,c:C.bad,a:w(t,7.6,.5)});
+  txt("deny counter: 0   ·   dashboard: green",680,280,{f:FM,sz:12.5,c:C.mu,a:w(t,8.8,.7)});
+  txt("fail-closed",680,462,{f:FM,sz:14,c:C.p,a:fc});
+  arr(680,496,858,496,fc,C.mu,{lw:1.5});
+  g.save(); g.globalAlpha=fc; g.fillStyle=C.bad; g.fillRect(866,462,7,68); g.restore();
+  txt("WC-8001   refused",892,492,{f:FM,sz:14,c:C.p,a:w(t,11.8,.6)});
+  txt("deny counter: n   ·   paged",892,518,{f:FM,sz:12.5,c:C.mu,a:w(t,12.2,.6)});
+ }});
+
+/* 09 ─ ledger */
+SC.push({id:"09",name:"ledger",dur:20,
+ caps:[[0,7,"verified end to end: live SCM + Envoy 1.31.10"],
+       [7,12.5,"unbindable: spend ceiling — no cost signal on the data path"],
+       [12.5,20,"the contract declares the ceiling; the PEP is what evaluates it"]],
+ draw:function(t){
+  var R=[["two-party contract via SCM merge","VERIFIED","p"],
+         ["in-path PEP, identity from peer cert","VERIFIED","p"],
+         ["surface pin → drift refuses","VERIFIED","p"],
+         ["rate ceiling per contract","IMPLEMENTED","k"],
+         ["concurrency ceiling per contract","IMPLEMENTED","k"],
+         ["spend ceiling (USD/day)","CANNOT BIND","bad"],
+         ["> 1 contract per (caller, callee)","KNOWN LIMIT","bad"],
+         ["external caller or callee","OUT OF SCOPE","fa"]];
+  var fin=w(t,13.4,1.2,ei), dim=1-.82*fin;
+  g.save(); g.globalAlpha=dim;
+  for(var i=0;i<8;i++){
+    var p=w(t,.3+i*.5,.6,eo), y=76+i*50, col=C[R[i][2]];
+    var pu=0;
+    if(i<3) pu=Math.max(0,Math.sin(cl((t-6.4-i*.22)/.9)*Math.PI));
+    if(i>=5&&i<7) pu=Math.max(0,Math.sin(cl((t-9.6-(i-5)*.22)/.9)*Math.PI));
+    box(140,y,920,40,p,pu>.05?col:C.ru,{lw:pu>.05?1.5:1.1});
+    txt(R[i][0],162,y+26,{f:FM,sz:13,c:C.ink,a:p});
+    txt(R[i][1],1038,y+26,{f:FM,sz:11.5,c:col,al:"right",a:p});
+  }
+  g.restore();
+  if(fin>.05){
+    txt("contract",600,304,{f:FM,sz:22,c:C.s,al:"center",a:w(t,13.8,.7)});
+    txt("declares the ceiling",600,334,{f:FS,sz:14,c:C.mu,al:"center",a:w(t,14.0,.7)});
+    txt("PEP",600,404,{f:FM,sz:22,c:C.p,al:"center",a:w(t,14.8,.7)});
+    txt("evaluates it, per call",600,434,{f:FS,sz:14,c:C.mu,al:"center",a:w(t,15.0,.7)});
+    ln(520,362,680,362,w(t,14.6,.6,eo),C.ru,{lw:1});
+    wr("neither is a control alone",600,514,w(t,16.2,1.6),
+       {f:FM,sz:16,c:C.ink,al:"center"});
+  }
+ }});
+
+/* ══ player ═══════════════════════════════════════════════════════════ */
+var TOT=0, OFF=[]; SC.forEach(function(s){OFF.push(TOT); TOT+=s.dur;});
+var T=0, playing=false, last=0;
+var elCap=document.getElementById("cap"), elTC=document.getElementById("tc"),
+    elTK=document.getElementById("tk"), elCH=document.getElementById("chs"),
+    elPP=document.getElementById("pp"), elPPI=document.getElementById("ppi").querySelector("path");
+var PLAY="M3 1.5v13l11-6.5z", PAUSE="M3.5 2h3.4v12H3.5zM9.1 2h3.4v12H9.1z";
+var reduce=window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+var segs=[], chs=[];
+SC.forEach(function(s,i){
+  var d=document.createElement("div"); d.className="seg"; d.style.flexGrow=s.dur;
+  d.innerHTML="<i></i>"; elTK.appendChild(d); segs.push(d.firstChild);
+  var b=document.createElement("button"); b.className="ch";
+  b.innerHTML="<b>"+s.id+"</b>"+s.name;
+  b.addEventListener("click",function(){seek(OFF[i]+.01); if(!playing)toggle();});
+  elCH.appendChild(b); chs.push(b);
+});
+document.querySelector(".eyebrow").textContent=
+  SC.length+" chapters · "+fmt(TOT).replace(/^0/,"");
+
+function fmt(x){var m=Math.floor(x/60), s=Math.floor(x%60); return m+":"+(s<10?"0":"")+s;}
+function idx(x){var i=SC.length-1; while(i>0&&x<OFF[i])i--; return i;}
+
+var capKey="";
+function frame(){
+  C=theme();
+  var i=idx(T), s=SC[i], lt=T-OFF[i];
+  g.setTransform(1,0,0,1,0,0);
+  g.fillStyle=C.bg; g.fillRect(0,0,W,H);
+  s.draw(lt);
+  txt(s.id,44,H-34,{f:FM,sz:12,c:C.fa});
+  txt(s.name,72,H-34,{f:FM,sz:12,c:C.fa});
+
+  var cap=""; for(var j=0;j<s.caps.length;j++){
+    if(lt>=s.caps[j][0]&&lt<s.caps[j][1]){cap=s.caps[j][2]; break;}}
+  var key=i+"|"+cap;
+  if(key!==capKey){capKey=key; elCap.style.opacity=0;
+    setTimeout(function(){elCap.textContent=cap; elCap.style.opacity=1;},reduce?0:140);}
+  for(var k=0;k<SC.length;k++){
+    var p=k<i?1:(k>i?0:cl(lt/s.dur));
+    segs[k].style.transform="scaleX("+p+")";
+    segs[k].parentNode.className="seg"+(k===i?" on":(k<i?" done":""));
+    if((k===i)!==chs[k].classList.contains("on")) chs[k].classList.toggle("on",k===i);
+  }
+  elTC.textContent=fmt(T)+" / "+fmt(TOT);
+}
+function seek(x){T=Math.max(0,Math.min(TOT-.001,x)); frame();}
+function toggle(){
+  playing=!playing;
+  elPPI.setAttribute("d",playing?PAUSE:PLAY);
+  elPP.setAttribute("aria-label",playing?"Pause":"Play");
+  if(playing){last=0; requestAnimationFrame(loop);}
+}
+function loop(ts){
+  if(!playing)return;
+  if(!last)last=ts;
+  var dt=Math.min(.05,(ts-last)/1000); last=ts;
+  T+=dt; if(T>=TOT){T=TOT-.001; playing=false;
+    elPPI.setAttribute("d",PLAY); elPP.setAttribute("aria-label","Play");}
+  frame(); if(playing)requestAnimationFrame(loop);
+}
+elPP.addEventListener("click",toggle);
+document.getElementById("rs").addEventListener("click",function(){seek(0); if(!playing)toggle();});
+
+function scrub(e){
+  var r=elTK.getBoundingClientRect();
+  seek(cl((e.clientX-r.left)/r.width)*TOT);
+}
+var drag=false;
+elTK.addEventListener("pointerdown",function(e){drag=true; elTK.setPointerCapture(e.pointerId); scrub(e);});
+elTK.addEventListener("pointermove",function(e){if(drag)scrub(e);});
+elTK.addEventListener("pointerup",function(){drag=false;});
+document.addEventListener("keydown",function(e){
+  if(/^(INPUT|TEXTAREA|SUMMARY|BUTTON)$/.test(e.target.tagName)&&e.key===" ")return;
+  if(e.key===" "){e.preventDefault(); toggle();}
+  else if(e.key==="ArrowRight"){e.preventDefault(); seek(T+5);}
+  else if(e.key==="ArrowLeft"){e.preventDefault(); seek(T-5);}
+});
+
+/* hidpi */
+function size(){
+  var dpr=Math.min(2,window.devicePixelRatio||1);
+  cv.width=W*dpr; cv.height=H*dpr;
+  g.setTransform(dpr,0,0,dpr,0,0); g.scale(1,1);
+  var o=g.setTransform.bind(g);
+  g.setTransform=function(a,b,c2,d,e,f){o(a*dpr,b*dpr,c2*dpr,d*dpr,e*dpr,f*dpr);};
+  frame();
+}
+size();
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(frame);
+if(window.matchMedia)matchMedia("(prefers-color-scheme:dark)").addEventListener?
+  matchMedia("(prefers-color-scheme:dark)").addEventListener("change",frame):0;
+
+/* autoplay when scrolled into view, unless reduced motion */
+if(!reduce&&"IntersectionObserver" in window){
+  var io=new IntersectionObserver(function(en){
+    en.forEach(function(x){ if(x.isIntersecting&&!playing&&T===0){toggle(); io.disconnect();} });
+  },{threshold:.5});
+  io.observe(cv);
+}
+
+/* transcript */
+var tr=document.getElementById("trx"), html="";
+SC.forEach(function(s,i){
+  html+="<b>"+s.id+" &middot; "+s.name+"</b><br>";
+  s.caps.forEach(function(c){html+="&nbsp;&nbsp;"+fmt(OFF[i]+c[0])+"&nbsp; "+c[2]+"<br>";});
+  html+="<br>";
+});
+tr.innerHTML=html;
+
+/* ══ lab ══════════════════════════════════════════════════════════════ */
+var S={surface:true,scope:true,policy:true,pep:true};
+var TL=[{n:"get_balance",surface:1,scope:1,policy:1},
+        {n:"list_transactions",surface:1,scope:1,policy:0},
+        {n:"transfer_funds",surface:0,scope:1,policy:1},
+        {n:"issue_refund",surface:0,scope:0,policy:1}];
+var RC={surface:"WC-4002 uncontracted tool",scope:"out of token scope",policy:"policy deny"};
+var KS=["surface","scope","policy"];
+function ev(st){
+  if(!st.pep)return TL.map(function(x){return{t:x,ok:true,r:"unevaluated"}});
+  return TL.map(function(x){
+    for(var i=0;i<3;i++){var k=KS[i]; if(st[k]&&!x[k])return{t:x,ok:false,r:RC[k]};}
+    return {t:x,ok:true,r:""};
   });
-  render();
-
-  // ── reveal ─────────────────────────────────────────────────────────
-  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var targets = document.querySelectorAll(".rv");
-  if (reduce || !("IntersectionObserver" in window)){
-    Array.prototype.forEach.call(targets, function(t){ t.classList.add("in"); });
-  } else {
-    var io = new IntersectionObserver(function(entries){
-      entries.forEach(function(e){
-        if (e.isIntersecting){ e.target.classList.add("in"); io.unobserve(e.target); }
-      });
-    }, {rootMargin:"0px 0px -8% 0px", threshold:0.04});
-    Array.prototype.forEach.call(targets, function(t){ io.observe(t); });
-  }
+}
+var BASE=ev({surface:1,scope:1,policy:1,pep:1}).filter(function(r){return r.ok})
+          .map(function(r){return r.t.n});
+var $=function(i){return document.getElementById(i)};
+var gk=$("gk"),gp=$("gp"),bA=$("bA"),bU=$("bU"),eM=$("eM"),pO=$("pO");
+var RG={surface:$("rS"),scope:$("rK"),policy:$("rP")},
+    LB={surface:$("lS"),scope:$("lK"),policy:$("lP")};
+function lab(){
+  var rows=ev(S), unb=!S.pep||(!S.surface&&!S.scope&&!S.policy);
+  bA.style.display=(S.surface&&!unb)?"":"none";
+  bU.style.display=unb?"":(S.surface?"none":"");
+  gk.setAttribute("clip-path",(S.scope&&!unb)?"url(#ck)":"none");
+  gp.setAttribute("clip-path",(S.policy&&!unb)?"url(#cp)":"none");
+  bA.setAttribute("fill",S.pep?"currentColor":"#E86F6F");
+  bU.setAttribute("fill",S.pep?"currentColor":"#E86F6F");
+  KS.forEach(function(k){
+    RG[k].setAttribute("opacity",(S[k]&&S.pep)?"1":".22");
+    RG[k].setAttribute("stroke-dasharray",S[k]?"none":"7 5");
+    LB[k].setAttribute("opacity",(S[k]&&S.pep)?"1":".3");
+  });
+  pO.style.display=S.pep?"none":"";
+  eM.style.display=(S.pep&&!unb)?"":"none";
+  $("tls").innerHTML=rows.map(function(r){
+    return '<div class="tl '+(r.ok?"y":"n")+'"><span class="st">'+(r.ok?"ALLOW":"REFUSE")+
+      '</span><span class="id">'+r.t.n+'</span>'+(r.r?'<span class="rc">'+r.r+'</span>':'')+'</div>';
+  }).join("");
+  var ok=rows.filter(function(r){return r.ok}).map(function(r){return r.t.n});
+  var gain=ok.filter(function(n){return BASE.indexOf(n)<0});
+  var off=KS.filter(function(k){return !S[k]});
+  var m,al=false;
+  if(!S.pep){al=true; m="|effective| = "+ok.length+" of "+TL.length+
+    " · contract signed, merged, approved · deny counter 0";}
+  else if(!off.length) m="|effective| = 1 of "+TL.length+" · all three ceilings agree";
+  else if(!gain.length) m="Δ = 0 · token.scope was not the binding ceiling";
+  else m="|effective| = "+ok.length+" of "+TL.length+" · dropped "+
+    off.map(function(k){return k==="surface"?"contract.surface":k==="scope"?"token.scope":"policy_decision"}).join(" + ")+
+    " → +"+gain.join(", ");
+  $("vd").innerHTML=m; $("vd").className="vd"+(al?" alarm":"");
+}
+Array.prototype.forEach.call(document.querySelectorAll(".sw"),function(b){
+  b.addEventListener("click",function(){
+    var k=b.getAttribute("data-k"); S[k]=!S[k];
+    b.setAttribute("aria-pressed",S[k]?"true":"false"); lab();
+  });
+});
+lab();
 })();
 </script>
