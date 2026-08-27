@@ -49,11 +49,25 @@ local function req(over)
   return r
 end
 
+--- Connect and list, which is what verifies the contract's pin. Any tool call before this is
+--- refused WC-1002, so a test that wants to exercise anything past the pin gate runs it first.
+local function verify_pin(h, c)
+  local rec = stub.install(req({
+    body = LIST,
+    resp_headers = { ["content-type"] = "application/json" },
+    resp_body = '{"jsonrpc":"2.0","id":1,"result":' .. SERVED .. "}",
+  }))
+  stub.phase(rec, function() h:access(c) end, "access")
+  stub.phase(rec, function() h:response(c) end, "response")
+  stub.phase(rec, function() h:log(c) end, "log")
+  return rec
+end
+
 --- Run access, then log. Returns the recorder and how access ended.
 local function run(h, c, r)
   local rec = stub.install(r)
-  local how = stub.phase(rec, function() h:access(c) end)
-  stub.phase(rec, function() h:log(c) end)
+  local how = stub.phase(rec, function() h:access(c) end, "access")
+  stub.phase(rec, function() h:log(c) end, "log")
   return rec, how
 end
 
@@ -67,16 +81,17 @@ t.case("a catalogue request enables buffering and its response is filtered", fun
     resp_headers = { ["content-type"] = "application/json" },
     resp_body = '{"jsonrpc":"2.0","id":1,"result":' .. SERVED .. "}",
   }))
-  t.eq(stub.phase(rec, function() h:access(c) end), "fell-through", "access")
+  t.eq(stub.phase(rec, function() h:access(c) end, "access"), "fell-through", "access")
   t.ok(rec.buffering, "Kong must be told to buffer BEFORE it proxies")
-  t.eq(stub.phase(rec, function() h:response(c) end), "fell-through", "response")
-  t.ok(rec.body_set, "the catalogue must have been rewritten")
-  local f = t.json.decode(rec.body_set)
+  -- The filtered body is delivered by exiting with it: set_raw_body is body_filter-only.
+  t.eq(stub.phase(rec, function() h:response(c) end, "response"), "exited", "response")
+  t.ok(rec.exit and rec.exit.body, "the catalogue must have been rewritten")
+  local f = t.json.decode(rec.exit.body)
   t.eq(#f.result.tools, 2, "three served, two contracted")
   t.eq(f.result.tools[1].name, "get_balance", "first tool")
-  t.ok(not rec.body_set:find("transfer_funds"), "the uncontracted tool must not survive")
-  t.eq(rec.headers_set["Content-Length"], #rec.body_set, "content-length must describe the NEW body")
-  stub.phase(rec, function() h:log(c) end)
+  t.ok(not rec.exit.body:find("transfer_funds"), "the uncontracted tool must not survive")
+  t.eq(rec.exit.status, 200, "the upstream's status is preserved")
+  stub.phase(rec, function() h:log(c) end, "log")
 end)
 
 -- --- verdicts ---------------------------------------------------------------
@@ -90,9 +105,9 @@ t.case("a contracted tool forwards once the pin is verified", function()
     resp_headers = { ["content-type"] = "application/json" },
     resp_body = '{"jsonrpc":"2.0","id":1,"result":' .. SERVED .. "}",
   }))
-  stub.phase(rec, function() h:access(c) end)
-  stub.phase(rec, function() h:response(c) end)
-  stub.phase(rec, function() h:log(c) end)
+  stub.phase(rec, function() h:access(c) end, "access")
+  stub.phase(rec, function() h:response(c) end, "response")
+  stub.phase(rec, function() h:log(c) end, "log")
 
   local rec2, how = run(h, c, req())
   t.eq(how, "fell-through", "a contracted call must reach the upstream")
@@ -107,9 +122,9 @@ t.case("an uncontracted tool is refused with WC-4002", function()
     resp_headers = { ["content-type"] = "application/json" },
     resp_body = '{"jsonrpc":"2.0","id":1,"result":' .. SERVED .. "}",
   }))
-  stub.phase(rec, function() h:access(c) end)
-  stub.phase(rec, function() h:response(c) end)
-  stub.phase(rec, function() h:log(c) end)
+  stub.phase(rec, function() h:access(c) end, "access")
+  stub.phase(rec, function() h:response(c) end, "response")
+  stub.phase(rec, function() h:log(c) end, "log")
 
   local rec2, how = run(h, c, req({ body = CALL_NO }))
   t.eq(how, "exited", "the call must not reach the upstream")
@@ -164,7 +179,7 @@ t.case("a failed start is not retried on every request", function()
   local c = conf({ contracts = { "/nonexistent/nope.jws" } })
   run(h, c, req())
   local rec = stub.install(req())
-  stub.phase(rec, function() h:access(c) end)
+  stub.phase(rec, function() h:access(c) end, "access")
   -- Still refusing, and the second attempt did not re-read the missing file.
   t.eq(rec.exit.status, 503, "still refusing")
 end)
@@ -175,25 +190,28 @@ t.case("the log phase releases the stream and is safe when there is none", funct
   local h = fresh()
   local c = conf()
   local rec = stub.install(req())
-  stub.phase(rec, function() h:access(c) end)
+  stub.phase(rec, function() h:access(c) end, "access")
   t.ok(kong.ctx.plugin.stream ~= nil, "access must have opened a stream")
-  stub.phase(rec, function() h:log(c) end)
+  stub.phase(rec, function() h:log(c) end, "log")
   t.eq(kong.ctx.plugin.stream, nil, "log must have released it")
   -- A second log, and a log with no access at all, must both be harmless.
-  stub.phase(rec, function() h:log(c) end)
+  stub.phase(rec, function() h:log(c) end, "log")
   local rec2 = stub.install(req())
-  stub.phase(rec2, function() h:log(c) end)
+  stub.phase(rec2, function() h:log(c) end, "log")
 end)
 
 t.case("the response phase does nothing when nothing was buffered", function()
   local h = fresh()
   local c = conf()
+  verify_pin(h, c)
+  -- A forwarded tool call, so nothing exited in access: otherwise this would assert against a
+  -- refusal left behind by the pin gate and pass for the wrong reason.
   local rec = stub.install(req())
-  stub.phase(rec, function() h:access(c) end)
+  t.eq(stub.phase(rec, function() h:access(c) end, "access"), "fell-through", "access")
   t.ok(not rec.buffering, "a tool call is not buffered")
-  t.eq(stub.phase(rec, function() h:response(c) end), "fell-through", "response")
-  t.eq(rec.body_set, nil, "no rewrite")
-  stub.phase(rec, function() h:log(c) end)
+  t.eq(stub.phase(rec, function() h:response(c) end, "response"), "fell-through", "response")
+  t.eq(rec.exit, nil, "the response phase must not have touched the body")
+  stub.phase(rec, function() h:log(c) end, "log")
 end)
 
 -- --- ceilings across workers -------------------------------------------------

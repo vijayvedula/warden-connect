@@ -52,7 +52,16 @@ function M.install(req)
         error(EXIT)
       end,
       set_header = function(k, v) rec.headers_set[k] = v end,
-      set_raw_body = function(b) rec.body_set = b end,
+      -- Kong restricts this to body_filter. A stub that accepted it anywhere let a handler
+      -- calling it from `response` pass the whole suite and fail on the first real request —
+      -- which is exactly what happened, so the restriction is modelled here.
+      set_raw_body = function(b)
+        if rec.phase ~= "body_filter" then
+          error("function cannot be called in " .. tostring(rec.phase)
+                .. " phase (only in: body_filter)")
+        end
+        rec.body_set = b
+      end,
     },
     service = {
       request = {
@@ -61,6 +70,7 @@ function M.install(req)
       response = {
         get_header = function(n) return (req.resp_headers or {})[n:lower()] end,
         get_raw_body = function() return req.resp_body end,
+        get_status = function() return req.resp_status or 200 end,
       },
     },
   }
@@ -68,8 +78,11 @@ function M.install(req)
 end
 
 --- Run one plugin phase, catching the unwind `kong.response.exit` performs.
-function M.phase(rec, fn, ...)
-  local ok, err = pcall(fn, ...)
+--
+-- `name` records which phase is running so the stub can enforce Kong's own phase restrictions.
+function M.phase(rec, fn, name)
+  rec.phase = name or "response"
+  local ok, err = pcall(fn)
   if ok then
     return "fell-through"
   end

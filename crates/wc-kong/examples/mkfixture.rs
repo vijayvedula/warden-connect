@@ -4,7 +4,13 @@
 //! the spec to sign, or commit an artifact that expires, this mints a fresh one at run time —
 //! the same way the ABI tests do, through the same public API.
 //!
-//! Usage: `cargo run -q --example mkfixture -- <dir>`
+//! Usage: `cargo run -q --example mkfixture -- <dir> [k=v ...]`
+//!
+//! Keys: `caller`, `callee`, `tools` (comma separated), `served` (comma separated),
+//! `served_file` (a JSON surface as the callee emits it, which overrides `served`),
+//! `rate`, `concurrent`, `mediator`, `issuer`. Everything has a default, so the Lua spec
+//! passes only a directory and the drill overrides the identities it generated certificates
+//! for.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use serde_json::json;
@@ -16,26 +22,54 @@ use wc_core::model::{Cid, EntityId, Jti, Tier, ZoneId};
 
 const PRIV: &[u8] = include_bytes!("../../../fixtures/keys/test_issuer_es256_priv.pem");
 const KID: &str = "wc-test-es256";
-const MEDIATOR: &str = "warden:mediator:kong-test";
-const ISS: &str = "https://connect.internal";
-const CALLER: &str = "spiffe://org/ns/agents/sa/recon-bot-7";
-const CALLEE: &str = "spiffe://org/ns/tools/sa/payments-mcp";
 
 fn main() {
-    let dir = std::env::args().nth(1).expect("usage: mkfixture <dir>");
-    let dir = std::path::PathBuf::from(dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let mut args = std::env::args().skip(1);
+    let dir = std::path::PathBuf::from(args.next().expect("usage: mkfixture <dir> [k=v ...]"));
+    let mut kv = std::collections::HashMap::new();
+    for a in args {
+        let (k, v) = a.split_once('=').expect("arguments are k=v");
+        kv.insert(k.to_string(), v.to_string());
+    }
+    let get = |k: &str, d: &str| kv.get(k).cloned().unwrap_or_else(|| d.to_string());
+    let list = |k: &str, d: &str| {
+        get(k, d)
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
 
+    let caller_id = get("caller", "spiffe://org/ns/agents/sa/recon-bot-7");
+    let callee_id = get("callee", "spiffe://org/ns/tools/sa/payments-mcp");
+    let mediator = get("mediator", "warden:mediator:kong-test");
+    let issuer = get("issuer", "https://connect.internal");
+    let tools = list("tools", "get_balance,list_transactions");
+    let served_names = list("served", "get_balance,list_transactions,transfer_funds");
+    let rate: Option<u32> = kv.get("rate").map(|v| v.parse().unwrap());
+    let concurrent: Option<u32> = kv.get("concurrent").map(|v| v.parse().unwrap());
+
+    std::fs::create_dir_all(&dir).unwrap();
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let callee = EntityId::new(CALLEE).unwrap();
-    let served = json!({"tools":[
-        {"name":"get_balance","description":"Read an account balance."},
-        {"name":"list_transactions","description":"List recent transactions."},
-        {"name":"transfer_funds","description":"Move money between accounts."}
-    ]});
+    let callee = EntityId::new(&callee_id).unwrap();
+    // The pin is over the surface the callee actually serves, schemas and all. A surface
+    // invented here from names alone would mismatch the real server on the first catalogue and
+    // read as drift — so a drill against a real upstream passes its emitted surface in.
+    let served = match kv.get("served_file") {
+        Some(p) => serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(p).expect("read served_file"),
+        )
+        .expect("served_file is JSON"),
+        None => json!({
+            "tools": served_names
+                .iter()
+                .map(|n| json!({"name": n, "description": format!("The {n} tool.")}))
+                .collect::<Vec<_>>()
+        }),
+    };
     let pin = canon::pin(
         SurfaceKind::McpTools,
         &callee,
@@ -45,7 +79,7 @@ fn main() {
     )
     .unwrap();
     let surface = Surface {
-        tools: vec!["get_balance".into(), "list_transactions".into()],
+        tools: tools.clone(),
         skills: Vec::new(),
         resources: Vec::new(),
     };
@@ -53,10 +87,10 @@ fn main() {
     let mut payload = ContractPayload::new(
         Cid::new("conn_7f3a91c4").unwrap(),
         Jti::new("cx_84be0011").unwrap(),
-        ISS,
-        MEDIATOR,
+        &issuer,
+        &mediator,
         Party {
-            id: EntityId::new(CALLER).unwrap(),
+            id: EntityId::new(&caller_id).unwrap(),
             zone: ZoneId::new("internal.apac-ops").unwrap(),
             tier: Tier::TWO,
             card: None,
@@ -76,11 +110,20 @@ fn main() {
     payload.nbf = at - 100;
     payload.exp = at + 3_600;
     payload.surface = surface;
-    // Bounded on purpose: the Lua suite has to exercise the acknowledgement, and a fixture
-    // with no ceiling would leave that path untested in the binding that has the problem.
+    // Bounded by default: the Lua suite has to exercise the ceiling acknowledgement, and a
+    // fixture with no ceiling would leave that path untested in the binding that has the
+    // problem. `rate=` and `concurrent=` override; an explicit 0 means unbounded.
     payload.terms = Terms {
-        max_calls_per_hour: Some(10),
-        max_concurrent: Some(3),
+        max_calls_per_hour: match rate {
+            Some(0) => None,
+            Some(n) => Some(n),
+            None => Some(10),
+        },
+        max_concurrent: match concurrent {
+            Some(0) => None,
+            Some(n) => Some(n),
+            None => Some(3),
+        },
         ..Terms::default()
     };
     payload.assurance = Assurance::default();
@@ -93,7 +136,7 @@ fn main() {
     std::fs::write(dir.join("c.jws"), jws).unwrap();
     std::fs::write(
         dir.join("routes.toml"),
-        format!("[[route]]\ncluster = \"payments\"\ncallee = \"{CALLEE}\"\n"),
+        format!("[[route]]\ncluster = \"payments\"\ncallee = \"{callee_id}\"\n"),
     )
     .unwrap();
     std::fs::write(

@@ -183,11 +183,16 @@ function WardenConnect:response(conf) -- luacheck: no unused args
     return refuse_bare(8004, "the filter returned " .. tostring(action))
   end
   if action == wc.REWRITE then
-    -- The upstream's content-length describes the body we are replacing. Leaving it makes the
-    -- filtered catalogue unparseable at the client — this cost the Envoy path a debugging
-    -- session, so it is removed here too.
-    kong.response.set_header("Content-Length", #out)
-    kong.response.set_raw_body(out)
+    -- Replaced by exiting with it. `kong.response.set_raw_body` is body_filter-only and raises
+    -- "function cannot be called in response phase" here — which is what a real Kong said and
+    -- a stub that accepted the call did not. exit() also recomputes Content-Length; the
+    -- upstream's describes the body being replaced, and leaving it stale made the filtered
+    -- catalogue unparseable on the Envoy path.
+    return kong.response.exit(
+      kong.service.response.get_status() or 200,
+      out,
+      { ["Content-Type"] = (ctype ~= "" and ctype) or "application/json" }
+    )
   end
 end
 
