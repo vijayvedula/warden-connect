@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A real MCP server over Streamable HTTP: a small account ledger.
 
-Three tools, and only two are ever contracted in the guide. `post_journal` is a write and is
+Three tools, and only two are ever contracted in the guide. `transfer_funds` is a write and is
 deliberately left out of the offer, so the surface ceiling has something worth refusing.
 
 Every executed call is appended to $LEDGER_LOG. The guide asserts the ABSENCE of a refused call
@@ -30,13 +30,17 @@ TOOLS = [
         },
     },
     {
-        "name": "list_accounts",
-        "description": "List every account this ledger holds.",
-        "inputSchema": {"type": "object", "properties": {}},
+        "name": "list_transactions",
+        "description": "List recent transactions for one account.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"account": {"type": "string"}},
+            "required": ["account"],
+        },
     },
     {
-        "name": "post_journal",
-        "description": "Post a journal entry, moving money between accounts.",
+        "name": "transfer_funds",
+        "description": "Move money between two accounts.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -68,11 +72,12 @@ def call_tool(name, args):
         if acct not in ACCOUNTS:
             return f"no such account: {acct}"
         return f"{acct} balance {ACCOUNTS[acct]:.2f}"
-    if name == "list_accounts":
-        return ", ".join(sorted(ACCOUNTS))
-    if name == "post_journal":
+    if name == "list_transactions":
+        acct = args.get("account", "")
+        return f"{acct}: 3 transactions in the last 7 days"
+    if name == "transfer_funds":
         JOURNAL.append(args)
-        return "POSTED {} -> {} for {}".format(
+        return "TRANSFERRED {} -> {} for {}".format(
             args.get("from_account"), args.get("to_account"), args.get("amount")
         )
     raise KeyError(name)

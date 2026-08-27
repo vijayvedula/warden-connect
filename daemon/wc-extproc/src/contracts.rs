@@ -162,7 +162,17 @@ impl Contracts for ContractSet {
         let caller = caller?;
         let caller = EntityId::new(caller).ok()?;
         let callee = EntityId::new(callee).ok()?;
-        let contract = self.cache.resolve(None, &caller, &callee).ok()?;
+        let contract = match self.cache.resolve(None, &caller, &callee) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "wc-extproc: no contract for {caller} -> {callee}: {} {}",
+                    e.code(),
+                    e.detail()
+                );
+                return None;
+            }
+        };
 
         let peer = wc_core::contract::PeerIdentity {
             caller: caller.clone(),
@@ -179,7 +189,21 @@ impl Contracts for ContractSet {
             zones: self.zones.as_ref(),
             mode: self.mode,
         };
-        let admitted = contract.admit_context(&ctx).ok()?;
+        // The gates. Swallowing this error was the worst of the three: a contract that exists
+        // and fails gate 9, 10 or 11 was reported as "no contract for this caller and callee",
+        // which sends the reader to look for a contract that is sitting right there.
+        let admitted = match contract.admit_context(&ctx) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!(
+                    "wc-extproc: contract {} found for {caller} -> {callee} but NOT admitted: {} {}",
+                    contract.payload.cid.as_str(),
+                    e.code(),
+                    e.detail()
+                );
+                return None;
+            }
+        };
         // The contract travels with the admitted connection. A filter that cannot reach it
         // cannot run gate 8, and a gate that cannot run is not a gate.
         Some(Resolved {

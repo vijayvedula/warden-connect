@@ -35,8 +35,8 @@ static_resources:
               domains: ["*"]
               routes:
               - match: { prefix: "/mcp" }
-                name: ledger-route
-                route: { cluster: ledger-mcp }
+                name: payments-route
+                route: { cluster: payments-mcp }
               # A second route to a cluster the verifier's table does not map, so the drill can
               # prove that an unmapped route is refused rather than defaulted.
               - match: { prefix: "/other" }
@@ -63,10 +63,10 @@ static_resources:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
   clusters:
-  - name: ledger-mcp
+  - name: payments-mcp
     type: STRICT_DNS
     load_assignment:
-      cluster_name: ledger-mcp
+      cluster_name: payments-mcp
       endpoints:
       - lb_endpoints:
         - endpoint: { address: { socket_address: { address: host.docker.internal, port_value: 8931 } } }
