@@ -251,12 +251,31 @@ start_plane || exit 2
 start_verifier "203.0.113.9" || exit 2   # deliberately wrong, for phase 1a
 
 docker rm -f wc-envoy-drill >/dev/null 2>&1
+# --add-host is what makes `host.docker.internal` resolve on Linux; Docker Desktop provides it
+# already and the flag is harmless there. Without it Envoy cannot reach the verifier OR the
+# upstream, every phase that expects a specific refusal code gets a transport error instead, and
+# "with the verifier down, traffic is denied" passes trivially because that is the state all the
+# way through. The drill passed on macOS and failed nine phases on a Linux runner.
+# The ports are fixed here because extproc-drill.yaml names them. A preflight, because the
+# alternative message is "envoy did not start", which is true of a port conflict, a bad config
+# and a missing mount alike — and a stale container from a previous run or another walkthrough
+# is by far the most common of the three.
+for p in "$ENVOY_PORT" "$GRPC_PORT" "$UP_PORT"; do
+  if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "port $p is already in use — stop whatever holds it first:" >&2
+    lsof -nP -iTCP:"$p" -sTCP:LISTEN 2>/dev/null | tail -n +2 | sed 's/^/  /' >&2
+    docker ps --format '  docker: {{.Names}} {{.Ports}}' 2>/dev/null | grep ":$p->" >&2
+    exit 2
+  fi
+done
+
 docker run -d --cidfile "$CID_FILE" --name wc-envoy-drill \
+  --add-host=host.docker.internal:host-gateway \
   -p "$ENVOY_PORT:$ENVOY_PORT" \
   -v "$REPO/scripts/envoy/extproc-drill.yaml:/etc/envoy/envoy.yaml:ro" \
   -v "$WORK/certs:/certs:ro" \
-  "$IMAGE" -c /etc/envoy/envoy.yaml --log-level warning >/dev/null 2>&1 \
-  || { echo "envoy did not start" >&2; exit 2; }
+  "$IMAGE" -c /etc/envoy/envoy.yaml --log-level warning >"$WORK/envoy-run.log" 2>&1 \
+  || { echo "envoy did not start:" >&2; cat "$WORK/envoy-run.log" >&2; exit 2; }
 for _ in $(seq 1 60); do
   curl -sk -o /dev/null --max-time 2 "https://localhost:$ENVOY_PORT/mcp" && break
   sleep 0.5

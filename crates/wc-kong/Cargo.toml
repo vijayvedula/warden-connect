@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# Not for crates.io: path dependencies read as wildcards there, which `cargo deny` refuses.
+# wc-e2e carries the same line for the same reason.
+publish = false
 description = "C ABI over the warden-connect gateway filter, for a Kong Lua plugin via LuaJIT FFI."
 
 [lib]
