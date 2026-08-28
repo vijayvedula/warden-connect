@@ -212,7 +212,10 @@ cp "$REPO/fixtures/keys/test_issuer_es256_pub.pem" issuer_pub.pem
 # create its own mountpoint inside one.
 cp "$SO" libwc_kong.so
 
+# See the note in envoy-drill.sh: without this `host.docker.internal` does not resolve on Linux
+# and Kong cannot reach the upstream at all.
 docker run -d --cidfile "$CID_FILE" \
+  --add-host=host.docker.internal:host-gateway \
   -v "$WORK:/wc:ro" \
   -v "$REPO/crates/wc-kong/lua:/wc-lua:ro" \
   -e KONG_DATABASE=off \
