@@ -934,6 +934,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::thread::spawn(move || {
             let mut trust = refresh_trust;
             let mut seq = 0u64;
+            // The revocation feed has its own sequence; asking for revocations "since the
+            // contract seq" would either re-fetch the whole feed or skip entries.
+            let mut rev_seq = 0u64;
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(refresh_secs));
                 let at = now();
@@ -956,9 +959,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     mediator_id: &med,
                     issuer: &iss,
                 };
-                match wc_mediator::client::refresh(&client, &cache, &trusted, seq, at) {
+                match wc_mediator::client::refresh(&client, &cache, &trusted, seq, rev_seq, at) {
                     Ok(report) => {
                         seq = report.seq;
+                        if let Some(rev) = &report.revocations {
+                            rev_seq = rev.applied_seq;
+                            if rev.applied > 0 {
+                                eprintln!(
+                                    "wc-extproc: applied {} revocation(s), feed at seq {}",
+                                    rev.applied, rev.applied_seq
+                                );
+                            }
+                        }
                         // Only a clean refresh counts as fresh. A partial one leaves this
                         // process holding a set the control plane did not fully hand over, and
                         // treating that as current is how a withdrawn contract keeps working.

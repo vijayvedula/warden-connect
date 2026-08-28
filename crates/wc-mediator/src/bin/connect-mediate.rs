@@ -356,7 +356,7 @@ fn run() -> Result<(), String> {
             mediator_id: &mediator_id,
             issuer: &issuer_id,
         };
-        let report = client::refresh(client, &cache, &trusted, 0, now())
+        let report = client::refresh(client, &cache, &trusted, 0, 0, now())
             .map_err(|e| format!("first contract refresh failed, refusing to start: {e}"))?;
         eprintln!(
             "connect-mediate: {} contract(s) installed, set {} seq {}{}",
@@ -396,6 +396,10 @@ fn run() -> Result<(), String> {
         std::thread::spawn(move || {
             let mut trust = trust;
             let mut seq = 0u64;
+            // Tracked separately from the contract-set seq: the revocation feed has its own
+            // sequence, and asking for revocations "since the contract seq" would either
+            // re-fetch the whole feed every time or skip entries.
+            let mut rev_seq = 0u64;
             let mut last_kids: Vec<String> = Vec::new();
             loop {
                 std::thread::sleep(Duration::from_secs(refresh_secs));
@@ -443,9 +447,12 @@ fn run() -> Result<(), String> {
                     mediator_id: &loop_mediator,
                     issuer: &loop_issuer,
                 };
-                match client::refresh(&loop_client, &loop_cache, &trusted, seq, at) {
+                match client::refresh(&loop_client, &loop_cache, &trusted, seq, rev_seq, at) {
                     Ok(report) => {
                         seq = report.seq;
+                        if let Some(rev) = &report.revocations {
+                            rev_seq = rev.applied_seq;
+                        }
                         if !report.is_clean() {
                             eprintln!(
                                 "connect-mediate: refresh not clean — {} missing, {} rejected, acked={}",
