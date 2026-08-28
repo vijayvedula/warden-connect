@@ -145,9 +145,53 @@ fn origin_of(remote: Option<&str>) -> wc_mediator::peer::Origin {
     }
 }
 
+/// What to call a frame that is not a tool call, so a record always names something.
+fn method_label(method: &str) -> String {
+    if method.is_empty() {
+        "<no method>".to_string()
+    } else {
+        method.to_string()
+    }
+}
+
 /// One stream. Never shared between requests.
 pub struct WcStream {
     filter: Filter,
+    /// The trail, and what this connection's terms say about a lost record. Carried on the
+    /// stream because `Decision` needs the connection's identity, and this is where it is known.
+    evidence: Option<std::sync::Arc<wc_mediator::evidence::FileSink>>,
+    delivery: Option<wc_mediator::evidence::Delivery>,
+    cid: String,
+    jti: String,
+    caller: String,
+    callee: String,
+    mode: &'static str,
+}
+
+impl WcStream {
+    /// Append one decision, and say whether the call may still proceed.
+    ///
+    /// A refusal is recorded before it is returned, and an allow before it is forwarded — under
+    /// `delivery = "blocking"` a record that cannot be written is itself a refusal, which is
+    /// what the term has always claimed and never done.
+    fn note(&self, verdict: &str, code: &str, tool: &str, micros: u64) -> bool {
+        let Some(sink) = &self.evidence else {
+            return true;
+        };
+        let d = wc_core::obs::Decision {
+            cid: &self.cid,
+            decision: verdict,
+            code,
+            mode: self.mode,
+            tool,
+            caller: &self.caller,
+            callee: &self.callee,
+            jti: &self.jti,
+            at: crate::now(),
+            micros,
+        };
+        sink.record_or_refuse(&d, self.delivery)
+    }
 }
 
 // --- lifecycle ------------------------------------------------------------
@@ -354,11 +398,25 @@ pub unsafe extern "C" fn wc_stream_new(
         let ceilings = resolved
             .as_ref()
             .map(|r| handle.ceilings.for_contract(r.admitted.jti.as_str()));
+        // Captured before `admitted` moves into the filter: a Decision needs the connection's
+        // identity, and an absent contract still deserves a record — a refused call is the one
+        // an auditor asks about.
+        let (cid, jti, delivery) = match &resolved {
+            Some(r) => (
+                r.admitted.cid.as_str().to_string(),
+                r.admitted.jti.as_str().to_string(),
+                Some(wc_mediator::evidence::Delivery::parse(
+                    &r.contract.payload.terms.evidence.delivery,
+                )),
+            ),
+            None => (String::new(), String::new(), None),
+        };
         let (admitted, contract) = match resolved {
             Some(r) => (Some(r.admitted), Some(r.contract)),
             None => (None, None),
         };
 
+        let bound_id = bound.as_str().to_string();
         let cfg = FilterCfg {
             mode: handle.mode,
             callee: bound,
@@ -367,6 +425,16 @@ pub unsafe extern "C" fn wc_stream_new(
         };
         Box::into_raw(Box::new(WcStream {
             filter: Filter::new(admitted, contract, ceilings, crate::now(), &cfg),
+            evidence: handle.evidence.clone(),
+            delivery,
+            cid,
+            jti,
+            caller: caller.unwrap_or_default(),
+            callee: bound_id,
+            mode: match handle.mode {
+                wc_core::error::Mode::Enforce => "enforce",
+                wc_core::error::Mode::Observe => "observe",
+            },
         }))
     })
 }
@@ -413,19 +481,44 @@ pub unsafe extern "C" fn wc_on_request(
                  call cannot be checked",
             );
         };
+        let started = std::time::Instant::now();
         let (method, params) = match parse_request_frame(bytes) {
             Ok(f) => f,
-            Err((code, detail)) => return refuse(out, code, detail),
+            Err((code, detail)) => {
+                // A frame that would not parse still produced a refusal, and an auditor asking
+                // "what did this caller try" needs it in the trail.
+                (*s).note("deny", &code.to_string(), "<unparseable frame>", 0);
+                return refuse(out, code, detail);
+            }
         };
-        match (*s).filter.on_request(&method, &params) {
+        let tool = wc_mediator::mcp::parse_tool_call(&params)
+            .map_or_else(|| method_label(&method), |(t, _)| t);
+        let verdict = (*s).filter.on_request(&method, &params);
+        let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        match verdict {
             Verdict::Forward => {
+                // Recorded BEFORE forwarding. Under `delivery = "blocking"` a record that
+                // cannot be written is itself a refusal — which is what the term has always
+                // said and never done.
+                if !(*s).note("allow", "WC-0000", &tool, micros) {
+                    return refuse(
+                        out,
+                        wc_core::error::Code::BLOCKING_SINK_UNAVAILABLE,
+                        "the decision could not be recorded and this contract's evidence \
+                         delivery is blocking",
+                    );
+                }
                 if (*s).filter.is_catalog() {
                     WC_BUFFER
                 } else {
                     WC_FORWARD
                 }
             }
-            Verdict::Refuse { code, detail } => refuse(out, code, &detail),
+            Verdict::Refuse { code, detail } => {
+                // A refusal is recorded too, and its write failing does not un-refuse it.
+                (*s).note("deny", &code.to_string(), &tool, micros);
+                refuse(out, code, &detail)
+            }
         }
     })
 }

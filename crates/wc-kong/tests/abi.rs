@@ -991,3 +991,151 @@ fn a_rejected_artifact_is_reported_and_does_not_stop_the_others_verifying() {
     );
     unsafe { wc_free(h) };
 }
+
+// --- the decision trail ---------------------------------------------------
+
+/// `terms.evidence` has been carried, narrowed and federated since the artifact was designed,
+/// and nothing at runtime read it. These are the tests that field could not have had.
+#[test]
+fn every_verdict_reaches_the_trail_and_the_trail_verifies() {
+    let d = dir("evidence");
+    let trail = d.join("trail.jsonl");
+    let _ = std::fs::remove_file(&trail);
+    let mut cfg: Value =
+        serde_json::from_str(&setup("evidence", &["get_balance"], "payments")).unwrap();
+    cfg["evidence_path"] = json!(trail.to_str().unwrap());
+    let h = init(&cfg.to_string()).unwrap();
+    let p = peer("payments", Some(CERT));
+
+    // A catalogue (allowed), then an uncontracted call (refused), then a batch (refused).
+    verify_pin(h, &p);
+    request(
+        h,
+        &p,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"transfer_funds"}}"#,
+    );
+    request(h, &p, r#"[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]"#);
+    unsafe { wc_free(h) };
+
+    let head = wc_mediator::evidence::verify(&trail).expect("the trail must verify");
+    assert!(
+        head.seq >= 3,
+        "expected at least 3 records, got {}",
+        head.seq
+    );
+
+    let text = std::fs::read_to_string(&trail).unwrap();
+    assert!(
+        text.contains("\"code\":\"WC-4002\""),
+        "the refusal must be in the trail:\n{text}"
+    );
+    assert!(text.contains("\"decision\":\"deny\""), "{text}");
+    assert!(
+        text.contains("\"decision\":\"allow\""),
+        "an allow is evidence too:\n{text}"
+    );
+    assert!(text.contains("\"tool\":\"transfer_funds\""), "{text}");
+}
+
+/// The record is what an auditor reads, so it has to carry the connection, not just the verdict.
+#[test]
+fn a_record_names_the_contract_the_caller_and_the_callee() {
+    let d = dir("evidence-fields");
+    let trail = d.join("trail.jsonl");
+    let _ = std::fs::remove_file(&trail);
+    let mut cfg: Value =
+        serde_json::from_str(&setup("evidence-fields", &["get_balance"], "payments")).unwrap();
+    cfg["evidence_path"] = json!(trail.to_str().unwrap());
+    let h = init(&cfg.to_string()).unwrap();
+    verify_pin(h, &peer("payments", Some(CERT)));
+    unsafe { wc_free(h) };
+
+    let text = std::fs::read_to_string(&trail).unwrap();
+    for field in [
+        "\"cid\":\"conn_7f3a91c4\"",
+        "\"jti\":\"cx_84be0011\"",
+        "\"caller\":\"spiffe://org/ns/agents/sa/recon-bot-7\"",
+        "\"callee\":\"spiffe://org/ns/tools/sa/payments-mcp\"",
+        "\"mode\":\"enforce\"",
+    ] {
+        assert!(text.contains(field), "missing {field} in:\n{text}");
+    }
+}
+
+/// A caller with no contract is exactly who an auditor asks about, so the refusal is recorded
+/// even though there are no terms to read a delivery mode from.
+#[test]
+fn a_refusal_with_no_contract_is_still_recorded() {
+    let d = dir("evidence-nocontract");
+    let trail = d.join("trail.jsonl");
+    let _ = std::fs::remove_file(&trail);
+    let mut cfg: Value =
+        serde_json::from_str(&setup("evidence-nocontract", &["get_balance"], "payments")).unwrap();
+    cfg["evidence_path"] = json!(trail.to_str().unwrap());
+    let h = init(&cfg.to_string()).unwrap();
+    let (v, _, code) = request(h, &peer("payments", None), TOOL_CALL);
+    assert_eq!(v, WC_REFUSE);
+    assert_eq!(code, 4001);
+    unsafe { wc_free(h) };
+
+    let text = std::fs::read_to_string(&trail).unwrap();
+    assert!(text.contains("\"code\":\"WC-4001\""), "{text}");
+    assert!(
+        text.contains("\"cid\":\"\""),
+        "no contract means an empty cid, not a missing row"
+    );
+    assert!(wc_mediator::evidence::verify(&trail).is_ok());
+}
+
+/// A trail that already does not verify must stop the worker starting, not be appended to.
+#[test]
+fn a_tampered_trail_stops_the_plugin_starting() {
+    let d = dir("evidence-tampered");
+    let trail = d.join("trail.jsonl");
+    let _ = std::fs::remove_file(&trail);
+    let mut cfg: Value =
+        serde_json::from_str(&setup("evidence-tampered", &["get_balance"], "payments")).unwrap();
+    cfg["evidence_path"] = json!(trail.to_str().unwrap());
+    let h = init(&cfg.to_string()).unwrap();
+    verify_pin(h, &peer("payments", Some(CERT)));
+    unsafe { wc_free(h) };
+
+    let text = std::fs::read_to_string(&trail).unwrap();
+    std::fs::write(
+        &trail,
+        text.replace("\"decision\":\"allow\"", "\"decision\":\"deny\""),
+    )
+    .unwrap();
+
+    let e = init(&cfg.to_string()).unwrap_err();
+    assert!(e.contains("evidence"), "got {e}");
+    assert!(
+        e.contains("edited"),
+        "the operator must be told what is wrong: {e}"
+    );
+}
+
+/// Two workers appending to one file interleave two chains, and the result never verifies —
+/// while every individual row still looks well-formed. That is not a corruption an operator
+/// would spot, so it is refused at startup instead.
+#[test]
+fn a_trail_shared_by_several_workers_is_refused() {
+    let d = dir("evidence-shared");
+    let mut cfg: Value =
+        serde_json::from_str(&setup("evidence-shared", &["get_balance"], "payments")).unwrap();
+    cfg["evidence_path"] = json!(d.join("trail.jsonl").to_str().unwrap());
+    cfg["workers"] = json!(4);
+    let e = init(&cfg.to_string()).unwrap_err();
+    assert!(e.contains("%w"), "the error must say how to fix it: {e}");
+    assert!(e.contains("never verifies"), "{e}");
+
+    // With %w it starts, and each worker lands on its own file.
+    cfg["evidence_path"] = json!(d.join("trail-%w.jsonl").to_str().unwrap());
+    cfg["worker_id"] = json!(3);
+    let h = init(&cfg.to_string()).expect("a per-worker path is fine");
+    unsafe { wc_free(h) };
+    assert!(
+        d.join("trail-3.jsonl").exists(),
+        "worker 3 must write its own trail"
+    );
+}

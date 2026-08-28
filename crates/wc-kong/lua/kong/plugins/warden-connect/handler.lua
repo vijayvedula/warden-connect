@@ -30,6 +30,7 @@ local CONFIG_KEYS = {
   "contracts", "routes", "identity", "mesh_origin", "issuer_pub", "jwks_file",
   "jwks_url", "kid", "mediator_id", "issuer_id", "mode", "pin_max_age",
   "max_stale", "any_zone", "no_pin", "ceiling_scope",
+  "evidence_path", "evidence_delivery",
 }
 
 local function config_json(conf)
@@ -43,6 +44,9 @@ local function config_json(conf)
   -- restate it is asking them to get it wrong. The library uses it to report what the
   -- configured ceilings actually come to across the fleet.
   t.workers = ngx.worker and ngx.worker.count() or 1
+  -- The worker id, so each worker writes its own chain. nginx owns both numbers; asking an
+  -- operator to restate either is asking them to get it wrong.
+  t.worker_id = ngx.worker and ngx.worker.id() or 0
   return cjson.encode(t)
 end
 
