@@ -320,7 +320,12 @@ for _ in $(seq 1 60); do
     docker logs "$(cat "$CID_FILE")" 2>&1 | tail -20 >&2
     exit 2
   fi
-  if curl -sk -o /dev/null --max-time 2 "https://localhost:$ENVOY_PORT/mcp"; then
+  # WITH the client certificate. The listener sets `require_client_certificate: true`, so a
+  # bare `curl -sk` could never complete a handshake — this probe had failed every time since
+  # it was written, and nobody noticed because the loop's result was thrown away and the drill
+  # printed "listening" regardless. Making the gate authoritative is what exposed it.
+  if curl -s -o /dev/null --max-time 2 "https://localhost:$ENVOY_PORT/mcp" \
+       --cert certs/client.crt --key certs/client.key --cacert certs/ca.crt; then
     ENVOY_UP=1; break
   fi
   sleep 0.5
