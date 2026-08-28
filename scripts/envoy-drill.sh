@@ -173,16 +173,44 @@ step "contract  get_balance only, of the 2 the callee serves"
 # reason. The client cert carries the caller's SPIFFE id as a URI SAN, which is where a real
 # mesh puts it.
 mkdir -p certs && cd certs
-openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt -days 1 \
-  -subj "/CN=wc-drill-ca" 2>/dev/null
+
+# Every openssl call is checked. They used to end in `2>/dev/null`, so a failure produced an
+# empty key, the drill mounted it, and Envoy reported "Failed to load incomplete private key"
+# five minutes and one container later — with no hint that generation was where it went wrong.
+SSL_LOG="$WORK/openssl.log"
+ssl() {
+  if ! openssl "$@" >>"$SSL_LOG" 2>&1; then
+    echo "setup: openssl $1 failed; see $SSL_LOG" >&2
+    tail -5 "$SSL_LOG" >&2
+    exit 2
+  fi
+}
+
+ssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt -days 1 -subj "/CN=wc-drill-ca"
 printf '[req]\ndistinguished_name=dn\n[dn]\n[ext]\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n' > srv.cnf
-openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=localhost" 2>/dev/null
-openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt \
-  -days 1 -extfile srv.cnf -extensions ext 2>/dev/null
+ssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=localhost"
+ssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt \
+  -days 1 -extfile srv.cnf -extensions ext
 printf '[req]\ndistinguished_name=dn\n[dn]\n[ext]\nsubjectAltName=URI:%s\n' "$CALLER" > cli.cnf
-openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj "/CN=recon-bot" 2>/dev/null
-openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt \
-  -days 1 -extfile cli.cnf -extensions ext 2>/dev/null
+ssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj "/CN=recon-bot"
+ssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt \
+  -days 1 -extfile cli.cnf -extensions ext
+
+# And what was written is checked before anything mounts it. Envoy's "incomplete private key"
+# is what an empty or truncated file looks like from inside the container, which is the least
+# useful place to find out.
+for k in ca.key server.key client.key; do
+  [ -s "$k" ] || { echo "setup: $k is empty" >&2; exit 2; }
+  openssl pkey -in "$k" -noout >/dev/null 2>&1 \
+    || { echo "setup: $k is not a readable private key" >&2; head -1 "$k" >&2; exit 2; }
+done
+for c in ca.crt server.crt client.crt; do
+  [ -s "$c" ] || { echo "setup: $c is empty" >&2; exit 2; }
+  openssl x509 -in "$c" -noout >/dev/null 2>&1 \
+    || { echo "setup: $c is not a readable certificate" >&2; exit 2; }
+done
+# Envoy reads these as a non-root user in some images, and a bind mount carries the host mode.
+chmod 644 ./*.key ./*.crt
 cd ..
 openssl x509 -in certs/client.crt -noout -text | grep -q "URI:$CALLER" \
   || { echo "setup: the client certificate does not carry the caller SAN" >&2; exit 2; }
