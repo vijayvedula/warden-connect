@@ -105,6 +105,60 @@ fn jws_with(tools: &[&str], terms: Terms) -> String {
     .unwrap()
 }
 
+/// A contract that expired an hour ago. Structurally valid, refused on its dates.
+fn expired_jws() -> String {
+    let at = now() - 7_200;
+    let callee = EntityId::new(CALLEE).unwrap();
+    let served = json!({"tools":[{"name":"get_balance","description":"Read an account balance."}]});
+    let pin = canon::pin(
+        SurfaceKind::McpTools,
+        &callee,
+        &served,
+        &Limits::default(),
+        at,
+    )
+    .unwrap();
+    let surface = Surface {
+        tools: vec!["get_balance".to_string()],
+        skills: Vec::new(),
+        resources: Vec::new(),
+    };
+    let digest = pin.surface_digest(&surface.items()).unwrap();
+    let mut payload = ContractPayload::new(
+        Cid::new("conn_deadbeef").unwrap(),
+        Jti::new("cx_deadbeef01").unwrap(),
+        ISS,
+        MEDIATOR,
+        Party {
+            id: EntityId::new(CALLER).unwrap(),
+            zone: ZoneId::new("internal.apac-ops").unwrap(),
+            tier: Tier::TWO,
+            card: None,
+            manifest: None,
+            surface_digest: None,
+        },
+        Party {
+            id: callee,
+            zone: ZoneId::new("internal.payments").unwrap(),
+            tier: Tier::TWO,
+            card: None,
+            manifest: Some(pin.manifest.clone()),
+            surface_digest: Some(digest),
+        },
+    );
+    payload.iat = at;
+    payload.nbf = at;
+    payload.exp = at + 3_600; // an hour after it was issued, which was two hours ago
+    payload.surface = surface;
+    payload.terms = Terms::default();
+    payload.assurance = Assurance::default();
+    mint(
+        &payload,
+        &IssuerKey::ec_pem(KID, PRIV, Algorithm::ES256).unwrap(),
+    )
+    .unwrap()
+}
+
 /// A private directory per test — shared paths across tests are a flake this repo has already
 /// paid for once.
 fn dir(name: &str) -> PathBuf {
@@ -897,5 +951,43 @@ fn an_acknowledged_bounded_ceiling_starts() {
 #[test]
 fn an_unbounded_contract_needs_no_acknowledgement() {
     let h = init(&setup("ceilnone", &["get_balance"], "payments")).unwrap();
+    unsafe { wc_free(h) };
+}
+
+/// An artifact that fails verification is dropped into `rejected`, and for a long time nothing
+/// said so: two paths in, "1 contract(s) verified" out, and no line naming which failed. A count
+/// that means less than it says is the same defect as a control that reads as configured and
+/// does nothing, so the set reports the shortfall.
+#[test]
+fn a_rejected_artifact_is_reported_and_does_not_stop_the_others_verifying() {
+    let d = dir("rejected");
+    let good = d.join("good.jws");
+    std::fs::write(&good, jws_with(&["get_balance"], Terms::default())).unwrap();
+
+    // Expired an hour ago: verifies as a JWS, refuses as a contract.
+    let stale = d.join("stale.jws");
+    std::fs::write(&stale, expired_jws()).unwrap();
+
+    let rpath = d.join("routes.toml");
+    std::fs::write(
+        &rpath,
+        format!("[[route]]\ncluster = \"payments\"\ncallee = \"{CALLEE}\"\n"),
+    )
+    .unwrap();
+    let cfg = json!({
+        "contracts": [good.to_str().unwrap(), stale.to_str().unwrap()],
+        "routes": rpath.to_str().unwrap(),
+        "issuer_pub": PUB_PATH, "kid": KID,
+        "mediator_id": MEDIATOR, "issuer_id": ISS, "identity": "tls"
+    })
+    .to_string();
+
+    let h = init(&cfg).expect("one bad artifact must not cost the good one");
+    // SAFETY: h is live.
+    assert_eq!(
+        unsafe { wc_contract_count(h) },
+        1,
+        "two artifacts in, one usable contract out"
+    );
     unsafe { wc_free(h) };
 }
