@@ -288,6 +288,29 @@ impl ControlPlane {
         Ok(self)
     }
 
+    /// Serve the revocation feed at `/v1/revocations`.
+    ///
+    /// # Why this had to be added rather than being on by default
+    ///
+    /// `revocations` was initialised to `None` and **nothing anywhere set it to `Some`**. The
+    /// route existed, [`crate::contain::RevocationFeed`] existed, `connect revoke` wrote to this
+    /// very path, and the endpoint answered every mediator with "this control plane serves no
+    /// revocation feed". The other end matched: no mediator fetched it. So a revocation was
+    /// recorded, signed, anchored — and reached no enforcement point, ever.
+    ///
+    /// Opening it is a hard error rather than a downgrade to `None`: a plane that cannot read
+    /// its own feed must not come up claiming it has none, because a mediator treats those two
+    /// answers very differently and only one of them is true.
+    ///
+    /// # Errors
+    ///
+    /// If the feed cannot be opened or replayed.
+    pub fn with_revocation_feed(mut self, path: &std::path::Path) -> Result<ControlPlane> {
+        let feed = crate::contain::RevocationFeed::open(path)?;
+        self.revocations = Some(Mutex::new(feed));
+        Ok(self)
+    }
+
     /// Publish a JWKS document.
     #[must_use]
     pub fn with_jwks(mut self, jwks: &str) -> ControlPlane {

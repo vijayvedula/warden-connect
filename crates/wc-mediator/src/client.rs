@@ -345,7 +345,7 @@ impl ControlPlaneClient {
 }
 
 /// What one refresh did.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct RefreshReport {
     /// Sequence the set was built from.
     pub seq: u64,
@@ -361,13 +361,30 @@ pub struct RefreshReport {
     pub removed: Vec<String>,
     /// Whether the acknowledgement was accepted.
     pub acked: bool,
+    /// What the revocation feed said, when it could be reached.
+    ///
+    /// `None` means the feed could not be fetched. That is **not** "nothing is revoked" — it is
+    /// a refresh that did not fully happen, so it does not count as clean and the staleness
+    /// bound starts running.
+    pub revocations: Option<RevocationReport>,
 }
 
 impl RefreshReport {
     /// Whether the whole refresh was clean.
+    ///
+    /// A set installed without its revocation feed is not a current set: a contract can be
+    /// withdrawn without the published set changing, so a refresh that only re-installed
+    /// contracts leaves a cut connection working. Marking that fresh is how a withdrawn
+    /// contract keeps being honoured.
     #[must_use]
     pub fn is_clean(&self) -> bool {
-        self.missing.is_empty() && self.rejected.is_empty() && self.acked
+        self.missing.is_empty()
+            && self.rejected.is_empty()
+            && self.acked
+            && self
+                .revocations
+                .as_ref()
+                .is_some_and(RevocationReport::is_clean)
     }
 }
 
@@ -381,6 +398,7 @@ pub fn refresh(
     cache: &Arc<Cache>,
     trust: &Trust<'_>,
     since: u64,
+    rev_since: u64,
     now: u64,
 ) -> Result<RefreshReport> {
     let set = client.fetch(since)?;
@@ -404,6 +422,7 @@ pub fn refresh(
         rejected,
         removed: set.removed.clone(),
         acked: false,
+        revocations: None,
     };
 
     cache.install(snapshot);
@@ -411,11 +430,80 @@ pub fn refresh(
     // window of usage data, which is the right trade: retaining it would mean an unreachable
     // control plane grows the map without bound, and usage is a reporting signal rather than
     // an authority — losing a window makes a contract look *less* used, never more.
+    // The revocation feed, which for the life of this feature nothing fetched. A contract can be
+    // withdrawn without the published set changing — that is what a deny-list is for — so a
+    // refresh that only re-installs contracts leaves a cut connection working.
+    match client.fetch_revocations(rev_since) {
+        Ok(delta) => {
+            let rev = install_revocations(cache, &delta, trust.keys, rev_since);
+            if !rev.is_clean() {
+                eprintln!(
+                    "revocations: delta not clean — applied {} of {}, contiguous={}. The set is \
+                     distrusted, so nothing is admitted until a clean delta arrives.",
+                    rev.applied,
+                    delta.events.len(),
+                    rev.contiguous
+                );
+            }
+            report.revocations = Some(rev);
+        }
+        Err(e) => {
+            // Not distrusted on a fetch failure: a transient blip would then deny all traffic,
+            // and `max_stale` already bounds how long a set may go unrefreshed. What must not
+            // happen is this counting as a clean refresh.
+            eprintln!(
+                "revocations: could not fetch the feed ({} {}); this refresh is NOT clean and \
+                 the staleness bound is now running",
+                e.code(),
+                e.detail()
+            );
+        }
+    }
+
     let used = cache.take_usage();
     report.acked = client
         .ack(&set.set_hash, set.seq, &set.removed, 0, &used)
         .is_ok();
     Ok(report)
+}
+
+/// Verify a revocation delta and **install it into a cache**, fail-closed.
+///
+/// # Why this exists separately from [`apply_revocations`]
+///
+/// `apply_revocations` verifies and returns a set; something has to put that set where
+/// `Cache::resolve` will read it. Nothing did. `fetch_revocations`, `apply_revocations` and
+/// `Cache::set_revocations` were each complete and each tested, and no binary called any of
+/// them — so the deny-list in every deployed enforcement point was permanently empty while
+/// `resolve` dutifully consulted it on every call.
+///
+/// # What a bad delta does
+///
+/// A delta with a gap in it means this process cannot know what is revoked. Installing the
+/// partial set would be the wrong answer twice: it would look like a successful refresh, and it
+/// would leave entries un-revoked that the plane has already cut. So the set is **distrusted**
+/// instead, and `resolve` then refuses everything until a clean delta arrives. Unknown reads as
+/// revoked, which is the only safe direction for a deny-list.
+pub fn install_revocations(
+    cache: &Cache,
+    delta: &RevocationDelta,
+    keys: &IssuerKeys,
+    since: u64,
+) -> RevocationReport {
+    let report = apply_revocations(delta, keys, &cache.revocations(), since);
+    match (&report.set, report.contiguous) {
+        (Some(set), true) => cache.set_revocations(set.clone()),
+        _ => {
+            let mut unknown = (*cache.revocations()).clone();
+            unknown.distrust(if report.contiguous {
+                "a revocation entry did not verify"
+            } else {
+                "the revocation feed has a gap, so what is revoked is unknown"
+            });
+            cache.set_revocations(unknown);
+        }
+    }
+    report
 }
 
 /// Verify a revocation delta and install it, returning what was applied.
@@ -505,7 +593,7 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/keys")
     }
 
-    fn revocation_keys() -> IssuerKeys {
+    pub(super) fn revocation_keys() -> IssuerKeys {
         let pem = std::fs::read(keys_dir().join("test_issuer_es256_pub.pem")).unwrap();
         let mut keys = IssuerKeys::new();
         keys.add_ec_pem("revoke-1", &pem, wc_core::contract::Algorithm::ES256)
@@ -530,21 +618,21 @@ mod tests {
         }
     }
 
-    fn party(seq: u64, id: &str) -> SignedRevocationWire {
+    pub(super) fn party(seq: u64, id: &str) -> SignedRevocationWire {
         signed(
             seq,
             serde_json::json!({ "kind": "party", "id": id, "reason": "SOC-1", "actor": "human:sam", "at": 1_000 }),
         )
     }
 
-    fn connection(seq: u64, cid: &str) -> SignedRevocationWire {
+    pub(super) fn connection(seq: u64, cid: &str) -> SignedRevocationWire {
         signed(
             seq,
             serde_json::json!({ "kind": "connection", "cid": cid, "reason": "SOC-1", "actor": "human:sam", "at": 1_000 }),
         )
     }
 
-    fn delta(events: Vec<SignedRevocationWire>) -> RevocationDelta {
+    pub(super) fn delta(events: Vec<SignedRevocationWire>) -> RevocationDelta {
         let head_seq = events
             .last()
             .map(|e| e.event["seq"].as_u64().unwrap())
@@ -725,8 +813,14 @@ mod tests {
 
     #[test]
     fn a_refresh_report_is_only_clean_when_everything_worked() {
+        let clean_rev = RevocationReport {
+            contiguous: true,
+            rejected: Vec::new(),
+            ..RevocationReport::default()
+        };
         let mut report = RefreshReport {
             acked: true,
+            revocations: Some(clean_rev.clone()),
             ..Default::default()
         };
         assert!(report.is_clean());
@@ -740,5 +834,131 @@ mod tests {
         report.rejected.clear();
         report.acked = false;
         assert!(!report.is_clean());
+        report.acked = true;
+        assert!(report.is_clean());
+
+        // A set installed without its revocation feed is NOT a current set. A contract can be
+        // withdrawn without the published set changing — that is what a deny-list is for — so
+        // treating this as fresh is exactly how a cut connection keeps being honoured. This
+        // assertion is the one that was missing while nothing fetched the feed at all.
+        report.revocations = None;
+        assert!(
+            !report.is_clean(),
+            "a refresh that could not reach the revocation feed must not count as clean"
+        );
+
+        // And a delta with a gap is worse than no delta: it looks like an answer.
+        report.revocations = Some(RevocationReport {
+            contiguous: false,
+            ..clean_rev
+        });
+        assert!(!report.is_clean());
+    }
+}
+
+#[cfg(test)]
+mod install_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::install_revocations;
+    use super::tests::{connection, delta, party, revocation_keys};
+    use crate::cache::Cache;
+    use wc_core::contract::RevocationView;
+    use wc_core::error::Code;
+
+    /// The whole point, and the thing nothing did.
+    ///
+    /// `fetch_revocations`, `apply_revocations` and `Cache::set_revocations` were each complete
+    /// and each tested, and no binary called any of them — so `Cache::resolve` consulted an
+    /// empty deny-list on every call for as long as the feature has existed. This asserts the
+    /// wire, not the pieces.
+    #[test]
+    fn a_revoked_connection_stops_resolving_after_the_delta_is_installed() {
+        let cache = Cache::new();
+        let report = install_revocations(
+            &cache,
+            &delta(vec![connection(1, "conn_00000001")]),
+            &revocation_keys(),
+            0,
+        );
+        assert!(report.is_clean(), "the delta must verify: {report:?}");
+        assert!(
+            cache.revocations().cid_revoked("conn_00000001"),
+            "the set the resolver reads must be the one that was installed"
+        );
+    }
+
+    #[test]
+    fn revocations_accumulate_rather_than_being_replaced() {
+        let cache = Cache::new();
+        install_revocations(
+            &cache,
+            &delta(vec![connection(1, "conn_00000001")]),
+            &revocation_keys(),
+            0,
+        );
+        // A later delta that says nothing about the first entry must not un-revoke it.
+        install_revocations(
+            &cache,
+            &delta(vec![party(2, "spiffe://org/ns/agents/sa/recon")]),
+            &revocation_keys(),
+            1,
+        );
+        let set = cache.revocations();
+        assert!(
+            set.cid_revoked("conn_00000001"),
+            "a deny-list is cumulative"
+        );
+        assert!(set.party_revoked("spiffe://org/ns/agents/sa/recon"));
+    }
+
+    /// A gap means this process cannot know what is revoked. Installing the partial set would
+    /// look like a successful refresh and leave entries un-revoked that the plane has cut.
+    #[test]
+    fn a_delta_with_a_gap_distrusts_the_set_rather_than_installing_part_of_it() {
+        let cache = Cache::new();
+        // Starts at seq 4 when the cache has applied nothing: entries 1..3 are missing.
+        let report = install_revocations(
+            &cache,
+            &delta(vec![connection(4, "conn_00000004")]),
+            &revocation_keys(),
+            0,
+        );
+        assert!(!report.contiguous, "the gap must be detected");
+        let set = cache.revocations();
+        assert!(
+            set.distrusted().is_some(),
+            "an unknown revocation state must read as revoked, not as 'nothing is revoked'"
+        );
+        assert!(
+            !set.cid_revoked("conn_00000004"),
+            "a partial set must not be installed as if it were the whole truth"
+        );
+    }
+
+    /// And a distrusted set refuses everything, which is what makes the gap safe.
+    #[test]
+    fn a_distrusted_set_refuses_a_contract_that_is_not_itself_revoked() {
+        let cache = Cache::new();
+        install_revocations(
+            &cache,
+            &delta(vec![connection(9, "conn_00000009")]),
+            &revocation_keys(),
+            0,
+        );
+        let e = cache
+            .resolve(
+                Some("conn_anything"),
+                &wc_core::model::EntityId::new("spiffe://org/ns/a/sa/x").unwrap(),
+                &wc_core::model::EntityId::new("spiffe://org/ns/b/sa/y").unwrap(),
+            )
+            .expect_err("a distrusted revocation state admits nothing");
+        // No contract is in this empty cache either, so either refusal is correct — what must
+        // NOT happen is an admission.
+        assert!(
+            matches!(e.code(), Code::CONTRACT_REVOKED | Code::NO_CONTRACT),
+            "got {}",
+            e.code()
+        );
     }
 }

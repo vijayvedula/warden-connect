@@ -9048,7 +9048,10 @@ fn serve_cmd(args: &Args) -> Result<()> {
     let mut cp = ControlPlane::new(store, evidence, policy, signer, &iss, now)
         .with_mode(mode(args))
         .with_transport(transport.clone())
-        .with_ack_ledger(&paths(args).set_acks)?;
+        .with_ack_ledger(&paths(args).set_acks)?
+        // Without this the endpoint answers every mediator "this control plane serves no
+        // revocation feed", which is what it did for the whole life of the feature.
+        .with_revocation_feed(&paths(args).revocations)?;
 
     if let Some(path) = args.get("jwks") {
         let text = std::fs::read_to_string(path).map_err(|e| {
