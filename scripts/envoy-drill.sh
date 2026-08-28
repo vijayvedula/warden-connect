@@ -296,15 +296,34 @@ start_plane || exit 2
 start_verifier "203.0.113.9" || exit 2   # deliberately wrong, for phase 1a
 
 docker rm -f wc-envoy-drill >/dev/null 2>&1
-# --add-host is what makes `host.docker.internal` resolve on Linux; Docker Desktop provides it
-# already and the flag is harmless there. Without it Envoy cannot reach the verifier OR the
-# upstream, every phase that expects a specific refusal code gets a transport error instead, and
-# "with the verifier down, traffic is denied" passes trivially because that is the state all the
-# way through. The drill passed on macOS and failed nine phases on a Linux runner.
+
+# How Envoy reaches the host differs by platform, and it is not cosmetic: `MeshTrust::accepts`
+# requires `is_local()`, which is loopback only.
+#
+#   macOS   Docker Desktop NATs a container's connection so the host sees it from loopback.
+#           `host.docker.internal` resolves already, and publishing the port is enough.
+#   Linux   a bridge network gives Envoy 172.17.0.x, which is NOT loopback — so the verifier
+#           refuses the XFCC header no matter what --mesh-origin says, and phases 1b onward all
+#           fail with WC-4001. Host networking puts Envoy on the host's stack, where its
+#           connection to the verifier is genuine loopback and the trust rule is exercised
+#           rather than side-stepped.
+#
+# The rule itself is deliberate and is not what needs relaxing: a bridge network is not "the
+# same host", and anything on it could send the header.
+if [ "$(uname -s)" = Linux ]; then
+  NET_ARGS=(--network host)
+  HOST_FROM_ENVOY=127.0.0.1
+else
+  NET_ARGS=(--add-host=host.docker.internal:host-gateway -p "$ENVOY_PORT:$ENVOY_PORT")
+  HOST_FROM_ENVOY=host.docker.internal
+fi
+sed "s/host\.docker\.internal/$HOST_FROM_ENVOY/g" \
+  "$REPO/scripts/envoy/extproc-drill.yaml" > "$WORK/envoy.yaml"
+step "network   ${NET_ARGS[*]} · upstreams via $HOST_FROM_ENVOY"
+
 docker run -d --cidfile "$CID_FILE" --name wc-envoy-drill \
-  --add-host=host.docker.internal:host-gateway \
-  -p "$ENVOY_PORT:$ENVOY_PORT" \
-  -v "$REPO/scripts/envoy/extproc-drill.yaml:/etc/envoy/envoy.yaml:ro" \
+  "${NET_ARGS[@]}" \
+  -v "$WORK/envoy.yaml:/etc/envoy/envoy.yaml:ro" \
   -v "$WORK/certs:/certs:ro" \
   "$IMAGE" -c /etc/envoy/envoy.yaml --log-level warning >"$WORK/envoy-run.log" 2>&1 \
   || { echo "envoy did not start:" >&2; cat "$WORK/envoy-run.log" >&2; exit 2; }
