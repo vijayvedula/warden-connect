@@ -280,10 +280,28 @@ docker run -d --cidfile "$CID_FILE" --name wc-envoy-drill \
   -v "$WORK/certs:/certs:ro" \
   "$IMAGE" -c /etc/envoy/envoy.yaml --log-level warning >"$WORK/envoy-run.log" 2>&1 \
   || { echo "envoy did not start:" >&2; cat "$WORK/envoy-run.log" >&2; exit 2; }
+# `docker run -d` reports success once the container is CREATED, so a container whose Envoy
+# exits on a bad config still returns 0 and the "envoy did not start" branch above never fires.
+# The old readiness loop then ran out its 60 tries and printed "listening on 10000" regardless,
+# and every phase after it tested an empty response. A drill that proceeds against nothing
+# reports failures about a proxy that was never there.
+ENVOY_UP=""
 for _ in $(seq 1 60); do
-  curl -sk -o /dev/null --max-time 2 "https://localhost:$ENVOY_PORT/mcp" && break
+  if ! docker ps -q --no-trunc | grep -q "$(cat "$CID_FILE")"; then
+    echo "envoy exited during startup:" >&2
+    docker logs "$(cat "$CID_FILE")" 2>&1 | tail -20 >&2
+    exit 2
+  fi
+  if curl -sk -o /dev/null --max-time 2 "https://localhost:$ENVOY_PORT/mcp"; then
+    ENVOY_UP=1; break
+  fi
   sleep 0.5
 done
+if [ -z "$ENVOY_UP" ]; then
+  echo "envoy is running but never answered on $ENVOY_PORT after 30s:" >&2
+  docker logs "$(cat "$CID_FILE")" 2>&1 | tail -20 >&2
+  exit 2
+fi
 step "envoy     listening on $ENVOY_PORT"
 
 # --- 1 · identity, both directions ------------------------------------------------
