@@ -125,6 +125,28 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo test
 
+      # The Kong binding runs the SAME wc-gateway decision inside an nginx worker, over a C ABI
+      # and a Lua plugin. Three statements of one ABI can disagree — Rust declares it, wc_kong.h
+      # describes it, the cdef restates it — and a disagreement is Lua reading a field at the
+      # wrong offset, not a crash. The spec compares all three against the built library.
+      #
+      # luajit is installed rather than assumed: `run.sh` exits 127 when it is missing, which
+      # fails this step. A gate that skips when its tooling is absent is a gate that reads as
+      # configured and does nothing, which is the defect this whole project is about.
+      - name: Kong plugin — the real handler against the real cdylib
+        working-directory: warden-connect
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq luajit
+          luajit -v
+          ./crates/wc-kong/lua/spec/run.sh
+
+      # And through a real Kong: mTLS the plugin reads an identity out of, a catalogue filtered
+      # in the path, and six refusal classes. The library is built for the container, because a
+      # glibc or architecture mismatch is a class of failure no test on the build host reaches.
+      - name: Kong drill — enforcement inside an nginx worker
+        working-directory: warden-connect
+        run: ./scripts/kong-drill.sh
+
       # The drill above is stdio only. "The transport does not change what is enforced" is a
       # claim about a control, and worth nothing until the control has been watched refusing
       # something over that transport — so this runs the same contract, pin and surface ceiling
