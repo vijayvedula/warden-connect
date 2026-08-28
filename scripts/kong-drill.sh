@@ -89,14 +89,36 @@ step "kong      $IMAGE"
 step "ports     upstream $UP_PORT · proxy tls $PROXY_TLS"
 
 # --- the library, built for the container ----------------------------------
-step "building the cdylib for linux (in $RUST_IMAGE)"
-docker run --rm -u "$(id -u):$(id -g)" -v "$REPO:/src" -w /src \
-  -e CARGO_HOME=/src/target/docker-cargo \
-  "$RUST_IMAGE" cargo build --release -q -p warden-connect-kong \
-  --target-dir /src/target/docker >"$WORK/build.log" 2>&1 \
-  || { echo "the cdylib does not build for linux; see $WORK/build.log" >&2; cat "$WORK/build.log" >&2; exit 2; }
-SO="$REPO/target/docker/release/libwc_kong.so"
+# The library has to be built FOR THE CONTAINER, not for the build host. On Linux the host
+# already is Linux, so a native build is right and skips pulling a ~1GB toolchain image; on
+# macOS it has to happen inside one. Either way the result is checked below: a glibc or
+# architecture mismatch is a class of failure no test on the build host can reach, and the
+# check is what keeps that honest if the runner and the Kong image ever drift apart.
+if [ "$(uname -s)" = Linux ]; then
+  step "building the cdylib natively (host is already linux)"
+  cargo build --release -q -p warden-connect-kong >"$WORK/build.log" 2>&1 \
+    || { echo "the cdylib does not build; see $WORK/build.log" >&2; cat "$WORK/build.log" >&2; exit 2; }
+  SO="$REPO/target/release/libwc_kong.so"
+else
+  step "building the cdylib for linux (in $RUST_IMAGE)"
+  docker run --rm -u "$(id -u):$(id -g)" -v "$REPO:/src" -w /src \
+    -e CARGO_HOME=/src/target/docker-cargo \
+    "$RUST_IMAGE" cargo build --release -q -p warden-connect-kong \
+    --target-dir /src/target/docker >"$WORK/build.log" 2>&1 \
+    || { echo "the cdylib does not build for linux; see $WORK/build.log" >&2; cat "$WORK/build.log" >&2; exit 2; }
+  SO="$REPO/target/docker/release/libwc_kong.so"
+fi
 [ -f "$SO" ] || { echo "no linux cdylib at $SO" >&2; exit 2; }
+
+# Loadable BY KONG, asked of Kong. Without this a mismatch surfaces as phase 1 failing to find
+# a verified contract, which says nothing about why.
+if ! docker run --rm -v "$SO:/probe.so:ro" --entrypoint ldd "$IMAGE" /probe.so >"$WORK/ldd.log" 2>&1 \
+   || grep -q 'not found' "$WORK/ldd.log"; then
+  echo "the cdylib does not load inside $IMAGE:" >&2
+  cat "$WORK/ldd.log" >&2
+  echo "build it in a container instead: RUST_IMAGE=$RUST_IMAGE, see the branch above" >&2
+  exit 2
+fi
 
 cargo build -q -p warden-connect-kong --example mkfixture 2>/dev/null \
   || { echo "mkfixture does not build" >&2; exit 2; }
