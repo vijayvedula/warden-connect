@@ -19,9 +19,33 @@ TOKEN=$(gh auth token -u "${MIRROR%%/*}" 2>/dev/null) || true
 [ -n "$TOKEN" ] || { echo "no gh token for ${MIRROR%%/*}; run: gh auth login" >&2; exit 2; }
 q() { GH_TOKEN="$TOKEN" gh "$@"; }
 
+# The mirror is private, so git needs THAT account's token — the active `gh` account cannot
+# even see the repository and the push fails with "Repository not found", which is a confusing
+# way to say "wrong credentials". Passed through GIT_ASKPASS rather than embedded in the URL, so
+# the token never appears in argv, `ps`, or shell history.
+mirror_push() {
+  ASK="$(mktemp)"
+  cat > "$ASK" <<'ASKEOF'
+#!/bin/sh
+case "$1" in
+  Username*) echo x-access-token ;;
+  *)         printenv WC_MIRROR_TOKEN ;;
+esac
+ASKEOF
+  chmod +x "$ASK"
+  # `-c credential.helper=` clears the inherited helper for this invocation only. Without it
+  # the macOS keychain answers first with the ACTIVE account's credential, and a private repo
+  # that account cannot see reports "Repository not found" rather than a permission error.
+  WC_MIRROR_TOKEN="$TOKEN" GIT_ASKPASS="$ASK" GIT_TERMINAL_PROMPT=0 \
+    git -c credential.helper= push "$REMOTE" HEAD:main
+  rc=$?
+  rm -f "$ASK"
+  return $rc
+}
+
 case "${1:-watch}" in
   push)
-    git push "$REMOTE" HEAD:main || exit 1
+    mirror_push || exit 1
     echo "pushed $(git rev-parse --short HEAD) to $MIRROR"
     sleep 8
     ;;
