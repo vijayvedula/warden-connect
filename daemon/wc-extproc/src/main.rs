@@ -150,6 +150,8 @@ struct Verifier<C: Contracts> {
     pins: Option<std::sync::Arc<PinLedger>>,
     /// Seconds a pin verification stays good; zero means it never expires.
     pin_max_age: u64,
+    /// The decision trail, when `--evidence` was given.
+    evidence: Option<std::sync::Arc<wc_mediator::evidence::FileSink>>,
     /// Ceilings per contract, keyed by the artifact id.
     ///
     /// Keyed by `jti` rather than by caller or route: the terms belong to the contract, and two
@@ -201,12 +203,16 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
         let limits = std::sync::Arc::clone(&self.limits);
         let pins = self.pins.clone();
         let pin_max_age = self.pin_max_age;
+        let evidence = self.evidence.clone();
 
         let admitted_slot = std::sync::Arc::new(std::sync::Mutex::new(None));
 
         // The filter for this stream. `Filter::new` is given the admitted connection once the
         // headers phase has established who the caller is.
         let mut filter: Option<Filter> = None;
+        // What a decision record needs, filled in once the headers phase has resolved who this
+        // stream belongs to.
+        let mut note: Option<Note> = None;
         let slot = std::sync::Arc::clone(&admitted_slot);
 
         // The processing loop MUST run detached, and the response stream must be returned to
@@ -257,6 +263,24 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                             }
                             _ => None,
                         };
+                        // Captured before `admitted` moves: a Decision needs the connection's
+                        // identity, and a refused call — the one an auditor asks about — has no
+                        // contract to read it from later.
+                        let (rec_cid, rec_jti, rec_delivery) = match &resolved {
+                            Some(r) => (
+                                r.admitted.cid.as_str().to_string(),
+                                r.admitted.jti.as_str().to_string(),
+                                Some(wc_mediator::evidence::Delivery::parse(
+                                    &r.contract.payload.terms.evidence.delivery,
+                                )),
+                            ),
+                            None => (String::new(), String::new(), None),
+                        };
+                        let rec_caller = caller.clone().unwrap_or_default();
+                        let rec_callee = callee_id
+                            .as_ref()
+                            .map(|c| c.as_str().to_string())
+                            .unwrap_or_default();
                         let (admitted, contract, ceilings) = match resolved {
                             Some(r) => {
                                 // Keyed by the artifact id: the terms belong to the contract,
@@ -266,6 +290,18 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                             }
                             None => (None, None, None),
                         };
+                        note = Some(Note {
+                            sink: evidence.clone(),
+                            delivery: rec_delivery,
+                            cid: rec_cid,
+                            jti: rec_jti,
+                            caller: rec_caller,
+                            callee: rec_callee,
+                            mode: match contracts_mode {
+                                wc_core::error::Mode::Enforce => "enforce",
+                                wc_core::error::Mode::Observe => "observe",
+                            },
+                        });
                         *slot.lock().expect("slot") = admitted.clone();
                         // With no callee there is nothing for gate 8 to bind a digest to, so the
                         // filter is built with no contract and refuses the stream.
@@ -298,7 +334,7 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                                 },
                             )
                         });
-                        on_request_body(f, &b)
+                        on_request_body(f, note.as_ref(), &b)
                     }
                     Some(processing_request::Request::ResponseHeaders(h)) => {
                         let ct = header(&h, "content-type").unwrap_or_default().to_string();
@@ -337,20 +373,85 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
 /// A body this cannot parse is refused. Envoy sends the buffered body here, so an unparseable
 /// one is either not JSON-RPC — in which case it is not a request this filter should be passing
 /// to an MCP server — or truncated because the buffer filled, which is the same answer.
-fn on_request_body(filter: &mut Filter, body: &HttpBody) -> ProcessingResponse {
+/// What one stream needs in order to write a decision record.
+///
+/// Held beside the filter rather than inside it: `Filter` is the decision and knows nothing
+/// about where a trail lives, which is what lets both bindings share it.
+struct Note {
+    sink: Option<std::sync::Arc<wc_mediator::evidence::FileSink>>,
+    delivery: Option<wc_mediator::evidence::Delivery>,
+    cid: String,
+    jti: String,
+    caller: String,
+    callee: String,
+    mode: &'static str,
+}
+
+impl Note {
+    /// Append one decision. Returns false only when the write failed and this contract's
+    /// `terms.evidence.delivery` is blocking — in which case the call must be refused.
+    fn write(&self, verdict: &str, code: &str, tool: &str, micros: u64) -> bool {
+        let Some(sink) = &self.sink else { return true };
+        sink.record_or_refuse(
+            &wc_core::obs::Decision {
+                cid: &self.cid,
+                decision: verdict,
+                code,
+                mode: self.mode,
+                tool,
+                caller: &self.caller,
+                callee: &self.callee,
+                jti: &self.jti,
+                at: now(),
+                micros,
+            },
+            self.delivery,
+        )
+    }
+}
+
+fn on_request_body(
+    filter: &mut Filter,
+    note: Option<&Note>,
+    body: &HttpBody,
+) -> ProcessingResponse {
+    let started = std::time::Instant::now();
+    let write = |verdict: &str, code: &str, tool: &str, micros: u64| -> bool {
+        note.is_none_or(|n| n.write(verdict, code, tool, micros))
+    };
     let (method, params) = match warden_connect_gateway::adapter::parse_request_frame(&body.body) {
         Ok(f) => f,
-        Err((code, detail)) => return immediate_refusal(code, detail),
+        Err((code, detail)) => {
+            write("deny", &code.to_string(), "<unparseable frame>", 0);
+            return immediate_refusal(code, detail);
+        }
     };
+    let tool =
+        wc_mediator::mcp::parse_tool_call(&params).map_or_else(|| method.clone(), |(t, _)| t);
 
-    match filter.on_request(&method, &params) {
+    let verdict = filter.on_request(&method, &params);
+    let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    match verdict {
+        Verdict::Forward if !write("allow", "WC-0000", &tool, micros) => {
+            // Recorded before forwarding. Under `delivery = "blocking"` a record that cannot
+            // be written is itself a refusal, which is what the term has always claimed.
+            immediate_refusal(
+                wc_core::error::Code::BLOCKING_SINK_UNAVAILABLE,
+                "the decision could not be recorded and this contract's evidence delivery is \
+                 blocking",
+            )
+        }
         Verdict::Forward => ProcessingResponse {
             response: Some(processing_response::Response::RequestBody(
                 BodyResponse::default(),
             )),
             ..Default::default()
         },
-        Verdict::Refuse { code, detail } => immediate_refusal(code, &detail),
+        Verdict::Refuse { code, detail } => {
+            // A refusal is recorded too, and a failed write does not un-refuse it.
+            write("deny", &code.to_string(), &tool, micros);
+            immediate_refusal(code, &detail)
+        }
     }
 }
 
@@ -484,6 +585,14 @@ USAGE
   --mesh-origin PATH   the unix socket Envoy connects from, if XFCC is only to be
                        believed from there. Omit only when Envoy is on loopback and
                        nothing else can reach this port
+  --evidence PATH      append a hash-chained decision trail here. Every verdict, allowed or
+                       refused, becomes one row carrying the hash of the row before it, so an
+                       edit anywhere invalidates the rows after it. Verify with the
+                       `evidence-verify` example. Absent means no trail is written
+  --evidence-delivery  what a call with NO contract gets, since it has no terms to read:
+                       `fail-safe` (default, the call proceeds) or `blocking` (a record that
+                       cannot be written is itself a refusal, WC-7001). A contract's own
+                       `terms.evidence.delivery` overrides this for its calls
   --any-zone           permit any zone pair (observe deployments only)
   --observe            record findings instead of denying
 
@@ -752,6 +861,29 @@ fn run() -> Result<Started, String> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(5);
 
+    // Opened before the first call, so a broken or unwritable trail is a startup error rather
+    // than a surprise at request rate. `verify` refuses a chain that already does not hold,
+    // which is the case an operator most needs to hear about early.
+    let evidence = match flag(&args, "evidence") {
+        Some(path) => {
+            let delivery = wc_mediator::evidence::Delivery::parse(
+                flag(&args, "evidence-delivery")
+                    .as_deref()
+                    .unwrap_or("fail-safe"),
+            );
+            let sink = wc_mediator::evidence::FileSink::open(&path, delivery)
+                .map_err(|e| format!("--evidence: {e}"))?;
+            eprintln!(
+                "wc-extproc: decision trail at {} (delivery {:?}, resuming at seq {})",
+                sink.path().display(),
+                delivery,
+                sink.head().seq
+            );
+            Some(std::sync::Arc::new(sink))
+        }
+        None => None,
+    };
+
     Ok(Started {
         verifier: Verifier {
             contracts: std::sync::Arc::new(set),
@@ -761,6 +893,7 @@ fn run() -> Result<Started, String> {
             pins,
             pin_max_age,
             mesh_trust,
+            evidence,
         },
         addr,
         pull_from,
@@ -1051,6 +1184,7 @@ mod tests {
                 socket: None,
                 addrs: vec!["127.0.0.1".to_string()],
             },
+            evidence: None,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1225,6 +1359,7 @@ mod tests {
                 // Not the loopback the test client connects from.
                 addrs: vec!["10.9.9.9".to_string()],
             },
+            evidence: None,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = format!("http://{}", listener.local_addr().unwrap());
@@ -1266,6 +1401,7 @@ mod tests {
                 socket: None,
                 addrs: Vec::new(),
             },
+            evidence: None,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = format!("http://{}", listener.local_addr().unwrap());
@@ -1340,6 +1476,7 @@ mod tests {
                 socket: None,
                 addrs: vec!["127.0.0.1".to_string()],
             },
+            evidence: None,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = format!("http://{}", listener.local_addr().unwrap());
@@ -1459,6 +1596,7 @@ mod tests {
                 socket: None,
                 addrs: vec!["127.0.0.1".to_string()],
             },
+            evidence: None,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = format!("http://{}", listener.local_addr().unwrap());

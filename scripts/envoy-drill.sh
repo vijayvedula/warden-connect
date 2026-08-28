@@ -275,6 +275,7 @@ start_verifier() {   # $1 = mesh origin
     --jwks-file jwks.json \
     --contract "$CONTRACT" --mesh-origin "$1" \
     --contracts "http://127.0.0.1:$API_PORT" --token tok_envoy_drill_0123456789 \
+    --evidence "$WORK/trail.jsonl" \
     --refresh 2 --max-stale 3600 >>verify.log 2>&1 &
   VERIFY_PID=$!
   for _ in $(seq 1 40); do
@@ -537,6 +538,34 @@ elif [ -z "$refused" ]; then
   bad "9 · 8 calls admitted against a ceiling of 3 — the ceiling counts nothing across streams"
 else
   bad "9 · the ceiling phase ended on an unexpected refusal"
+fi
+
+# 10 --------------------------------------------------------------------------
+# The decision trail. `terms.evidence` sat in the artifact unread since it was designed, so this
+# is the first phase that asks whether a refusal leaves a record and whether the chain over those
+# records holds. The verifier is restarted mid-drill for phase 1b, so this also proves a trail
+# resumes rather than starting a second chain.
+if [ ! -s "$WORK/trail.jsonl" ]; then
+  bad "10 · no decision trail was written"
+else
+  ROWS=$(wc -l < "$WORK/trail.jsonl" | tr -d ' ')
+  DENIES=$(grep -c '"decision":"deny"' "$WORK/trail.jsonl" 2>/dev/null || true)
+  CODES=$(grep -o '"code":"WC-[0-9]*"' "$WORK/trail.jsonl" | sort -u \
+          | sed 's/.*"\(WC-[0-9]*\)"/\1/' | tr '\n' ' ')
+  if [ "${DENIES:-0}" -ge 3 ]; then
+    ok "10 · $ROWS decisions recorded, $DENIES of them refusals"
+    step "codes in the trail: $CODES"
+  else
+    bad "10 · only ${DENIES:-0} refusals in the trail, expected at least 3"
+  fi
+  if cargo run -q -p warden-connect-mediator --example evidence-verify \
+       --manifest-path "$REPO/Cargo.toml" -- "$WORK/trail.jsonl" >/dev/null 2>&1; then
+    ok "10b · the trail verifies across the verifier restart in phase 1b"
+  else
+    bad "10b · the trail does not verify"
+    cargo run -q -p warden-connect-mediator --example evidence-verify \
+      --manifest-path "$REPO/Cargo.toml" -- "$WORK/trail.jsonl" 2>&1 | sed 's/^/       /'
+  fi
 fi
 
 echo
