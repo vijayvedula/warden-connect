@@ -46,6 +46,23 @@ VERIFY="$REPO/daemon/wc-extproc/target/release/wc-extproc"
 
 WORK="$(mktemp -d)"
 UP_PORT=8931; GRPC_PORT=9002; ENVOY_PORT=10000
+
+# The ports are fixed because extproc-drill.yaml names them, so a preflight is the only defence
+# against a stale process — and the alternative message is "envoy did not start", which is
+# equally true of a port conflict, a bad config and a missing mount.
+#
+# It runs HERE, before this script starts anything. A first version sat just above the
+# `docker run` and reported the drill's OWN upstream and verifier as a conflict, because by
+# that point it had already bound them. A preflight that fires on itself is worse than none:
+# it fails a healthy run and teaches you to skip the check.
+for p in "$ENVOY_PORT" "$GRPC_PORT" "$UP_PORT"; do
+  if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "port $p is already in use — stop whatever holds it first:" >&2
+    lsof -nP -iTCP:"$p" -sTCP:LISTEN 2>/dev/null | tail -n +2 | sed 's/^/  /' >&2
+    docker ps --format '  docker: {{.Names}} {{.Ports}}' 2>/dev/null | grep ":$p->" >&2
+    exit 2
+  fi
+done
 CID_FILE="$WORK/envoy.cid"
 cleanup() {
   [ -f "$CID_FILE" ] && docker rm -f "$(cat "$CID_FILE")" >/dev/null 2>&1
@@ -256,19 +273,6 @@ docker rm -f wc-envoy-drill >/dev/null 2>&1
 # upstream, every phase that expects a specific refusal code gets a transport error instead, and
 # "with the verifier down, traffic is denied" passes trivially because that is the state all the
 # way through. The drill passed on macOS and failed nine phases on a Linux runner.
-# The ports are fixed here because extproc-drill.yaml names them. A preflight, because the
-# alternative message is "envoy did not start", which is true of a port conflict, a bad config
-# and a missing mount alike — and a stale container from a previous run or another walkthrough
-# is by far the most common of the three.
-for p in "$ENVOY_PORT" "$GRPC_PORT" "$UP_PORT"; do
-  if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
-    echo "port $p is already in use — stop whatever holds it first:" >&2
-    lsof -nP -iTCP:"$p" -sTCP:LISTEN 2>/dev/null | tail -n +2 | sed 's/^/  /' >&2
-    docker ps --format '  docker: {{.Names}} {{.Ports}}' 2>/dev/null | grep ":$p->" >&2
-    exit 2
-  fi
-done
-
 docker run -d --cidfile "$CID_FILE" --name wc-envoy-drill \
   --add-host=host.docker.internal:host-gateway \
   -p "$ENVOY_PORT:$ENVOY_PORT" \
