@@ -239,7 +239,7 @@ step "trust     jwks.json ($(python3 -c 'import json;print(len(json.load(open("j
 cat > tokens.toml <<T
 [[client]]
 token = "tok_envoy_drill_0123456789"
-roles = ["connect.read", "connect.mediator"]
+roles = ["connect.read", "connect.mediator", "connect.secops"]
 T
 cat > mediators.toml <<M
 [[mediator]]
@@ -553,35 +553,38 @@ fi
 # told the plane serves none — while `Cache::resolve` faithfully consulted an empty deny-list on
 # every call. Both ends were complete and neither was connected.
 #
-# Signed with the ISSUER key here, because the verifier verifies revocation entries against the
-# same JWKS it verifies contracts against and this drill publishes one key. A real estate uses a
-# separate revocation key on separate custody (custody 5c); the verification path is identical.
-# Gated on the EXIT STATUS, not on the output. `revoke` reports a bad cid as
-# "WC-3001 contract not found: conn_...", which contains the string a grep for `conn_` would
-# match — so an output check here would treat a failed revocation as a successful one and every
-# assertion below would pass for the wrong reason.
-if ! "$C" revoke --cid "$CONN_CID" --reason "drill: revocation reach" \
-     --revocation-key issuer.priv.pem --revocation-kid issuer-1 \
-     --by human:drill@org >revoke.log 2>&1; then
-  bad "9b · the revocation was not recorded"
-  sed 's/^/       /' revoke.log | head -3
+# Over HTTP, not the CLI, and that is a finding rather than a convenience. `connect revoke --cid`
+# writes to the event log, and a SERVING plane holds the single-writer lock — so it fails with
+# WC-8003 against exactly the estate anyone would need to revoke. The first draft of this phase
+# used it and failed that way. `POST /v1/quarantine` is what works on a live plane, and it
+# contains a PARTY; there is no route for connection-level revocation at all, so `--cid` is
+# effectively unusable on a running estate. Recorded in §7.13 rather than papered over.
+QUAR=$(curl -s -o quarantine.log -w '%{http_code}' -X POST \
+  -H "authorization: Bearer tok_envoy_drill_0123456789" \
+  -H 'content-type: application/json' \
+  -H "idempotency-key: drill-quarantine-1" \
+  --data "{\"party\":\"$CALLER\",\"reason\":\"drill: revocation reach\",\"approvers\":[\"human:drill@org\"]}" \
+  "http://127.0.0.1:$API_PORT/v1/quarantine")
+if [ "$QUAR" != "200" ] && [ "$QUAR" != "201" ]; then
+  bad "9b · the quarantine was not accepted (HTTP $QUAR)"
+  sed 's/^/       /' quarantine.log | head -3
 else
   # Two refresh intervals, so a single slow poll cannot make this flaky.
   sleep 5
   R=$(call '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"get_balance","arguments":{}}}')
-  # A revoked contract fails at RESOLUTION, before the ceiling is consulted, so the client sees
+  # A revoked party fails at RESOLUTION, before the ceiling is consulted, so the client sees
   # WC-4001 and not the WC-4003 phase 9 just exhausted. The reason is WC-3105 and it appears only
   # in the verifier's log — an operator staring at the client response cannot tell a revoked
-  # contract from one that was never issued.
+  # connection from one that was never issued.
   if printf '%s' "$R" | grep -q "WC-4001"; then
     if grep -q "WC-3105" verify.log; then
       ok "9b · a revocation reached the enforcement point: refused, WC-3105 in the verifier log"
     else
-      bad "9b · refused WC-4001, but the verifier never logged WC-3105 — is this revocation, or a lost contract?"
-      grep -E 'no contract for' verify.log | tail -2 | sed 's/^/       /'
+      bad "9b · refused WC-4001, but the verifier never logged WC-3105 — revocation, or a lost contract?"
+      grep -E 'no contract for|revok' verify.log | tail -3 | sed 's/^/       /'
     fi
   else
-    bad "9b · the contract was still honoured after being revoked"
+    bad "9b · the contract was still honoured after the party was quarantined"
     printf '%s\n' "$R" | sed 's/^/       /' | head -2
   fi
 fi
