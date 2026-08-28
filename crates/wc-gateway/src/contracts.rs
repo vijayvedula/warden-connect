@@ -110,6 +110,29 @@ impl ContractSet {
                 sh.callee
             );
         }
+        // An artifact that failed verification is dropped into `rejected` and, until now, never
+        // mentioned. An operator who passed two paths and read "1 contract(s) verified" had no
+        // way to tell which one failed or why — a count that means less than it says, which is
+        // the same defect as a control that reads as configured and does nothing.
+        if !snapshot.rejected.is_empty() {
+            eprintln!(
+                "{}: {} of {} artifact(s) verified. {} REJECTED:",
+                binding(),
+                snapshot.len(),
+                artifacts.len(),
+                snapshot.rejected.len()
+            );
+            for (label, code) in &snapshot.rejected {
+                eprintln!(
+                    "{}:   {} {} — artifact beginning {:?}. Match it with: \
+                     head -c 24 <your-contracts>/*.jws",
+                    binding(),
+                    code,
+                    code.summary(),
+                    label
+                );
+            }
+        }
         let cache = Arc::new(Cache::new());
         cache.install(snapshot);
         Ok(ContractSet {
