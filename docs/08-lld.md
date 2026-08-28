@@ -1065,9 +1065,23 @@ decorative.
 
 ### Known flake
 
-SCM shim tests occasionally fail under heavy parallel load — 2 failures in 55
-runs, both spawning subprocesses. Open, and tracked as such rather than retried
-away.
+SCM shim tests fail under parallel load. The first CI runs put it near one run
+in two on a shared runner, against 2 in 55 locally — and because `cargo test`
+runs before the drills, it was stopping the drills from ever executing.
+
+One of the two causes was **not a flake at all**. A shim that exits 127 races
+the parent's write to its stdin, and returning on the write error meant one
+misconfiguration reported two unrelated diagnoses: `WC-8004 ... not found or not
+executable` when the write won, `WC-1001 ... cannot write the query` when it
+lost. A broken pipe there is a symptom of the child having exited, not a verdict,
+so it now falls through to the exit-status classification that was already
+correct. Pinned by a test that repeats the case 64 times, because once proves
+nothing about a race.
+
+The second cause is open: `a_ref_the_host_disagrees_with_is_an_error_not_a_downgrade`
+still fails under 8-thread contention at roughly 3 runs in 25, and the failing
+detail has not been captured — it reproduces on a loaded machine and not on an
+idle one. Tracked, not retried away.
 
 ---
 
