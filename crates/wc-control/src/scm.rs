@@ -271,9 +271,20 @@ impl ScmShim {
                 .write_all(line.as_bytes())
                 .and_then(|()| stdin.write_all(b"\n"))
             {
-                drop(stdin);
-                kill(&mut child);
-                return Err(self.fail("cannot write the query").with_source(e));
+                // A broken pipe is not a verdict. It means the shim exited before it read the
+                // query, which is exactly what `command not found` does — and whether our write
+                // lands before the child dies is a scheduling race. Returning here made ONE
+                // misconfiguration report two different things: WC-8004 "not found or not
+                // executable" when the write won, WC-1001 "cannot write the query" when it lost.
+                // An operator with a mistyped shim path got whichever the scheduler picked.
+                //
+                // The exit-status classification below is the real diagnosis, so a broken pipe
+                // falls through to it. Every other write error is still a failure worth naming.
+                if e.kind() != std::io::ErrorKind::BrokenPipe {
+                    drop(stdin);
+                    kill(&mut child);
+                    return Err(self.fail("cannot write the query").with_source(e));
+                }
             }
         }
 
@@ -762,6 +773,32 @@ mod tests {
             .merge_evidence("acme/repo", "deadbeef")
             .expect_err("127 means the command was never found");
         assert_eq!(err.code(), Code::CONFIG_INVALID, "{err}");
+    }
+
+    /// The diagnosis must not depend on who wins a race.
+    ///
+    /// The 127 case exits immediately, so the parent's write to its stdin either lands or gets
+    /// EPIPE depending on scheduling. For a long time it reported `WC-8004 ... not found or not
+    /// executable` when the write won and `WC-1001 ... cannot write the query` when it lost —
+    /// so a mistyped shim path produced one of two unrelated diagnoses. It surfaced as a flake
+    /// documented at 2 failures in 55 local runs, and on a shared CI runner it was closer to
+    /// one run in two.
+    ///
+    /// Repeated because once proves nothing about a race.
+    #[test]
+    fn the_verdict_on_a_shim_that_exits_127_does_not_depend_on_scheduling() {
+        let d = Dir::new("notfound-repeat");
+        let shim = ScmShim::parse("gh", &d.shim("exit 127\n")).unwrap();
+        for i in 0..64 {
+            let err = shim
+                .merge_evidence("acme/repo", "deadbeef")
+                .expect_err("127 means the command was never found");
+            assert_eq!(
+                err.code(),
+                Code::CONFIG_INVALID,
+                "attempt {i} reported {err} — the diagnosis raced"
+            );
+        }
     }
 
     #[test]
