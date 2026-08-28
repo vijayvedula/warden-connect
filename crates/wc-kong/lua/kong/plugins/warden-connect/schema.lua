@@ -42,6 +42,12 @@ return {
           -- accepted as a value that changes nothing.
           { ceiling_scope = { type = "string", one_of = { "worker", "node" } } },
 
+          -- Where the decision trail is appended. %w is replaced with the worker id and is
+          -- REQUIRED when worker_processes > 1: each worker keeps its own hash chain, and two
+          -- appending to one file interleave into a trail that never verifies.
+          { evidence_path = { type = "string" } },
+          { evidence_delivery = { type = "string", one_of = { "blocking", "fail-safe" } } },
+
           -- Gate 8 is not optional. This exists for a staged rollout and nothing else, so it
           -- is spelled out rather than looking like a tuning knob.
           { no_pin = { type = "boolean", default = false } },

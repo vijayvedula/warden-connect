@@ -228,7 +228,9 @@ plugins:
       issuer_id: "$ISS"
       mode: enforce
       ceiling_scope: worker
+      evidence_path: /wc/evidence/trail-%w.jsonl
 YAML
+mkdir -p "$WORK/evidence" && chmod 777 "$WORK/evidence"
 cp "$REPO/fixtures/keys/test_issuer_es256_pub.pem" issuer_pub.pem
 # Copied in rather than bind-mounted: /wc is mounted read-only, and a second mount cannot
 # create its own mountpoint inside one.
@@ -239,6 +241,7 @@ cp "$SO" libwc_kong.so
 docker run -d --cidfile "$CID_FILE" \
   --add-host=host.docker.internal:host-gateway \
   -v "$WORK:/wc:ro" \
+  -v "$WORK/evidence:/wc/evidence" \
   -v "$REPO/crates/wc-kong/lua:/wc-lua:ro" \
   -e KONG_DATABASE=off \
   -e KONG_DECLARATIVE_CONFIG=/wc/kong.yml \
@@ -392,6 +395,40 @@ if printf '%s' "$R" | grep -q 'WC-1002'; then
   ok "11 · and the drift revoked the pin: a tool call is refused WC-1002"
 else
   bad "11 · drift did not revoke the verified pin: $(printf '%s' "$R" | head -c 200)"
+fi
+
+# 12 --------------------------------------------------------------------------
+# The decision trail. `terms.evidence` has been in the artifact since it was designed and
+# nothing read it, so this is the first phase that asks whether a refusal leaves a record.
+TRAILS=$(ls "$WORK"/evidence/trail-*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+if [ "$TRAILS" = 0 ]; then
+  bad "12 · no decision trail was written"
+else
+  ROWS=$(cat "$WORK"/evidence/trail-*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+  DENIES=$(grep -ho '"decision":"deny"' "$WORK"/evidence/trail-*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+  CODES=$(grep -ho '"code":"WC-[0-9]*"' "$WORK"/evidence/trail-*.jsonl 2>/dev/null \
+          | sort -u | sed 's/.*"\(WC-[0-9]*\)"/\1/' | tr '\n' ' ')
+  if [ "$DENIES" -ge 4 ]; then
+    ok "12 · $ROWS decisions across $TRAILS worker trail(s); $DENIES refusals recorded"
+    step "codes in the trail: $CODES"
+  else
+    bad "12 · only $DENIES refusals in the trail, expected at least 4"
+  fi
+fi
+
+# 13 --------------------------------------------------------------------------
+# And the chain holds. Every worker keeps its own, because two appending to one file interleave
+# into something that never verifies while every row still looks well-formed.
+BROKEN=0
+for t in "$WORK"/evidence/trail-*.jsonl; do
+  [ -f "$t" ] || continue
+  cargo run -q -p warden-connect-mediator --example evidence-verify --manifest-path \
+    "$REPO/Cargo.toml" -- "$t" >/dev/null 2>&1 || BROKEN=$((BROKEN + 1))
+done
+if [ "$BROKEN" = 0 ] && [ "$TRAILS" != 0 ]; then
+  ok "13 · every worker trail verifies"
+else
+  bad "13 · $BROKEN of $TRAILS trail(s) do not verify"
 fi
 
 echo

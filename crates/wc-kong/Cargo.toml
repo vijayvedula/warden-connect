@@ -21,3 +21,6 @@ warden-connect-gateway = { path = "../wc-gateway" }
 warden-connect-mediator = { path = "../wc-mediator" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+warden-connect-mediator = { path = "../wc-mediator" }

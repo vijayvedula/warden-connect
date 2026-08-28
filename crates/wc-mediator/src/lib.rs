@@ -24,6 +24,7 @@ pub mod cache;
 pub mod ceiling;
 pub mod client;
 pub mod drain;
+pub mod evidence;
 pub mod filter;
 pub mod gate;
 pub mod jwks;

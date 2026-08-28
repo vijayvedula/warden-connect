@@ -118,6 +118,21 @@ pub struct Config {
     /// How many nginx workers share this configuration — `ngx.worker.count()`.
     #[serde(default)]
     pub workers: Option<u32>,
+    /// This worker's id — `ngx.worker.id()`. Substituted for `%w` in `evidence_path`.
+    #[serde(default)]
+    pub worker_id: Option<u32>,
+    /// Where to append the decision trail. Absent means no trail is written.
+    ///
+    /// **`%w` is replaced with the worker id**, and is required when more than one worker
+    /// shares this configuration. Each worker keeps its own chain — two processes appending to
+    /// one file interleave two chains, and the result never verifies. That is not a corruption
+    /// an operator would notice: every row is well-formed and only the links are wrong.
+    #[serde(default)]
+    pub evidence_path: Option<String>,
+    /// What a call with no contract gets, since it has no terms to read.
+    /// `blocking` | `fail-safe`. Default `fail-safe`.
+    #[serde(default)]
+    pub evidence_delivery: Option<String>,
 }
 
 /// One process-wide handle: the contract set, the route table, and the counters they share.
@@ -139,6 +154,8 @@ pub struct Handle {
     pub mode: Mode,
     /// Where identity comes from.
     pub identity: IdentitySource,
+    /// The decision trail, when one is configured.
+    pub evidence: Option<Arc<wc_mediator::evidence::FileSink>>,
     /// Where an XFCC header may be believed from. Empty under `identity = "tls"`.
     pub mesh: wc_mediator::peer::MeshTrust,
 }
@@ -301,6 +318,38 @@ impl Handle {
             }
         }
 
+        // Opened before the first call, so a broken or unwritable trail is a startup error
+        // rather than a surprise at request rate. `verify` refuses a chain that already does
+        // not hold, which is the case an operator most needs to hear about early.
+        let evidence = match &cfg.evidence_path {
+            Some(p) => {
+                let workers = cfg.workers.unwrap_or(1);
+                if workers > 1 && !p.contains("%w") {
+                    return Err(format!(
+                        "evidence_path {p:?} is shared by {workers} workers and contains no \
+                         %w. Each worker keeps its own hash chain, so they would interleave \
+                         into a file that never verifies — and every row would still look \
+                         well-formed. Use something like /var/log/kong/wc-%w.jsonl"
+                    ));
+                }
+                let p = p.replace("%w", &cfg.worker_id.unwrap_or(0).to_string());
+                let p = &p;
+                let delivery = wc_mediator::evidence::Delivery::parse(
+                    cfg.evidence_delivery.as_deref().unwrap_or("fail-safe"),
+                );
+                let sink = wc_mediator::evidence::FileSink::open(p, delivery)
+                    .map_err(|e| format!("evidence: {e}"))?;
+                eprintln!(
+                    "wc-kong: decision trail at {} (delivery {:?}, resuming at seq {})",
+                    sink.path().display(),
+                    delivery,
+                    sink.head().seq
+                );
+                Some(Arc::new(sink))
+            }
+            None => None,
+        };
+
         Ok(Handle {
             contracts,
             routes,
@@ -310,6 +359,7 @@ impl Handle {
             mode: cfg.mode.into(),
             identity: cfg.identity,
             mesh,
+            evidence,
         })
     }
 }
