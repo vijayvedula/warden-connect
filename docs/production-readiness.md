@@ -14,6 +14,7 @@ code, not recalled.
 | **3.1b** | revocation reaches Kong | each worker refreshes on its own background thread — not a Lua timer, which would stall the event loop. Drilled: a revocation applied inside a real nginx worker |
 | **1.4** | several contracts per pair | resolution picks by tool; the catalogue is the union and must satisfy every pin; two contracts claiming one tool is a conflict, reported at load and refused at the call |
 | **0.4** | the gate is deterministic | not a second scm race: concurrent spawns inherited each other's pipes, so a shim that exited 0 having printed its verdict was recorded as never answering. Every spawn is gated; 4 hangs in 60 runs became 0 in 180 |
+| **3.1c** | connection-level revocation | `POST /v1/connections/{cid}/revoke` — the narrow cut, symmetric with quarantine: register, evidence, and the deny-list. The API harness had no revocation feed at all, which is why the serving plane's failure to append to one survived a full suite |
 | **1.2** | `Terms` audit | every field traced to what binds it — table below. One term was bound by nothing anywhere, and the check meant to announce that class of term was itself an instance of it |
 
 ## What binds each term
@@ -57,7 +58,6 @@ Three findings, of which one is fixed:
 | 1.2b | sweep for documented-but-absent mechanisms — six found in one session | S–M |
 | 2.3 | `connect evidence verify\|since` — needs a `wc-cli → wc-mediator` edge | S |
 | 2.4 | anchor the chain head on the ack, so the trail is tamper-*evident* and not merely tamper-detecting | M |
-| 3.1c | no HTTP route for connection-level revocation; `connect revoke --cid` fails `WC-8003` against a serving plane | S |
 | 3.1d | revocations are signed with the issuer key, so anyone who can mint can revoke | S |
 | 3.2 | neither binding ships; `release.yml` has no reference to `wc-extproc` or `wc-kong` | M |
 | 3.3 | install path per binding without a repo checkout | S |
