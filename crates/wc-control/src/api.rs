@@ -113,6 +113,16 @@ pub struct ControlPlane {
     pub policy: RwLock<Arc<ConnectPolicy>>,
     /// Contract signing key.
     pub signer: IssuerKey,
+    /// Key that signs the revocation feed, when it is not the contract signing key.
+    ///
+    /// Separate because the two authorities are different. Minting says a connection may
+    /// exist; revoking says one must stop. A plane that signs both with one key has made
+    /// "can issue" and "can contain" the same privilege, so the compromise that lets an
+    /// attacker mint also lets them forge the withdrawal of anything they broke.
+    ///
+    /// `None` means the contract key is used, which the CLI announces at startup — this is
+    /// exactly the kind of collapse that should never be inferred from silence.
+    pub revocation_signer: Option<IssuerKey>,
     /// Who may approve.
     pub approvers: ApproverRegistry,
     /// Issuer URL stamped into artifacts.
@@ -204,6 +214,7 @@ impl ControlPlane {
             evidence: Mutex::new(evidence),
             policy: RwLock::new(Arc::new(policy)),
             signer,
+            revocation_signer: None,
             approvers: ApproverRegistry::new(),
             iss: iss.to_string(),
             mode: Mode::Observe,
@@ -309,6 +320,30 @@ impl ControlPlane {
         let feed = crate::contain::RevocationFeed::open(path)?;
         self.revocations = Some(Mutex::new(feed));
         Ok(self)
+    }
+
+    /// Sign the revocation feed with a key of its own.
+    ///
+    /// `connect revoke` and `connect quarantine` have taken `--revocation-key` since custody
+    /// was introduced; the serving plane took no such flag and signed every revocation with
+    /// the contract key. So the separation existed exactly where an operator does it by hand
+    /// and was absent from the path an estate actually runs.
+    #[must_use]
+    pub fn with_revocation_signer(mut self, key: IssuerKey) -> ControlPlane {
+        self.revocation_signer = Some(key);
+        self
+    }
+
+    /// The key the revocation feed is signed with.
+    #[must_use]
+    pub fn revocation_key(&self) -> &IssuerKey {
+        self.revocation_signer.as_ref().unwrap_or(&self.signer)
+    }
+
+    /// Whether revocations are signed with the contract key, because no separate one was given.
+    #[must_use]
+    pub fn revocation_shares_the_contract_key(&self) -> bool {
+        self.revocation_signer.is_none()
     }
 
     /// Publish a JWKS document.
@@ -1689,7 +1724,7 @@ fn revoke_connection(
             &reason,
             caller.subject.as_str(),
             now,
-            &cp.signer,
+            cp.revocation_key(),
         )?;
     }
 
@@ -1756,7 +1791,7 @@ fn quarantine(cp: &Arc<ControlPlane>, caller: &Caller, req: &Request) -> Result<
             &reason,
             caller.subject.as_str(),
             now,
-            &cp.signer,
+            cp.revocation_key(),
         )?;
     }
 

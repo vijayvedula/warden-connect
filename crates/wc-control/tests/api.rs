@@ -313,7 +313,13 @@ fn harness(tag: &str) -> Harness {
     // configured the append is skipped, so a test could exercise a quarantine end to end and
     // never touch the line that was missing.
     .with_revocation_feed(&tmp.0.join("revocations.jsonl"))
-    .unwrap();
+    .unwrap()
+    // A key of its own, so a test can tell which one signed. The plane used to sign the feed
+    // with the contract key, and with one key in play nothing could distinguish "signed by the
+    // revocation authority" from "signed by whatever was to hand".
+    .with_revocation_signer(
+        IssuerKey::ec_pem("wc-test-revocation", ISSUER_PRIV, Algorithm::ES256).unwrap(),
+    );
 
     let api = Arc::new(Api(Arc::new(cp)));
     let shutdown = Arc::new(Shutdown::default());
@@ -984,6 +990,16 @@ fn revoking_one_connection_cuts_it_and_leaves_the_party_s_others_standing() {
     assert_eq!(events[0]["event"]["kind"], "connection");
     assert_eq!(events[0]["event"]["cid"], cids[0]);
     assert!(!events[0]["jws"].as_str().unwrap().is_empty());
+
+    // Signed by the revocation authority, not the contract authority. Minting says a
+    // connection may exist; revoking says one must stop. Signing both with one key makes
+    // "can issue" and "can contain" a single privilege, so the compromise that lets an
+    // attacker mint also lets them forge the withdrawal of anything they broke.
+    assert_eq!(
+        events[0]["kid"], "wc-test-revocation",
+        "the feed must be signed by the revocation key, not the contract key: {}",
+        feed.body
+    );
 }
 
 #[test]
