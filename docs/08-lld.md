@@ -157,7 +157,7 @@ plane through a linked library.
 | `bench` | Performance gates | 8.10.3 |
 | `lib` | Composition root |
 
-### `wc-mediator` — 13 modules
+### `wc-mediator` — 12 modules
 
 | Module | Responsibility | § |
 |---|---|---|
@@ -165,7 +165,6 @@ plane through a linked library.
 | `cache` | The contract cache and revocation set | 8.6.2 |
 | `jwks` | Issuer keys from a published key set, so rotation is not a deployment | 8.6.3 |
 | `filter` | Catalogue filtering | 8.6.4 |
-| `ceiling` | Rate, spend and concurrency ceilings | 8.6.5 |
 | `peer` | Where peer identity actually comes from | 8.6.6 |
 | `drain` | What happens to in-flight work when a revocation lands | 8.6.5 |
 | `client` | Pull a contract set from the control plane, acknowledge it | 8.6.2 |
@@ -292,7 +291,7 @@ visible to you" (`WC-2020` throttling, `WC-2021` asker not attested).
 ### 8.5.7 `assurance` — the loop
 
 Re-attestation on a tier-derived interval; drift classified benign or material
-(§8.7.5); posture scored from denial patterns and ceiling breaches fed back from
+(§8.7.5); posture scored from denial patterns fed back from
 the data plane. Material drift suspends every contract referencing the pin
 (`WC-5002`).
 
@@ -461,71 +460,34 @@ agent. This is the single most valuable thing the mediator does: **the model
 never sees the tool it is not contracted for**, so it cannot be talked into
 attempting it. A catalogue that cannot be filtered is refused (`WC-4007`).
 
-### 8.6.5 `ceiling` and `drain`
+### 8.6.5 `drain`
 
-Rate (`WC-4003`), spend (`WC-4004`) and concurrency (`WC-4005`) ceilings.
-Breaching a ceiling denies the call and notifies the owner — it does **not**
-invalidate the contract. `drain` decides what happens to in-flight work when a
-revocation lands: `drain` or `abort`, per policy.
+**Rate, concurrency and spend ceilings were removed.** `ceiling.rs` is deleted
+and `WC-4003`, `WC-4004` and `WC-4005` are unreachable — retired rather than
+deleted from the taxonomy, because a code is a stable contract and removing one
+makes old evidence unreadable.
 
-**What is actually enforced, and where.** All three are implemented in
-`ceiling.rs`; they are not all wired to a caller, and the difference matters more
-than the implementation.
+Why: counters live in one process. A contract saying `max_calls_per_hour = 10`
+admitted ten **per nginx worker per node**, so the number an owner signed was
+never the number in force. Measured: a 3-per-hour contract executed three calls
+per process and nine across three, in the same hour. The available fixes were to
+redefine the term as per-instance, divide the budget across instances that come
+and go, or put a shared counter on the hot path — which §7.11 forbids outright.
+Envoy and Kong both rate-limit properly, and traffic shaping belongs in a proxy.
 
-| Ceiling | Code | Inline mediator | Gateway (E5) |
-|---|---|---|---|
-| rate | `WC-4003` | enforced | enforced |
-| concurrency | `WC-4005` | enforced, but only the **zero** case can fire — see below | enforced at any value, slot held for the stream |
-| spend | `WC-4004` | **not wired** | **not enforceable** |
+So this component claims **one axis**: which capabilities a caller may reach on
+a callee, enforced exactly. That is a smaller claim than the design started with
+and it is the one that is true.
 
-**Why concurrency is nearly inert inline.** In-flight calls through one
-`MediatedUpstream` are structurally at most one: `Upstream::request` takes
-`&mut self`, `standalone_loop` is single-threaded, and warden's gateway holds its
-upstream in a `Mutex<Box<dyn Upstream + Send>>`. So a ceiling of 2, or 200, can
-never be reached on that path.
+The fields stay in `Terms` for one more version. `ContractPayload` carries
+`deny_unknown_fields`, so deleting them now would make every already-signed
+artifact fail to verify. They are enforced nowhere, cannot be set on a new
+contract, and a binding that loads a legacy artifact carrying one **says so at
+startup** — an inert term that nobody announces is exactly the defect this
+document keeps naming.
 
-It is wired anyway for the value that *can* be reached. The narrowing algebra
-takes the `min` of both sides, so either party can drive `max_concurrent` to 0
-and mean it — a way to suspend a connection without revoking it. The gateway
-refused that; the inline path forwarded it. Same contract, two answers, and
-conformance vectors do not catch it because they cover the checks and not the
-terms.
-
-Spend is not a wiring gap. `Ceilings::charge` needs an amount, and nothing in the
-data plane produces one: an MCP response carries no cost, and the mediator has no
-price list. Enforcing it needs a cost signal that does not exist yet, so the term
-is carried, narrowed and federated correctly and bounds nothing at runtime.
-Recorded here rather than left to be discovered from a contract that looked
-capped.
-
-**Gate 8 on a stream that carries no catalogue.** The pin can only be checked
-when a `tools/list` response passes, and a filter cannot fetch one the way the
-inline mediator does (`verify_pin_lazily`). So the gateway records verifications
-and refuses a `tools/call` on a contract that has never been pinned.
-
-| Keyed by | Why not |
-|---|---|
-| session | a stateless MCP server issues no `Mcp-Session-Id`, so every stream would be its own unverifiable session |
-| callee | the digest covers exactly the **contracted items**, so two contracts over different subsets of one callee have different digests and neither vouches for the other |
-| **contract (`jti`)** | correct: any stream on that contract that carries a catalogue verifies it for every other stream on it, which is as far as the evidence reaches |
-
-Two properties that took a second pass to get right:
-
-* A **detected mismatch revokes** the recorded verification. Refusing only that
-  catalogue would leave the pin standing and tool calls flowing on a contract
-  whose callee has demonstrably moved — drift detected and then ignored.
-* The ledger is **in memory**, so a verifier restart drops it and the first tool
-  call after a restart is refused until some client lists. Fail-closed and
-  self-healing within one MCP handshake, but it reads as an outage if nobody has
-  written it down. Drill phase 9 depends on this and says so.
-
-`--allow-unpinned` gives the requirement up; everything else still applies on
-those streams. `--pin-max-age N` re-requires verification every N seconds.
-
-At the gateway the counters are keyed by the contract's `jti` and shared across
-HTTP streams. Per-stream counters would reset on every request, and a contract
-reading `max_calls_per_hour = 10` would admit ten calls *per request* — a ceiling
-that reads as configured and counts nothing.
+`drain` is unaffected and stays: it decides what happens to in-flight work when
+a revocation lands — `drain` or `abort`, per policy.
 
 ### 8.6.6 `peer`
 
@@ -698,28 +660,22 @@ SAN critical; and indefinite length (`0x30 0x80`) is refused, because it is
 legal BER and never legal DER, and accepting it means parsing a structure the
 verifier upstream never agreed to.
 
-### 8.6b.5 Ceilings across instances
+### 8.6b.5 Why there is no ceiling here
 
-`Registry` counts per process. Kong runs one worker per core, so a contract
-saying `max_calls_per_hour = 10` admits up to 40 across four workers — every
-call admitted, every call correct-looking, and nothing saying the number in the
-contract is not the number in force.
+There was one, and it is gone. `Registry` counted per process, so a contract
+saying `max_calls_per_hour = 10` admitted up to 40 across four nginx workers on
+one node, and more across a fleet. Kong made the operator acknowledge the
+multiplier with `ceiling_scope = "worker"`, which converted a silent wrong
+number into a stated one and left it wrong.
 
-Dividing by the worker count is not the fix: 3 across 4 workers becomes 0 (deny
-everything) or 1 (12 in force, still not 3). So the number stays per-worker and
-the operator states that they know it.
+The fixes all failed on something structural. Dividing by the worker count turns
+3 across 4 workers into 0 (deny everything) or 1 (12 in force, still not 3).
+Shared memory fixes one node and not a fleet, and splits the ceiling into Lua.
+A shared counter across nodes is a hot-path network call, which §7.11 forbids.
 
-| | |
-|---|---|
-| `ceiling_scope = "worker"` | acknowledges the multiplier. Demanded **only** when a loaded contract actually bounds a ceiling — ceremony where there is nothing to multiply is how an operator learns to paste past the warning that will one day matter |
-| `ceiling_scope = "node"` | refused as **not built**. Accepting a value that changes nothing is the same defect wearing a different hat |
-| `workers` | from `ngx.worker.count()`, not from configuration. Asking an operator to restate nginx's own number is asking them to get it wrong |
-
-At startup the library prints the arithmetic per contract — `10/hour configured
--> up to 40/hour in force`. That line is the deliverable; the flag is the
-forcing function that makes it read. The same is true of `wc-extproc` behind
-more than one Envoy, which is why the analysis is in `adapter` and not in the
-Kong crate.
+So rate, concurrency and spend were removed as a capability (§8.6.5). Envoy and
+Kong both rate-limit properly and traffic shaping belongs in a proxy; this
+binding claims one axis and enforces it exactly.
 
 ### 8.6b.6 What each test layer can and cannot reach
 
@@ -745,11 +701,10 @@ developed on macOS while Kong runs Linux.
 
 | Limit | Status |
 |---|---|
-| ceilings are per worker | acknowledged, not solved. `ngx.shared.DICT` is the fix and is not built |
 | one contract per `(caller, callee)` | a second is verified, counted and unreachable — resolution is by pair and a filter never has a `cid` |
 | hot reload | **not built.** There is no `wc_reload` and no timer, so a contract set or a route table changes only when the worker restarts — and a revocation reaches this PEP no faster than that. `max_stale` would bound the exposure, but with no refresh source a bound only converts "serving a stale set" into "denying everything", so it defaults to 0 and the real containment is **contract expiry**. Set `exp` accordingly, or reload on a schedule you control |
 | `no_pin` exists | for a staged rollout only. Gate 8 is not optional, which is why the flag is spelled out rather than looking like a tuning knob |
-| `max_spend_usd_per_day` | unenforceable here as everywhere: nothing on the path produces a cost |
+| rate, concurrency and spend | **removed as a capability** (§8.6.5). Set volume limits on the proxy |
 
 ---
 
@@ -759,8 +714,6 @@ developed on macOS while Kong runs Linux.
 
 ```
 meet(a, b).surface        = a.surface ∩ b.surface
-meet(a, b).max_calls      = min(a.max_calls, b.max_calls)
-meet(a, b).max_spend      = min(a.max_spend, b.max_spend)
 meet(a, b).max_depth      = min(a.max_depth, b.max_depth)
 meet(a, b).data_classes   = a.data_classes ∩ b.data_classes
 meet(a, b).jurisdictions  = a.jurisdictions ∩ b.jurisdictions

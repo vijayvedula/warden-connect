@@ -16,6 +16,28 @@ Pre-1.0. Nothing has been tagged yet; `main` is the only thing to run and
 [docs/production-readiness.md](docs/production-readiness.md) is the list of what stands
 between here and a release.
 
+### Removed
+
+- **Rate, concurrency and spend ceilings are no longer a capability.**
+  `terms.max_calls_per_hour`, `max_concurrent` and `max_spend_usd_per_day` are enforced
+  nowhere: not by the stdio mediator, not by the Envoy binding, not by the Kong plugin.
+  `WC-4003`, `WC-4004` and `WC-4005` are unreachable and **retired rather than deleted** —
+  a code is part of the public interface and removing one makes old evidence unreadable.
+
+  Counters lived in one process, so a contract saying `10/hour` admitted ten per nginx
+  worker per node; the number an owner signed was never the number in force. Every fix
+  meant redefining the term, dividing a budget across instances that come and go, or
+  putting a shared counter on the hot path, which the latency NFR forbids. Envoy and Kong
+  rate-limit properly, and traffic shaping belongs in a proxy. warden-connect now claims
+  one axis — **which capabilities a caller may reach on a callee** — and enforces it
+  exactly.
+
+  The three fields remain in `Terms` for one more version: `ContractPayload` carries
+  `deny_unknown_fields`, so removing them now would make every already-signed artifact
+  fail to verify. They cannot be set on a new contract, and a binding that loads a legacy
+  artifact carrying one announces it at startup. **Their removal from the schema is a
+  breaking change and will be its own release.**
+
 ### The artifact and the core
 
 - **Connection contracts** as signed JWS (`warden-connection+jws`), asymmetric-only, with
