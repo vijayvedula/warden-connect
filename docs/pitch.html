@@ -102,17 +102,17 @@
 <div class="reel">
   <div class="frame">
     <canvas id="stage" role="img"
-      aria-label="A fifty-eight second animated pitch in two acts. It opens on one concrete pair: an agent called recon-bot holding a token whose scope is payments colon star, wired to an MCP server called payments-mcp. The server unfolds its tool surface — get_balance, list_transactions, transfer_funds, issue_refund, close_account — and every one of the five is marked reachable, including transfer_funds, which is highlighted in red. A bracket reads five of five reachable, and the line beneath says the token admits the server and the server admits every tool: reachable is not approved, and nothing in the picture can tell them apart. That single pair then multiplies into a whole estate, which freezes while three questions appear — which agents can reach payments, who approved that connection, and how do you revoke it everywhere now — with no system of record to answer them. The problem then splits into two planes: may this connection exist, owned by warden-connect, and may this call proceed, owned by warden. Act one, contract creation, which is GitOps, shown as two separate lanes. The provider lane runs warden slash offer dot toml through a merge approved by its own reviewers to connect offer publish. The consumer lane runs warden slash needs dot toml through a merge approved by different reviewers to connect need apply. The two lanes never meet: neither party reviews the other pull request, because the offer is held until a need arrives. Only then do both lanes join at the control plane, which folds offer intersected with need against policy, confirms both merges with the source host rather than believing the pipelines, and mints a contract carrying a cid, a pinned surface digest and an expiry. The contract then lives in three places holding three different things: git holds a receipt at warden slash contracts slash cid dot toml and never the signed artifact; the control plane holds the signed artifact and the register of what is issued, revoked and acknowledged; and every enforcement point holds a verified copy in memory that is refreshed, expires, and can be revoked. Act two, enforcement: the algebra effective equals surface intersect scope intersect policy, with surface bracketed as warden-connect’s term decided at issuance and scope and policy bracketed as warden’s, decided at authentication and per call; the contract is enforced inside the proxy already carrying the traffic and an uncontracted tool is refused WC-4002; then one revocation reaches every enforcement point and every decision is written to a hash-chained trail."></canvas>
+      aria-label="A one-minute-fifty-six animated walkthrough in two acts, ten slides, each holding its finished frame for five seconds before the cut. The problem: an agent called recon-bot holds a token scoped payments colon star and is wired to an MCP server, payments-mcp, which unfolds five tools — get_balance, list_transactions, transfer_funds, issue_refund, close_account — every one marked reachable, five of five. The token admits the server and the server admits every tool: reachable is not approved, and nothing in the picture can tell them apart. That pair multiplies into an estate which freezes while three unanswerable questions appear, and the problem splits into two planes: may this connection exist, owned by warden-connect, and may this call proceed, owned by warden. Act one is contract creation as GitOps, across three slides. First, two lanes that never touch: the provider merges warden slash offer dot toml under its own approvers, the consumer merges warden slash needs dot toml under different approvers, neither party reviews the other pull request, and they join only at the control plane, which confirms both merges with the source host rather than the pipelines. Second, the disposition — one need, three outcomes: pre-granted goes straight to a minted contract with no person involved, because the provider approved a class once in a reviewed commit; gated routes to the callee owner and nothing is minted while the whole need waits on one item; refused stops, because no term covers this consumer and approval cannot help. Third, where the contract then lives: git holds a receipt and never the signed artifact, the control plane holds the artifact and the register, and every enforcement point holds a verified copy in memory that refreshes and expires — which is why a revocation has somewhere to arrive. Act two is enforcement: the algebra effective equals surface intersect scope intersect policy, with surface bracketed as warden-connect at issuance and scope and policy bracketed as warden at authentication and per call; enforcement happens inside the proxy already carrying the traffic, where an uncontracted tool is refused WC-4002; and one revocation reaches every enforcement point while every decision is written to a hash-chained trail."></canvas>
   </div>
 
   <div class="transport">
     <button class="play" id="play" aria-label="Play">▶</button>
     <div class="track" id="track" role="slider" tabindex="0"
-         aria-label="Timeline" aria-valuemin="0" aria-valuemax="58" aria-valuenow="0">
+         aria-label="Timeline" aria-valuemin="0" aria-valuemax="116" aria-valuenow="0">
       <div class="bed"></div><div class="fill" id="fill"></div>
       <div class="chapters" id="chapters"></div><div class="head" id="head"></div>
     </div>
-    <div class="clock" id="clock">0:00 / 0:58</div>
+    <div class="clock" id="clock">0:00 / 1:56</div>
   </div>
 
   <div class="legend">
@@ -126,7 +126,7 @@
 (() => {
   "use strict";
 
-  const W = 1600, H = 900, DUR = 58;
+  const W = 1600, H = 900, DUR = 116;
   const SERIF = '"Newsreader", Georgia, "Times New Roman", serif';
   const MONO  = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
 
@@ -346,7 +346,7 @@
     caption("The server exposes its surface.", "five tools  ·  to anyone the token admits",
             env(t, 2.7, 4.7, 0.4));
     caption("Reachable is not approved.", "and nothing in this picture can tell them apart",
-            env(t, 4.9, 6.5, 0.4));
+            env(t, 4.9, 11.5, 0.4));
   }
 
   function s2_estate(t) {               // 6.5 → 12   now multiply it, then stop
@@ -367,11 +367,11 @@
                 "who approved that connection ?",
                 "how do you revoke it, everywhere, now ?"];
     qs.forEach((q, i) => {
-      const a = env(t, 1.75 + i * 0.55, 5.2, 0.3);
+      const a = env(t, 1.75 + i * 0.55, 10.2, 0.3);
       txt(q, W / 2, 330 + i * 62, { size: 30, align: "center", alpha: a, color: C.ink, spacing: 0.5 });
       line(W / 2 - 300, 348 + i * 62, W / 2 + 300, 348 + i * 62, C.rule, 1, a * 0.35);
     });
-    caption("Three questions. No system of record.", null, env(t, 3.3, 5.5, 0.4));
+    caption("Three questions. No system of record.", null, env(t, 3.3, 10.5, 0.4));
   }
 
   function s3_split(t) {                // 12 → 17.5   two questions, two products
@@ -382,7 +382,7 @@
     line(160, 442, W - 160, 442, C.rule, 1, p * 0.55, [5, 7]);
 
     // The slow plane: signed, human, and the one nobody owned.
-    const aA = env(t, 0.35, 5.5, 0.4);
+    const aA = env(t, 0.35, 10.5, 0.4);
     line(220, yA + 62, W - 220, yA + 62, C.rule, 1, aA * 0.5);
     txt("May this connection exist ?", 220, yA, { size: 44, font: SERIF, alpha: aA, color: C.surface });
     txt("WARDEN-CONNECT   ·   signed artifact   ·   human approval   ·   revocable",
@@ -393,7 +393,7 @@
     }
 
     // The fast plane: already solved, already shipping, and not the same question.
-    const aB = env(t, 0.95, 5.5, 0.4);
+    const aB = env(t, 0.95, 10.5, 0.4);
     line(220, yB + 62, W - 220, yB + 62, C.rule, 1, aB * 0.5);
     txt("May this call proceed ?", 220, yB, { size: 44, font: SERIF, alpha: aB, color: C.policy });
     txt("WARDEN   ·   every request   ·   microseconds   ·   already solved",
@@ -404,39 +404,26 @@
     }
 
     caption("Everyone built the second one.", "the first has never had an owner",
-            env(t, 2.6, 5.5, 0.4));
+            env(t, 2.6, 10.5, 0.4));
   }
 
   // ---- ACT I · how a contract comes to exist, which is GitOps -----------
   //
-  // TWO lanes, deliberately not one. The offer is the callee's half of a bilateral contract
-  // and is held until a consumer's need arrives, "so neither party reviews the other's pull
-  // request" (`connect offer publish --help`). Drawing them as one queue would erase the
-  // property that makes the model work between organisations.
-  //
-  // Then: where the contract actually lives afterwards, which is three places holding three
-  // different things. docs/08-lld.md §8.5.11 for the manifests and the receipt.
+  // Three slides, not one. It was one, and one frame carrying thirty labels is a frame nobody
+  // reads — the lanes, the disposition and the homes are three separate ideas and each now
+  // gets its own. docs/08-lld.md §8.5.11, offer.rs and need.rs.
   const LANES = [
-    { y: 190, tag: "PROVIDER", c: C.surface, file: "warden/offer.toml",
+    { y: 250, tag: "PROVIDER", c: C.surface, file: "warden/offer.toml",
       who: "approved by  s.iyer  +  p.rao",  cmd: "connect offer publish" },
-    { y: 340, tag: "CONSUMER", c: C.scope,   file: "warden/needs.toml",
+    { y: 430, tag: "CONSUMER", c: C.scope,   file: "warden/needs.toml",
       who: "approved by  a.khan  +  b.singh", cmd: "connect need apply" },
   ];
   const COL = [250, 540, 830], BW = 230, BH = 62;
-  const MINT = { x: 1330, y: 284, w: 290, h: 250 };
-  const HOMES = [
-    { x: 340,  c: C.scope,   title: "git",
-      a: "warden/contracts/<cid>.toml", b: "the receipt — never the JWS" },
-    { x: 835,  c: C.surface, title: "the control plane",
-      a: "the signed artifact", b: "issued · revoked · acknowledged" },
-    { x: 1330, c: C.policy,  title: "every enforcement point",
-      a: "a verified copy, in memory", b: "refreshed · expires · revocable" },
-  ];
+  const MINT = { x: 1330, y: 340, w: 290, h: 250 };
 
-  function s4_creation(t) {             // 17.5 → 32.5
+  function s4_lanes(t) {                // two lanes that never touch, and the join
     act("I  ·  CONTRACT CREATION  ·  GITOPS", env(t, 0.3, 99, 0.5));
 
-    // --- the two lanes, which never meet until the plane joins them ---
     LANES.forEach(L => {
       const a0 = env(t, 0.3, 99, 0.5);
       txt(L.tag, COL[0] - BW / 2, L.y - 50, { size: 13, color: L.c, alpha: a0, spacing: 3 });
@@ -448,7 +435,7 @@
                                    alpha: a, width: k === 1 ? 1.5 : 1 });
         txt(label, COL[k], L.y + 5, { size: 14, align: "center", alpha: a,
                                       color: k === 1 ? L.c : C.ink });
-        if (k > 0) {   // the connector into this box
+        if (k > 0) {
           const from = COL[k - 1] + BW / 2 + 8, to = COL[k] - BW / 2 - 8;
           line(from, L.y, to, L.y, C.rule, 1, a * 0.7);
           line(to - 8, L.y - 5, to, L.y, C.rule, 1, a * 0.7);
@@ -456,12 +443,10 @@
         }
       });
 
-      // Who approved, in their own repository, under their own [approval] block.
       txt(L.who, COL[1], L.y + 50, { size: 12.5, align: "center", color: C.muted,
                                      alpha: env(t, 1.6, 99, 0.5) * 0.8 });
     });
 
-    // --- the join: two lanes, one plane ---
     const aj = env(t, 4.3, 99, 0.5);
     if (aj > 0.001) {
       const jx = 1065, mx = MINT.x - MINT.w / 2;
@@ -480,50 +465,120 @@
       ["offer   ∩   need", "policy fold", "both merges confirmed", "with the source host"]
         .forEach((l, k) => {
           const a = env(t, 5.2 + k * 0.6, 99, 0.4);
-          txt(l, MINT.x, MINT.y - 105 + k * 32,
+          txt(l, MINT.x, MINT.y - 90 + k * 32,
               { size: 13, align: "center", color: k > 1 ? C.policy : C.ink, alpha: a });
         });
-
-      const born = env(t, 8.4, 99, 0.5);
-      line(MINT.x - 108, MINT.y + 16, MINT.x + 108, MINT.y + 16, C.rule, 1, born * 0.6);
-      txt("contract", MINT.x, MINT.y + 46,
+      const born = env(t, 8.0, 99, 0.5);
+      line(MINT.x - 108, MINT.y + 52, MINT.x + 108, MINT.y + 52, C.rule, 1, born * 0.6);
+      txt("contract", MINT.x, MINT.y + 82,
           { size: 15, align: "center", color: C.surface, alpha: born, spacing: 1.6 });
-      txt("cid · surface_digest · exp", MINT.x, MINT.y + 74,
-          { size: 12.5, align: "center", color: C.muted, alpha: born * 0.9 });
-      const flash = Math.max(0, 1 - (t - 8.4) * 1.6);
+      const flash = Math.max(0, 1 - (t - 8.0) * 1.6);
       box(MINT.x, MINT.y, MINT.w, MINT.h, { stroke: C.surface, alpha: flash * 0.8, width: 2, r: 3 });
-    }
-
-    // --- and then where it actually lives: three places, three different things ---
-    const ah = env(t, 10.2, 99, 0.5);
-    if (ah > 0.001) {
-      txt("WHERE THE CONTRACT LIVES", COL[0] - BW / 2 - 60, 440,
-          { size: 13, color: C.muted, alpha: ah * 0.85, spacing: 3 });
-      line(MINT.x, MINT.y + MINT.h / 2, MINT.x, 455, C.rule, 1, ah * 0.7);
-      line(HOMES[0].x, 455, MINT.x, 455, C.rule, 1, ah * 0.7);
-
-      HOMES.forEach((h, k) => {
-        const a = env(t, 10.2 + k * 0.5, 99, 0.5);
-        if (a <= 0.001) return;
-        line(h.x, 455, h.x, 502, C.rule, 1, a * 0.7);
-        line(h.x - 5, 494, h.x, 502, C.rule, 1, a * 0.7);
-        line(h.x + 5, 494, h.x, 502, C.rule, 1, a * 0.7);
-        box(h.x, 560, 300, 100, { stroke: h.c, fill: C.panel, alpha: a, width: 1.3 });
-        txt(h.title, h.x, 536, { size: 15, align: "center", color: h.c, alpha: a, spacing: 1.1 });
-        txt(h.a, h.x, 564, { size: 12.5, align: "center", color: C.ink, alpha: a * 0.9 });
-        txt(h.b, h.x, 588, { size: 12.5, align: "center", color: C.muted, alpha: a * 0.85 });
-      });
     }
 
     caption("Two repositories. Two reviews.", "the provider offers   ·   the consumer asks",
             env(t, 0.6, 3.8, 0.4));
     caption("Neither reviews the other's pull request.", "the offer waits until a need arrives",
-            env(t, 4.2, 7.4, 0.4));
+            env(t, 4.2, 7.0, 0.4));
     caption("Both merges confirmed with the source host.",
-            "the pipeline asserts   ·   only the host can confirm", env(t, 7.8, 10.0, 0.4));
-    caption("One artifact. Three places it lives.",
-            "a receipt in git   ·   the register in the plane   ·   a copy that expires at the edge",
-            env(t, 10.4, 15, 0.45));
+            "the pipeline asserts   ·   only the host can confirm", env(t, 7.2, 14, 0.4));
+  }
+
+  // The three ways a need can land. Two of them never involve a person, and saying so is the
+  // answer to the question every architect asks next — does this become a ticket queue.
+  const DISPO = [
+    { y: 250, c: C.policy, name: "pre-granted", enum_: "Disposition::Grant",
+      note: "the offer already named this audience",
+      via: null, end: "contract minted", endC: C.policy },
+    { y: 430, c: C.scope,  name: "gated", enum_: "Disposition::NeedsApproval",
+      note: "per-consumer sign-off, on this item",
+      via: "the callee's owner decides", end: "nothing is minted yet", endC: C.scope },
+    { y: 610, c: C.refuse, name: "refused", enum_: "Disposition::Refused",
+      note: "no term covers this consumer",
+      via: "approval cannot help", end: null, endC: C.refuse },
+  ];
+
+  function s4b_disposition(t) {         // the gated path, and the two that are not
+    act("I  ·  CONTRACT CREATION  ·  DISPOSITION", env(t, 0.3, 99, 0.5));
+    txt("one need   ·   three dispositions", W / 2, 150,
+        { size: 17, align: "center", color: C.muted, alpha: env(t, 0.3, 99, 0.4), spacing: 2.2 });
+
+    const arrow = (x1, x2, y, c, a) => {
+      line(x1, y, x2 - 8, y, c, 1, a * 0.7);
+      line(x2 - 16, y - 5, x2 - 8, y, c, 1, a * 0.7);
+      line(x2 - 16, y + 5, x2 - 8, y, c, 1, a * 0.7);
+    };
+
+    DISPO.forEach((d, i) => {
+      const a = env(t, 0.4 + i * 2.4, 99, 0.5);
+      if (a <= 0.001) return;
+
+      box(330, d.y, 280, 74, { stroke: d.c, fill: C.panel, alpha: a, width: 1.5 });
+      txt(d.name, 330, d.y - 8, { size: 16, align: "center", color: d.c, alpha: a, spacing: 1 });
+      txt(d.note, 330, d.y + 18, { size: 12.5, align: "center", color: C.muted, alpha: a * 0.85 });
+      txt(d.enum_, 330, d.y + 60, { size: 12.5, align: "center", color: C.dim, alpha: a * 0.8 });
+
+      if (d.via) {
+        arrow(474, 600, d.y, d.c, a);
+        box(740, d.y, 280, 62, { stroke: C.rule, fill: C.panel, alpha: a });
+        txt(d.via, 740, d.y + 5, { size: 14, align: "center", color: C.ink, alpha: a });
+        if (d.end) arrow(884, 1030, d.y, d.c, a);
+      } else {
+        arrow(474, 1030, d.y, d.c, a);   // straight through: nobody is asked
+      }
+
+      if (d.end) {
+        box(1150, d.y, 240, 62, { stroke: d.endC, fill: C.panel, alpha: a,
+                                  width: d.endC === C.policy ? 1.5 : 1 });
+        txt(d.end, 1150, d.y + 5, { size: 14, align: "center", color: d.endC, alpha: a });
+      }
+    });
+
+    caption("Most needs never reach a person.",
+            "the provider approved a class once, in a reviewed commit", env(t, 0.7, 3.4, 0.4));
+    caption("Some do — and the whole need waits.",
+            "one gated item holds all of it   ·   nothing is minted meanwhile",
+            env(t, 3.7, 6.2, 0.4));
+    caption("And some cannot be approved at all.",
+            "no term covers this consumer   ·   refusal outranks gating", env(t, 6.5, 13, 0.4));
+  }
+
+  const HOMES = [
+    { x: 290,  c: C.scope,   title: "git",
+      lines: ["warden/contracts/<cid>.toml", "the receipt", "never the JWS"] },
+    { x: 800,  c: C.surface, title: "the control plane",
+      lines: ["the signed artifact", "the register", "issued · revoked · acknowledged"] },
+    { x: 1310, c: C.policy,  title: "every enforcement point",
+      lines: ["a verified copy, in memory", "refreshed  ·  expires", "revocable"] },
+  ];
+
+  function s4c_homes(t) {               // where the thing actually is, afterwards
+    act("I  ·  CONTRACT CREATION  ·  WHERE IT LIVES", env(t, 0.3, 99, 0.5));
+
+    const a0 = env(t, 0.3, 99, 0.5);
+    box(800, 190, 240, 62, { stroke: C.surface, fill: C.film, alpha: a0, width: 1.6, r: 3 });
+    txt("one contract", 800, 195, { size: 15, align: "center", color: C.surface,
+                                    alpha: a0, spacing: 1.4 });
+
+    HOMES.forEach((h, i) => {
+      const a = env(t, 1.0 + i * 0.7, 99, 0.5);
+      if (a <= 0.001) return;
+      line(800, 221, 800, 268, C.rule, 1, a * 0.7);
+      line(h.x, 268, 800, 268, C.rule, 1, a * 0.7);
+      line(h.x, 268, h.x, 306, C.rule, 1, a * 0.7);
+      line(h.x - 5, 298, h.x, 306, C.rule, 1, a * 0.7);
+      line(h.x + 5, 298, h.x, 306, C.rule, 1, a * 0.7);
+
+      box(h.x, 420, 380, 180, { stroke: h.c, fill: C.panel, alpha: a, width: 1.3, r: 3 });
+      txt(h.title, h.x, 366, { size: 16, align: "center", color: h.c, alpha: a, spacing: 1.1 });
+      h.lines.forEach((l, k) => txt(l, h.x, 386 + k * 34,
+        { size: 13, align: "center", color: k === 0 ? C.ink : C.muted, alpha: a * (k ? 0.85 : 1) }));
+    });
+
+    caption("One artifact. Three places it lives.", "three different things, deliberately",
+            env(t, 0.8, 3.4, 0.4));
+    caption("Only the copy at the edge expires.",
+            "which is why a revocation has somewhere to arrive", env(t, 3.7, 11, 0.4));
   }
 
   // ---- ACT II · what the artifact then does ------------------------------
@@ -619,7 +674,7 @@
 
     caption("A contract is a ceiling. Never a grant.", null, env(t, 4.5, 6.3, 0.4));
     caption("warden-connect draws it. warden decides inside it.",
-            "neither is a control on its own", env(t, 6.4, 8.0, 0.4));
+            "neither is a control on its own", env(t, 6.4, 13, 0.4));
   }
 
   function s6_enforce(t) {              // 40.5 → 47   a ceiling with no floor is a PDF
@@ -673,7 +728,7 @@
       dot(bx, y, 5.5, C.refuse, a);
       txt("transfer_funds", bx, y - 26, { size: 14, align: "center", color: C.refuse, alpha: a * 0.9 });
       if (k >= 0.62) {
-        const f = env(t, 4.3, 6.5, 0.3);
+        const f = env(t, 4.3, 11.5, 0.3);
         line(px - 108, y - 62, px - 108, y + 62, C.refuse, 2, f * 0.85);
         txt("WC-4002  uncontracted tool", px - 128, y + 96,
             { size: 17, align: "right", color: C.refuse, alpha: f, spacing: 0.8 });
@@ -681,11 +736,11 @@
     }
 
     caption("Enforced inside the hop you already run.", "no new proxy · no new latency budget",
-            env(t, 4.6, 6.5, 0.35));
+            env(t, 4.6, 11.5, 0.35));
   }
 
   function s7_revoke(t) {               // 47 → 53.5   contained, and on the record
-    act("II  ·  ENFORCEMENT", 1 - sm(5.9, 6.5, t));
+    act("II  ·  ENFORCEMENT", 1 - sm(10.9, 11.5, t));
     const cx = 800, cy = 132;
     const posts = [400, 800, 1200], py = 322;
 
@@ -719,7 +774,7 @@
     const bl = 8, bw = 120, gap = 26, total = bl * bw + (bl - 1) * gap;
     const x0 = (W - total) / 2 + bw / 2, by = 560;
     for (let i = 0; i < bl; i++) {
-      const a = env(t, 1.4 + i * 0.18, 6.5, 0.26);
+      const a = env(t, 1.4 + i * 0.18, 11.5, 0.26);
       if (a <= 0.001) continue;
       const x = x0 + i * (bw + gap);
       box(x, by, bw, 50, { stroke: C.rule, fill: C.panel, alpha: a });
@@ -728,20 +783,20 @@
       if (i > 0) line(x - bw / 2 - gap, by, x - bw / 2, by, C.surface, 1, a * 0.7);
     }
     txt("hash-chained  ·  an edit anywhere invalidates every row after it", W / 2, 636,
-        { size: 15, align: "center", color: C.muted, alpha: env(t, 2.8, 6.5, 0.32), spacing: 1.3 });
+        { size: 15, align: "center", color: C.muted, alpha: env(t, 2.8, 11.5, 0.32), spacing: 1.3 });
 
-    caption("Revoke once. Everywhere. On the record.", null, env(t, 3.9, 6.5, 0.4));
+    caption("Revoke once. Everywhere. On the record.", null, env(t, 3.9, 11.5, 0.4));
   }
 
   function s8_close(t) {                // 53.5 → 58
-    const a = env(t, 0.15, 4.5, 0.55);
+    const a = env(t, 0.15, 9.5, 0.55);
     txt("warden-connect", W / 2, 384, { size: 84, font: SERIF, align: "center", alpha: a,
                                         color: C.ink, weight: "300" });
     line(W / 2 - 236, 422, W / 2 + 236, 422, C.rule, 1, a * 0.7);
     txt("the connection control plane for AI agents", W / 2, 468,
         { size: 21, align: "center", alpha: a * 0.86, color: C.muted, spacing: 3.2 });
 
-    const b = env(t, 0.85, 4.5, 0.5);
+    const b = env(t, 0.85, 9.5, 0.5);
     txt("it draws the ceiling.   warden decides inside it.", W / 2, 546,
         { size: 17, align: "center", alpha: b * 0.9, color: C.ink, spacing: 1.4 });
     [[-190, C.surface], [0, C.scope], [190, C.policy]]
@@ -751,14 +806,18 @@
   }
 
   const SCENES = [
-    { at: 0,    to: 6.5,  fn: s1_reach,       name: "reachable is not approved" },
-    { at: 6.5,  to: 12,   fn: s2_estate,      name: "the same defect, N times" },
-    { at: 12,   to: 17.5, fn: s3_split,       name: "two questions, two products" },
-    { at: 17.5, to: 32.5, fn: s4_creation,    name: "I · two lanes, one contract", act: true },
-    { at: 32.5, to: 40.5, fn: s5_algebra,     name: "II · a ceiling, and whose", act: true },
-    { at: 40.5, to: 47,   fn: s6_enforce,     name: "enforced in the existing hop" },
-    { at: 47,   to: 53.5, fn: s7_revoke,      name: "revoked, and on the record" },
-    { at: 53.5, to: DUR,  fn: s8_close,       name: "warden-connect" },
+    // Every slide holds its finished frame for five seconds before the cut. The film is a
+    // walkthrough at this pace, not an elevator pitch — a reader gets to finish the diagram.
+    { at: 0,     to: 11.5, fn: s1_reach,         name: "reachable is not approved" },
+    { at: 11.5,  to: 22,   fn: s2_estate,        name: "the same defect, N times" },
+    { at: 22,    to: 32.5, fn: s3_split,         name: "two questions, two products" },
+    { at: 32.5,  to: 46.5, fn: s4_lanes,         name: "I · two lanes that never touch", act: true },
+    { at: 46.5,  to: 59.5, fn: s4b_disposition,  name: "I · gated, ungated, refused" },
+    { at: 59.5,  to: 70.5, fn: s4c_homes,        name: "I · where the contract lives" },
+    { at: 70.5,  to: 83.5, fn: s5_algebra,       name: "II · a ceiling, and whose", act: true },
+    { at: 83.5,  to: 95,   fn: s6_enforce,       name: "enforced in the existing hop" },
+    { at: 95,    to: 106.5, fn: s7_revoke,       name: "revoked, and on the record" },
+    { at: 106.5, to: DUR,  fn: s8_close,         name: "warden-connect" },
   ];
 
   function render(t) {
@@ -873,7 +932,7 @@
     resize();
     const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (!still) { playing = true; last = performance.now(); }
-    else { clock = 34; render(clock); }   // the algebra, with the product boundary on it
+    else { clock = 78; render(clock); }   // the algebra, with the product boundary on it
     chrome();
     requestAnimationFrame(frame);
   }
