@@ -1,0 +1,370 @@
+<title>Twelve Shots, One Minute</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300&display=swap">
+
+<style>
+  :root {
+    /* The film's own palette. This sheet is production material for it, not a separate thing. */
+    --ground:  #0B0F17;
+    --panel:   #0E131C;
+    --raise:   #131A25;
+    --rule:    #28323F;
+    --ink:     #E9EEF6;
+    --muted:   #8695AB;
+    --dim:     #5A6879;
+    --surface: #58C6E6;
+    --scope:   #F0BE52;
+    --policy:  #7FD39B;
+    --refuse:  #E86F6F;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --serif: "Newsreader", Georgia, "Times New Roman", serif;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 15px;
+    line-height: 1.6;
+    margin: 0;
+    padding: clamp(20px, 5vw, 64px) clamp(16px, 5vw, 40px) 96px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 40px; }
+
+  h1 {
+    font-family: var(--serif); font-weight: 300; font-size: clamp(34px, 6vw, 54px);
+    line-height: 1.1; margin: 0 0 10px; text-wrap: balance;
+  }
+  h2 {
+    font-family: var(--serif); font-weight: 300; font-size: clamp(24px, 4vw, 32px);
+    margin: 0 0 6px;
+  }
+  .eyebrow {
+    color: var(--muted); font-size: 12px; letter-spacing: .22em; text-transform: uppercase;
+    margin: 0 0 18px;
+  }
+  p { margin: 0 0 14px; max-width: 68ch; }
+  .lede { color: var(--muted); }
+  a { color: var(--surface); }
+
+  section { border-top: 1px solid var(--rule); padding-top: 26px; }
+
+  /* --- the honest warning, first, because it changes what you generate --- */
+  .flag {
+    border: 1px solid var(--refuse); border-left-width: 3px;
+    background: rgba(232,111,111,.055);
+    padding: 18px 22px; border-radius: 2px;
+  }
+  .flag b { color: var(--refuse); font-weight: 400; }
+
+  /* --- shot cards --- */
+  .shot {
+    border: 1px solid var(--rule); border-radius: 3px; background: var(--panel);
+    padding: 20px 22px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .shot + .shot { margin-top: 16px; }
+  .shot header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+  .num {
+    font-size: 26px; font-family: var(--serif); color: var(--surface);
+    font-variant-numeric: tabular-nums; line-height: 1;
+  }
+  .tc { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; letter-spacing: .06em; }
+  .beat { font-family: var(--serif); font-size: 21px; flex: 1 1 260px; }
+  .tag {
+    font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase;
+    border: 1px solid currentColor; border-radius: 2px; padding: 2px 8px; white-space: nowrap;
+  }
+  .t2v { color: var(--policy); }
+  .i2v { color: var(--scope); }
+
+  .says { color: var(--muted); font-size: 14px; }
+  .says b { color: var(--ink); font-weight: 400; }
+
+  pre {
+    margin: 0; background: var(--raise); border: 1px solid var(--rule); border-radius: 2px;
+    padding: 14px 16px; font-size: 13px; line-height: 1.62; color: var(--ink);
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .block { position: relative; }
+  .block .label {
+    font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 6px;
+  }
+  button.copy {
+    position: absolute; top: 26px; right: 8px;
+    background: var(--panel); border: 1px solid var(--rule); color: var(--muted);
+    font: inherit; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    padding: 3px 9px; border-radius: 2px; cursor: pointer;
+  }
+  button.copy:hover { color: var(--surface); border-color: var(--surface); }
+  button.copy:focus-visible { outline: 2px solid var(--surface); outline-offset: 2px; }
+  button.copy[data-done="1"] { color: var(--policy); border-color: var(--policy); }
+
+  .meta { display: flex; flex-wrap: wrap; gap: 6px 28px; font-size: 13px; color: var(--muted); }
+  .meta b { color: var(--ink); font-weight: 400; }
+
+  .overlay {
+    border-left: 2px solid var(--surface); padding-left: 14px;
+    font-family: var(--serif); font-size: 19px; color: var(--ink);
+  }
+  .overlay small {
+    display: block; font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+    letter-spacing: .04em; margin-top: 2px;
+  }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { color: var(--dim); font-weight: 400; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; }
+  td.n { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+  .scroll { overflow-x: auto; }
+
+  ol.steps { padding-left: 22px; max-width: 68ch; }
+  ol.steps li { margin-bottom: 10px; }
+  code { background: var(--raise); border: 1px solid var(--rule); border-radius: 2px;
+         padding: 1px 5px; font-size: 13px; }
+</style>
+
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">warden-connect · pitch film · production sheet</p>
+  <h1>Twelve shots, one minute</h1>
+  <p class="lede">A Kling shot list for the 58-second pitch. Twelve generations of five seconds
+  each, one caption per shot, assembled to sixty. Every prompt is written to be generated
+  cold — no shot depends on the one before it except through the start/end frames noted.</p>
+</header>
+
+<section>
+  <div class="flag">
+    <p><b>Read this before you spend a single generation.</b> Generative video cannot render
+    legible text. Every string this film depends on — <code>warden/offer.toml</code>,
+    <code>WC-4002</code>, <code>effective = surface ∩ scope ∩ policy</code> — will come back as
+    convincing gibberish, and it will look worse than no text at all because a viewer can tell
+    it is trying.</p>
+    <p style="margin-bottom:0">So none of these prompts asks for text, and the negative prompt
+    forbids it explicitly. <b>Every legible word is overlaid afterwards</b>, from the caption
+    track at the bottom of this sheet. Kling supplies the atmosphere; the editor supplies the
+    argument.</p>
+  </div>
+</section>
+
+<section>
+  <h2>The visual bible</h2>
+  <p class="lede">Paste this ahead of every shot prompt. Consistency across twelve independent
+  generations comes from repeating the same material description, not from luck — and this
+  palette is the film's own, so the overlaid captions will sit in it rather than on it.</p>
+
+  <div class="block">
+    <div class="label">Style preamble — prepend to every shot</div>
+    <button class="copy" data-copy="style">Copy</button>
+    <pre id="style">Abstract technical cinematography. An immense black void, deep ink-blue-black, with fine particulate haze and volumetric depth. All light comes from thin luminous filaments, translucent planes and molten pools. Strictly three light colours: pale cyan, warm amber, pale green — with rare crimson reserved for refusal. Matte surfaces, never glossy or chrome. Slow deliberate camera. Shallow depth of field, anamorphic 35mm, subtle film grain. No text or symbols anywhere.</pre>
+  </div>
+
+  <div class="block" style="margin-top:18px">
+    <div class="label">Negative prompt — paste into every shot</div>
+    <button class="copy" data-copy="neg">Copy</button>
+    <pre id="neg">text, letters, words, numbers, typography, glyphs, subtitles, captions, watermark, logo, signage, UI, interface, HUD, dashboard, charts, people, faces, hands, bodies, cartoon, anime, glossy plastic, chrome, lens flare, rainbow colours, oversaturation, clutter, warping, morphing artifacts, flicker, duplicated objects</pre>
+  </div>
+
+  <div class="meta" style="margin-top:18px">
+    <span><b>Aspect</b> 16:9</span>
+    <span><b>Duration</b> 5s per shot (Kling takes 5 or 10 only)</span>
+    <span><b>Mode</b> highest quality tier you have</span>
+    <span><b>Total</b> 12 shots = 60s</span>
+  </div>
+</section>
+
+<section>
+  <h2>The shots</h2>
+  <p class="lede"><span class="tag t2v">T2V</span> generates from the prompt alone.
+  <span class="tag i2v">I2V</span> takes a start and end frame — screenshot those two moments
+  from <a href="pitch.html">the canvas film</a> at the timecodes given, and Kling animates
+  between them. Use I2V where the geometry has to be right.</p>
+
+  <div id="shots"></div>
+</section>
+
+<section>
+  <h2>The caption track</h2>
+  <p class="lede">Overlaid in the editor, not generated. Serif for the claim a person makes,
+  monospace for the machine's own words — the same rule the canvas film uses, and the reason
+  it reads as one argument rather than a slideshow.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>In</th><th>Claim</th><th>Sub-line</th></tr></thead>
+      <tbody id="caps"></tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Assembly</h2>
+  <ol class="steps">
+    <li><b>Generate shots 1–12 at 5s.</b> Expect to regenerate three or four; drift and
+    duplicated objects are normal. Keep the seed of anything you like.</li>
+    <li><b>Cut hard, never dissolve.</b> The film's rhythm is a series of statements. A
+    cross-fade between two abstract shots reads as indecision.</li>
+    <li><b>Overlay the caption track.</b> Fade each in over ~0.4s, hold, fade out. Lower third,
+    centred, generous margins.</li>
+    <li><b>Grade for one ground.</b> Match black points across all twelve so the void is the
+    same void. This is the single biggest thing separating "twelve clips" from "one film".</li>
+    <li><b>Sound.</b> One sustained low drone throughout; a single sub-bass hit on shot 3 (the
+    freeze), shot 7 (the seal) and shot 11 (the revoke pulse). Silence for the last half-second.
+    No music with a beat — the cuts are the rhythm.</li>
+  </ol>
+  <p><b>Two ways to assemble, and they are different films.</b> All-Kling with overlaid
+  captions is the mood piece — best for the investor audience, because it is about the shape of
+  the problem. Intercutting the canvas panels for shots 5, 6 and 9 keeps the actual algebra and
+  the actual GitOps lanes on screen — better for architects, who will want to read them. Pick
+  one and hold it; alternating between two visual languages looks like an accident.</p>
+</section>
+
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const SHOTS = [
+    { n: 1, tc: "0:00", mode: "t2v", beat: "One connection",
+      says: "Before it is a problem it is a single, reasonable decision.",
+      prompt: "A single point of pale cyan light suspended in an immense black void, fine dust drifting through volumetric shafts. Thin luminous filaments begin to grow slowly outward from the point, like nerve fibres or root tendrils feeling their way into the darkness. Far away at the edges of frame, tall unlit monolithic slabs are barely visible. Everything is quiet and slow.",
+      cam: "Slow dolly in toward the point of light." },
+
+    { n: 2, tc: "0:05", mode: "t2v", beat: "Proliferation",
+      says: "The estate wires itself, faster than anyone approves it.",
+      prompt: "Dozens of luminous cyan filaments erupt outward at accelerating speed across a vast black void, threading toward tall dark monolithic slabs and weaving into a dense tangled web. Bright sparks travel along every filament like traffic on a wire. The growth is chaotic, organic and beautiful, and it keeps accelerating until the web fills the frame.",
+      cam: "Steady crane back, revealing the scale of the tangle." },
+
+    { n: 3, tc: "0:10", mode: "t2v", beat: "The freeze",
+      says: "Nobody signed for any of it. This is the silence in the middle of the film.",
+      prompt: "All motion stops at once. The dense web of glowing filaments freezes rigid in mid-air and the colour drains out of it, pale cyan bleeding away to cold ash grey. Fine dust hangs completely motionless in the volumetric light. The scene becomes still, cold and lifeless, like a photograph of something that was moving a moment ago.",
+      cam: "Very slow lateral drift past the frozen web. No push, no pull." },
+
+    { n: 4, tc: "0:15", mode: "t2v", beat: "Two planes",
+      says: "Two different questions. Everyone built the second one.",
+      prompt: "The frozen grey tangle dissolves into drifting particles that reorganise into two distinct horizontal planes of light separated by deep darkness. Along the upper plane a single slow deliberate amber thread is drawn steadily across, unhurried. Along the lower plane a fast dense torrent of pale green particles streams past at high speed. Two rhythms in one frame, one patient and one urgent.",
+      cam: "Locked off, centred, no camera movement — the two speeds do the work." },
+
+    { n: 5, tc: "0:20", mode: "i2v", beat: "Two lanes that never touch",
+      says: "Provider and consumer each merge in their own repository. Neither reviews the other's pull request.",
+      frames: "start 0:19 · end 0:27",
+      prompt: "Two separate rivers of luminous liquid light flow in parallel through an immense dark hall and never touch — the upper river pale cyan, the lower river warm amber, with a wide band of darkness between them. Each river passes through its own tall stone gateway where a heavy seal presses down into the moving light and leaves a glowing imprint that travels onward with the flow.",
+      cam: "Lateral tracking shot alongside both rivers, matching their speed." },
+
+    { n: 6, tc: "0:25", mode: "i2v", beat: "The join",
+      says: "They meet in the control plane, and nowhere earlier.",
+      frames: "start 0:28 · end 0:31",
+      prompt: "Two parallel rivers of cyan and amber light finally converge into a single channel and pour together into a circular forge of white-hot light set into a dark floor. Inside the forge, a flat rectangular crystal tablet begins to crystallise out of the molten light, its edges forming first and the surface filling in after. Sparks lift and drift upward.",
+      cam: "Slow crane down over the forge, looking into it." },
+
+    { n: 7, tc: "0:30", mode: "t2v", beat: "The artifact",
+      says: "Signed, pinned, dated. This is the object the whole film is about.",
+      prompt: "A flat crystal tablet finishes forming above a forge of light, lifts free and rotates slowly in the air. A heavy seal presses into its surface; the tablet flares once, brilliantly white, then settles to a steady inner glow of pale cyan. Loose sparks drift away into the dark. The tablet is solid, matte and deliberate, not glassy or ornamental.",
+      cam: "Slow orbit around the tablet, shallow depth of field." },
+
+    { n: 8, tc: "0:35", mode: "t2v", beat: "Three places it lives",
+      says: "A receipt in git, the register in the plane, a copy that expires at the edge.",
+      prompt: "The glowing crystal tablet silently separates into three identical translucent copies which drift apart along three diverging paths into the darkness. Each settles into a different distant place: one into a recess carved in stone, one inside a tall dark vault, one into a small lit alcove far away. The three destinations are clearly different from one another.",
+      cam: "Long dolly out, ending wide enough to hold all three destinations at once." },
+
+    { n: 9, tc: "0:40", mode: "i2v", beat: "A ceiling, never a grant",
+      says: "surface ∩ scope ∩ policy. The core is smaller than any of them.",
+      frames: "start 0:33 · end 0:38",
+      prompt: "Three enormous translucent luminous discs — one pale cyan, one warm amber, one pale green — drift slowly through a black void and begin to overlap one another. Where all three intersect, a small brilliant core of green-white light ignites and pulses gently. Everything outside that small intersection dims steadily toward darkness until only the core is bright.",
+      cam: "Slow push in toward the glowing core." },
+
+    { n: 10, tc: "0:45", mode: "t2v", beat: "Refusal",
+      says: "The uncontracted call never reaches the callee. That is the whole point.",
+      prompt: "A steady river of luminous particles flows toward a tall dark archway. One stream of pale green light passes cleanly through the arch and continues into the distance. A second stream of crimson light strikes an invisible barrier across the mouth of the arch and shatters into drifting red embers that fall away, never passing through.",
+      cam: "Locked off at the side of the archway, very slight push in." },
+
+    { n: 11, tc: "0:50", mode: "t2v", beat: "Revoked, and on the record",
+      says: "One order reaches every enforcement point at once, and the trail links behind it.",
+      prompt: "A single bright crimson pulse ripples outward as an expanding ring across a vast dark plain. As the ring passes three distant beacons of cyan light, all three go dark in the same instant. Behind the travelling ring, small blocks of light link together one after another into a continuous unbroken chain stretching away across the plain.",
+      cam: "High and wide, craning slowly upward as the ring travels." },
+
+    { n: 12, tc: "0:55", mode: "t2v", beat: "The whole structure",
+      says: "Pull back far enough and it is one system, quiet.",
+      prompt: "The camera pulls steadily back to reveal an entire structure at once inside an immense dark cathedral space — two parallel rivers of light, a circular forge, three distant alcoves, and a long chain of linked light — all glowing quietly and holding still. Motion settles completely. The lights hold, then dim slowly and evenly toward black.",
+      cam: "Long continuous dolly out, ending on near-black." },
+  ];
+
+  const CAPS = [
+    ["0:01", "You shipped agents.", null],
+    ["0:06", "They opened connections.", "18 agents · 5 systems · 90 possible edges"],
+    ["0:11", "Nobody approved these.", "which agents reach payments · who signed · how do you revoke it"],
+    ["0:16", "Two questions. One has never had an owner.", "may this connection exist · may this call proceed"],
+    ["0:21", "Two repositories. Two reviews.", "warden/offer.toml · warden/needs.toml"],
+    ["0:26", "Neither reviews the other's pull request.", "the offer waits until a need arrives"],
+    ["0:31", "The source host confirms the merge. Not the pipeline.", "merged · protected · author named · approver ≠ author"],
+    ["0:36", "One artifact. Three places it lives.", "a receipt in git · the register in the plane · a copy that expires"],
+    ["0:41", "A contract is a ceiling. Never a grant.", "effective = surface ∩ scope ∩ policy"],
+    ["0:46", "Enforced inside the hop you already run.", "WC-4002 · the uncontracted tool never arrives"],
+    ["0:51", "Revoke once. Everywhere. On the record.", "hash-chained · an edit invalidates every row after it"],
+    ["0:56", "warden-connect", "the connection control plane for AI agents"],
+  ];
+
+  const esc = s => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+  /** "0:55" + 5s = "1:00". Slicing the string got this wrong in both directions. */
+  const plus5 = tc => {
+    const [m, s] = tc.split(":").map(Number);
+    const t = m * 60 + s + 5;
+    return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+  };
+
+  document.getElementById("shots").innerHTML = SHOTS.map(s => `
+    <article class="shot">
+      <header>
+        <span class="num">${String(s.n).padStart(2, "0")}</span>
+        <span class="tc">${s.tc} – ${plus5(s.tc)} · 5s</span>
+        <span class="beat">${esc(s.beat)}</span>
+        <span class="tag ${s.mode}">${s.mode === "i2v" ? "start / end frame" : "text to video"}</span>
+      </header>
+      <p class="says"><b>What it has to convey.</b> ${esc(s.says)}</p>
+      <div class="block">
+        <div class="label">Shot prompt — paste after the style preamble</div>
+        <button class="copy" data-shot="${s.n}">Copy</button>
+        <pre id="p${s.n}">${esc(s.prompt)} ${esc(s.cam)}</pre>
+      </div>
+      <div class="meta">
+        <span><b>Camera</b> ${esc(s.cam)}</span>
+        ${s.frames ? `<span><b>Frames from pitch.html</b> ${esc(s.frames)}</span>` : ""}
+      </div>
+    </article>`).join("");
+
+  document.getElementById("caps").innerHTML = CAPS.map(([tc, claim, sub]) => `
+    <tr><td class="n">${tc}</td>
+        <td><div class="overlay">${esc(claim)}${sub ? `<small>${esc(sub)}</small>` : ""}</div></td>
+        <td></td></tr>`).join("");
+
+  // Copy buttons. The style preamble is prepended to shot prompts, because that is how they
+  // are meant to be pasted and asking someone to do it twelve times by hand invites drift.
+  const styleText = () => document.getElementById("style").textContent.trim();
+  document.addEventListener("click", e => {
+    const b = e.target.closest("button.copy");
+    if (!b) return;
+    let text;
+    if (b.dataset.shot) text = styleText() + "\n\n" + document.getElementById("p" + b.dataset.shot).textContent.trim();
+    else text = document.getElementById(b.dataset.copy).textContent.trim();
+
+    const done = () => {
+      const was = b.textContent;
+      b.textContent = "Copied"; b.dataset.done = "1";
+      setTimeout(() => { b.textContent = was; b.dataset.done = ""; }, 1400);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, () => {});
+    } else {
+      // Older embeddings have no async clipboard; a hidden textarea still works there.
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (_) { /* nothing more to try */ }
+      ta.remove();
+    }
+  });
+})();
+</script>
