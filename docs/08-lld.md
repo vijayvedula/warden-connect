@@ -286,7 +286,14 @@ tighter always wins, never the more recent.
 
 Returns capability **summaries** only: no endpoints, no credentials, no full
 schemas. An empty result is deliberately indistinguishable from "exists but not
-visible to you" (`WC-2020` throttling, `WC-2021` asker not attested).
+visible to you" (`WC-2021` asker not attested).
+
+Throttling **truncates and never refuses**: overflow returns `truncated: true`
+with an empty tail. `WC-2020 DISCOVERY_THROTTLED` is therefore reserved and
+unreachable by design — a status that changes when a caller crosses a threshold
+is itself the enumeration signal throttling exists to deny. This paragraph named
+it as a refusal the broker emits, which contradicted the module's own principle
+3 and would have sent anyone implementing to it reintroduce the oracle.
 
 ### 8.5.7 `assurance` — the loop
 
@@ -1078,13 +1085,13 @@ them. This is a permanent decision, not a backlog item.
 |---|---|---|
 | [UC-01](use-cases/UC-01-register-and-admit-an-agent.md) | `admission`, `attest`, `screen`, `registry` | `WC-1001`–`WC-1010` |
 | [UC-02](use-cases/UC-02-onboard-a-tool-server.md) | `admission`, `canon`, `screen` | `WC-1002`, `WC-1005`, `WC-1010` |
-| [UC-03](use-cases/UC-03-mediated-capability-discovery.md) | `broker` | `WC-2020`, `WC-2021` |
+| [UC-03](use-cases/UC-03-mediated-capability-discovery.md) | `broker` | `WC-2021` (throttling truncates, see §8.5.6) |
 | [UC-04](use-cases/UC-04-establish-a-connection.md) | `issuance`, `cpolicy`, `authority`, `gate`, `filter` | `WC-3010`–`WC-3121`, `WC-4002`–`WC-4005` |
 | [UC-05](use-cases/UC-05-cross-organisation-federation.md) | `federate` | `WC-2030`–`WC-2035` |
-| [UC-06](use-cases/UC-06-surface-drift.md) | `assurance`, `canon`, `screen` | `WC-5001`, `WC-5002`, `WC-3108` |
+| [UC-06](use-cases/UC-06-surface-drift.md) | `assurance`, `canon`, `screen` | `WC-5002`, `WC-3108` (a failed re-attestation reports as `Posture::Degraded`, not `WC-5001`) |
 | [UC-07](use-cases/UC-07-emergency-quarantine.md) | `contain`, `dist`, `caep` | `WC-6001`–`WC-6004`, `WC-5030` |
 | [UC-08](use-cases/UC-08-shadow-estate-detection.md) | `inventory`, `portal` | `WC-2001`, `WC-4001` |
-| [UC-09](use-cases/UC-09-renewal-review-offboarding.md) | `issuance`, `assurance`, `backup` | `WC-3030`–`WC-3033` |
+| [UC-09](use-cases/UC-09-renewal-review-offboarding.md) | `issuance`, `assurance`, `backup` | `WC-3032`, `WC-3033` (degraded posture denies in `cpolicy` with its own reason, not `WC-3030`/`WC-3031`) |
 | [UC-10](use-cases/UC-10-regulatory-register-and-evidence.md) | `export`, `chain`, `rekor` | `WC-7001`–`WC-7010` |
 
 ---
