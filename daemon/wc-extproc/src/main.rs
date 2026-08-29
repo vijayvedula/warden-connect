@@ -253,30 +253,49 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                             (Some(cid), Some(_)) => {
                                 contracts.resolve(caller.as_deref(), cid.as_str())
                             }
-                            _ => None,
+                            _ => Vec::new(),
                         };
                         // Captured before `admitted` moves: a Decision needs the connection's
                         // identity, and a refused call — the one an auditor asks about — has no
                         // contract to read it from later.
-                        let (rec_cid, rec_jti, rec_delivery) = match &resolved {
-                            Some(r) => (
-                                r.admitted.cid.as_str().to_string(),
-                                r.admitted.jti.as_str().to_string(),
-                                Some(wc_mediator::evidence::Delivery::parse(
+                        // A pair can hold several contracts. The record names the first —
+                        // which one governed a call is settled per tool inside the filter — and
+                        // delivery takes the strictest, because a call is either recorded or it
+                        // is not, and the stricter agreement is the one to honour.
+                        let (rec_cid, rec_jti) = resolved.first().map_or_else(
+                            || (String::new(), String::new()),
+                            |r| {
+                                (
+                                    r.admitted.cid.as_str().to_string(),
+                                    r.admitted.jti.as_str().to_string(),
+                                )
+                            },
+                        );
+                        let rec_delivery = resolved
+                            .iter()
+                            .map(|r| {
+                                wc_mediator::evidence::Delivery::parse(
                                     &r.contract.payload.terms.evidence.delivery,
-                                )),
-                            ),
-                            None => (String::new(), String::new(), None),
-                        };
+                                )
+                            })
+                            .reduce(|a, b| {
+                                if a == wc_mediator::evidence::Delivery::Blocking
+                                    || b == wc_mediator::evidence::Delivery::Blocking
+                                {
+                                    wc_mediator::evidence::Delivery::Blocking
+                                } else {
+                                    wc_mediator::evidence::Delivery::FailSafe
+                                }
+                            });
                         let rec_caller = caller.clone().unwrap_or_default();
                         let rec_callee = callee_id
                             .as_ref()
                             .map(|c| c.as_str().to_string())
                             .unwrap_or_default();
-                        let (admitted, contract) = match resolved {
-                            Some(r) => (Some(r.admitted), Some(r.contract)),
-                            None => (None, None),
-                        };
+                        let held: Vec<_> = resolved
+                            .into_iter()
+                            .map(|r| (r.admitted, Some(r.contract)))
+                            .collect();
                         note = Some(Note {
                             sink: evidence.clone(),
                             contracts: (!rec_cid.is_empty()).then(|| {
@@ -292,7 +311,7 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                                 wc_core::error::Mode::Observe => "observe",
                             },
                         });
-                        *slot.lock().expect("slot") = admitted.clone();
+                        *slot.lock().expect("slot") = held.first().map(|(a, _)| a.clone());
                         // With no callee there is nothing for gate 8 to bind a digest to, so the
                         // filter is built with no contract and refuses the stream.
                         let bound = callee_id.unwrap_or_else(placeholder_callee);
@@ -302,7 +321,7 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                             pins: pins.clone(),
                             pin_max_age,
                         };
-                        filter = Some(Filter::new(admitted, contract, now(), &cfg));
+                        filter = Some(Filter::new(held, now(), &cfg));
                         cont_headers()
                     }
                     Some(processing_request::Request::RequestBody(b)) => {
@@ -312,8 +331,7 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                             // trusting the body is how a caller reaches the upstream with no identity
                             // established at all, so this fails closed rather than assuming.
                             Filter::new(
-                                None,
-                                None,
+                                Vec::new(),
                                 now(),
                                 &FilterCfg {
                                     mode: contracts_mode,
@@ -1075,13 +1093,13 @@ mod tests {
     }
 
     impl Contracts for OneContract {
-        fn resolve(&self, caller: Option<&str>, _callee: &str) -> Option<contracts::Resolved> {
+        fn resolve(&self, caller: Option<&str>, _callee: &str) -> Vec<contracts::Resolved> {
             match caller {
-                Some(c) if c == self.caller => Some(contracts::Resolved {
+                Some(c) if c == self.caller => vec![contracts::Resolved {
                     admitted: self.admitted.clone(),
                     contract: std::sync::Arc::clone(&self.resolved),
-                }),
-                _ => None,
+                }],
+                _ => Vec::new(),
             }
         }
     }

@@ -1090,3 +1090,203 @@ fn a_refused_call_is_not_reported_as_usage() {
         wc_free(h);
     }
 }
+
+// --- several contracts for one pair ---------------------------------------
+//
+// Two teams, two capabilities, two approval timelines. The map was one-per-pair, so the second
+// contract was verified, counted and unreachable — found by a walkthrough where "2 contract(s)
+// verified" was followed by the wrong tool list.
+
+/// Drive a catalogue through and return the rewritten frame.
+fn catalogue(h: *mut wc_kong::config::Handle, p: &str) -> Value {
+    let mut err = WcOut {
+        ptr: std::ptr::null_mut(),
+        len: 0,
+        code: 0,
+    };
+    // SAFETY: h is live.
+    let s = unsafe { wc_stream_new(h, p.as_ptr(), p.len(), &raw mut err) };
+    unsafe { wc_out_free(&raw mut err) };
+    let frame = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+    let mut out = WcOut {
+        ptr: std::ptr::null_mut(),
+        len: 0,
+        code: 0,
+    };
+    let ct = "application/json";
+    let body = json!({"jsonrpc":"2.0","id":1,"result": served()}).to_string();
+    // SAFETY: s is live across all three phases.
+    let rewritten = unsafe {
+        assert_eq!(
+            wc_on_request(s, frame.as_ptr(), frame.len(), &raw mut out),
+            WC_BUFFER
+        );
+        wc_out_free(&raw mut out);
+        assert_eq!(
+            wc_on_response_headers(s, ct.as_ptr(), ct.len(), &raw mut out),
+            WC_BUFFER
+        );
+        wc_out_free(&raw mut out);
+        assert_eq!(
+            wc_on_response_body(s, body.as_ptr(), body.len(), &raw mut out),
+            WC_REWRITE
+        );
+        let text =
+            String::from_utf8_lossy(std::slice::from_raw_parts(out.ptr, out.len)).into_owned();
+        wc_out_free(&raw mut out);
+        wc_stream_free(s);
+        text
+    };
+    serde_json::from_str(&rewritten).expect("valid json")
+}
+
+/// A second artifact for the same pair, over a different tool.
+fn jws_second(cid: &str, jti: &str, tools: &[&str]) -> String {
+    let at = now();
+    let callee = EntityId::new(CALLEE).unwrap();
+    let pin = canon::pin(
+        SurfaceKind::McpTools,
+        &callee,
+        &served(),
+        &Limits::default(),
+        at,
+    )
+    .unwrap();
+    let surface = Surface {
+        tools: tools.iter().map(|t| (*t).to_string()).collect(),
+        skills: Vec::new(),
+        resources: Vec::new(),
+    };
+    let digest = pin.surface_digest(&surface.items()).unwrap();
+    let mut payload = ContractPayload::new(
+        Cid::new(cid).unwrap(),
+        Jti::new(jti).unwrap(),
+        ISS,
+        MEDIATOR,
+        Party {
+            id: EntityId::new(CALLER).unwrap(),
+            zone: ZoneId::new("internal.apac-ops").unwrap(),
+            tier: Tier::TWO,
+            card: None,
+            manifest: None,
+            surface_digest: None,
+        },
+        Party {
+            id: callee,
+            zone: ZoneId::new("internal.payments").unwrap(),
+            tier: Tier::TWO,
+            card: None,
+            manifest: Some(pin.manifest.clone()),
+            surface_digest: Some(digest),
+        },
+    );
+    payload.iat = at - 100;
+    payload.nbf = at - 100;
+    payload.exp = at + 3_600;
+    payload.surface = surface;
+    payload.terms = Terms::default();
+    payload.assurance = Assurance::default();
+    mint(
+        &payload,
+        &IssuerKey::ec_pem(KID, PRIV, Algorithm::ES256).unwrap(),
+    )
+    .unwrap()
+}
+
+/// Two contracts, disjoint tools, one pair. Both must work.
+fn two_contract_cfg(name: &str, second_tools: &[&str]) -> String {
+    let d = dir(name);
+    let a = d.join("a.jws");
+    let b = d.join("b.jws");
+    std::fs::write(&a, jws_with(&["get_balance"], Terms::default())).unwrap();
+    std::fs::write(
+        &b,
+        jws_second("conn_2222bbbb", "cx_2222bbbb01", second_tools),
+    )
+    .unwrap();
+    let rpath = d.join("routes.toml");
+    std::fs::write(
+        &rpath,
+        format!("[[route]]\ncluster = \"payments\"\ncallee = \"{CALLEE}\"\n"),
+    )
+    .unwrap();
+    json!({
+        "contracts": [a.to_str().unwrap(), b.to_str().unwrap()],
+        "routes": rpath.to_str().unwrap(),
+        "issuer_pub": PUB_PATH, "kid": KID,
+        "mediator_id": MEDIATOR, "issuer_id": ISS,
+        "identity": "tls", "mode": "enforce"
+    })
+    .to_string()
+}
+
+#[test]
+fn a_tool_from_the_second_contract_for_a_pair_is_reachable() {
+    let h = init(&two_contract_cfg("twoc", &["transfer_funds"])).unwrap();
+    // SAFETY: h is live.
+    assert_eq!(unsafe { wc_contract_count(h) }, 2);
+    let p = peer("payments", Some(CERT));
+    verify_pin(h, &p);
+
+    // The FIRST contract's tool.
+    let (v, body, _) = request(h, &p, TOOL_CALL);
+    assert_eq!(v, WC_FORWARD, "contract A's tool: {body}");
+
+    // The SECOND contract's tool — the one that used to be unreachable.
+    let (v, body, _) = request(
+        h,
+        &p,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"transfer_funds"}}"#,
+    );
+    assert_eq!(v, WC_FORWARD, "contract B's tool must resolve too: {body}");
+    unsafe { wc_free(h) };
+}
+
+#[test]
+fn the_catalogue_is_the_union_of_every_contract_for_the_pair() {
+    let h = init(&two_contract_cfg("twoc-cat", &["transfer_funds"])).unwrap();
+    let p = peer("payments", Some(CERT));
+    let rec = catalogue(h, &p);
+    let names: Vec<&str> = rec["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .map(|t| t["name"].as_str().expect("name"))
+        .collect();
+    assert!(names.contains(&"get_balance"), "{names:?}");
+    assert!(
+        names.contains(&"transfer_funds"),
+        "the second contract's tool must appear: {names:?}"
+    );
+    assert!(
+        !names.contains(&"list_transactions"),
+        "a tool no contract covers must not: {names:?}"
+    );
+    unsafe { wc_free(h) };
+}
+
+/// Nothing in either artifact says which governs, so guessing would apply one contract's terms
+/// to the other's approval.
+#[test]
+fn a_tool_two_contracts_both_claim_is_refused_rather_than_guessed() {
+    let h = init(&two_contract_cfg(
+        "twoc-clash",
+        &["get_balance", "transfer_funds"],
+    ))
+    .unwrap();
+    let p = peer("payments", Some(CERT));
+    verify_pin(h, &p);
+    let (v, body, _) = request(h, &p, TOOL_CALL);
+    assert_eq!(v, WC_REFUSE, "an ambiguous tool must not be guessed");
+    assert!(body.contains("which governs"), "{body}");
+
+    // And only the ambiguous one. `transfer_funds` is claimed by exactly one contract, so it
+    // still resolves — a conflict over one tool must not withdraw the rest of the agreement.
+    let (v, body, _) = request(
+        h,
+        &p,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"transfer_funds"}}"#,
+    );
+    assert_eq!(v, WC_FORWARD, "an unambiguous tool must still work: {body}");
+    unsafe { wc_free(h) };
+}

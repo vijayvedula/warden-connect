@@ -397,30 +397,48 @@ pub unsafe extern "C" fn wc_stream_new(
             }
         };
 
-        let resolved = callee
-            .as_ref()
-            .and_then(|c| handle.contracts.resolve(caller.as_deref(), c.as_str()));
+        let resolved = callee.as_ref().map_or_else(Vec::new, |c| {
+            handle.contracts.resolve(caller.as_deref(), c.as_str())
+        });
         // Captured before `admitted` moves into the filter: a Decision needs the connection's
         // identity, and an absent contract still deserves a record — a refused call is the one
         // an auditor asks about.
+        // A pair can hold several contracts. The evidence record names the FIRST — a decision
+        // is about a call, and which contract governed it is settled per tool inside the
+        // filter; recording the pair's first is enough to correlate and honest about what it
+        // is. Delivery likewise: the strictest wins, because a call is either recorded or it
+        // is not, and the stricter of two agreements is the one to honour.
         let cid_for_use = resolved
-            .as_ref()
+            .first()
             .map(|r| r.admitted.cid.as_str().to_string())
             .unwrap_or_default();
-        let (cid, jti, delivery) = match &resolved {
-            Some(r) => (
-                r.admitted.cid.as_str().to_string(),
-                r.admitted.jti.as_str().to_string(),
-                Some(wc_mediator::evidence::Delivery::parse(
-                    &r.contract.payload.terms.evidence.delivery,
-                )),
-            ),
-            None => (String::new(), String::new(), None),
-        };
-        let (admitted, contract) = match resolved {
-            Some(r) => (Some(r.admitted), Some(r.contract)),
-            None => (None, None),
-        };
+        let (cid, jti) = resolved.first().map_or_else(
+            || (String::new(), String::new()),
+            |r| {
+                (
+                    r.admitted.cid.as_str().to_string(),
+                    r.admitted.jti.as_str().to_string(),
+                )
+            },
+        );
+        let delivery = resolved
+            .iter()
+            .map(|r| {
+                wc_mediator::evidence::Delivery::parse(&r.contract.payload.terms.evidence.delivery)
+            })
+            .reduce(|a, b| {
+                if a == wc_mediator::evidence::Delivery::Blocking
+                    || b == wc_mediator::evidence::Delivery::Blocking
+                {
+                    wc_mediator::evidence::Delivery::Blocking
+                } else {
+                    wc_mediator::evidence::Delivery::FailSafe
+                }
+            });
+        let held: Vec<_> = resolved
+            .into_iter()
+            .map(|r| (r.admitted, Some(r.contract)))
+            .collect();
 
         let bound_id = bound.as_str().to_string();
         let cfg = FilterCfg {
@@ -430,7 +448,7 @@ pub unsafe extern "C" fn wc_stream_new(
             pin_max_age: handle.pin_max_age,
         };
         Box::into_raw(Box::new(WcStream {
-            filter: Filter::new(admitted, contract, crate::now(), &cfg),
+            filter: Filter::new(held, crate::now(), &cfg),
             evidence: handle.evidence.clone(),
             delivery,
             cid,

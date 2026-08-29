@@ -138,8 +138,7 @@ fn cfg(pins: Option<Arc<PinLedger>>, pin_max_age: u64) -> FilterCfg {
 
 fn filter_for(tools: &[&str], catalogue: &Value) -> Filter {
     Filter::new(
-        Some(admitted(tools)),
-        Some(contract(tools, catalogue)),
+        vec![(admitted(tools), Some(contract(tools, catalogue)))],
         NOW,
         &cfg(None, 0),
     )
@@ -208,7 +207,7 @@ fn a_reworded_description_moves_the_pin() {
 fn a_stream_with_no_contract_does_not_silently_pass_a_catalogue() {
     // No contract means no admitted connection, so there is nothing to filter against and the
     // request never reaches the catalogue phase in the first place.
-    let mut f = Filter::new(None, None, NOW, &cfg(None, 0));
+    let mut f = Filter::new(Vec::new(), NOW, &cfg(None, 0));
     assert_eq!(
         f.on_request("tools/list", &json!({})),
         warden_connect_gateway::Verdict::Refuse {
@@ -232,8 +231,7 @@ fn filter_with_ledger(
     let mut a = admitted(tools);
     a.jti = Jti::new("cx_84be0011").unwrap();
     Filter::new(
-        Some(a),
-        Some(contract(tools, catalogue)),
+        vec![(a, Some(contract(tools, catalogue)))],
         now,
         &cfg(Some(Arc::clone(ledger)), max_age),
     )
@@ -335,8 +333,10 @@ fn no_ledger_means_the_requirement_is_off_entirely() {
     // The documented escape for an estate whose clients never list tools. Everything else is
     // still enforced; only gate 8 on catalogue-less streams is given up.
     let mut f = Filter::new(
-        Some(admitted(&["get_balance"])),
-        Some(contract(&["get_balance"], &served())),
+        vec![(
+            admitted(&["get_balance"]),
+            Some(contract(&["get_balance"], &served())),
+        )],
         NOW,
         &cfg(None, 0),
     );

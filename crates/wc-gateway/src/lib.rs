@@ -175,19 +175,15 @@ pub struct FilterCfg {
 /// what makes scaling out a matter of adding instances.
 #[derive(Debug)]
 pub struct Filter {
-    /// The connection this stream belongs to, once `initialize` has been admitted.
-    admitted: Option<wc_core::contract::Admitted>,
-    /// The callee's pinned surface digest, from the contract.
+    /// Every contract covering this pair, each with its own admitted connection.
     ///
-    /// The contract itself, so gate 8 runs through `VerifiedContract::check_pin`.
-    ///
-    /// An earlier version of this carried the pinned digest and compared it to the presented
-    /// manifest. That was wrong twice: the contract pins a digest over **exactly the contracted
-    /// items**, not the whole manifest, so it mismatched whenever the callee served more tools
-    /// than were contracted — which is the normal case; and a contract carrying no digest was
-    /// treated as "gate 8 off" where `check_pin` refuses it. Calling the shared check is both
-    /// correct and the reason this crate does not reimplement any of them.
-    contract: Option<std::sync::Arc<wc_core::contract::VerifiedContract>>,
+    /// Plural because one pair can hold several — two teams, two capabilities, two approval
+    /// timelines. A `tools/call` is governed by whichever contract covers that tool; a
+    /// catalogue shows the union and must satisfy every contract's pin.
+    held: Vec<(
+        wc_core::contract::Admitted,
+        Option<std::sync::Arc<wc_core::contract::VerifiedContract>>,
+    )>,
     /// The callee id the pin is bound to. A digest is over (entity, surface), so comparing one
     /// computed for a different entity would always mismatch.
     callee: wc_core::model::EntityId,
@@ -223,19 +219,20 @@ enum StreamKind {
 impl Filter {
     /// A filter for one stream, on a connection that has already been admitted.
     ///
-    /// Admission is not this type's job: at a gateway the contract is resolved per session, and
-    /// the session outlives the stream. `None` means no admitted connection, and every frame on
-    /// the stream is then refused — absent is not permissive.
+    /// Admission is not this type's job: at a gateway contracts are resolved per session, and
+    /// the session outlives the stream. An EMPTY list means no admitted connection, and every
+    /// frame on the stream is then refused — absent is not permissive.
     #[must_use]
     pub fn new(
-        admitted: Option<wc_core::contract::Admitted>,
-        contract: Option<std::sync::Arc<wc_core::contract::VerifiedContract>>,
+        held: Vec<(
+            wc_core::contract::Admitted,
+            Option<std::sync::Arc<wc_core::contract::VerifiedContract>>,
+        )>,
         now: u64,
         cfg: &FilterCfg,
     ) -> Filter {
         Filter {
-            admitted,
-            contract,
+            held,
             callee: cfg.callee.clone(),
             limits: wc_core::canon::Limits::default(),
             now,
@@ -252,7 +249,7 @@ impl Filter {
     pub fn on_request(&mut self, method: &str, params: &Value) -> Verdict {
         // No contract, no traffic. In observe mode the finding is recorded by the adapter and
         // the frame goes through, which is the documented softening — and the only one.
-        let Some(admitted) = self.admitted.clone() else {
+        if self.held.is_empty() {
             self.kind = StreamKind::Other;
             return match self.mode {
                 wc_core::error::Mode::Observe => Verdict::Forward,
@@ -261,7 +258,7 @@ impl Filter {
                     detail: "no contract for this caller and callee".to_string(),
                 },
             };
-        };
+        }
 
         if let Some(catalog) = wc_mediator::filter::Catalog::from_method(method) {
             self.kind = StreamKind::Catalog(catalog);
@@ -277,12 +274,41 @@ impl Filter {
                 };
             };
             // The surface is a ceiling. This is the check the whole component exists for.
-            if !admitted.items.contains(&tool) {
-                return Verdict::Refuse {
-                    code: Code::TOOL_UNCONTRACTED,
-                    detail: format!("{tool} is not in the contracted surface"),
-                };
-            }
+            //
+            // Which contract governs is decided by the TOOL, because that is the only thing in
+            // the request that distinguishes two agreements over one party pair. Two contracts
+            // claiming the same tool is unresolvable — nothing in either artifact says which
+            // governs — so it is refused rather than guessed, and the set reports it at load.
+            let governing: Vec<usize> = self
+                .held
+                .iter()
+                .enumerate()
+                .filter(|(_, (a, _))| a.items.contains(&tool))
+                .map(|(i, _)| i)
+                .collect();
+            let idx = match governing.as_slice() {
+                [] => {
+                    return Verdict::Refuse {
+                        code: Code::TOOL_UNCONTRACTED,
+                        detail: format!("{tool} is not in the contracted surface"),
+                    }
+                }
+                [only] => *only,
+                many => {
+                    let cids: Vec<&str> =
+                        many.iter().map(|i| self.held[*i].0.cid.as_str()).collect();
+                    return Verdict::Refuse {
+                        code: Code::CONFIG_INVALID,
+                        detail: format!(
+                            "{} contracts claim {tool} for this pair ({}) and nothing says \
+                             which governs — put each tool in exactly one contract",
+                            many.len(),
+                            cids.join(", ")
+                        ),
+                    };
+                }
+            };
+            let admitted = self.held[idx].0.clone();
 
             // Gate 8, for a stream that carries no catalogue of its own. Before the ceilings
             // for the same reason the surface check is: `reserve` records the call, and a call
@@ -361,9 +387,9 @@ impl Filter {
         let StreamKind::Catalog(catalog) = self.kind else {
             return BodyAction::Pass;
         };
-        let Some(admitted) = &self.admitted else {
+        if self.held.is_empty() {
             return BodyAction::Pass;
-        };
+        }
         let Ok(mut frame) = serde_json::from_slice::<Value>(body) else {
             // An unparseable catalogue is not an empty one. Passing it through would hand the
             // agent the server's full tool list.
@@ -376,7 +402,11 @@ impl Filter {
         // actually presented. The mediator fetches a catalogue when a client skips discovery; a
         // filter cannot, so a stream that carries none is not pinned — named in the crate docs
         // rather than hidden.
-        if let (Some(contract), Some(result)) = (&self.contract, frame.get("result")) {
+        // EVERY contract's pin, not just one. Each pins a digest over its own contracted items,
+        // so one catalogue has to satisfy all of them — a caller holding two contracts on a
+        // callee that drifted must not keep working because the drift happened to miss the
+        // tools in the first one.
+        if let Some(result) = frame.get("result") {
             let presented = match wc_core::canon::pin(
                 wc_core::canon::SurfaceKind::McpTools,
                 &self.callee,
@@ -394,27 +424,39 @@ impl Filter {
                     }
                 }
             };
-            if let Err(e) = contract.check_pin(&presented) {
-                // A mismatch REVOKES any earlier verification. Refusing only this catalogue
-                // would leave the recorded pin standing, so tool calls would keep flowing on a
-                // contract whose callee has demonstrably moved — the drift detected and then
-                // ignored, which is worse than not looking.
-                if let (Some(pins), Some(a)) = (&self.pins, &self.admitted) {
-                    pins.forget(a.jti.as_str());
+            for (admitted, contract) in &self.held {
+                let Some(contract) = contract else { continue };
+                if let Err(e) = contract.check_pin(&presented) {
+                    // A mismatch REVOKES any earlier verification, for EVERY contract on this
+                    // pair. Refusing only this catalogue would leave recorded pins standing, so
+                    // tool calls would keep flowing on a callee that has demonstrably moved —
+                    // the drift detected and then ignored, which is worse than not looking.
+                    if let Some(pins) = &self.pins {
+                        for (a, _) in &self.held {
+                            pins.forget(a.jti.as_str());
+                        }
+                    }
+                    return BodyAction::Refuse {
+                        code: e.code(),
+                        detail: format!("contract {}: {}", admitted.cid.as_str(), e.detail()),
+                    };
                 }
-                return BodyAction::Refuse {
-                    code: e.code(),
-                    detail: e.detail().to_string(),
-                };
             }
-            // Recorded only on a match. A mismatch must not mark the contract pinned, or one
-            // bad catalogue would unlock every later tool call on it.
-            if let (Some(pins), Some(a)) = (&self.pins, &self.admitted) {
-                pins.record(a.jti.as_str(), self.now);
+            // Recorded only when every pin matched. A mismatch must not mark anything pinned,
+            // or one bad catalogue would unlock every later tool call on this pair.
+            if let Some(pins) = &self.pins {
+                for (a, _) in &self.held {
+                    pins.record(a.jti.as_str(), self.now);
+                }
             }
         }
 
-        let permitted = permitted_for(admitted, catalog);
+        // The union across every contract for this pair: what the caller may reach is what any
+        // of their agreements permits, and showing less would hide a capability they hold.
+        let mut permitted = std::collections::BTreeSet::new();
+        for (a, _) in &self.held {
+            permitted.extend(permitted_for(a, catalog));
+        }
         let _stat = wc_mediator::filter::filter_catalog(catalog, &permitted, &mut frame);
         BodyAction::Rewrite(Box::new(frame))
     }
@@ -479,7 +521,7 @@ mod tests {
     /// A live stream with no contract carried, so these exercise the phase machine alone.
     /// Gate 8 needs a real minted contract and lives in `tests/pin.rs`.
     fn live(items: &[&str]) -> Filter {
-        Filter::new(Some(admitted(items)), None, 0, &cfg(Mode::Enforce))
+        Filter::new(vec![(admitted(items), None)], 0, &cfg(Mode::Enforce))
     }
 
     fn call(tool: &str) -> (String, Value) {
@@ -515,14 +557,14 @@ mod tests {
     fn no_contract_refuses_in_enforce_and_forwards_in_observe() {
         let (m, p) = call("anything");
         assert!(matches!(
-            Filter::new(None, None, 0, &cfg(Mode::Enforce)).on_request(&m, &p),
+            Filter::new(Vec::new(), 0, &cfg(Mode::Enforce)).on_request(&m, &p),
             Verdict::Refuse {
                 code: Code::NO_CONTRACT,
                 ..
             }
         ));
         assert_eq!(
-            Filter::new(None, None, 0, &cfg(Mode::Observe)).on_request(&m, &p),
+            Filter::new(Vec::new(), 0, &cfg(Mode::Observe)).on_request(&m, &p),
             Verdict::Forward
         );
     }
