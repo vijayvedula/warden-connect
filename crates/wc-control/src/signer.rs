@@ -144,13 +144,14 @@ impl Signer for CommandSigner {
         // sequence deadlocks if the helper fills one pipe before closing the other,
         // and a signing helper's diagnostics are more use in the control plane's own
         // stderr than buried in an error string.
-        let mut child = Command::new(&self.program)
-            .args(&self.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| self.fail("cannot spawn").with_source(e))?;
+        let mut child = wc_core::proc::spawn_piped(
+            Command::new(&self.program)
+                .args(&self.args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit()),
+        )
+        .map_err(|e| self.fail("cannot spawn").with_source(e))?;
 
         let encoded = URL_SAFE_NO_PAD.encode(signing_input);
         {
