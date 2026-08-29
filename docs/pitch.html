@@ -381,26 +381,52 @@
     const yA = 300, yB = 585;
     line(160, 442, W - 160, 442, C.rule, 1, p * 0.55, [5, 7]);
 
+    // Each question, then who answers it. The owner used to be a word inside the sub-line,
+    // which is where a reader's eye goes last — and "which product does what" is the first
+    // thing an architect wants from a family of four.
+    // Measured, not placed by eye. The two questions are different lengths and the display face
+    // may be Newsreader or the Georgia fallback, so a hardcoded arrow either collides with the
+    // longer question or leaves a gap after the shorter one. Both arrows align past whichever
+    // question is wider, whatever font actually loaded.
+    const QA = "May this connection exist ?", QB = "May this call proceed ?";
+    ctx.save();
+    ctx.font = `44px ${SERIF}`;
+    const qw = Math.max(ctx.measureText(QA).width, ctx.measureText(QB).width);
+    ctx.restore();
+    const ax = 200 + qw + 58, px = ax + 112;
+
+    const owner = (y, c, a) => {
+      line(ax, y, ax + 78, y, c, 1.5, a * 0.85);
+      line(ax + 68, y - 6, ax + 78, y, c, 1.5, a * 0.85);
+      line(ax + 68, y + 6, ax + 78, y, c, 1.5, a * 0.85);
+    };
+
     // The slow plane: signed, human, and the one nobody owned.
     const aA = env(t, 0.35, 10.5, 0.4);
-    line(220, yA + 62, W - 220, yA + 62, C.rule, 1, aA * 0.5);
-    txt("May this connection exist ?", 220, yA, { size: 44, font: SERIF, alpha: aA, color: C.surface });
-    txt("WARDEN-CONNECT   ·   signed artifact   ·   human approval   ·   revocable",
-        220, yA + 38, { size: 15, alpha: aA * 0.72, color: C.muted, spacing: 1.9 });
+    line(200, yA + 62, W - 200, yA + 62, C.rule, 1, aA * 0.5);
+    txt(QA, 200, yA, { size: 44, font: SERIF, alpha: aA, color: C.ink });
+    owner(yA - 14, C.surface, env(t, 1.5, 10.5, 0.4));
+    txt("warden-connect", px, yA, { size: 40, font: SERIF, color: C.surface,
+                                    alpha: env(t, 1.7, 10.5, 0.4) });
+    txt("control plane   ·   signed artifact   ·   human approval   ·   revocable",
+        200, yA + 38, { size: 15, alpha: aA * 0.72, color: C.muted, spacing: 1.9 });
     {   // one deliberate, unhurried transit
-      const k = (t * 0.30) % 1, x = lerp(240, W - 240, k);
+      const k = (t * 0.30) % 1, x = lerp(220, W - 220, k);
       dot(x, yA + 62, 4, C.surface, aA * (0.35 + 0.65 * Math.sin(k * Math.PI)));
     }
 
     // The fast plane: already solved, already shipping, and not the same question.
     const aB = env(t, 0.95, 10.5, 0.4);
-    line(220, yB + 62, W - 220, yB + 62, C.rule, 1, aB * 0.5);
-    txt("May this call proceed ?", 220, yB, { size: 44, font: SERIF, alpha: aB, color: C.policy });
-    txt("WARDEN   ·   every request   ·   microseconds   ·   already solved",
-        220, yB + 38, { size: 15, alpha: aB * 0.72, color: C.muted, spacing: 1.9 });
+    line(200, yB + 62, W - 200, yB + 62, C.rule, 1, aB * 0.5);
+    txt(QB, 200, yB, { size: 44, font: SERIF, alpha: aB, color: C.ink });
+    owner(yB - 14, C.policy, env(t, 2.1, 10.5, 0.4));
+    txt("warden", px, yB, { size: 40, font: SERIF, color: C.policy,
+                            alpha: env(t, 2.3, 10.5, 0.4) });
+    txt("data plane   ·   every request   ·   microseconds   ·   already solved",
+        200, yB + 38, { size: 15, alpha: aB * 0.72, color: C.muted, spacing: 1.9 });
     for (let i = 0; i < 7; i++) {
       const k = ((t * 1.5) + i / 7) % 1;
-      dot(lerp(240, W - 240, k), yB + 62, 3, C.policy, aB * 0.8);
+      dot(lerp(220, W - 220, k), yB + 62, 3, C.policy, aB * 0.8);
     }
 
     caption("Everyone built the second one.", "the first has never had an owner",
