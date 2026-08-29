@@ -2,7 +2,7 @@
 
 | Document | What it is |
 |---|---|
-| [pitch.html](pitch.html) | **The elevator pitch, 55 seconds.** For architects, technology leaders and investors: the connections nobody approved, the two questions everyone conflates, and the contract that is a ceiling. Autoplays, scrubbable, seven chapters. Open it in a browser |
+| [pitch.html](pitch.html) | **The elevator pitch, 58 seconds, in two acts.** For architects, technology leaders and investors: the connections nobody approved, then **how a contract is created** (four gates) and **how it is enforced**. The algebra carries the product boundary — `surface` is warden-connect at issuance, `scope ∩ policy` is warden at the call. Autoplays, scrubbable. Open it in a browser |
 | [contract-and-enforcement.html](contract-and-enforcement.html) | **For CTOs, CIOs and enterprise architects.** A 9-chapter animated explainer, 2:41 — contract × enforcement point, and why neither is a control alone. Canvas-driven, scrubbable, with an interactive intersection and a full transcript. Open it in a browser |
 | [explainer.html](explainer.html) | A 21-slide self-building deck: the problem, the model, the lifecycle, the capabilities. Open it in a browser |
 | [install.md](install.md) | Installing either enforcement point from release artifacts, without a checkout — verification first, then Envoy and Kong |
