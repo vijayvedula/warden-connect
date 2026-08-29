@@ -3,6 +3,10 @@
 What stands between `main` and a release. Every gap here was verified against the
 code, not recalled.
 
+**v0.2.0 is released.** What remains below is the backlog for the next one, not a list
+of things blocking a shipment — with the caveat that 4.3 (cluster scale) is unverified
+rather than known-good, and 1.2c is two terms that are declared and unchecked today.
+
 ## Closed
 
 | | | |
@@ -23,6 +27,8 @@ code, not recalled.
 | **3.3** | install without a checkout | [install.md](install.md), per binding, verification first. Every flag and config key in it was checked against `--help` and `schema.lua` |
 | **4.4** | Path A is walked | it always was — `attest-drill.sh` phase 4 executes a contracted call and refuses an uncontracted one, in enforce mode, over stdio. The plan entry saying otherwise was wrong. Confirmed by running it. Coverage is thinner than the bindings' (no catalogue-filter, batch, pin-drift or revocation phase) and it lives in a drill named for attestation, where nobody would look |
 | **4.2** | the gates are covered | `scripts/gate-mutation-check.sh` breaks five gates in the decision core — uncontracted tool, no identity, staleness, batch, unverified pin — and requires a test to notice. All five are caught; in CI |
+| **4.1** | independent security review | conducted outside this repository |
+| **released** | **v0.2.0** | tagged and published: five artifacts, each SLSA-attested, each verified after publication with the command [install.md](install.md) gives operators. Code lives on `origin`; the attested release is cut on the Actions mirror |
 | **1.2** | `Terms` audit | every field traced to what binds it — table below. One term was bound by nothing anywhere, and the check meant to announce that class of term was itself an instance of it |
 
 ## What binds each term
@@ -64,7 +70,6 @@ Three findings, of which one is fixed:
 |---|---|---|
 | 1.2c | `human_oversight` and `delegation.attenuation` are declared and unchecked — enforce, or refuse to mint | S |
 | 2.4 | anchor the chain head on the ack, so the trail is tamper-*evident* and not merely tamper-detecting | M |
-| 4.1 | **independent security review** — submitted for external review | L |
 | 4.2b | the gate mutations cover `wc-gateway`, the shared decision core. `wc-kong`'s own layer — the FFI boundary, config parsing, the per-worker trail — is not mutation-checked | S |
 | 4.3 | cluster scale unverified | L |
 | 4.4b | Path A writes no decision trail — `connect-mediate` has no `--evidence`, so `terms.evidence.delivery = "blocking"` cannot bind there. Announced at startup; pending **D1** | S |
