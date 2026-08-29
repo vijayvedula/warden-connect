@@ -1642,12 +1642,34 @@ fn quarantine(cp: &Arc<ControlPlane>, caller: &Caller, req: &Request) -> Result<
                 caller.subject.clone(),
             )
             .with_entities([party.as_str()])
-            .with_reason(reason)
+            .with_reason(reason.clone())
             .with_detail(json!({
                 "revoked": outcome.revoked.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
                 "impacted_services": outcome.impacted_services,
             })),
             now,
+        )?;
+    }
+
+    // The deny-list, and the reason it exists separately from the contract set.
+    //
+    // Containment already reaches mediators by the contract dropping out of the published set,
+    // which is allow-list-by-omission: a stale or partial set that still contains it brings it
+    // back. `Revoked::Party` is the backstop, and its own documentation says why — it "holds
+    // even if the control plane's contract-set construction has a bug, because a mediator can
+    // apply it without knowing which contracts exist".
+    //
+    // The serving plane never appended here. Only the CLI did, and the CLI cannot run against a
+    // serving plane because the event log is single-writer — so the feed published at
+    // /v1/revocations was permanently empty on every live estate.
+    if let Some(feed) = &cp.revocations {
+        let mut feed = lock(feed);
+        feed.append(
+            crate::contain::Revoked::Party { id: party.clone() },
+            &reason,
+            caller.subject.as_str(),
+            now,
+            &cp.signer,
         )?;
     }
 

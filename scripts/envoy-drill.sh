@@ -585,11 +585,22 @@ else
   # in the verifier's log — an operator staring at the client response cannot tell a revoked
   # connection from one that was never issued.
   if printf '%s' "$R" | grep -q "WC-4001"; then
-    if grep -q "WC-3105" verify.log; then
-      ok "9b · a revocation reached the enforcement point: refused, WC-3105 in the verifier log"
+    # Refused — but by WHICH mechanism? Containment reaches a mediator two ways and only one of
+    # them is monotonic:
+    #
+    #   set membership   the contract drops out of the published set. Allow-list by omission: a
+    #                    stale or partial set that still contains it brings it back.
+    #   the deny-list    Revoked::Party, cumulative and deny-only, applied without the mediator
+    #                    needing to know which contracts exist. The backstop.
+    #
+    # Asserting only the first would have passed while the deny-list stayed permanently empty,
+    # which is exactly the state this drill found it in.
+    if grep -qE 'applied [0-9]+ revocation' verify.log; then
+      ok "9b · a revocation reached the enforcement point, via the deny-list AND the set"
+      grep -oE 'applied [0-9]+ revocation\(s\), feed at seq [0-9]+' verify.log | tail -1 | sed 's/^/       /'
     else
-      bad "9b · refused WC-4001, but the verifier never logged WC-3105 — revocation, or a lost contract?"
-      grep -E 'no contract for|revok' verify.log | tail -3 | sed 's/^/       /'
+      bad "9b · refused, but the deny-list was never populated — only set membership cut it"
+      grep -E 'revocations: |no contract for' verify.log | tail -2 | sed 's/^/       /'
     fi
   else
     bad "9b · the contract was still honoured after the party was quarantined"
