@@ -11,6 +11,7 @@ code, not recalled.
 | **P2.1/2.2** | evidence | both enforcement points write a hash-chained decision trail, asserted in both drills. `terms.evidence.delivery = "blocking"` binds for the first time |
 | **3.1 (Envoy)** | revocation | quarantine → feed → fetch → verify → deny-list → refusal at a real Envoy. Three separate breaks, each invisible alone: the plane set its feed from nowhere, no mediator fetched one, and the serving plane never appended to the feed it published |
 | **1.3** | ceilings | removed as a capability rather than fixed — see the CHANGELOG |
+| **3.1b** | revocation reaches Kong | each worker refreshes on its own background thread — not a Lua timer, which would stall the event loop. Drilled: a revocation applied inside a real nginx worker |
 | **1.4** | several contracts per pair | resolution picks by tool; the catalogue is the union and must satisfy every pin; two contracts claiming one tool is a conflict, reported at load and refused at the call |
 
 ## Remaining
@@ -22,7 +23,6 @@ code, not recalled.
 | 1.2b | sweep for documented-but-absent mechanisms — six found in one session | S–M |
 | 2.3 | `connect evidence verify\|since` — needs a `wc-cli → wc-mediator` edge | S |
 | 2.4 | anchor the chain head on the ack, so the trail is tamper-*evident* and not merely tamper-detecting | M |
-| 3.1b | Kong has no pull path, so revocation reaches Envoy and not Kong | M |
 | 3.1c | no HTTP route for connection-level revocation; `connect revoke --cid` fails `WC-8003` against a serving plane | S |
 | 3.1d | revocations are signed with the issuer key, so anyone who can mint can revoke | S |
 | 3.2 | neither binding ships; `release.yml` has no reference to `wc-extproc` or `wc-kong` | M |

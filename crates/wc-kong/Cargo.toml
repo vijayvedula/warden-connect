@@ -23,4 +23,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+# For the example that emits a signed revocation delta; not in the library tree.
+warden-connect-control = { path = "../wc-control" }
 warden-connect-mediator = { path = "../wc-mediator" }
