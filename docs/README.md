@@ -2,7 +2,7 @@
 
 | Document | What it is |
 |---|---|
-| [pitch.html](pitch.html) | **The elevator pitch, 58 seconds, in two acts.** For architects, technology leaders and investors: the connections nobody approved, then **how a contract is created** (four gates) and **how it is enforced**. The algebra carries the product boundary — `surface` is warden-connect at issuance, `scope ∩ policy` is warden at the call. Autoplays, scrubbable. Open it in a browser |
+| [pitch.html](pitch.html) | **The elevator pitch, 57 seconds, in two acts.** For architects, technology leaders and investors. **Act I is the GitOps path** — two manifests, a pull request, approvers read at the base commit, the merge confirmed with the *source host* rather than the pipeline, and a receipt written back to git. **Act II is enforcement**, with the product boundary drawn on the algebra: `surface` is warden-connect at issuance, `scope ∩ policy` is warden at the call. Autoplays, scrubbable. Open it in a browser |
 | [contract-and-enforcement.html](contract-and-enforcement.html) | **For CTOs, CIOs and enterprise architects.** A 9-chapter animated explainer, 2:41 — contract × enforcement point, and why neither is a control alone. Canvas-driven, scrubbable, with an interactive intersection and a full transcript. Open it in a browser |
 | [explainer.html](explainer.html) | A 21-slide self-building deck: the problem, the model, the lifecycle, the capabilities. Open it in a browser |
 | [install.md](install.md) | Installing either enforcement point from release artifacts, without a checkout — verification first, then Envoy and Kong |
