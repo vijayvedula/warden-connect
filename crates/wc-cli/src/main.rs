@@ -626,6 +626,14 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
             "tokens",
             "approvers",
             "enforce",
+            // Revocation custody, the same flags `revoke` and `quarantine` take. Without them
+            // this process signs the revocation feed with the contract key, which makes "can
+            // issue" and "can contain" one privilege.
+            "revocation-key",
+            "revocation-signer",
+            "revocation-kid",
+            "break-glass-kid",
+            "break-glass",
         ],
         "breakglass" => &[
             "policy",
@@ -9052,6 +9060,30 @@ fn serve_cmd(args: &Args) -> Result<()> {
         // Without this the endpoint answers every mediator "this control plane serves no
         // revocation feed", which is what it did for the whole life of the feature.
         .with_revocation_feed(&paths(args).revocations)?;
+
+    // Revocation custody. `revoke` and `quarantine` have taken these flags since custody
+    // existed; serving took none, so every revocation an estate issued through the API was
+    // signed with the contract key. The separation was present exactly where an operator does
+    // it by hand and absent from the path a running estate uses.
+    match resolve_revocation_custody(args)? {
+        Some(revocation) => {
+            eprintln!(
+                "connect serve: the revocation feed is signed with {} ({:?})",
+                revocation.kid, revocation.role
+            );
+            cp = cp.with_revocation_signer(revocation.key);
+        }
+        None => {
+            // Said out loud rather than inferred from the absence of a flag. A collapse of two
+            // authorities into one is not something an operator should have to deduce.
+            eprintln!(
+                "connect serve: NOTE no --revocation-key, so the revocation feed is signed \
+                 with the CONTRACT key. Anyone who can mint a contract can forge the \
+                 revocation of any other, and a compromise of that key is unrecoverable by \
+                 revocation. Give the feed its own key"
+            );
+        }
+    }
 
     if let Some(path) = args.get("jwks") {
         let text = std::fs::read_to_string(path).map_err(|e| {
