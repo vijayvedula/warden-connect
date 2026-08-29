@@ -77,4 +77,9 @@ class Plane(BaseHTTPRequestHandler):
 # CI as "the contract was still honoured after the party was revoked", because the worker that
 # served the probe was the one whose poll was still queued behind another worker's. The drill was
 # reporting the enforcement point as broken when the fault was in the drill's own control plane.
-ThreadingHTTPServer(("127.0.0.1", PORT), Plane).serve_forever()
+# 0.0.0.0, not 127.0.0.1, and for the same reason `envoy/ledger-server.py` already does it. The
+# container reaches this through `host.docker.internal`, which resolves to the bridge gateway
+# address on Linux; a socket bound to loopback refuses that connection. On Docker Desktop it
+# works either way, which is why binding to loopback passed here and failed in CI -- as
+# "the contract was still honoured after the party was revoked", i.e. as an enforcement defect.
+ThreadingHTTPServer(("0.0.0.0", PORT), Plane).serve_forever()  # noqa: S104
