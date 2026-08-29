@@ -1,0 +1,630 @@
+<title>The Connection Nobody Approved</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300&display=swap">
+
+<style>
+  :root {
+    /* Inherited from docs/contract-and-enforcement.html — the same product, the same voice.
+       Single-theme on purpose: this is a film frame, and a film frame has one ground. */
+    --ground:  #070A11;
+    --film:    #0B0F17;
+    --panel:   #0E131C;
+    --rule:    #28323F;
+    --ink:     #E9EEF6;
+    --muted:   #8695AB;
+    --surface: #58C6E6;
+    --scope:   #F0BE52;
+    --policy:  #7FD39B;
+    --refuse:  #E86F6F;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: clamp(12px, 3vw, 40px);
+    box-sizing: border-box;
+  }
+
+  .reel { width: min(1180px, 100%); display: flex; flex-direction: column; gap: 14px; }
+
+  .frame {
+    position: relative;
+    background: var(--film);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+    aspect-ratio: 16 / 9;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  /* Transport. Deliberately spare — it should read as a projector, not a web player. */
+  .transport { display: flex; align-items: center; gap: 14px; }
+
+  button.play {
+    background: transparent;
+    border: 1px solid var(--rule);
+    color: var(--ink);
+    width: 42px; height: 42px;
+    border-radius: 2px;
+    cursor: pointer;
+    font: inherit; font-size: 14px;
+    display: grid; place-items: center;
+    flex: none;
+    transition: border-color .15s, color .15s;
+  }
+  button.play:hover { border-color: var(--surface); color: var(--surface); }
+  button.play:focus-visible { outline: 2px solid var(--surface); outline-offset: 2px; }
+
+  .track {
+    position: relative; flex: 1; height: 42px; cursor: pointer;
+    display: flex; align-items: center;
+  }
+  .track:focus-visible { outline: 2px solid var(--surface); outline-offset: 2px; }
+  .track .bed { position: absolute; left: 0; right: 0; height: 1px; background: var(--rule); }
+  .track .fill { position: absolute; left: 0; height: 1px; background: var(--surface); }
+  .track .chapters { position: absolute; left: 0; right: 0; height: 42px; }
+  .track .chapters i {
+    position: absolute; top: 15px; width: 1px; height: 12px; background: var(--rule);
+  }
+  .track .head {
+    position: absolute; width: 2px; height: 18px; background: var(--ink); transform: translateX(-1px);
+  }
+
+  .clock { color: var(--muted); font-size: 12px; letter-spacing: .06em; flex: none;
+           font-variant-numeric: tabular-nums; }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 6px 20px;
+    color: var(--muted); font-size: 11.5px; letter-spacing: .07em; text-transform: uppercase;
+  }
+  .legend b { font-weight: 400; color: var(--ink); }
+  .legend span::before {
+    content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    margin-right: 7px; vertical-align: 1px; background: currentColor;
+  }
+  .s-surface { color: var(--surface); }
+  .s-scope   { color: var(--scope); }
+  .s-policy  { color: var(--policy); }
+
+  @media (prefers-reduced-motion: reduce) {
+    button.play { border-color: var(--surface); }
+  }
+</style>
+
+<div class="reel">
+  <div class="frame">
+    <canvas id="stage" role="img"
+      aria-label="A fifty-five second animated pitch. Agents proliferate and open unreviewed connections; the questions nobody can answer freeze on screen; the problem splits into two planes — may this connection exist, and may this call proceed; a signed contract is shown as the intersection of surface, scope and policy, a ceiling and never a grant; enforcement happens inside the proxy already carrying the traffic, refusing an uncontracted tool with WC-4002; a single revocation reaches every enforcement point and every decision is written to a hash-chained trail."></canvas>
+  </div>
+
+  <div class="transport">
+    <button class="play" id="play" aria-label="Play">▶</button>
+    <div class="track" id="track" role="slider" tabindex="0"
+         aria-label="Timeline" aria-valuemin="0" aria-valuemax="56" aria-valuenow="0">
+      <div class="bed"></div><div class="fill" id="fill"></div>
+      <div class="chapters" id="chapters"></div><div class="head" id="head"></div>
+    </div>
+    <div class="clock" id="clock">0:00 / 0:56</div>
+  </div>
+
+  <div class="legend">
+    <span class="s-surface"><b>surface</b> what the callee offers</span>
+    <span class="s-scope"><b>scope</b> what the token carries</span>
+    <span class="s-policy"><b>policy</b> what the estate allows</span>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const W = 1600, H = 900, DUR = 56;
+  const SERIF = '"Newsreader", Georgia, "Times New Roman", serif';
+  const MONO  = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
+
+  const C = {
+    film: "#0B0F17", panel: "#0E131C", rule: "#28323F",
+    ink: "#E9EEF6", muted: "#8695AB", dim: "#5A6879",
+    surface: "#58C6E6", scope: "#F0BE52", policy: "#7FD39B", refuse: "#E86F6F",
+  };
+
+  const cv = document.getElementById("stage");
+  const ctx = cv.getContext("2d");
+
+  // ---- maths -------------------------------------------------------------
+  const cl  = (v, a, b) => v < a ? a : v > b ? b : v;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const sm  = (a, b, v) => { const t = cl((v - a) / (b - a || 1e-6), 0, 1); return t * t * (3 - 2 * t); };
+  const easeOut = t => 1 - Math.pow(1 - cl(t, 0, 1), 3);
+
+  /** Fade in, hold, fade out — the only opacity envelope any of this needs. */
+  const env = (t, a, b, f = 0.45) => Math.min(sm(a, a + f, t), 1 - sm(b - f, b, t));
+
+  /** Deterministic, so scrubbing backwards lands on the same frame it left. */
+  function rng(seed) { let s = seed >>> 0; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296; }
+
+  // ---- text --------------------------------------------------------------
+  const canSpace = "letterSpacing" in ctx;
+  function txt(s, x, y, o = {}) {
+    const { size = 28, font = MONO, color = C.ink, align = "left", alpha = 1,
+            weight = "", spacing = 0, baseline = "alphabetic", italic = false } = o;
+    if (alpha <= 0.001) return;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.textAlign = align;
+    ctx.textBaseline = baseline;
+    ctx.font = `${italic ? "italic " : ""}${weight ? weight + " " : ""}${size}px ${font}`;
+    if (canSpace && spacing) ctx.letterSpacing = `${spacing}px`;
+    ctx.fillText(s, x, y);
+    if (canSpace && spacing) ctx.letterSpacing = "0px";
+    ctx.restore();
+  }
+
+  /** The lower third. Serif for the claim a person makes, mono for the machine's own words. */
+  function caption(claim, note, alpha) {
+    if (alpha <= 0.001) return;
+    if (claim) txt(claim, W / 2, 792, { size: 46, font: SERIF, align: "center", alpha, color: C.ink });
+    if (note)  txt(note,  W / 2, 838, { size: 17, align: "center", alpha: alpha * 0.75,
+                                        color: C.muted, spacing: 1.6 });
+  }
+
+  function line(x1, y1, x2, y2, color, width = 1, alpha = 1, dash = null) {
+    if (alpha <= 0.001) return;
+    ctx.save();
+    ctx.globalAlpha = alpha; ctx.strokeStyle = color; ctx.lineWidth = width;
+    if (dash) ctx.setLineDash(dash);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.restore();
+  }
+
+  function dot(x, y, r, color, alpha = 1) {
+    if (alpha <= 0.001) return;
+    ctx.save(); ctx.globalAlpha = alpha; ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  }
+
+  function box(x, y, w, h, { stroke = C.rule, fill = null, alpha = 1, width = 1, r = 2 } = {}) {
+    if (alpha <= 0.001) return;
+    ctx.save(); ctx.globalAlpha = alpha; ctx.lineWidth = width;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x - w / 2, y - h / 2, w, h, r);
+    else ctx.rect(x - w / 2, y - h / 2, w, h);
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    if (stroke) { ctx.strokeStyle = stroke; ctx.stroke(); }
+    ctx.restore();
+  }
+
+  // ---- the estate, laid out once ----------------------------------------
+  const SYSTEMS = ["payments", "ledger", "hr-records", "crm", "object-store"];
+  const sysY = i => 210 + i * 122;
+  const SYS_X = 1215;
+
+  const AGENTS = (() => {
+    const r = rng(20260829), out = [];
+    for (let i = 0; i < 18; i++) {
+      out.push({
+        x: 300 + r() * 120,
+        y: 175 + (i / 17) * 560 + (r() - 0.5) * 34,
+        sys: Math.floor(r() * SYSTEMS.length),
+        born: i * 0.30,
+      });
+    }
+    return out;
+  })();
+
+  /** The tangle. `grey` desaturates it in place when the film stops to ask its question. */
+  function drawEstate(t, alpha, grey) {
+    if (alpha <= 0.001) return;
+    const linkC = grey > 0.5 ? C.rule : C.surface;
+
+    for (const s of SYSTEMS.keys()) {
+      const y = sysY(s);
+      box(SYS_X, y, 210, 46, { stroke: grey > 0.5 ? C.rule : "#3C4A5C", fill: C.panel, alpha });
+      txt(SYSTEMS[s], SYS_X, y + 5, { size: 15, align: "center", alpha: alpha * (grey > 0.5 ? 0.5 : 0.9),
+                                      color: grey > 0.5 ? C.dim : C.ink, spacing: 1.2 });
+    }
+
+    for (const a of AGENTS) {
+      const age = t - a.born;
+      if (age < 0) continue;
+      const grow = easeOut(age / 0.9);
+      const tx = SYS_X - 105, ty = sysY(a.sys);
+      const ex = lerp(a.x, tx, grow), ey = lerp(a.y, ty, grow);
+
+      ctx.save();
+      ctx.globalAlpha = alpha * (grey > 0.5 ? 0.38 : 0.5);
+      ctx.strokeStyle = linkC; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.quadraticCurveTo((a.x + tx) / 2, (a.y + ty) / 2 - 55, ex, ey);
+      ctx.stroke();
+      ctx.restore();
+
+      // A packet in flight, so the tangle reads as live traffic rather than a diagram.
+      if (grow >= 1 && grey < 0.5) {
+        const p = ((t * 0.42 + a.born) % 1);
+        const mx = (a.x + tx) / 2, my = (a.y + ty) / 2 - 55;
+        const px = (1 - p) * (1 - p) * a.x + 2 * (1 - p) * p * mx + p * p * tx;
+        const py = (1 - p) * (1 - p) * a.y + 2 * (1 - p) * p * my + p * p * ty;
+        dot(px, py, 2.4, C.surface, alpha * 0.85);
+      }
+
+      const ac = grey > 0.5 ? C.dim : C.ink;
+      dot(a.x, a.y, 4.5, ac, alpha * easeOut(age / 0.35));
+    }
+  }
+
+  // ---- scenes ------------------------------------------------------------
+  // Each is a pure function of its own local time. Nothing accumulates, so the
+  // scrubber is free and frame N looks the same whichever direction you reached it from.
+
+  function s1_proliferate(t) {          // 0 → 7.5   the estate wires itself
+    drawEstate(t, 1, 0);
+    caption("You shipped agents.", null, env(t, 0.5, 3.5, 0.5));
+    caption("They opened connections.", "18 agents · 5 systems · 90 possible edges",
+            env(t, 3.9, 7.5, 0.5));
+  }
+
+  function s2_freeze(t) {               // 7.5 → 15  and nobody signed for any of it
+    drawEstate(7.5, 1, sm(0, 0.7, t));
+    const veil = sm(0, 0.7, t) * 0.72;
+    ctx.save(); ctx.globalAlpha = veil; ctx.fillStyle = C.film;
+    ctx.fillRect(0, 0, W, H); ctx.restore();
+
+    const qs = ["which agents can reach payments ?",
+                "who approved that connection ?",
+                "how do you revoke it, everywhere, now ?"];
+    qs.forEach((q, i) => {
+      const a = env(t, 0.9 + i * 0.85, 6.6, 0.4);
+      txt(q, W / 2, 330 + i * 62, { size: 30, align: "center", alpha: a, color: C.ink, spacing: 0.5 });
+      line(W / 2 - 300, 348 + i * 62, W / 2 + 300, 348 + i * 62, C.rule, 1, a * 0.35);
+    });
+    caption("Three questions. No system of record.", null, env(t, 4.0, 7.5, 0.5));
+  }
+
+  function s3_split(t) {                // 15 → 24  two questions, not one
+    const p = sm(0, 1.4, t);
+    drawEstate(7.5, (1 - p) * 0.5, 1);
+
+    const yA = 300, yB = 585;
+    line(160, 442, W - 160, 442, C.rule, 1, p * 0.55, [5, 7]);
+
+    // The slow plane: signed, human, and the one nobody owned.
+    const aA = env(t, 0.5, 9, 0.5);
+    line(220, yA + 62, W - 220, yA + 62, C.rule, 1, aA * 0.5);
+    txt("May this connection exist ?", 220, yA, { size: 44, font: SERIF, alpha: aA, color: C.surface });
+    txt("CONTROL PLANE   ·   signed artifact   ·   human approval   ·   revocable",
+        220, yA + 38, { size: 15, alpha: aA * 0.72, color: C.muted, spacing: 1.9 });
+    {   // one deliberate, unhurried transit
+      const k = (t * 0.30) % 1, x = lerp(240, W - 240, k);
+      dot(x, yA + 62, 4, C.surface, aA * (0.35 + 0.65 * Math.sin(k * Math.PI)));
+    }
+
+    // The fast plane: already solved, already shipping, and not the same question.
+    const aB = env(t, 1.5, 9, 0.5);
+    line(220, yB + 62, W - 220, yB + 62, C.rule, 1, aB * 0.5);
+    txt("May this call proceed ?", 220, yB, { size: 44, font: SERIF, alpha: aB, color: C.policy });
+    txt("DATA PLANE   ·   every request   ·   microseconds   ·   already solved",
+        220, yB + 38, { size: 15, alpha: aB * 0.72, color: C.muted, spacing: 1.9 });
+    for (let i = 0; i < 7; i++) {
+      const k = ((t * 1.5) + i / 7) % 1;
+      dot(lerp(240, W - 240, k), yB + 62, 3, C.policy, aB * 0.8);
+    }
+
+    caption("Everyone built the second one.", "the first has never had an owner",
+            env(t, 4.6, 9, 0.5));
+  }
+
+  function s4_algebra(t) {              // 24 → 34  the artifact, and what it is not
+    const p = sm(0.2, 2.6, t);
+    const cx = 800, cy = 400, R = 176;
+    const rings = [
+      { x: lerp(430, cx - 104, p), y: lerp(250, cy - 62, p), c: C.surface, label: "surface" },
+      { x: lerp(1170, cx + 104, p), y: lerp(250, cy - 62, p), c: C.scope,   label: "scope" },
+      { x: lerp(cx, cx, p),         y: lerp(730, cy + 118, p), c: C.policy, label: "policy" },
+    ];
+
+    for (const r of rings) {
+      ctx.save();
+      ctx.globalAlpha = 0.09; ctx.fillStyle = r.c;
+      ctx.beginPath(); ctx.arc(r.x, r.y, R, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.85; ctx.strokeStyle = r.c; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(r.x, r.y, R, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+
+    // The intersection, by actual clipping — so the shape on screen is the algebra,
+    // not an artist's impression of it.
+    const glow = env(t, 2.5, 10, 0.6);
+    if (glow > 0.001) {
+      ctx.save();
+      for (const r of rings) {
+        ctx.beginPath(); ctx.arc(r.x, r.y, R, 0, Math.PI * 2); ctx.clip();
+      }
+      ctx.globalAlpha = glow * (0.55 + 0.12 * Math.sin(t * 2.4));
+      ctx.fillStyle = C.policy;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+
+    rings.forEach(r => {
+      const lx = r.x + (r.label === "policy" ? 0 : (r.label === "surface" ? -R - 14 : R + 14));
+      const ly = r.label === "policy" ? r.y + R + 34 : r.y - R + 6;
+      txt(r.label, lx, ly, {
+        size: 17, alpha: p * 0.95, color: r.c, spacing: 2.4,
+        align: r.label === "policy" ? "center" : (r.label === "surface" ? "right" : "left"),
+      });
+    });
+
+    txt("effective  =  surface  ∩  scope  ∩  policy", W / 2, 706,
+        { size: 27, align: "center", alpha: env(t, 3.2, 10, 0.5), color: C.ink, spacing: 1.2 });
+
+    caption("A contract is a ceiling.", null, env(t, 5.0, 7.4, 0.4));
+    caption("Never a grant.", "it can only ever subtract", env(t, 7.5, 10, 0.4));
+  }
+
+  function s5_enforce(t) {              // 34 → 43.5  and a ceiling with no floor is a PDF
+    const y = 392, ax = 250, sx = 1350, px = 800;
+
+    line(ax, y, px - 108, y, C.rule, 1, 0.75);
+    line(px + 108, y, sx, y, C.rule, 1, 0.75);
+    dot(ax, y, 7, C.ink, 0.95);
+    txt("agent", ax, y + 34, { size: 15, align: "center", color: C.muted, spacing: 1.4 });
+    box(sx, y, 190, 52, { stroke: "#3C4A5C", fill: C.panel });
+    txt("payments", sx, y + 5, { size: 15, align: "center", color: C.ink, spacing: 1.2 });
+
+    box(px, y, 216, 132, { stroke: C.rule, fill: C.panel, r: 3 });
+    txt("ENVOY · KONG", px, y - 30, { size: 14, align: "center", color: C.muted, spacing: 2.2 });
+    txt("the proxy already", px, y + 12, { size: 16, align: "center", color: C.dim });
+    txt("carrying this traffic", px, y + 36, { size: 16, align: "center", color: C.dim });
+
+    // The contract falls into the path it will govern.
+    const drop = sm(0.2, 1.5, t);
+    if (drop > 0) {
+      const cyy = lerp(120, y - 66, easeOut(drop));
+      box(px, cyy, 132, 34, { stroke: C.surface, fill: C.film, alpha: drop, r: 2 });
+      txt("contract", px, cyy + 5, { size: 14, align: "center", color: C.surface, alpha: drop, spacing: 1.6 });
+      if (drop >= 1) {
+        const f = Math.max(0, 1 - (t - 1.5) * 2.2);
+        box(px, y, 216, 132, { stroke: C.surface, alpha: f * 0.9, width: 2, r: 3 });
+      }
+    }
+
+    // A contracted call goes through.
+    const g = (t - 2.6) / 1.9;
+    if (g > 0 && g < 1.25) {
+      const k = cl(g, 0, 1);
+      dot(lerp(ax, sx, k), y, 5.5, C.policy, Math.min(1, (1.25 - g) * 3));
+      txt("get_balance", lerp(ax, sx, k), y - 26, { size: 14, align: "center",
+          color: C.policy, alpha: Math.min(1, (1.25 - g) * 3) * 0.9 });
+    }
+
+    // An uncontracted one does not. It never reaches the callee — that is the whole point.
+    const b = (t - 4.9) / 1.5;
+    if (b > 0) {
+      const k = cl(b, 0, 1);
+      const bx = k < 0.62 ? lerp(ax, px - 108, k / 0.62) : lerp(px - 108, ax + 130, (k - 0.62) / 0.38);
+      const a = b < 2.9 ? 1 : Math.max(0, 1 - (b - 2.9) * 2);
+      dot(bx, y, 5.5, C.refuse, a);
+      txt("transfer_funds", bx, y - 26, { size: 14, align: "center", color: C.refuse, alpha: a * 0.9 });
+      if (k >= 0.62) {
+        const f = env(t, 5.85, 9.5, 0.35);
+        line(px - 108, y - 62, px - 108, y + 62, C.refuse, 2, f * 0.85);
+        txt("WC-4002  uncontracted tool", px - 128, y + 96,
+            { size: 17, align: "right", color: C.refuse, alpha: f, spacing: 0.8 });
+      }
+    }
+
+    caption("Enforced inside the hop you already run.", "no new proxy · no new latency budget",
+            env(t, 6.4, 9.5, 0.5));
+  }
+
+  function s6_revoke(t) {               // 43.5 → 51.5  contained, and on the record
+    const cx = 800, cy = 132;
+    const posts = [400, 800, 1200], py = 322;
+
+    box(cx, cy, 260, 46, { stroke: C.rule, fill: C.panel });
+    txt("control plane", cx, cy + 5, { size: 15, align: "center", color: C.muted, spacing: 1.8 });
+
+    const wave = (t - 0.6) * 620;
+    posts.forEach(x => {
+      const d = Math.hypot(x - cx, py - cy);
+      const hit = wave > d;
+      const flash = hit ? Math.max(0, 1 - (wave - d) / 300) : 0;
+      line(cx, cy + 23, x, py - 26, hit ? C.refuse : C.rule, 1, hit ? 0.35 + flash * 0.5 : 0.3);
+      box(x, py, 200, 54, { stroke: hit ? C.refuse : C.rule, fill: C.panel, width: hit ? 1.6 : 1 });
+      txt("enforcement", x, py + 4, { size: 14, align: "center", spacing: 1.5,
+                                      color: hit ? C.refuse : C.muted });
+      line(x, py + 27, x, py + 74, hit ? C.refuse : C.surface, 1, hit ? 0.25 : 0.6,
+           hit ? [4, 6] : null);
+      dot(x, py + 82, 5, hit ? C.rule : C.surface, 0.9);
+    });
+    if (wave > 0) {
+      const rr = wave;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 0.5 - rr / 1400);
+      ctx.strokeStyle = C.refuse; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+      txt("revoke", cx, cy - 40, { size: 17, align: "center", color: C.refuse,
+                                   alpha: Math.max(0, 1 - (t - 0.6) / 3), spacing: 2.6 });
+    }
+
+    // Every decision, linked to the one before it.
+    const bl = 8, bw = 120, gap = 26, total = bl * bw + (bl - 1) * gap;
+    const x0 = (W - total) / 2 + bw / 2, by = 560;
+    for (let i = 0; i < bl; i++) {
+      const a = env(t, 2.0 + i * 0.22, 8, 0.3);
+      if (a <= 0.001) continue;
+      const x = x0 + i * (bw + gap);
+      box(x, by, bw, 50, { stroke: C.rule, fill: C.panel, alpha: a });
+      txt("WC-" + ["0000", "4002", "0000", "0000", "3108", "0000", "4001", "0000"][i],
+          x, by + 5, { size: 14, align: "center", color: i % 2 ? C.muted : C.dim, alpha: a });
+      if (i > 0) line(x - bw / 2 - gap, by, x - bw / 2, by, C.surface, 1, a * 0.7);
+    }
+    txt("hash-chained  ·  an edit anywhere invalidates every row after it", W / 2, 636,
+        { size: 15, align: "center", color: C.muted, alpha: env(t, 3.6, 8, 0.4), spacing: 1.3 });
+
+    caption("Revoke once. Everywhere. On the record.", null, env(t, 5.0, 8, 0.5));
+  }
+
+  function s7_close(t) {                // 51.5 → 56
+    const a = env(t, 0.15, 4.5, 0.55);
+    txt("warden-connect", W / 2, 396, { size: 84, font: SERIF, align: "center", alpha: a,
+                                        color: C.ink, weight: "300" });
+    line(W / 2 - 236, 434, W / 2 + 236, 434, C.rule, 1, a * 0.7);
+    txt("the connection control plane for AI agents", W / 2, 480,
+        { size: 21, align: "center", alpha: a * 0.86, color: C.muted, spacing: 3.2 });
+
+    const b = env(t, 0.85, 4.5, 0.5);
+    [[-190, C.surface, "surface"], [0, C.scope, "scope"], [190, C.policy, "policy"]]
+      .forEach(([dx, c]) => dot(W / 2 + dx, 566, 5, c, b));
+    txt("Envoy   ·   Kong   ·   inline mediator", W / 2, 626,
+        { size: 15, align: "center", alpha: b * 0.7, color: C.dim, spacing: 2.6 });
+  }
+
+  const SCENES = [
+    { at: 0,    to: 7.5,  fn: s1_proliferate, name: "the estate wires itself" },
+    { at: 7.5,  to: 15,   fn: s2_freeze,      name: "nobody signed for it" },
+    { at: 15,   to: 24,   fn: s3_split,       name: "two questions" },
+    { at: 24,   to: 34,   fn: s4_algebra,     name: "a ceiling, never a grant" },
+    { at: 34,   to: 43.5, fn: s5_enforce,     name: "enforced in the existing hop" },
+    { at: 43.5, to: 51.5, fn: s6_revoke,      name: "revoked, and on the record" },
+    { at: 51.5, to: DUR,  fn: s7_close,       name: "warden-connect" },
+  ];
+
+  function render(t) {
+    t = cl(t, 0, DUR);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(scale, 0, 0, scale, offX, offY);
+
+    ctx.fillStyle = C.film;
+    ctx.fillRect(0, 0, W, H);
+
+    const sc = SCENES.find(s => t >= s.at && t < s.to) || SCENES[SCENES.length - 1];
+    ctx.save();
+    sc.fn(t - sc.at);
+    ctx.restore();
+
+    // A quiet frame line, so the canvas reads as a projected image.
+    ctx.save();
+    ctx.globalAlpha = 0.5; ctx.strokeStyle = C.rule; ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+    ctx.restore();
+  }
+
+  // ---- projector ---------------------------------------------------------
+  let scale = 1, offX = 0, offY = 0;
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const r = cv.getBoundingClientRect();
+    cv.width = Math.max(1, Math.round(r.width * dpr));
+    cv.height = Math.max(1, Math.round(r.height * dpr));
+    scale = Math.min(cv.width / W, cv.height / H);
+    offX = (cv.width - W * scale) / 2;
+    offY = (cv.height - H * scale) / 2;
+    render(clock);
+  }
+
+  let clock = 0, playing = false, last = 0;
+  const $play = document.getElementById("play");
+  const $track = document.getElementById("track");
+  const $fill = document.getElementById("fill");
+  const $head = document.getElementById("head");
+  const $clockEl = document.getElementById("clock");
+
+  const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+  function chrome() {
+    const p = (clock / DUR) * 100;
+    $fill.style.width = p + "%";
+    $head.style.left = p + "%";
+    $clockEl.textContent = `${mmss(clock)} / ${mmss(DUR)}`;
+    $track.setAttribute("aria-valuenow", clock.toFixed(1));
+    $play.textContent = clock >= DUR - 0.01 ? "↻" : (playing ? "❚❚" : "▶");
+    $play.setAttribute("aria-label", clock >= DUR - 0.01 ? "Replay" : (playing ? "Pause" : "Play"));
+  }
+
+  function frame(now) {
+    if (playing) {
+      const dt = Math.min((now - last) / 1000, 0.1);
+      last = now;
+      clock += dt;
+      if (clock >= DUR) { clock = DUR; playing = false; }
+      render(clock);
+      chrome();
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function toggle() {
+    if (clock >= DUR - 0.01) clock = 0;
+    playing = !playing;
+    last = performance.now();
+    chrome();
+  }
+  $play.addEventListener("click", toggle);
+
+  function seekFromEvent(e) {
+    const r = $track.getBoundingClientRect();
+    const x = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    clock = cl(x / r.width, 0, 1) * DUR;
+    render(clock); chrome();
+  }
+  let dragging = false;
+  $track.addEventListener("pointerdown", e => {
+    dragging = true; $track.setPointerCapture(e.pointerId); seekFromEvent(e);
+  });
+  $track.addEventListener("pointermove", e => { if (dragging) seekFromEvent(e); });
+  $track.addEventListener("pointerup", e => {
+    dragging = false;
+    try { $track.releasePointerCapture(e.pointerId); } catch (_) { /* already released */ }
+  });
+  $track.addEventListener("keydown", e => {
+    if (e.key === "ArrowRight") { clock = cl(clock + 1, 0, DUR); render(clock); chrome(); e.preventDefault(); }
+    if (e.key === "ArrowLeft")  { clock = cl(clock - 1, 0, DUR); render(clock); chrome(); e.preventDefault(); }
+  });
+  window.addEventListener("keydown", e => {
+    if (e.key === " " && e.target === document.body) { toggle(); e.preventDefault(); }
+  });
+
+  // Chapter ticks, so a viewer can jump to the beat they want to re-read.
+  const $ch = document.getElementById("chapters");
+  SCENES.slice(1).forEach(s => {
+    const i = document.createElement("i");
+    i.style.left = (s.at / DUR) * 100 + "%";
+    i.title = s.name;
+    $ch.appendChild(i);
+  });
+
+  window.addEventListener("resize", resize);
+
+  function begin() {
+    resize();
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!still) { playing = true; last = performance.now(); }
+    else { clock = 28; render(clock); }   // the algebra: the one frame that carries the idea
+    chrome();
+    requestAnimationFrame(frame);
+  }
+
+  // Wait for the display face, or the first seconds render in a fallback and then jump.
+  if (document.fonts && document.fonts.ready) {
+    let started = false;
+    const go = () => { if (!started) { started = true; begin(); } };
+    document.fonts.ready.then(go);
+    setTimeout(go, 1200);
+  } else {
+    begin();
+  }
+})();
+</script>
