@@ -27,7 +27,6 @@ use wc_core::contract::{
 use wc_core::error::{Code, Mode};
 use wc_core::model::{Cid, EntityId, Jti, Pin, Posture, Tier, ZoneId};
 use wc_mediator::cache::{Cache, Revocations, Snapshot, Trust};
-use wc_mediator::ceiling::Ceilings;
 use wc_mediator::gate::{GateCfg, MediatedUpstream};
 
 const PRIV: &[u8] = include_bytes!("../../../fixtures/keys/test_issuer_es256_priv.pem");
@@ -287,8 +286,7 @@ fn build(
     ));
     cfg.telemetry = Arc::clone(&telemetry);
 
-    let mediated = MediatedUpstream::new(Box::new(upstream), Arc::clone(&cache), cfg)
-        .with_ceilings(Ceilings::new());
+    let mediated = MediatedUpstream::new(Box::new(upstream), Arc::clone(&cache), cfg);
 
     Fixture {
         cache,
@@ -707,69 +705,6 @@ fn an_expired_contract_never_establishes_a_connection() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_rate_ceiling_denies_without_revoking() {
-    let mut f = build(
-        &["get_balance"],
-        DECLARED,
-        |p| p,
-        Mode::Enforce,
-        Terms {
-            max_calls_per_hour: Some(2),
-            ..Default::default()
-        },
-    );
-    f.mediated.request(&initialize());
-    f.mediated.request(&tools_list());
-
-    assert!(f.mediated.request(&call("get_balance")).error.is_none());
-    assert!(f.mediated.request(&call("get_balance")).error.is_none());
-
-    let third = f.mediated.request(&call("get_balance"));
-    let message = tool_error(&third).expect("a ceiling breach is a tool error");
-    assert!(message.contains("WC-4003"), "{message}");
-
-    // Two forwarded, one refused — and the connection is still alive, because a
-    // rate breach is a signal rather than a compromise.
-    assert_eq!(f.recorder.calls().len(), 2);
-    assert!(f.mediated.admitted().is_some());
-}
-
-#[test]
-fn a_concurrency_ceiling_of_zero_denies_on_the_inline_path_too() {
-    // `WC-4005` had no caller on this path at all. The in-flight count here is structurally at
-    // most one — `Upstream::request` takes `&mut self`, the standalone loop is single-threaded,
-    // and warden's gateway holds its upstream behind a Mutex — so a ceiling of 2 could never be
-    // reached and its absence looked harmless.
-    //
-    // Zero is the value that makes it not harmless. The narrowing algebra takes the `min` of
-    // both sides, so either party can drive `max_concurrent` to 0 and mean it. The gateway
-    // refused that; this path forwarded it. Same contract, two answers.
-    let mut f = build(
-        &["get_balance"],
-        DECLARED,
-        |p| p,
-        Mode::Enforce,
-        Terms {
-            max_concurrent: Some(0),
-            ..Default::default()
-        },
-    );
-    f.mediated.request(&initialize());
-    f.mediated.request(&tools_list());
-
-    let denied = f.mediated.request(&call("get_balance"));
-    let message = tool_error(&denied).expect("a ceiling breach is a tool error");
-    assert!(message.contains("WC-4005"), "{message}");
-    assert_eq!(
-        f.recorder.calls().len(),
-        0,
-        "a call was forwarded against a ceiling of zero"
-    );
-    // Denied, not contained: a ceiling breach is a signal, not a compromise.
-    assert!(f.mediated.admitted().is_some());
-}
-
-#[test]
 fn a_concurrency_slot_is_released_between_sequential_calls() {
     // The failure a held slot would cause: take one, never release it, and the SECOND call on
     // the same connection is refused against a ceiling of one. Serial callers must not exhaust
@@ -912,8 +847,7 @@ fn uncontracted(mode: Mode) -> Fixture {
         // There is no contract in this fixture; that is its whole point.
         jws: String::new(),
         recorder,
-        mediated: MediatedUpstream::new(Box::new(upstream), cache, cfg)
-            .with_ceilings(Ceilings::new()),
+        mediated: MediatedUpstream::new(Box::new(upstream), cache, cfg),
         telemetry,
     }
 }

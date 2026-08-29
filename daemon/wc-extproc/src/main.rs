@@ -18,7 +18,7 @@
 //! Envoy must be configured with `failure_mode_allow: false`. If this process is unreachable the
 //! traffic is denied, which is the only safe reading of "the verifier is not there".
 
-use warden_connect_gateway::adapter::{placeholder_callee, refusal_frame, Registry};
+use warden_connect_gateway::adapter::{placeholder_callee, refusal_frame};
 use warden_connect_gateway::{contracts, routes};
 
 use std::pin::Pin;
@@ -152,13 +152,6 @@ struct Verifier<C: Contracts> {
     pin_max_age: u64,
     /// The decision trail, when `--evidence` was given.
     evidence: Option<std::sync::Arc<wc_mediator::evidence::FileSink>>,
-    /// Ceilings per contract, keyed by the artifact id.
-    ///
-    /// Keyed by `jti` rather than by caller or route: the terms belong to the contract, and two
-    /// contracts between the same pair have separate budgets. Shared across streams because one
-    /// HTTP stream is one call — per-stream counters would make every ceiling count to one and
-    /// then reset.
-    limits: std::sync::Arc<Registry>,
     /// Where `x-forwarded-client-cert` may be believed from. An empty configuration trusts
     /// nothing, which is `MeshTrust`'s deliberate default and the right one: "we forgot to
     /// configure it" must not look identical to "it is configured".
@@ -200,7 +193,6 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
 
         let contracts_mode = self.mode;
         let mesh = self.mesh_trust.clone();
-        let limits = std::sync::Arc::clone(&self.limits);
         let pins = self.pins.clone();
         let pin_max_age = self.pin_max_age;
         let evidence = self.evidence.clone();
@@ -281,14 +273,9 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                             .as_ref()
                             .map(|c| c.as_str().to_string())
                             .unwrap_or_default();
-                        let (admitted, contract, ceilings) = match resolved {
-                            Some(r) => {
-                                // Keyed by the artifact id: the terms belong to the contract,
-                                // and two contracts between the same pair have separate budgets.
-                                let c = limits.for_contract(r.admitted.jti.as_str());
-                                (Some(r.admitted), Some(r.contract), Some(c))
-                            }
-                            None => (None, None, None),
+                        let (admitted, contract) = match resolved {
+                            Some(r) => (Some(r.admitted), Some(r.contract)),
+                            None => (None, None),
                         };
                         note = Some(Note {
                             sink: evidence.clone(),
@@ -315,7 +302,7 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                             pins: pins.clone(),
                             pin_max_age,
                         };
-                        filter = Some(Filter::new(admitted, contract, ceilings, now(), &cfg));
+                        filter = Some(Filter::new(admitted, contract, now(), &cfg));
                         cont_headers()
                     }
                     Some(processing_request::Request::RequestBody(b)) => {
@@ -325,7 +312,6 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                             // trusting the body is how a caller reaches the upstream with no identity
                             // established at all, so this fails closed rather than assuming.
                             Filter::new(
-                                None,
                                 None,
                                 None,
                                 now(),
@@ -910,7 +896,6 @@ fn run() -> Result<Started, String> {
             contracts: std::sync::Arc::new(set),
             mode,
             routes: std::sync::Arc::new(routes),
-            limits: std::sync::Arc::new(Registry::default()),
             pins,
             pin_max_age,
             mesh_trust,
@@ -1110,14 +1095,7 @@ mod tests {
     }
 
     fn one_contract(tools: &str) -> OneContract {
-        one_contract_with(tools, c_terms(None))
-    }
-
-    fn c_terms(max_calls: Option<u32>) -> wc_core::contract::Terms {
-        wc_core::contract::Terms {
-            max_calls_per_hour: max_calls,
-            ..wc_core::contract::Terms::default()
-        }
+        one_contract_with(tools, wc_core::contract::Terms::default())
     }
 
     fn one_contract_with(tools: &str, terms: wc_core::contract::Terms) -> OneContract {
@@ -1210,7 +1188,6 @@ mod tests {
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
             // Loopback TCP, which is the origin the test client connects from.
-            limits: std::sync::Arc::new(Registry::default()),
             pins: None,
             pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
@@ -1384,7 +1361,6 @@ mod tests {
             routes: std::sync::Arc::new(CalleeSource::Single(
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
-            limits: std::sync::Arc::new(Registry::default()),
             pins: None,
             pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
@@ -1427,7 +1403,6 @@ mod tests {
             routes: std::sync::Arc::new(CalleeSource::Single(
                 wc_core::model::EntityId::new(CALLEE).unwrap(),
             )),
-            limits: std::sync::Arc::new(Registry::default()),
             pins: None,
             pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
@@ -1502,7 +1477,6 @@ mod tests {
             routes: std::sync::Arc::new(CalleeSource::Table(std::sync::Arc::new(
                 routes::Routes::load(&path).unwrap(),
             ))),
-            limits: std::sync::Arc::new(Registry::default()),
             pins: None,
             pin_max_age: 0,
             mesh_trust: wc_mediator::peer::MeshTrust {
@@ -1605,57 +1579,6 @@ mod tests {
         assert!(
             immediate(&got[1]).is_some(),
             "a stream with no route attribute was admitted"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_rate_ceiling_holds_across_separate_ext_proc_streams() {
-        // Each request is its own ext_proc stream and its own Filter. If the ceilings were
-        // per-stream the third call would be admitted, and a contract saying 2/hour would
-        // permit two PER REQUEST — a ceiling that reads as configured and counts nothing.
-        let v = Verifier {
-            contracts: std::sync::Arc::new(one_contract_with(
-                "summarize_statement",
-                c_terms(Some(2)),
-            )),
-            mode: wc_core::error::Mode::Enforce,
-            routes: std::sync::Arc::new(CalleeSource::Single(
-                wc_core::model::EntityId::new(CALLEE).unwrap(),
-            )),
-            limits: std::sync::Arc::new(Registry::default()),
-            pins: None,
-            pin_max_age: 0,
-            mesh_trust: wc_mediator::peer::MeshTrust {
-                socket: None,
-                addrs: vec!["127.0.0.1".to_string()],
-            },
-            evidence: None,
-        };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            Server::builder()
-                .add_service(ExternalProcessorServer::new(v))
-                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
-                .await
-                .unwrap();
-        });
-
-        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"summarize_statement","arguments":{}}}"#;
-        for i in 1..=2 {
-            let got = exchange(&addr, vec![req_headers(XFCC), req_body(body)]).await;
-            assert!(
-                immediate(&got[1]).is_none(),
-                "call {i} of 2 was refused before the ceiling was reached"
-            );
-        }
-        let got = exchange(&addr, vec![req_headers(XFCC), req_body(body)]).await;
-        let i = immediate(&got[1])
-            .expect("the third call was admitted — the ceiling did not carry across streams");
-        assert!(
-            String::from_utf8_lossy(&i.body).contains("WC-4003"),
-            "{}",
-            String::from_utf8_lossy(&i.body)
         );
     }
 

@@ -35,7 +35,6 @@ use wc_core::error::{Code, Mode, WcError};
 use wc_core::model::Pin;
 
 use crate::cache::Cache;
-use crate::ceiling::Ceilings;
 use crate::filter::{self, Catalog, FilterStat};
 
 /// JSON-RPC error code for a refused connection. Distinct from a tool error: the
@@ -189,7 +188,6 @@ impl ConnectionLog {
 pub struct MediatedUpstream {
     inner: Box<dyn Upstream + Send>,
     cache: Arc<Cache>,
-    ceilings: Ceilings,
     cfg: GateCfg,
     state: State,
     log: ConnectionLog,
@@ -212,20 +210,11 @@ impl MediatedUpstream {
         MediatedUpstream {
             inner,
             cache,
-            ceilings: Ceilings::default(),
             cfg,
             state: State::New,
             log: ConnectionLog::default(),
             next_id: 100_000,
         }
-    }
-
-    /// Attach ceilings. Without this the contract's terms are recorded but not
-    /// enforced, so a deployment that cares about rate or spend must call it.
-    #[must_use]
-    pub fn with_ceilings(mut self, ceilings: Ceilings) -> Self {
-        self.ceilings = ceilings;
-        self
     }
 
     /// What happened on this connection.
@@ -715,33 +704,10 @@ impl MediatedUpstream {
             );
         }
 
-        if let Err(e) = self.ceilings.reserve(&admitted.terms, now) {
-            self.log.denials.push((tool.clone(), e.code()));
-            return self.tool_denial(req, e.code(), e.detail());
-        }
-
-        // Concurrency (`WC-4005`), held across the upstream call and released when this scope
-        // ends. On THIS path the in-flight count is structurally at most one: `Upstream::request`
-        // takes `&mut self`, the standalone loop is single-threaded, and warden's gateway holds
-        // its upstream behind a `Mutex` — so a ceiling of 2 or 200 can never be reached here and
-        // this check exists for the value that CAN be: zero. The narrowing algebra takes the
-        // `min` of both sides, so a provider or a consumer can drive `max_concurrent` to 0 and
-        // mean it, and until now the inline path ignored that while the gateway refused it.
-        // Same contract, two answers, which is the divergence conformance vectors do not cover
-        // because they cover the checks and not the terms.
-        //
-        // One consequence worth stating: because nothing here can be concurrent, whether the
-        // slot is HELD across the call or dropped immediately is unobservable on this path, and
-        // no test here can tell the two apart — mutating it to drop early survives, correctly.
-        // It is held because that is what the ceiling means and because this path may not always
-        // be serial; the hold is covered where it can be, in the gateway filter.
-        let _slot = match self.ceilings.enter(&admitted.terms) {
-            Ok(slot) => slot,
-            Err(e) => {
-                self.log.denials.push((tool.clone(), e.code()));
-                return self.tool_denial(req, e.code(), e.detail());
-            }
-        };
+        // Rate, concurrency and spend ceilings used to be enforced here. They are gone:
+        // counters live in one process, so the number an owner wrote was never the number in
+        // force, and a proxy is where traffic shaping belongs. `connect offer lint` refuses a
+        // term that claims otherwise.
 
         // The allow path. Timed around the upstream call so `latency_us` is the cost of
         // the whole mediated hop, which is the number §7.10's per-call budget is about.

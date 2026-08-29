@@ -400,9 +400,6 @@ pub unsafe extern "C" fn wc_stream_new(
         let resolved = callee
             .as_ref()
             .and_then(|c| handle.contracts.resolve(caller.as_deref(), c.as_str()));
-        let ceilings = resolved
-            .as_ref()
-            .map(|r| handle.ceilings.for_contract(r.admitted.jti.as_str()));
         // Captured before `admitted` moves into the filter: a Decision needs the connection's
         // identity, and an absent contract still deserves a record — a refused call is the one
         // an auditor asks about.
@@ -433,7 +430,7 @@ pub unsafe extern "C" fn wc_stream_new(
             pin_max_age: handle.pin_max_age,
         };
         Box::into_raw(Box::new(WcStream {
-            filter: Filter::new(admitted, contract, ceilings, crate::now(), &cfg),
+            filter: Filter::new(admitted, contract, crate::now(), &cfg),
             evidence: handle.evidence.clone(),
             delivery,
             cid,

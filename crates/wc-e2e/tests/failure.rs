@@ -29,7 +29,6 @@ use wc_core::contract::{self, AnyZone, PeerIdentity, VerifyOpts};
 use wc_core::error::{Code, Mode};
 use wc_core::model::Kind;
 use wc_mediator::cache::{Cache, Revocations, Snapshot};
-use wc_mediator::ceiling::Ceilings;
 use wc_mediator::gate::{GateCfg, MediatedUpstream};
 
 const AGENT: &str = "spiffe://org/ns/agents/sa/recon";
@@ -81,8 +80,7 @@ fn mediator(
     );
     cfg.mode = Mode::Enforce;
     cfg.zones = Box::new(AnyZone);
-    let mediated = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg)
-        .with_ceilings(Ceilings::new());
+    let mediated = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg);
     (mediated, recorder, cache)
 }
 
@@ -294,8 +292,7 @@ fn an_unverifiable_revocation_feed_denies_everything() {
         cfg.zones = Box::new(AnyZone);
         let _ = keys;
         (
-            MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg)
-                .with_ceilings(Ceilings::new()),
+            MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg),
             rec,
             (),
         )
@@ -323,8 +320,7 @@ fn an_unverifiable_revocation_feed_denies_everything() {
     );
     cfg.mode = Mode::Observe;
     cfg.zones = Box::new(AnyZone);
-    let mut m3 = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg)
-        .with_ceilings(Ceilings::new());
+    let mut m3 = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg);
     m3.request(&req(1, "initialize", json!({})));
     assert!(
         refusal(&m3.request(&req(2, "tools/call", json!({"name": "get_balance"})))).is_some(),
@@ -612,8 +608,7 @@ fn a_stale_mediator_closes_on_a_revoked_cid_at_the_next_refresh() {
     );
     cfg.mode = Mode::Enforce;
     cfg.zones = Box::new(AnyZone);
-    let mut fresh = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg)
-        .with_ceilings(Ceilings::new());
+    let mut fresh = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg);
     let why = refusal(&fresh.request(&req(1, "initialize", json!({}))))
         .expect("a revoked cid must not be admitted");
     assert!(why.contains("WC-3105"), "{why}");
@@ -635,8 +630,7 @@ fn a_stale_mediator_closes_on_a_revoked_cid_at_the_next_refresh() {
     );
     cfg2.mode = Mode::Enforce;
     cfg2.zones = Box::new(AnyZone);
-    let mut again = MediatedUpstream::new(Box::new(stub2), Arc::clone(&cache), cfg2)
-        .with_ceilings(Ceilings::new());
+    let mut again = MediatedUpstream::new(Box::new(stub2), Arc::clone(&cache), cfg2);
     assert!(refusal(&again.request(&req(1, "initialize", json!({})))).is_some());
     assert!(rec3.executed().is_empty());
     let _ = recorder;

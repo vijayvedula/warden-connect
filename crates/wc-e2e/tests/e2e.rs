@@ -38,7 +38,6 @@ use wc_core::contract::{self, AnyZone, ContractStatus, PeerIdentity, Surface, Te
 use wc_core::error::{Code, Mode};
 use wc_core::model::{EntityId, Kind, Lifecycle, Posture};
 use wc_mediator::cache::{Cache, Snapshot};
-use wc_mediator::ceiling::Ceilings;
 use wc_mediator::gate::{GateCfg, MediatedUpstream};
 
 const AGENT: &str = "spiffe://org/ns/agents/sa/recon";
@@ -459,8 +458,7 @@ fn uc04_connection() {
     );
     cfg.mode = Mode::Enforce;
     cfg.zones = Box::new(AnyZone);
-    let mut mediated = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg)
-        .with_ceilings(Ceilings::new());
+    let mut mediated = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg);
 
     mediated.request(&req(1, "initialize", json!({})));
 
@@ -688,8 +686,7 @@ fn uc06_drift() {
     );
     cfg.mode = Mode::Enforce;
     cfg.zones = Box::new(AnyZone);
-    let mut mediated = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg)
-        .with_ceilings(Ceilings::new());
+    let mut mediated = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg);
     mediated.request(&req(1, "initialize", json!({})));
     let listed = mediated.request(&req(2, "tools/list", json!({})));
 
@@ -876,8 +873,7 @@ fn uc08_shadow() {
         );
         cfg.mode = mode;
         cfg.zones = Box::new(AnyZone);
-        let mut mediated = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg)
-            .with_ceilings(Ceilings::new());
+        let mut mediated = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg);
 
         mediated.request(&req(1, "initialize", json!({})));
         let listed = mediated.request(&req(2, "tools/list", json!({})));
@@ -981,8 +977,7 @@ fn uc08_a_contracted_pair_is_not_a_shadow_finding() {
     );
     cfg.mode = Mode::Observe;
     cfg.zones = Box::new(AnyZone);
-    let mut mediated = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg)
-        .with_ceilings(Ceilings::new());
+    let mut mediated = MediatedUpstream::new(Box::new(stub), Arc::clone(&cache), cfg);
 
     mediated.request(&req(1, "initialize", json!({})));
     mediated.request(&req(2, "tools/list", json!({})));

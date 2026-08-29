@@ -140,7 +140,6 @@ fn filter_for(tools: &[&str], catalogue: &Value) -> Filter {
     Filter::new(
         Some(admitted(tools)),
         Some(contract(tools, catalogue)),
-        None,
         NOW,
         &cfg(None, 0),
     )
@@ -209,7 +208,7 @@ fn a_reworded_description_moves_the_pin() {
 fn a_stream_with_no_contract_does_not_silently_pass_a_catalogue() {
     // No contract means no admitted connection, so there is nothing to filter against and the
     // request never reaches the catalogue phase in the first place.
-    let mut f = Filter::new(None, None, None, NOW, &cfg(None, 0));
+    let mut f = Filter::new(None, None, NOW, &cfg(None, 0));
     assert_eq!(
         f.on_request("tools/list", &json!({})),
         warden_connect_gateway::Verdict::Refuse {
@@ -235,7 +234,6 @@ fn filter_with_ledger(
     Filter::new(
         Some(a),
         Some(contract(tools, catalogue)),
-        None,
         now,
         &cfg(Some(Arc::clone(ledger)), max_age),
     )
@@ -339,7 +337,6 @@ fn no_ledger_means_the_requirement_is_off_entirely() {
     let mut f = Filter::new(
         Some(admitted(&["get_balance"])),
         Some(contract(&["get_balance"], &served())),
-        None,
         NOW,
         &cfg(None, 0),
     );
