@@ -485,6 +485,10 @@ plugins:
       contracts_url: http://host.docker.internal:$PLANE_PORT
       token: tok_drill_stub_plane_0123456789
       refresh_secs: 1
+      # The phase below turns on this number. A set nobody has refreshed within it is refused
+      # outright, so a call that still works after the bound has elapsed can only be running on
+      # a set the worker pulled.
+      max_stale: 10
 YAML
 
 docker rm -f "$(cat "$CID_FILE")" >/dev/null 2>&1
@@ -517,8 +521,27 @@ R=$(call client /mcp "$GET")
 if ! printf '%s' "$R" | grep -q '"result"'; then
   bad "14 · the contract does not work before revocation, so the phase proves nothing"
   printf '       %s\n' "$(printf '%s' "$R" | head -c 200)"
+  docker logs "$(cat "$CID_FILE")" 2>&1 | grep -iE 'refresh|contracts_url|wc-kong' | tail -6 \
+    | sed 's/^/       /'
 else
-  ok "14 · pulling from a control plane: the contract works"
+  # A working call proves nothing about pulling on its own: this config also loads
+  # /wc/fx/c.jws from disk, and that file alone satisfies the call. It did exactly that in CI
+  # -- the phase reported "pulling from a control plane: the contract works" while every
+  # refresh in the run was failing `unreachable`, because the stub plane was bound to loopback
+  # and the container could not see it. The phase was reporting the file.
+  #
+  # `max_stale` is what separates them. Past the bound, a set nobody has refreshed is refused
+  # on every call, so waiting it out and calling again asks the only question that matters:
+  # is this worker running on something it pulled?
+  sleep 12
+  R=$(call client /mcp "$GET")
+  if ! printf '%s' "$R" | grep -q '"result"'; then
+    bad "14 · nothing was ever pulled: the set went stale and the file could not save it"
+    printf '       %s\n' "$(printf '%s' "$R" | head -c 200)"
+    docker logs "$(cat "$CID_FILE")" 2>&1 | grep -iE 'refresh|stale|contracts_url' | tail -6 \
+      | sed 's/^/       /'
+  else
+    ok "14 · pulling from a control plane: a set older than max_stale still works, so it was pulled"
 
   # 15 ------------------------------------------------------------------------
   touch "$ARM"
@@ -559,6 +582,7 @@ else
       bad "15 · refused, but no worker applied a revocation — set membership, not the feed"
     fi
   fi
+fi
 fi
 
 kill "$PLANE_PID" 2>/dev/null
