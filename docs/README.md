@@ -4,6 +4,7 @@
 |---|---|
 | [contract-and-enforcement.html](contract-and-enforcement.html) | **For CTOs, CIOs and enterprise architects.** A 9-chapter animated explainer, 2:41 — contract × enforcement point, and why neither is a control alone. Canvas-driven, scrubbable, with an interactive intersection and a full transcript. Open it in a browser |
 | [explainer.html](explainer.html) | A 21-slide self-building deck: the problem, the model, the lifecycle, the capabilities. Open it in a browser |
+| [install.md](install.md) | Installing either enforcement point from release artifacts, without a checkout — verification first, then Envoy and Kong |
 | [production-readiness.md](production-readiness.md) | What stands between `main` and a release, and what has been closed |
 | [07-hld.md](07-hld.md) | High-level design — the plane split, the contract, the algebra, the trust model |
 | [08-lld.md](08-lld.md) | Low-level design — every crate, every module, every check, the build order. §8.6b is the enforcement-point bindings: Envoy and Kong over one decision core |

@@ -68,6 +68,15 @@ jobs:
     name: Build and attest
     needs: gate
     runs-on: ubuntu-latest
+    env:
+      # ONE list. It appeared in four places -- the copy, the digests, and both attestation
+      # loops -- so shipping a new artifact meant remembering all four, and the two enforcement
+      # points shipped in none of them. A release that omits the binding is a release of a
+      # control plane with nothing to enforce it.
+      # Artifacts, not just binaries: the Kong binding is a cdylib PLUS the Lua that loads it,
+      # and shipping only the .so leaves an operator needing a repo checkout for the half that
+      # makes it a plugin.
+      ARTIFACTS: connect connect-mediate wc-extproc libwc_kong.so wc-kong-lua.tar.gz
     permissions:
       # Keyless signing: cosign exchanges this for a short-lived Fulcio certificate, so
       # there is no signing key in repository secrets to leak or rotate.
@@ -85,7 +94,13 @@ jobs:
 
       - name: Build
         working-directory: warden-connect
-        run: cargo build --release -p warden-connect-cli -p warden-connect-mediator
+        run: |
+          set -euo pipefail
+          cargo build --release -p warden-connect-cli -p warden-connect-mediator \
+                                -p warden-connect-kong
+          # `daemon/` is deliberately outside the workspace (§8.2: the async stops at the
+          # binary), so it needs its own manifest rather than a `-p`.
+          cargo build --release --manifest-path daemon/wc-extproc/Cargo.toml
 
       - name: Digests
         id: digests
@@ -93,11 +108,18 @@ jobs:
         run: |
           mkdir -p release
           cp target/release/connect target/release/connect-mediate release/
+          cp target/release/libwc_kong.so release/
+          cp daemon/wc-extproc/target/release/wc-extproc release/
+          # The plugin's Lua half, and the C header the FFI is declared against. Reproducible:
+          # sorted, with no owner, group or mtime, so the digest depends on the contents alone.
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='UTC 2020-01-01' \
+              -czf release/wc-kong-lua.tar.gz \
+              -C crates/wc-kong lua include
           cd release
           # The manifest a human reads and `verify-release.sh` does not: the script computes
           # the digest from the bytes itself, because a digest copied off a release page is a
           # digest whoever controls the page chose.
-          sha256sum connect connect-mediate > SHA256SUMS
+          sha256sum $ARTIFACTS > SHA256SUMS
           cat SHA256SUMS
           echo "connect=sha256:$(sha256sum connect | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
@@ -120,7 +142,7 @@ jobs:
           BUILDER: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
         run: |
           set -euo pipefail
-          for bin in connect connect-mediate; do
+          for bin in $ARTIFACTS; do
             # ONLY the predicate. Not a full in-toto Statement.
             #
             # The first run of this workflow failed here, and it is the exact gap the header
@@ -176,7 +198,7 @@ jobs:
           set -euo pipefail
           # Extracting the DSSE envelope from the Sigstore bundle: `attest verify` takes the
           # envelope, deliberately — it is offline and Sigstore-free by design.
-          for bin in connect connect-mediate; do
+          for bin in $ARTIFACTS; do
             python3 - "release/$bin.provenance.bundle" > "release/$bin.dsse.json" <<'PY'
           import json, sys
           bundle = json.load(open(sys.argv[1]))
