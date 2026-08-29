@@ -232,6 +232,45 @@ pub fn row_hash(prev: &str, line: &str) -> String {
     sha256_hex(&format!("{prev}\n{line}"))
 }
 
+/// The records after `seq`, once the whole trail has been verified.
+///
+/// Verification first, always. Handing back rows from a chain that does not hold would let a
+/// reader act on records an editor chose for them, which is the one thing the chain exists to
+/// prevent — and the tail of an edited file is exactly where the interesting rows would be.
+///
+/// Returns the verbatim record text of each row, so what a caller reads is what was hashed.
+///
+/// # Errors
+///
+/// If the trail does not verify, or cannot be read.
+pub fn records_since(path: impl AsRef<Path>, seq: u64) -> Result<Vec<String>, String> {
+    let path = path.as_ref();
+    verify(path)?;
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("evidence {}: {e}", path.display()))?;
+    let mut out = Vec::new();
+    for line in std::io::BufReader::new(file).lines() {
+        let line = line.map_err(|e| format!("evidence {}: {e}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        // `verify` has already established that every row parses and carries these fields.
+        let row: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("evidence {}: {e}", path.display()))?;
+        if row
+            .get("seq")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            > seq
+        {
+            if let Some(raw) = raw_rec(&line) {
+                out.push(raw.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Walk a trail and confirm every row follows from the one before it.
 ///
 /// # Errors
@@ -347,6 +386,32 @@ mod tests {
             .unwrap();
         assert_eq!(h.seq, 2);
         assert_eq!(verify(&p).unwrap(), h, "the head must match a full walk");
+    }
+
+    #[test]
+    fn records_since_returns_the_tail_and_refuses_an_edited_trail() {
+        let p = dir("since").join("trail.jsonl");
+        let _ = std::fs::remove_file(&p);
+        let sink = FileSink::open(&p, Delivery::FailSafe).unwrap();
+        for i in 0..4 {
+            sink.record(&decision("conn_a", "allow", "WC-0000", "get_balance"))
+                .unwrap();
+            let _ = i;
+        }
+
+        assert_eq!(records_since(&p, 0).unwrap().len(), 4);
+        assert_eq!(records_since(&p, 2).unwrap().len(), 2);
+        assert!(records_since(&p, 4).unwrap().is_empty());
+        // Verbatim record text, so what a caller reads is what was hashed.
+        assert!(records_since(&p, 3).unwrap()[0].contains("\"cid\":\"conn_a\""));
+
+        // The part worth having a test for. An edited trail must yield NOTHING, not the rows
+        // that happen to sit after the break — the tail of an edited file is exactly where an
+        // editor would put what they wanted read.
+        let text = std::fs::read_to_string(&p).unwrap();
+        std::fs::write(&p, text.replace("get_balance", "transfer_funds")).unwrap();
+        let err = records_since(&p, 0).unwrap_err();
+        assert!(err.contains("edited"), "{err}");
     }
 
     /// The point of the chain. Editing any row must invalidate the trail from there.

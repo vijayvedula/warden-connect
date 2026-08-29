@@ -1153,6 +1153,7 @@ dependencies = [
  "toml",
  "warden-connect-control",
  "warden-connect-core",
+ "warden-connect-mediator",
 ]
 
 [[package]]
