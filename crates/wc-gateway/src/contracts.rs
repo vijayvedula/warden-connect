@@ -39,8 +39,12 @@ pub struct Resolved {
 
 /// Resolve an admitted connection for a caller.
 pub trait Contracts: Send + Sync + 'static {
-    /// The admitted connection for this pair, or `None` if there is no contract.
-    fn resolve(&self, caller: Option<&str>, callee: &str) -> Option<Resolved>;
+    /// Every admitted connection for this pair.
+    ///
+    /// Plural because one pair can hold several contracts covering different tools — two
+    /// teams, two capabilities, two approval timelines. It was singular, and the second
+    /// contract was verified, counted and unreachable.
+    fn resolve(&self, caller: Option<&str>, callee: &str) -> Vec<Resolved>;
 
     /// Report that a call PROCEEDED on this connection.
     ///
@@ -108,20 +112,22 @@ impl ContractSet {
             issuer: &issuer,
         };
         let snapshot = Snapshot::build(artifacts, &trusted, at);
-        // A second contract for one party pair is verified, counted and then unreachable: the
-        // resolver here never names a `cid`, so it can only ever find one per pair. Saying so at
-        // startup is the difference between "2 contracts verified" meaning two usable contracts
-        // and meaning one — a walkthrough lost an afternoon to exactly that.
-        for sh in &snapshot.shadowed {
+        // Several contracts per pair used to mean the second was verified, counted and
+        // unreachable — a walkthrough lost an afternoon to exactly that. They all resolve now,
+        // by tool. What remains unresolvable is two of them claiming the SAME tool: nothing in
+        // either artifact says which governs, so that tool is refused rather than guessed, and
+        // an operator hears about it at startup instead of at an audit.
+        for c in &snapshot.conflicting {
             eprintln!(
-                "{}: WARNING contract {} is UNREACHABLE — {} covers the same pair \
-                 ({} -> {}) and this filter resolves by pair, never by cid. Put the tools you \
-                 need in ONE contract",
+                "{}: WARNING contracts {} and {} both claim {:?} for {} -> {}. Nothing says \
+                 which governs, so those tools are REFUSED. Put each tool in exactly one \
+                 contract for this pair",
                 binding(),
-                sh.cid,
-                sh.shadowed_by,
-                sh.caller,
-                sh.callee
+                c.cid,
+                c.conflicts_with,
+                c.items,
+                c.caller,
+                c.callee
             );
         }
         // An artifact that failed verification is dropped into `rejected` and, until now, never
@@ -208,7 +214,7 @@ impl Contracts for ContractSet {
         self.cache.mark_used(cid, at);
     }
 
-    fn resolve(&self, caller: Option<&str>, callee: &str) -> Option<Resolved> {
+    fn resolve(&self, caller: Option<&str>, callee: &str) -> Vec<Resolved> {
         // A set nobody has been able to refresh is a set a revocation cannot reach. Refusing
         // is the only honest answer: the alternative is admitting calls on a contract that may
         // have been withdrawn an hour ago.
@@ -219,7 +225,7 @@ impl Contracts for ContractSet {
                 binding(),
                 self.max_stale
             );
-            return None;
+            return Vec::new();
         }
 
         // No identity, no contract. This is the line that decides an unauthenticated caller is
@@ -228,10 +234,17 @@ impl Contracts for ContractSet {
         // The identity arrives already authenticated: `PeerSource::Mesh` resolved it from the
         // XFCC header AND checked the origin the header came from, which is the half that makes
         // it authentication rather than a request field with a hyphen in it.
-        let caller = caller?;
-        let caller = EntityId::new(caller).ok()?;
-        let callee = EntityId::new(callee).ok()?;
-        let contract = match self.cache.resolve(None, &caller, &callee) {
+        let Some(caller) = caller else {
+            return Vec::new();
+        };
+        let (Ok(caller), Ok(callee)) = (EntityId::new(caller), EntityId::new(callee)) else {
+            return Vec::new();
+        };
+        let contracts = match self.cache.resolve_all(&caller, &callee) {
+            Ok(c) if c.is_empty() => {
+                eprintln!("{}: no contract for {caller} -> {callee}", binding());
+                return Vec::new();
+            }
             Ok(c) => c,
             Err(e) => {
                 eprintln!(
@@ -240,7 +253,7 @@ impl Contracts for ContractSet {
                     e.code(),
                     e.detail()
                 );
-                return None;
+                return Vec::new();
             }
         };
 
@@ -259,28 +272,34 @@ impl Contracts for ContractSet {
             zones: self.zones.as_ref(),
             mode: self.mode,
         };
-        // The gates. Swallowing this error was the worst of the three: a contract that exists
-        // and fails gate 9, 10 or 11 was reported as "no contract for this caller and callee",
-        // which sends the reader to look for a contract that is sitting right there.
-        let admitted = match contract.admit_context(&ctx) {
-            Ok(a) => a,
-            Err(e) => {
-                eprintln!(
-                    "{}: contract {} found for {caller} -> {callee} but NOT admitted: {} {}",
-                    binding(),
-                    contract.payload.cid.as_str(),
-                    e.code(),
-                    e.detail()
-                );
-                return None;
-            }
-        };
-        // The contract travels with the admitted connection. A filter that cannot reach it
-        // cannot run gate 8, and a gate that cannot run is not a gate.
-        Some(Resolved {
-            admitted,
-            contract: std::sync::Arc::clone(&contract),
-        })
+        // The gates, per contract. One failing does not cost the others: a pair may hold a
+        // live contract and an expired one, and refusing both because of the second would
+        // withdraw an agreement nobody withdrew.
+        //
+        // Swallowing this error was the worst of the three: a contract that exists and fails
+        // gate 9, 10 or 11 was reported as "no contract for this caller and callee", which
+        // sends the reader to look for a contract that is sitting right there.
+        contracts
+            .iter()
+            .filter_map(|contract| match contract.admit_context(&ctx) {
+                Ok(admitted) => Some(Resolved {
+                    admitted,
+                    // The contract travels with the admitted connection. A filter that cannot
+                    // reach it cannot run gate 8, and a gate that cannot run is not a gate.
+                    contract: std::sync::Arc::clone(contract),
+                }),
+                Err(e) => {
+                    eprintln!(
+                        "{}: contract {} found for {caller} -> {callee} but NOT admitted: {} {}",
+                        binding(),
+                        contract.payload.cid.as_str(),
+                        e.code(),
+                        e.detail()
+                    );
+                    None
+                }
+            })
+            .collect()
     }
 }
 
@@ -424,7 +443,10 @@ mod tests {
 
     #[test]
     fn the_contracted_caller_resolves_and_carries_its_contract() {
-        let r = set().resolve(Some(CALLER), CALLEE).expect("should resolve");
+        let r = set()
+            .resolve(Some(CALLER), CALLEE)
+            .pop()
+            .expect("should resolve");
         assert!(r.admitted.items.contains("get_balance"));
         assert!(
             !r.admitted.items.contains("wire_funds"),
@@ -439,14 +461,14 @@ mod tests {
     #[test]
     fn an_absent_identity_resolves_to_nothing() {
         // The line that decides an unauthenticated caller is not a permitted one.
-        assert!(set().resolve(None, CALLEE).is_none());
+        assert!(set().resolve(None, CALLEE).is_empty());
     }
 
     #[test]
     fn a_different_caller_resolves_to_nothing() {
         assert!(set()
             .resolve(Some("spiffe://org/ns/agents/sa/somebody-else"), CALLEE)
-            .is_none());
+            .is_empty());
     }
 
     #[test]
@@ -454,12 +476,12 @@ mod tests {
         // The callee is configuration. A contract for one callee must not satisfy another.
         assert!(set()
             .resolve(Some(CALLER), "spiffe://org/ns/tools/sa/other-mcp")
-            .is_none());
+            .is_empty());
     }
 
     #[test]
     fn a_malformed_caller_id_resolves_to_nothing() {
-        assert!(set().resolve(Some("not-a-spiffe-id"), CALLEE).is_none());
+        assert!(set().resolve(Some("not-a-spiffe-id"), CALLEE).is_empty());
     }
 
     #[test]
@@ -468,20 +490,20 @@ mod tests {
         // cannot be contained: `connect revoke` lands in the control plane and never arrives.
         let s = set_with_bound(60);
         assert!(
-            s.resolve(Some(CALLER), CALLEE).is_some(),
+            !s.resolve(Some(CALLER), CALLEE).is_empty(),
             "fresh set should resolve"
         );
 
         set_clock(T_NOW + 61);
         assert!(
-            s.resolve(Some(CALLER), CALLEE).is_none(),
+            s.resolve(Some(CALLER), CALLEE).is_empty(),
             "a set older than its bound still admitted a call"
         );
 
         // A successful refresh clears it.
         s.mark_fresh(T_NOW + 61);
         assert!(
-            s.resolve(Some(CALLER), CALLEE).is_some(),
+            !s.resolve(Some(CALLER), CALLEE).is_empty(),
             "marking the set fresh did not clear the refusal"
         );
         set_clock(T_NOW);
@@ -493,7 +515,7 @@ mod tests {
         // would refuse a correctly-configured air-gapped deployment.
         let s = set_with_bound(0);
         set_clock(T_NOW + 10_000_000);
-        assert!(s.resolve(Some(CALLER), CALLEE).is_some());
+        assert!(!s.resolve(Some(CALLER), CALLEE).is_empty());
         assert_eq!(s.stale(), None);
         set_clock(T_NOW);
     }

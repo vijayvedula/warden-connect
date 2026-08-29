@@ -11,6 +11,7 @@ code, not recalled.
 | **P2.1/2.2** | evidence | both enforcement points write a hash-chained decision trail, asserted in both drills. `terms.evidence.delivery = "blocking"` binds for the first time |
 | **3.1 (Envoy)** | revocation | quarantine → feed → fetch → verify → deny-list → refusal at a real Envoy. Three separate breaks, each invisible alone: the plane set its feed from nowhere, no mediator fetched one, and the serving plane never appended to the feed it published |
 | **1.3** | ceilings | removed as a capability rather than fixed — see the CHANGELOG |
+| **1.4** | several contracts per pair | resolution picks by tool; the catalogue is the union and must satisfy every pin; two contracts claiming one tool is a conflict, reported at load and refused at the call |
 
 ## Remaining
 
@@ -19,7 +20,6 @@ code, not recalled.
 | 0.4 | second scm race under contention; the gate is non-deterministic until fixed | M |
 | 1.2 | audit every remaining `Terms` field for a claim that binds nothing (`delegation.max_depth` is known) | S |
 | 1.2b | sweep for documented-but-absent mechanisms — six found in one session | S–M |
-| 1.4 | one contract per `(caller, callee)`; a second is verified, counted, unreachable | M |
 | 2.3 | `connect evidence verify\|since` — needs a `wc-cli → wc-mediator` edge | S |
 | 2.4 | anchor the chain head on the ack, so the trail is tamper-*evident* and not merely tamper-detecting | M |
 | 3.1b | Kong has no pull path, so revocation reaches Envoy and not Kong | M |

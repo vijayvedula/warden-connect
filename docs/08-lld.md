@@ -701,7 +701,7 @@ developed on macOS while Kong runs Linux.
 
 | Limit | Status |
 |---|---|
-| one contract per `(caller, callee)` | a second is verified, counted and unreachable — resolution is by pair and a filter never has a `cid` |
+| several contracts per `(caller, callee)` | supported. Resolution picks by **tool**, a catalogue shows the union and must satisfy every pin, and two contracts claiming one tool is a conflict reported at load and refused at the call |
 | hot reload | **not built.** There is no `wc_reload` and no timer, so a contract set or a route table changes only when the worker restarts — and a revocation reaches this PEP no faster than that. `max_stale` would bound the exposure, but with no refresh source a bound only converts "serving a stale set" into "denying everything", so it defaults to 0 and the real containment is **contract expiry**. Set `exp` accordingly, or reload on a schedule you control |
 | `no_pin` exists | for a staged rollout only. Gate 8 is not optional, which is why the flag is spelled out rather than looking like a tuning knob |
 | rate, concurrency and spend | **removed as a capability** (§8.6.5). Set volume limits on the proxy |

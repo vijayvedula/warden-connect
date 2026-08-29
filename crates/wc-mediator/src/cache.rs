@@ -114,17 +114,24 @@ impl RevocationView for Revocations {
 /// `wc-control` cannot depend on this crate.
 pub use wc_core::contract::Trust;
 
-/// A contract that verified but cannot be resolved without a `cid`.
+/// Two contracts for one pair that claim the same tool.
+///
+/// Several contracts per pair is normal — two teams, two capabilities, two approval
+/// timelines — and resolution picks by tool. What is not resolvable is two contracts naming
+/// the SAME tool: nothing in either artifact says which governs, and picking one would apply
+/// its terms to the other's approval. Reported at load, refused at the call.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShadowedContract {
-    /// The contract that lost the party-pair slot.
+pub struct ConflictingContracts {
+    /// The contract that arrived second.
     pub cid: String,
-    /// The contract that took it.
-    pub shadowed_by: String,
-    /// The caller both share.
+    /// The one it collides with.
+    pub conflicts_with: String,
+    /// The caller both name.
     pub caller: String,
-    /// The callee both share.
+    /// The callee both name.
     pub callee: String,
+    /// The tools both claim.
+    pub items: Vec<String>,
 }
 
 /// A verified contract set, immutable once built.
@@ -139,16 +146,12 @@ pub struct Snapshot {
     by_cid: BTreeMap<String, Arc<VerifiedContract>>,
     /// Verified contracts by authenticated party pair — how a connection is found
     /// when the agent carries no `cid`.
-    by_pair: HashMap<(String, String), Arc<VerifiedContract>>,
-    /// Contracts that verified but are unreachable without a `cid`, because another contract
-    /// for the same party pair took the `by_pair` slot.
+    by_pair: HashMap<(String, String), Vec<Arc<VerifiedContract>>>,
+    /// Contracts for one pair that claim the same tool, and therefore cannot be told apart.
     ///
-    /// This map is one-per-pair, so a second contract between the same two parties is loaded,
-    /// counted and then never resolved for any caller that does not name a `cid`. A gateway
-    /// filter never names one — it resolves before a body has been read — so at a gateway the
-    /// shadowed contract is simply dead. Reporting it is the difference between "2 contracts
-    /// verified" meaning two usable contracts and meaning one.
-    pub shadowed: Vec<ShadowedContract>,
+    /// Not the same as "a second contract for this pair", which is normal and now resolves by
+    /// tool. This is the case nothing in the artifacts decides.
+    pub conflicting: Vec<ConflictingContracts>,
     /// Artifacts that failed verification when the snapshot was built, with the
     /// reason. Kept so a mediator can report *why* it has no contract, rather
     /// than only that it has none.
@@ -180,17 +183,29 @@ impl Snapshot {
                     digest_input.push('\n');
                     let shared = Arc::new(verified);
                     snapshot.by_cid.insert(cid.clone(), Arc::clone(&shared));
-                    if let Some(previous) = snapshot.by_pair.insert(pair.clone(), shared) {
-                        // Last write wins, which is arbitrary — artifact order is the caller's.
-                        // Whichever lost is unreachable without a `cid`, so it is named rather
-                        // than dropped in silence.
-                        snapshot.shadowed.push(ShadowedContract {
-                            cid: previous.payload.cid.as_str().to_string(),
-                            shadowed_by: cid,
-                            caller: pair.0,
-                            callee: pair.1,
-                        });
+                    // Several contracts may cover one pair: two teams, two capabilities, two
+                    // approval timelines. They used to overwrite each other here, so the loser
+                    // was verified, counted and unreachable. They are all kept now and the
+                    // resolver picks by TOOL, which is the key that actually decides.
+                    //
+                    // What is still a conflict is two contracts claiming the SAME tool for one
+                    // pair: nothing in the artifact says which governs, and guessing would mean
+                    // one contract's terms silently applying to another's approval.
+                    let held = snapshot.by_pair.entry(pair.clone()).or_default();
+                    for other in held.iter() {
+                        let clash: Vec<String> =
+                            shared.items.intersection(&other.items).cloned().collect();
+                        if !clash.is_empty() {
+                            snapshot.conflicting.push(ConflictingContracts {
+                                cid: cid.clone(),
+                                conflicts_with: other.payload.cid.as_str().to_string(),
+                                caller: pair.0.clone(),
+                                callee: pair.1.clone(),
+                                items: clash,
+                            });
+                        }
                     }
+                    held.push(shared);
                 }
                 Err(e) => {
                     let label = jws.chars().take(24).collect::<String>();
@@ -232,8 +247,20 @@ impl Snapshot {
     /// Look up by the authenticated party pair.
     #[must_use]
     pub fn by_pair(&self, caller: &EntityId, callee: &EntityId) -> Option<&Arc<VerifiedContract>> {
+        self.all_for_pair(caller, callee).first()
+    }
+
+    /// Every contract covering this pair, in the order the artifacts were given.
+    ///
+    /// One pair can hold several contracts and the surface each covers is what tells them
+    /// apart. A caller with a pre-granted contract over the read tools and a gated one over
+    /// `transfer_funds` has two, and until now the second was verified, counted and
+    /// unreachable — resolution overwrote by pair.
+    #[must_use]
+    pub fn all_for_pair(&self, caller: &EntityId, callee: &EntityId) -> &[Arc<VerifiedContract>] {
         self.by_pair
             .get(&(caller.as_str().to_string(), callee.as_str().to_string()))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// How many contracts are held.
@@ -422,6 +449,45 @@ impl Cache {
             }
         }
         Ok(contract)
+    }
+
+    /// Every contract for this pair that is still in force.
+    ///
+    /// The plural of [`Self::resolve`], and the one a gateway needs: a filter has no `cid`, and
+    /// one pair can hold several contracts covering different tools. Revocation and the
+    /// distrust check apply per contract, so a cut connection drops out of this list while its
+    /// neighbours keep working — which is what a deny-list on one connection should do.
+    ///
+    /// # Errors
+    ///
+    /// Only when the revocation state itself cannot be relied on, which admits nothing at all.
+    /// An empty result is not an error: it is "no contract for this pair", and the caller says
+    /// so in its own words.
+    pub fn resolve_all(
+        &self,
+        caller: &EntityId,
+        callee: &EntityId,
+    ) -> Result<Vec<Arc<VerifiedContract>>> {
+        let snapshot = self.snapshot();
+        let revoked = self.revocations();
+        if let Some(why) = revoked.distrusted() {
+            return Err(WcError::with_detail(
+                Code::CONTRACT_REVOKED,
+                format!("revocation state cannot be relied on ({why}), so nothing is admitted"),
+            ));
+        }
+        Ok(snapshot
+            .all_for_pair(caller, callee)
+            .iter()
+            .filter(|c| {
+                let p = &c.payload;
+                !revoked.jti_revoked(p.jti.as_str())
+                    && !revoked.cid_revoked(p.cid.as_str())
+                    && !revoked.party_revoked(p.caller.id.as_str())
+                    && !revoked.party_revoked(p.callee.id.as_str())
+            })
+            .cloned()
+            .collect())
     }
 
     /// Re-check a connection admitted earlier: is the artifact it runs on still in force?
@@ -779,58 +845,69 @@ mod tests {
 }
 
 #[cfg(test)]
-mod shadowed_tests {
-    //! Two contracts between the same two parties. The map is one-per-pair, so one of them is
-    //! unreachable without a `cid` — and a gateway filter never has one. This was found by a
-    //! walkthrough where `2 contract(s) verified` was followed by the wrong tool list.
+mod multi_contract_tests {
+    //! Several contracts between the same two parties. One pair, two capabilities, two approval
+    //! timelines — the normal case, and for a long time the second contract was verified,
+    //! counted and unreachable because the map was one-per-pair. Found by a walkthrough where
+    //! `2 contract(s) verified` was followed by the wrong tool list.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::tests::{agent, contract_for, keys, server, ISS, MEDIATOR, NOW};
     use super::{Snapshot, Trust};
 
-    #[test]
-    fn a_second_contract_for_one_pair_is_reported_as_shadowed() {
-        let a = contract_for("conn_aaaa0001", &["get_balance"], NOW + 3600);
-        let b = contract_for("conn_bbbb0002", &["wire_funds"], NOW + 3600);
-        let trust = Trust {
-            keys: &keys(),
+    fn trust() -> Trust<'static> {
+        Trust {
+            keys: Box::leak(Box::new(keys())),
             mediator_id: MEDIATOR,
             issuer: ISS,
-        };
-        let snap = Snapshot::build(&[a, b], &trust, NOW);
-
-        assert_eq!(snap.len(), 2, "both should verify");
-        assert_eq!(
-            snap.shadowed.len(),
-            1,
-            "one of two contracts for one pair must be reported unreachable"
-        );
-        let s = &snap.shadowed[0];
-        assert_eq!(
-            s.cid, "conn_aaaa0001",
-            "the first loaded is the one shadowed"
-        );
-        assert_eq!(s.shadowed_by, "conn_bbbb0002");
-
-        // And the shadowed one really is unreachable by pair, while both remain reachable by cid.
-        assert!(snap.by_cid("conn_aaaa0001").is_some());
-        assert!(snap.by_cid("conn_bbbb0002").is_some());
-        let by_pair = snap.by_pair(&agent(), &server()).unwrap();
-        assert_eq!(by_pair.payload.cid.as_str(), "conn_bbbb0002");
+        }
     }
 
     #[test]
-    fn one_contract_per_pair_shadows_nothing() {
-        let trust = Trust {
-            keys: &keys(),
-            mediator_id: MEDIATOR,
-            issuer: ISS,
-        };
-        let snap = Snapshot::build(
-            &[contract_for("conn_aaaa0001", &["get_balance"], NOW + 3600)],
-            &trust,
-            NOW,
+    fn two_contracts_for_one_pair_are_both_reachable() {
+        let a = contract_for("conn_aaaa0001", &["get_balance"], NOW + 3600);
+        let b = contract_for("conn_bbbb0002", &["wire_funds"], NOW + 3600);
+        let snap = Snapshot::build(&[a, b], &trust(), NOW);
+
+        assert_eq!(snap.len(), 2, "both should verify");
+        assert!(
+            snap.conflicting.is_empty(),
+            "disjoint surfaces are not a conflict"
         );
-        assert_eq!(snap.len(), 1);
-        assert!(snap.shadowed.is_empty());
+        let all = snap.all_for_pair(&agent(), &server());
+        assert_eq!(all.len(), 2, "both must be reachable by pair, not just one");
+        let cids: Vec<&str> = all.iter().map(|c| c.payload.cid.as_str()).collect();
+        assert!(
+            cids.contains(&"conn_aaaa0001") && cids.contains(&"conn_bbbb0002"),
+            "{cids:?}"
+        );
+    }
+
+    /// The case nothing in the artifacts decides. Picking one would apply its terms to the
+    /// other's approval, so it is reported at load and refused at the call.
+    #[test]
+    fn two_contracts_claiming_one_tool_are_reported_as_conflicting() {
+        let a = contract_for("conn_aaaa0001", &["get_balance"], NOW + 3600);
+        let b = contract_for("conn_bbbb0002", &["get_balance", "wire_funds"], NOW + 3600);
+        let snap = Snapshot::build(&[a, b], &trust(), NOW);
+
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap.conflicting.len(), 1, "the overlap must be reported");
+        let c = &snap.conflicting[0];
+        assert_eq!(c.cid, "conn_bbbb0002");
+        assert_eq!(c.conflicts_with, "conn_aaaa0001");
+        assert_eq!(c.items, vec!["get_balance".to_string()]);
+        assert!(
+            !c.items.contains(&"wire_funds".to_string()),
+            "only the shared tool is a conflict"
+        );
+    }
+
+    #[test]
+    fn both_remain_reachable_by_cid() {
+        let a = contract_for("conn_aaaa0001", &["get_balance"], NOW + 3600);
+        let b = contract_for("conn_bbbb0002", &["wire_funds"], NOW + 3600);
+        let snap = Snapshot::build(&[a, b], &trust(), NOW);
+        assert!(snap.by_cid("conn_aaaa0001").is_some());
+        assert!(snap.by_cid("conn_bbbb0002").is_some());
     }
 }
