@@ -136,12 +136,13 @@ impl StdioUpstream {
         let mut parts = command.split_whitespace();
         let program = parts.next().ok_or("empty upstream command")?;
         let args: Vec<&str> = parts.collect();
-        let mut child = Command::new(program)
-            .args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("spawn upstream: {e}"))?;
+        let mut child = wc_core::proc::spawn_piped(
+            Command::new(program)
+                .args(&args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped()),
+        )
+        .map_err(|e| format!("spawn upstream: {e}"))?;
         let stdin = child.stdin.take().ok_or("no upstream stdin")?;
         let stdout = child.stdout.take().ok_or("no upstream stdout")?;
         Ok(Spawned {

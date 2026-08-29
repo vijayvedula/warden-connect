@@ -248,16 +248,17 @@ impl ScmShim {
 
     /// Ask the shim one question and parse its answer.
     fn ask(&self, query: &serde_json::Value) -> Result<serde_json::Value> {
-        let mut child = Command::new(&self.program)
-            .args(&self.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| {
-                self.misconfigured("cannot be started (is the path right, and executable?)")
-                    .with_source(e)
-            })?;
+        let mut child = wc_core::proc::spawn_piped(
+            Command::new(&self.program)
+                .args(&self.args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit()),
+        )
+        .map_err(|e| {
+            self.misconfigured("cannot be started (is the path right, and executable?)")
+                .with_source(e)
+        })?;
 
         {
             let Some(mut stdin) = child.stdin.take() else {
@@ -726,6 +727,10 @@ mod tests {
     fn answering(tag: &str, json_line: &str) -> (Dir, ScmShim) {
         let d = Dir::new(tag);
         let cmd = d.shim(&format!("cat > /dev/null\nprintf '%s\\n' '{json_line}'\n"));
+        // Five seconds is ample: the whole suite runs in under one. It nevertheless expired
+        // about one run in fifteen under `--test-threads 8`, and the timeout was never the
+        // reason — a concurrently spawned sibling had inherited this child's pipe, so the answer
+        // could not arrive down a pipe someone else was holding open. See `wc_core::proc`.
         let shim = ScmShim::parse("test", &cmd)
             .unwrap()
             .with_timeout(Duration::from_secs(5));
