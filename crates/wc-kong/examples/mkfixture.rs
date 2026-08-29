@@ -8,7 +8,8 @@
 //!
 //! Keys: `caller`, `callee`, `tools` (comma separated), `served` (comma separated),
 //! `served_file` (a JSON surface as the callee emits it, which overrides `served`),
-//! `mediator`, `issuer`. Everything has a default, so the Lua spec
+//! `mediator`, `issuer`, `revoke_party` (writes a signed revocation delta for that party).
+//! Everything has a default, so the Lua spec
 //! passes only a directory and the drill overrides the identities it generated certificates
 //! for.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -117,6 +118,38 @@ fn main() {
     )
     .unwrap();
     std::fs::write(dir.join("c.jws"), jws).unwrap();
+
+    // A signed revocation delta, for a drill that needs to serve one without standing up a
+    // whole control plane. The Envoy drill proves the plane end of containment; what this lets
+    // a Kong drill prove is the BINDING end — that a worker's background refresher pulls the
+    // feed, applies it, and that the request path sees the result.
+    if let Some(party) = kv.get("revoke_party") {
+        let feed_path = dir.join("feed.jsonl");
+        let _ = std::fs::remove_file(&feed_path);
+        let mut feed = wc_control::contain::RevocationFeed::open(&feed_path).unwrap();
+        let signed = feed
+            .append(
+                wc_control::contain::Revoked::Party {
+                    id: EntityId::new(party).unwrap(),
+                },
+                "drill: revocation reach",
+                "human:drill@org",
+                at,
+                &IssuerKey::ec_pem(KID, PRIV, Algorithm::ES256).unwrap(),
+            )
+            .unwrap();
+        let delta = json!({
+            "since": 0,
+            "head_seq": signed.event.seq,
+            "head_digest": "sha256:drill",
+            "events": [{ "event": signed.event, "jws": signed.jws, "kid": signed.kid }],
+        });
+        std::fs::write(
+            dir.join("revocations.json"),
+            serde_json::to_string(&delta).unwrap(),
+        )
+        .unwrap();
+    }
     std::fs::write(
         dir.join("routes.toml"),
         format!("[[route]]\ncluster = \"payments\"\ncallee = \"{callee_id}\"\n"),

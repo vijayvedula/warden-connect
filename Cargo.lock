@@ -1199,6 +1199,7 @@ version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
+ "warden-connect-control",
  "warden-connect-core",
  "warden-connect-gateway",
  "warden-connect-mediator",

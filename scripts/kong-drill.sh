@@ -66,6 +66,7 @@ cleanup() {
     docker rm -f "$(cat "$CID_FILE")" >/dev/null 2>&1
   fi
   [ -n "${UP_PID:-}" ] && kill "$UP_PID" 2>/dev/null
+  [ -n "${PLANE_PID:-}" ] && { kill "$PLANE_PID" 2>/dev/null; wait "$PLANE_PID" 2>/dev/null; }
   wait 2>/dev/null
   if [ -n "${KEEP:-}" ]; then echo "kept: $WORK"; else rm -rf "$WORK"; fi
 }
@@ -150,7 +151,8 @@ python3 "$REPO/scripts/envoy/ledger-server.py" --emit-surface > "$WORK/surface.j
   || { echo "could not emit the upstream surface" >&2; exit 2; }
 cargo run -q -p warden-connect-kong --example mkfixture --manifest-path "$REPO/Cargo.toml" -- \
   "$WORK/fx" "caller=$CALLER" "callee=$CALLEE" "mediator=$MED" "issuer=$ISS" \
-  "tools=get_balance,list_transactions" "served_file=$WORK/surface.json" >/dev/null \
+  "tools=get_balance,list_transactions" "served_file=$WORK/surface.json" \
+  "revoke_party=$CALLER" >/dev/null \
   || { echo "could not mint the drill contract" >&2; exit 2; }
 
 # --- the upstream -----------------------------------------------------------
@@ -422,6 +424,123 @@ if [ "$BROKEN" = 0 ] && [ "$TRAILS" != 0 ]; then
 else
   bad "13 · $BROKEN of $TRAILS trail(s) do not verify"
 fi
+
+# 14 --------------------------------------------------------------------------
+# The pull path. Until now this binding had none: a worker held the artifacts it loaded at
+# start for the life of those contracts and no containment order could reach it. Revocation
+# worked at the Envoy binding and not this one.
+#
+# Against a stub plane rather than a real one on purpose. The Envoy drill proves the plane end
+# of containment against `connect serve`; what is unproven HERE is the binding end — that a
+# background thread started after nginx forks actually pulls, applies a revocation, and that
+# the request path sees it. A whole estate would test the plane twice and the binding once.
+PLANE_PORT=$(free_port)
+ARM="$WORK/arm-revocation"
+rm -f "$ARM"
+python3 "$REPO/scripts/.stub-plane.py" "$PLANE_PORT" "$WORK/fx" "$ARM" \
+  >"$WORK/plane.log" 2>&1 &
+PLANE_PID=$!
+for _ in $(seq 1 40); do
+  curl -sf -o /dev/null "http://127.0.0.1:$PLANE_PORT/v1/revocations?since=0" && break
+  sleep 0.1
+done
+
+# The undrifted upstream, because phase 10 left it serving a changed surface and a fresh Kong
+# has an empty pin ledger — the catalogue below has to match the contract or nothing past it
+# proves anything about revocation.
+stop_upstream || bad "14 · the upstream would not release port $UP_PORT"
+start_upstream || bad "14 · the undrifted upstream did not come up"
+
+# Its own heredoc rather than an edit of the first. Patching YAML from a shell one-liner is how
+# a quoting mistake becomes a phase that tests the wrong thing — the first attempt at this used
+# `sed` with a \n that BSD sed does not support, and produced a config Kong could not parse.
+cat > "$WORK/kong-pull.yml" <<YAML
+_format_version: "3.0"
+services:
+  - name: payments
+    url: http://host.docker.internal:$UP_PORT
+    routes:
+      - name: mcp
+        paths: ["/mcp"]
+        strip_path: true
+  - name: unmapped
+    url: http://host.docker.internal:$UP_PORT
+    routes:
+      - name: elsewhere
+        paths: ["/elsewhere"]
+        strip_path: true
+plugins:
+  - name: warden-connect
+    config:
+      library_path: /wc/libwc_kong.so
+      contracts: ["/wc/fx/c.jws"]
+      routes: /wc/fx/routes.toml
+      identity: tls
+      issuer_pub: /wc/issuer_pub.pem
+      kid: wc-test-es256
+      mediator_id: "$MED"
+      issuer_id: "$ISS"
+      mode: enforce
+      evidence_path: /wc/evidence/pull-%w.jsonl
+      contracts_url: http://host.docker.internal:$PLANE_PORT
+      token: tok_drill_stub_plane_0123456789
+      refresh_secs: 1
+YAML
+
+docker rm -f "$(cat "$CID_FILE")" >/dev/null 2>&1
+rm -f "$CID_FILE"
+docker run -d --cidfile "$CID_FILE" \
+  --add-host=host.docker.internal:host-gateway \
+  -v "$WORK:/wc:ro" -v "$WORK/evidence:/wc/evidence" \
+  -e KONG_DATABASE=off -e KONG_DECLARATIVE_CONFIG=/wc/kong-pull.yml \
+  -e "KONG_PLUGINS=bundled,warden-connect" \
+  -e "KONG_LUA_PACKAGE_PATH=/wc-lua/?.lua;;" \
+  -v "$REPO/crates/wc-kong/lua:/wc-lua:ro" \
+  -e "KONG_PROXY_LISTEN=0.0.0.0:8000, 0.0.0.0:8443 ssl" \
+  -e KONG_NGINX_PROXY_SSL_CLIENT_CERTIFICATE=/wc/ca.pem \
+  -e KONG_NGINX_PROXY_SSL_VERIFY_CLIENT=optional \
+  -e KONG_SSL_CERT=/wc/server.pem -e KONG_SSL_CERT_KEY=/wc/server.key \
+  -e KONG_NGINX_WORKER_PROCESSES=1 \
+  -e KONG_PROXY_ACCESS_LOG=/dev/stdout -e KONG_PROXY_ERROR_LOG=/dev/stderr \
+  -e KONG_LOG_LEVEL=notice \
+  -p "$PROXY_TLS:8443" "$IMAGE" >"$WORK/run2.log" 2>&1 \
+  || { bad "14 · kong did not restart against the stub plane"; cat "$WORK/run2.log" >&2; }
+
+for _ in $(seq 1 80); do
+  curl -sk -o /dev/null --max-time 2 "https://127.0.0.1:$PROXY_TLS/mcp" 2>/dev/null && break
+  sleep 0.25
+done
+
+# Pin first, then a working call — the baseline the refusal has to be measured against.
+call client /mcp "$LIST" >/dev/null
+R=$(call client /mcp "$GET")
+if ! printf '%s' "$R" | grep -q '"result"'; then
+  bad "14 · the contract does not work before revocation, so the phase proves nothing"
+  printf '       %s\n' "$(printf '%s' "$R" | head -c 200)"
+else
+  ok "14 · pulling from a control plane: the contract works"
+
+  # 15 ------------------------------------------------------------------------
+  touch "$ARM"
+  sleep 4
+  R=$(call client /mcp "$GET")
+  if printf '%s' "$R" | grep -q 'WC-4001'; then
+    if docker logs "$(cat "$CID_FILE")" 2>&1 | grep -q 'applied 1 revocation'; then
+      ok "15 · a revocation reached the nginx worker, via the deny-list"
+      docker logs "$(cat "$CID_FILE")" 2>&1 | grep -o 'applied 1 revocation(s), feed at seq [0-9]*' \
+        | tail -1 | sed 's/^/       /'
+    else
+      bad "15 · refused, but the worker never applied a revocation — set membership, not the feed"
+    fi
+  else
+    bad "15 · the contract was still honoured after the party was revoked"
+    printf '       %s\n' "$(printf '%s' "$R" | head -c 200)"
+  fi
+fi
+
+kill "$PLANE_PID" 2>/dev/null
+wait "$PLANE_PID" 2>/dev/null
+PLANE_PID=""
 
 echo
 if [ "$fail" = 0 ]; then
