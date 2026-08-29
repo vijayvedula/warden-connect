@@ -151,6 +151,8 @@ const TWO_WORD: &[&str] = &[
     "register server",
     "register agent",
     "audit verify",
+    "evidence verify",
+    "evidence since",
     "policy lint",
     "policy dry-run",
     "policy show",
@@ -221,6 +223,8 @@ const COMMANDS: &[&str] = &[
     "caep ingest",
     "tenants",
     "audit verify",
+    "evidence verify",
+    "evidence since",
     "backup",
     "restore",
     "retention",
@@ -528,6 +532,8 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         ],
         "blast-radius" => &["id", "depth", "services"],
         "audit verify" => &["anchor-pub"],
+        "evidence verify" => &["path", "json"],
+        "evidence since" => &["path", "seq", "json"],
         "backup" => &["out", "anchor-pub", "now"],
         "restore" => &["from", "into"],
         "retention" => &["contracts", "discovery", "now", "retire", "anchor-pub"],
@@ -788,6 +794,8 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "need apply" => need_apply_cmd(args)?,
         "scm probe" => scm_probe_cmd(args)?,
         "audit verify" => audit_verify(args)?,
+        "evidence verify" => evidence_verify_cmd(args)?,
+        "evidence since" => evidence_since_cmd(args)?,
         "backup" => backup_cmd(args)?,
         "restore" => restore_cmd(args)?,
         "retention" => retention_cmd(args)?,
@@ -7290,6 +7298,55 @@ fn read_optional(args: &Args, flag: &str) -> Result<Option<Vec<u8>>> {
     }
 }
 
+/// Verify an enforcement point's decision trail.
+///
+/// Distinct from `audit verify`, which checks the control plane's lifecycle chain. This reads
+/// the file a PEP appends to, and until now the only way to check one was to run a drill — the
+/// chain was tamper-evident to the drills and to nobody operating the thing.
+fn evidence_verify_cmd(args: &Args) -> Result<()> {
+    let path = positional_or_flag(args, "path")?.to_string();
+    let head = wc_mediator::evidence::verify(&path)
+        .map_err(|why| WcError::with_detail(Code::CHAIN_BROKEN, why))?;
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({"path": path, "rows": head.seq, "head": head.hash, "intact": true}))?
+        );
+    } else {
+        println!("{} rows, intact, head {}", head.seq, head.hash);
+    }
+    Ok(())
+}
+
+/// The records after `--seq`, for a shipper or an auditor resuming where it left off.
+fn evidence_since_cmd(args: &Args) -> Result<()> {
+    let path = positional_or_flag(args, "path")?.to_string();
+    let seq: u64 = match args.get("seq") {
+        Some(v) => v.parse().map_err(|_| {
+            WcError::with_detail(Code::CONFIG_INVALID, format!("--seq {v} is not a number"))
+        })?,
+        None => 0,
+    };
+    // The whole trail is verified before a single row is handed back — see `records_since`.
+    // The tail of an edited file is exactly where the interesting rows would be.
+    let rows = wc_mediator::evidence::records_since(&path, seq)
+        .map_err(|why| WcError::with_detail(Code::CHAIN_BROKEN, why))?;
+
+    if args.has("json") {
+        let parsed: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| serde_json::from_str(r).unwrap_or(serde_json::Value::Null))
+            .collect();
+        println!("{}", pretty(&json!({"since": seq, "records": parsed}))?);
+    } else {
+        for r in &rows {
+            println!("{r}");
+        }
+    }
+    Ok(())
+}
+
 fn audit_verify(args: &Args) -> Result<()> {
     let p = paths(args);
     let anchor_pub = match args.get("anchor-pub") {
@@ -9800,6 +9857,15 @@ CI
 
 EVIDENCE
   audit verify [--anchor-pub PEM] [--json]
+  evidence verify PATH [--json]
+            walk an enforcement point's decision trail and report its head.
+            Distinct from `audit verify`, which checks the control plane's
+            lifecycle chain — this reads the file a PEP appends to
+            exit 4 if a row was edited, naming the first row that does not follow
+  evidence since PATH [--seq N] [--json]
+            the records after N, for a shipper or an auditor resuming. Verifies
+            the whole trail first and returns nothing from a broken one: the tail
+            of an edited file is where an editor would put what they want read
   backup    --out DIR [--anchor-pub PEM] [--json]
             a verified snapshot of this tenant's state and evidence. Refuses if
             the chain does not verify: a snapshot of a corrupt root looks like

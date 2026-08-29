@@ -26,6 +26,9 @@ path = "src/main.rs"
 # crates.io refuses the crate — a wildcard path dependency is not resolvable there.
 wc-core = { package = "warden-connect-core", path = "../wc-core", version = "0.1" }
 wc-control = { package = "warden-connect-control", path = "../wc-control", version = "0.1" }
+# For `evidence verify|since`. The decision trail an enforcement point writes is this module's
+# format, and reading it anywhere else would be a second implementation of the row layout.
+wc-mediator = { package = "warden-connect-mediator", path = "../wc-mediator", version = "0.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
