@@ -31,6 +31,7 @@ local CONFIG_KEYS = {
   "jwks_url", "kid", "mediator_id", "issuer_id", "mode", "pin_max_age",
   "max_stale", "any_zone", "no_pin",
   "evidence_path", "evidence_delivery",
+  "contracts_url", "token", "refresh_secs",
 }
 
 local function config_json(conf)

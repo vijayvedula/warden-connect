@@ -1290,3 +1290,43 @@ fn a_tool_two_contracts_both_claim_is_refused_rather_than_guessed() {
     assert_eq!(v, WC_FORWARD, "an unambiguous tool must still work: {body}");
     unsafe { wc_free(h) };
 }
+
+// --- the pull path --------------------------------------------------------
+//
+// Without one a worker holds what it loaded at start for the life of those contracts, and no
+// containment order reaches it. Revocation worked at the Envoy binding and not this one.
+
+/// A token is not optional with a URL: without it every pull is refused, and the worker would
+/// keep a set that can never be revoked while looking configured.
+#[test]
+fn a_contracts_url_without_a_token_refuses_to_start() {
+    let mut cfg: Value =
+        serde_json::from_str(&setup("pull-notoken", &["get_balance"], "payments")).unwrap();
+    cfg["contracts_url"] = json!("http://127.0.0.1:1");
+    let e = init(&cfg.to_string()).unwrap_err();
+    assert!(e.contains("connect.mediator"), "got {e}");
+    assert!(
+        e.contains("never be revoked"),
+        "the error must say why: {e}"
+    );
+}
+
+/// And with both it starts, refreshing in the background. The plane is unreachable here — what
+/// is asserted is that an unreachable plane does not stop the worker serving what it has, which
+/// is the difference between a refresh failure and an outage.
+#[test]
+fn an_unreachable_control_plane_does_not_stop_the_worker_starting() {
+    let mut cfg: Value =
+        serde_json::from_str(&setup("pull-unreachable", &["get_balance"], "payments")).unwrap();
+    cfg["contracts_url"] = json!("http://127.0.0.1:1");
+    cfg["token"] = json!("tok_drill_unreachable_0123456789");
+    cfg["refresh_secs"] = json!(1);
+    let h = init(&cfg.to_string()).expect("an unreachable plane is not a startup failure");
+    // SAFETY: h is live.
+    assert_eq!(unsafe { wc_contract_count(h) }, 1);
+    let p = peer("payments", Some(CERT));
+    verify_pin(h, &p);
+    let (v, body, _) = request(h, &p, TOOL_CALL);
+    assert_eq!(v, WC_FORWARD, "the loaded set still serves: {body}");
+    unsafe { wc_free(h) };
+}

@@ -36,6 +36,13 @@ return {
           { max_stale = { type = "number", default = 0 } },
           { any_zone = { type = "boolean", default = false } },
 
+          -- The control plane to pull contract sets AND revocations from. Without it a worker
+          -- holds what it loaded at start for the life of those contracts, and no containment
+          -- order can reach it. Each worker refreshes on its own background thread.
+          { contracts_url = { type = "string" } },
+          { token = { type = "string" } },
+          { refresh_secs = { type = "number", default = 5 } },
+
           -- Where the decision trail is appended. %w is replaced with the worker id and is
           -- REQUIRED when worker_processes > 1: each worker keeps its own hash chain, and two
           -- appending to one file interleave into a trail that never verifies.
