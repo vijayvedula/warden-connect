@@ -471,17 +471,7 @@ fn run() -> Result<(), String> {
     // file exists from second zero. Without that flush a mediator living less than the
     // interval writes **no file at all** — a per-task agent invocation is exactly that — and
     // the staleness alert cannot tell "never started" from "started recently".
-    if cache.snapshot().has_rate_or_spend_ceiling() {
-        // Carried by an artifact signed before these terms were withdrawn. Announced rather than
-        // ignored: a term that reads as configured and does nothing is the defect this project
-        // exists to catch, and staying silent about a legacy one would be committing it.
-        eprintln!(
-            "connect-mediate: NOTE a contract carries a rate, concurrency or spend ceiling. \
-             These terms are NO LONGER ENFORCED — counters lived in one process, so the number \
-             an owner wrote was never the number in force. Set the limit on your proxy (Envoy \
-             and Kong both do this properly) and re-issue the contract without the term"
-        );
-    }
+    wc_mediator::cache::announce_withdrawn_ceilings(&cache.snapshot(), "connect-mediate");
 
     let has_revocation_source = client.is_some();
     if !has_revocation_source {

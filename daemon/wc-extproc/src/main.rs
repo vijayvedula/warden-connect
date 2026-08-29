@@ -947,6 +947,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
+    wc_mediator::cache::announce_withdrawn_ceilings(
+        &verifier.contracts.cache().snapshot(),
+        "wc-extproc",
+    );
+
     // --- the refresh loop -----------------------------------------------------------------
     // A plain thread, not a tokio task: `ControlPlaneClient` is blocking (ureq), and putting a
     // blocking pull on the async runtime would stall the reactor that is answering Envoy.

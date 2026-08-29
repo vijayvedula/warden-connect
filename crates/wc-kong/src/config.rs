@@ -329,6 +329,13 @@ impl Handle {
         // opposed to `init_worker` or `access` — would silently produce workers whose refresher
         // is not running, and nothing about them would look wrong.
         let contracts = Arc::new(contracts);
+        // Kong loads the same artifacts the mediator does, so it owes the same notice. Announced
+        // here rather than only in `connect-mediate`, which is where it used to live and where
+        // it covered one enforcement path of three. nginx captures stderr into the error log.
+        wc_mediator::cache::announce_withdrawn_ceilings(
+            &contracts.cache().snapshot(),
+            "warden-connect[kong]",
+        );
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         if let Some(url) = &cfg.contracts_url {
             let Some(token) = cfg.token.clone() else {

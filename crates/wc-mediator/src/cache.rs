@@ -280,10 +280,18 @@ impl Snapshot {
     /// This exists only so a binding can ANNOUNCE a legacy artifact that still carries one.
     /// Silence would be the defect this project is about: a term that reads as configured and
     /// does nothing.
-    pub fn has_rate_or_spend_ceiling(&self) -> bool {
+    ///
+    /// All three withdrawn terms, not two. The announcement this feeds has always said "rate,
+    /// concurrency or spend"; the predicate tested rate and spend, so a contract carrying only
+    /// `max_concurrent` was passed over in silence by the very check written to break that
+    /// silence. `max_concurrent` was the one term in `Terms` bound by nothing anywhere — no
+    /// enforcement, no policy fact, no mint refusal, and, until now, no announcement.
+    pub fn has_withdrawn_ceiling(&self) -> bool {
         self.by_cid.values().any(|c| {
             let terms = &c.payload.terms;
-            terms.max_calls_per_hour.is_some() || terms.max_spend_usd_per_day.is_some()
+            terms.max_calls_per_hour.is_some()
+                || terms.max_concurrent.is_some()
+                || terms.max_spend_usd_per_day.is_some()
         })
     }
 
@@ -292,6 +300,31 @@ impl Snapshot {
     pub fn is_empty(&self) -> bool {
         self.by_cid.is_empty()
     }
+}
+
+/// Announce, on stderr, that a loaded contract carries a term this product no longer enforces.
+///
+/// Returns whether anything was announced.
+///
+/// Every binding that loads contracts must call this. It lived as bespoke text inside
+/// `connect-mediate` and so covered one enforcement path of three: the same legacy artifact
+/// loaded into Kong or Envoy was enforced by neither and mentioned by neither. The message and
+/// the predicate it depends on now sit together, because when they were apart they drifted --
+/// the text said "rate, concurrency or spend" while the predicate tested two of the three.
+pub fn announce_withdrawn_ceilings(snapshot: &Snapshot, binding: &str) -> bool {
+    if !snapshot.has_withdrawn_ceiling() {
+        return false;
+    }
+    // Carried by an artifact signed before these terms were withdrawn. Announced rather than
+    // ignored: a term that reads as configured and does nothing is the defect this project
+    // exists to catch, and staying silent about a legacy one would be committing it.
+    eprintln!(
+        "{binding}: NOTE a contract carries a rate, concurrency or spend ceiling. These terms \
+         are NO LONGER ENFORCED — counters lived in one process, so the number an owner wrote \
+         was never the number in force. Set the limit on your proxy (Envoy and Kong both do \
+         this properly) and re-issue the contract without the term"
+    );
+    true
 }
 
 /// The live contract set plus the revocation set.
@@ -596,6 +629,11 @@ mod tests {
 
     /// A contract for `tools`, minted for the given cid.
     pub(crate) fn contract_for(cid: &str, tools: &[&str], exp: u64) -> String {
+        contract_with_terms(cid, tools, exp, Terms::default())
+    }
+
+    /// The same, carrying the given terms — for asserting what a term does, or fails to do.
+    pub(crate) fn contract_with_terms(cid: &str, tools: &[&str], exp: u64, terms: Terms) -> String {
         let pin = server_pin();
         let surface = Surface {
             tools: tools.iter().map(|t| (*t).to_string()).collect(),
@@ -629,11 +667,57 @@ mod tests {
         p.nbf = NOW - 100;
         p.exp = exp;
         p.surface = surface;
-        p.terms = Terms::default();
+        p.terms = terms;
         p.assurance = Assurance::default();
         p.approval = ApprovalRef::standing();
         p.policy_version = "connect-policy@v1".to_string();
         contract::mint(&p, &signer()).unwrap()
+    }
+
+    #[test]
+    fn every_withdrawn_ceiling_is_announced_including_the_one_that_was_not() {
+        // The announcement's text has always read "rate, concurrency or spend". The predicate
+        // behind it tested rate and spend, so a contract carrying only `max_concurrent` was
+        // passed over by the very check whose purpose was to break that silence — the failure
+        // mode announced in the message, committed by the announcement.
+        let rate = Terms {
+            max_calls_per_hour: Some(100),
+            ..Terms::default()
+        };
+        let concurrency = Terms {
+            max_concurrent: Some(4),
+            ..Terms::default()
+        };
+        let spend = Terms {
+            max_spend_usd_per_day: Some(50.0),
+            ..Terms::default()
+        };
+
+        for (cid, terms) in [
+            ("conn_11111111", rate),
+            ("conn_22222222", concurrency),
+            ("conn_33333333", spend),
+        ] {
+            let jws = contract_with_terms(cid, &["get_balance"], NOW + 3_600, terms);
+            let snapshot = Snapshot::build(&[jws], &trusting(&keys()), NOW);
+            assert_eq!(snapshot.len(), 1, "{cid} must verify");
+            assert!(
+                snapshot.has_withdrawn_ceiling(),
+                "{cid} carries a withdrawn ceiling and must be announced"
+            );
+            assert!(announce_withdrawn_ceilings(&snapshot, "test"));
+        }
+    }
+
+    #[test]
+    fn a_contract_with_no_withdrawn_ceiling_is_not_announced() {
+        // The other half. An announcement that fires for everything says nothing, and would
+        // train an operator to ignore the one that matters.
+        let jws = contract_for("conn_44444444", &["get_balance"], NOW + 3_600);
+        let snapshot = Snapshot::build(&[jws], &trusting(&keys()), NOW);
+        assert_eq!(snapshot.len(), 1);
+        assert!(!snapshot.has_withdrawn_ceiling());
+        assert!(!announce_withdrawn_ceilings(&snapshot, "test"));
     }
 
     #[test]
