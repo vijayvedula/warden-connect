@@ -34,7 +34,7 @@ jsonwebtoken = { workspace = true }
 # `path` for this workspace, `version` for the registry: Cargo prefers the path when
 # building here and rewrites it to the version on publish. Without the version,
 # crates.io refuses the crate — a wildcard path dependency is not resolvable there.
-wc-core = { package = "warden-connect-core", path = "../wc-core", version = "0.1" }
+wc-core = { package = "warden-connect-core", path = "../wc-core", version = "0.2" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # The one crate in this workspace that links Warden core. Not a dependency

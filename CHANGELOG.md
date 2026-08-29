@@ -12,9 +12,85 @@ because a third-party verifier depends on both.
 
 ## [Unreleased]
 
-Pre-1.0. Nothing has been tagged yet; `main` is the only thing to run and
-[docs/production-readiness.md](docs/production-readiness.md) is the list of what stands
-between here and a release.
+Nothing yet.
+
+## [0.2.0] — 2026-08-29
+
+**The first release that ships an enforcement point.** `v0.1.0` and `v0.1.1` were tagged
+before the bindings existed and were never published, so this is the first version of
+warden-connect that can be installed and put in front of traffic. See
+[docs/install.md](docs/install.md).
+
+Breaking, and the reason for the minor bump pre-1.0: rate, concurrency and spend ceilings
+are no longer a capability (below), and inter-crate version requirements move from `0.1`
+to `0.2`.
+
+### Enforcement points
+
+- **Envoy** — `wc-extproc`, an `ext_proc` gRPC daemon: one hop, mTLS or XFCC identity.
+- **Kong** — `libwc_kong.so`, a cdylib loaded by LuaJIT FFI inside the nginx worker: zero
+  hops. Ships with `wc-kong-lua.tar.gz`, the plugin's Lua half and the C header the FFI is
+  declared against.
+- Both are built, digested and SLSA-attested by `release.yml`. Neither shipped before; the
+  artifact list lived in four places in that workflow and the bindings were in none of
+  them. It is one list now.
+- Both decide through the same `wc-gateway` core, so the transport changes where the
+  decision is made and not what is decided.
+- `connect gateway check --plugin-config FILE` runs a binding's **own** startup path
+  against a configuration before deployment, rather than a second implementation of it.
+
+### Revocation
+
+- The loop is joined end to end and drilled on both bindings: quarantine → feed → fetch →
+  verify → deny-list → refusal at a real Envoy and inside a real nginx worker. It was
+  broken at **both** ends — the plane set its feed from nowhere and no mediator fetched
+  one — and because both ends were dead, neither end's silence looked wrong.
+- `POST /v1/connections/{cid}/revoke` cuts one connection. Only party-wide quarantine had
+  a route, so an estate running a control plane could reach the blunt instrument or
+  nothing.
+- The feed takes a signing key of its own (`connect serve --revocation-key`). It was
+  signed with the contract key, which made "can issue" and "can contain" one privilege.
+  Without one, `serve` now says so at startup.
+- Several contracts may exist per party pair, resolved by tool; the catalogue is their
+  union and must satisfy every pin.
+
+### Evidence
+
+- Both enforcement points write a hash-chained decision trail, and
+  `terms.evidence.delivery = "blocking"` binds: a record that cannot be written is itself
+  a refusal (`WC-7001`).
+- `connect evidence verify PATH` and `connect evidence since PATH --seq N`. The chain was
+  verifiable by the drills and by nobody operating it. `since` verifies the whole trail
+  before returning a row, so an edited file yields nothing rather than its surviving tail.
+- `connect-mediate` writes **no** trail, and says so at startup when a loaded contract
+  asks for blocking delivery.
+
+### Fixed
+
+- **A verifier could report that a shim never answered, about a process that answered
+  correctly and exited 0.** Creating a pipe and marking it close-on-exec are two steps; a
+  thread that forks in between inherits another thread's pipe ends, and the reader then
+  waits for an EOF that cannot arrive. It reached `scm.rs` (source-host merge
+  verification), `signer.rs` (KMS signing) and the mediator's upstream — every place this
+  tree starts a child. The refusal was real and its stated reason was fiction, and a rerun
+  cleared it. All spawns now serialise through `wc_core::proc::spawn_piped`;
+  `scripts/spawn-adoption.sh` fails the build on one that does not. Measured on the
+  workload it was found in: 4 hangs in 60 runs before, 0 in 180 after.
+
+### Honesty of the interface
+
+- **Eleven of eighty-two `WC-*` codes were never emitted**, six of them named in the LLD
+  and three traced from a use case. Each now carries a `RESERVED:` note naming the
+  mechanism that reports in its place, and `scripts/code-emission.sh` fails the build on a
+  new one. `WC-2020` is the sharpest: the LLD described discovery refusing with it, while
+  `broker` throttles by truncating and never refusing **on purpose** — a status that flips
+  at a threshold is the enumeration oracle throttling exists to deny.
+- `max_concurrent` was bound by nothing anywhere, and the announcement that exists to
+  catch exactly that said "rate, concurrency or spend" while testing two of the three.
+- `human_oversight` and `delegation.attenuation` remain declared and unchecked. Recorded
+  in [production-readiness](docs/production-readiness.md) as 1.2c rather than quietly
+  enforced, because enforcing an unchecked term and refusing to mint it are opposite
+  answers and the choice is not a defect to patch.
 
 ### Removed
 

@@ -1615,7 +1615,7 @@ dependencies = [
 
 [[package]]
 name = "warden-connect-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "warden-connect-gateway"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1639,7 +1639,7 @@ dependencies = [
 
 [[package]]
 name = "warden-connect-mediator"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
@@ -1702,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "wc-extproc"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "envoy-types",
  "serde",
