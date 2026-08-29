@@ -73,6 +73,7 @@
   .track .chapters i {
     position: absolute; top: 15px; width: 1px; height: 12px; background: var(--rule);
   }
+  .track .chapters i.act { top: 11px; height: 20px; background: var(--muted); }
   .track .head {
     position: absolute; width: 2px; height: 18px; background: var(--ink); transform: translateX(-1px);
   }
@@ -101,23 +102,23 @@
 <div class="reel">
   <div class="frame">
     <canvas id="stage" role="img"
-      aria-label="A fifty-five second animated pitch. Agents proliferate and open unreviewed connections; the questions nobody can answer freeze on screen; the problem splits into two planes — may this connection exist, and may this call proceed; a signed contract is shown as the intersection of surface, scope and policy, a ceiling and never a grant; enforcement happens inside the proxy already carrying the traffic, refusing an uncontracted tool with WC-4002; a single revocation reaches every enforcement point and every decision is written to a hash-chained trail."></canvas>
+      aria-label="A fifty-eight second animated pitch in two acts. First the problem: agents proliferate and open unreviewed connections, three questions freeze on screen with no system of record, and the problem splits into two planes — may this connection exist, owned by warden-connect, and may this call proceed, owned by warden. Act one, contract creation: a request passes four gates — offer intersected with need, policy, human approval, and attestation — and what emerges is a signed contract with a pinned surface digest and an expiry. Act two, enforcement: the algebra effective equals surface intersect scope intersect policy, with surface bracketed as warden-connect's term decided at issuance and scope and policy bracketed as warden's, decided at authentication and per call; the contract is enforced inside the proxy already carrying the traffic and an uncontracted tool is refused WC-4002; then one revocation reaches every enforcement point and every decision is written to a hash-chained trail."></canvas>
   </div>
 
   <div class="transport">
     <button class="play" id="play" aria-label="Play">▶</button>
     <div class="track" id="track" role="slider" tabindex="0"
-         aria-label="Timeline" aria-valuemin="0" aria-valuemax="56" aria-valuenow="0">
+         aria-label="Timeline" aria-valuemin="0" aria-valuemax="58" aria-valuenow="0">
       <div class="bed"></div><div class="fill" id="fill"></div>
       <div class="chapters" id="chapters"></div><div class="head" id="head"></div>
     </div>
-    <div class="clock" id="clock">0:00 / 0:56</div>
+    <div class="clock" id="clock">0:00 / 0:58</div>
   </div>
 
   <div class="legend">
-    <span class="s-surface"><b>surface</b> what the callee offers</span>
-    <span class="s-scope"><b>scope</b> what the token carries</span>
-    <span class="s-policy"><b>policy</b> what the estate allows</span>
+    <span class="s-surface"><b>surface</b> warden-connect · at issuance</span>
+    <span class="s-scope"><b>scope</b> warden · at authentication</span>
+    <span class="s-policy"><b>policy</b> warden · per call</span>
   </div>
 </div>
 
@@ -125,7 +126,7 @@
 (() => {
   "use strict";
 
-  const W = 1600, H = 900, DUR = 56;
+  const W = 1600, H = 900, DUR = 58;
   const SERIF = '"Newsreader", Georgia, "Times New Roman", serif';
   const MONO  = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
 
@@ -171,9 +172,16 @@
   /** The lower third. Serif for the claim a person makes, mono for the machine's own words. */
   function caption(claim, note, alpha) {
     if (alpha <= 0.001) return;
-    if (claim) txt(claim, W / 2, 792, { size: 46, font: SERIF, align: "center", alpha, color: C.ink });
+    if (claim) txt(claim, W / 2, 792, { size: 44, font: SERIF, align: "center", alpha, color: C.ink });
     if (note)  txt(note,  W / 2, 838, { size: 17, align: "center", alpha: alpha * 0.75,
                                         color: C.muted, spacing: 1.6 });
+  }
+
+  /** Which act we are in. The film is a creation half and an enforcement half. */
+  function act(label, alpha) {
+    if (alpha <= 0.001) return;
+    line(64, 64, 92, 64, C.muted, 1, alpha * 0.6);
+    txt(label, 104, 70, { size: 13, color: C.muted, alpha: alpha * 0.85, spacing: 3.4 });
   }
 
   function line(x1, y1, x2, y2, color, width = 1, alpha = 1, dash = null) {
@@ -214,7 +222,7 @@
         x: 300 + r() * 120,
         y: 175 + (i / 17) * 560 + (r() - 0.5) * 34,
         sys: Math.floor(r() * SYSTEMS.length),
-        born: i * 0.30,
+        born: i * 0.27,
       });
     }
     return out;
@@ -235,7 +243,7 @@
     for (const a of AGENTS) {
       const age = t - a.born;
       if (age < 0) continue;
-      const grow = easeOut(age / 0.9);
+      const grow = easeOut(age / 0.85);
       const tx = SYS_X - 105, ty = sysY(a.sys);
       const ex = lerp(a.x, tx, grow), ey = lerp(a.y, ty, grow);
 
@@ -266,16 +274,16 @@
   // Each is a pure function of its own local time. Nothing accumulates, so the
   // scrubber is free and frame N looks the same whichever direction you reached it from.
 
-  function s1_proliferate(t) {          // 0 → 7.5   the estate wires itself
+  function s1_proliferate(t) {          // 0 → 6      the estate wires itself
     drawEstate(t, 1, 0);
-    caption("You shipped agents.", null, env(t, 0.5, 3.5, 0.5));
+    caption("You shipped agents.", null, env(t, 0.4, 3.0, 0.45));
     caption("They opened connections.", "18 agents · 5 systems · 90 possible edges",
-            env(t, 3.9, 7.5, 0.5));
+            env(t, 3.3, 6.0, 0.45));
   }
 
-  function s2_freeze(t) {               // 7.5 → 15  and nobody signed for any of it
-    drawEstate(7.5, 1, sm(0, 0.7, t));
-    const veil = sm(0, 0.7, t) * 0.72;
+  function s2_freeze(t) {               // 6 → 11.5   and nobody signed for any of it
+    drawEstate(6.0, 1, sm(0, 0.6, t));
+    const veil = sm(0, 0.6, t) * 0.72;
     ctx.save(); ctx.globalAlpha = veil; ctx.fillStyle = C.film;
     ctx.fillRect(0, 0, W, H); ctx.restore();
 
@@ -283,25 +291,25 @@
                 "who approved that connection ?",
                 "how do you revoke it, everywhere, now ?"];
     qs.forEach((q, i) => {
-      const a = env(t, 0.9 + i * 0.85, 6.6, 0.4);
+      const a = env(t, 0.6 + i * 0.7, 5.2, 0.35);
       txt(q, W / 2, 330 + i * 62, { size: 30, align: "center", alpha: a, color: C.ink, spacing: 0.5 });
       line(W / 2 - 300, 348 + i * 62, W / 2 + 300, 348 + i * 62, C.rule, 1, a * 0.35);
     });
-    caption("Three questions. No system of record.", null, env(t, 4.0, 7.5, 0.5));
+    caption("Three questions. No system of record.", null, env(t, 3.0, 5.5, 0.45));
   }
 
-  function s3_split(t) {                // 15 → 24  two questions, not one
-    const p = sm(0, 1.4, t);
-    drawEstate(7.5, (1 - p) * 0.5, 1);
+  function s3_split(t) {                // 11.5 → 17.5   two questions, two products
+    const p = sm(0, 1.2, t);
+    drawEstate(6.0, (1 - p) * 0.5, 1);
 
     const yA = 300, yB = 585;
     line(160, 442, W - 160, 442, C.rule, 1, p * 0.55, [5, 7]);
 
     // The slow plane: signed, human, and the one nobody owned.
-    const aA = env(t, 0.5, 9, 0.5);
+    const aA = env(t, 0.4, 6, 0.45);
     line(220, yA + 62, W - 220, yA + 62, C.rule, 1, aA * 0.5);
     txt("May this connection exist ?", 220, yA, { size: 44, font: SERIF, alpha: aA, color: C.surface });
-    txt("CONTROL PLANE   ·   signed artifact   ·   human approval   ·   revocable",
+    txt("WARDEN-CONNECT   ·   signed artifact   ·   human approval   ·   revocable",
         220, yA + 38, { size: 15, alpha: aA * 0.72, color: C.muted, spacing: 1.9 });
     {   // one deliberate, unhurried transit
       const k = (t * 0.30) % 1, x = lerp(240, W - 240, k);
@@ -309,10 +317,10 @@
     }
 
     // The fast plane: already solved, already shipping, and not the same question.
-    const aB = env(t, 1.5, 9, 0.5);
+    const aB = env(t, 1.1, 6, 0.45);
     line(220, yB + 62, W - 220, yB + 62, C.rule, 1, aB * 0.5);
     txt("May this call proceed ?", 220, yB, { size: 44, font: SERIF, alpha: aB, color: C.policy });
-    txt("DATA PLANE   ·   every request   ·   microseconds   ·   already solved",
+    txt("WARDEN   ·   every request   ·   microseconds   ·   already solved",
         220, yB + 38, { size: 15, alpha: aB * 0.72, color: C.muted, spacing: 1.9 });
     for (let i = 0; i < 7; i++) {
       const k = ((t * 1.5) + i / 7) % 1;
@@ -320,16 +328,126 @@
     }
 
     caption("Everyone built the second one.", "the first has never had an owner",
-            env(t, 4.6, 9, 0.5));
+            env(t, 3.0, 6, 0.45));
   }
 
-  function s4_algebra(t) {              // 24 → 34  the artifact, and what it is not
-    const p = sm(0.2, 2.6, t);
-    const cx = 800, cy = 400, R = 176;
+  // ---- ACT I · how a contract comes to exist -----------------------------
+  const GATES = [
+    { x: 250,  c: C.surface, name: "offer ∩ need",  sub: "offered, and asked for" },
+    { x: 520,  c: C.scope,   name: "policy",        sub: "zone · class · jurisdiction" },
+    { x: 790,  c: C.policy,  name: "approval",      sub: "two named humans" },
+    { x: 1060, c: C.surface, name: "attestation",   sub: "SPIFFE · card · SLSA" },
+  ];
+  const GATE_AT = [1.0, 2.9, 4.8, 6.7];
+  const ART_X = 1380, ART_AT = 9.0;
+
+  function s4_creation(t) {             // 17.5 → 29.5
+    act("I  ·  CONTRACT CREATION", env(t, 0.3, 99, 0.5));
+    const y = 318;
+
+    line(250, y, ART_X, y, C.rule, 1, env(t, 0.2, 99, 0.5) * 0.55);
+
+    GATES.forEach((g, i) => {
+      const a = env(t, 0.3 + i * 0.16, 99, 0.45);
+      const lit = cl((t - GATE_AT[i]) / 0.45, 0, 1);
+      box(g.x, y, 214, 76, { stroke: lit > 0 ? g.c : C.rule, fill: C.panel,
+                             alpha: a, width: lit > 0 ? 1.6 : 1 });
+      txt(g.name, g.x, y + 6, { size: 19, align: "center", alpha: a,
+                                color: lit > 0 ? g.c : C.dim });
+      txt(g.sub, g.x, y + 70, { size: 13, align: "center", alpha: a * 0.7,
+                                color: C.muted, spacing: 0.7 });
+      // A gate that has been satisfied says so.
+      if (lit > 0) txt("✓", g.x + 84, y - 20, { size: 15, align: "center", color: g.c, alpha: lit });
+    });
+
+    // The request walks the line, and accretes as it goes. This is the whole idea:
+    // a contract is not authored, it is what is left after four gates agree.
+    let tx, stamps = 0;
+    if (t < GATE_AT[0]) tx = lerp(120, GATES[0].x, sm(0, GATE_AT[0], t));
+    else {
+      let i = 0;
+      while (i < 3 && t >= GATE_AT[i + 1]) i++;
+      stamps = i + 1;
+      if (i === 3) tx = lerp(GATES[3].x, ART_X, sm(GATE_AT[3] + 0.5, ART_AT, t));
+      else tx = lerp(GATES[i].x, GATES[i + 1].x, sm(GATE_AT[i] + 0.5, GATE_AT[i + 1], t));
+    }
+    const travelling = 1 - sm(ART_AT - 0.5, ART_AT, t);
+    if (travelling > 0.001) {
+      dot(tx, y, 6 + stamps * 1.6, GATES[Math.max(0, stamps - 1)].c, travelling * 0.9);
+      dot(tx, y, 12 + stamps * 2.4, GATES[Math.max(0, stamps - 1)].c, travelling * 0.18);
+    }
+
+    // What comes out the other side.
+    const born = sm(ART_AT - 0.4, ART_AT + 0.5, t);
+    if (born > 0) {
+      box(ART_X, y, 206, 168, { stroke: C.surface, fill: C.film, alpha: born, width: 1.6, r: 3 });
+      txt("contract", ART_X, y - 54, { size: 17, align: "center", color: C.surface,
+                                       alpha: born, spacing: 1.8 });
+      ["cid   conn_7f3a91", "surface_digest  ✓", "exp   + 30 days", "signed   ES256"]
+        .forEach((l, i) => txt(l, ART_X, y - 18 + i * 26,
+                               { size: 12.5, align: "center", color: C.muted, alpha: born * 0.9 }));
+      const flash = Math.max(0, 1 - (t - ART_AT) * 1.8);
+      box(ART_X, y, 206, 168, { stroke: C.surface, alpha: flash * 0.8, width: 2.5, r: 3 });
+    }
+
+    caption("No one writes a contract.", null, env(t, 0.5, 4.2, 0.45));
+    caption("Four gates. A human at one of them.", null, env(t, 4.6, 8.4, 0.4));
+    caption("It is what survives the review.", "signed · surface pinned · dated · revocable",
+            env(t, 9.3, 12, 0.45));
+  }
+
+  // ---- ACT II · what the artifact then does ------------------------------
+
+  /**
+   * The formula, drawn term by term so each carries its own colour — and so the
+   * bracket beneath can point at the exact terms each product owns.
+   * Returns the x-span of the named terms.
+   */
+  function formula(cx, y, alpha) {
+    const parts = [
+      { s: "effective", c: C.ink }, { s: "  =  ", c: C.dim },
+      { s: "surface", c: C.surface, key: "surface" },
+      { s: "  ∩  ", c: C.dim },
+      { s: "scope", c: C.scope, key: "scope" },
+      { s: "  ∩  ", c: C.dim },
+      { s: "policy", c: C.policy, key: "policy" },
+    ];
+    ctx.save();
+    ctx.font = `27px ${MONO}`;
+    const w = parts.map(p => ctx.measureText(p.s).width);
+    ctx.restore();
+
+    const total = w.reduce((a, b) => a + b, 0);
+    let x = cx - total / 2;
+    const span = {};
+    parts.forEach((p, i) => {
+      if (p.key) span[p.key] = [x, x + w[i]];
+      txt(p.s, x, y, { size: 27, color: p.c, alpha, align: "left" });
+      x += w[i];
+    });
+    return span;
+  }
+
+  /** Who owns which terms — the product boundary, drawn on the algebra itself. */
+  function owner(x1, x2, y, color, product, when, alpha) {
+    if (alpha <= 0.001) return;
+    line(x1, y, x2, y, color, 1, alpha * 0.75);
+    line(x1, y, x1, y - 7, color, 1, alpha * 0.75);
+    line(x2, y, x2, y - 7, color, 1, alpha * 0.75);
+    const mid = (x1 + x2) / 2;
+    txt(product, mid, y + 26, { size: 16, align: "center", color, alpha, spacing: 1.1 });
+    txt(when, mid, y + 48, { size: 13, align: "center", color: C.muted, alpha: alpha * 0.8 });
+  }
+
+  function s5_algebra(t) {              // 29.5 → 38.5   the ceiling, and whose it is
+    act("II  ·  ENFORCEMENT", env(t, 0.3, 99, 0.5));
+
+    const p = sm(0.2, 2.2, t);
+    const cx = 800, R = 140;
     const rings = [
-      { x: lerp(430, cx - 104, p), y: lerp(250, cy - 62, p), c: C.surface, label: "surface" },
-      { x: lerp(1170, cx + 104, p), y: lerp(250, cy - 62, p), c: C.scope,   label: "scope" },
-      { x: lerp(cx, cx, p),         y: lerp(730, cy + 118, p), c: C.policy, label: "policy" },
+      { x: lerp(420, 706, p),  y: lerp(230, 260, p), c: C.surface, label: "surface", side: "L" },
+      { x: lerp(1180, 894, p), y: lerp(230, 260, p), c: C.scope,   label: "scope",   side: "R" },
+      { x: cx,                 y: lerp(640, 417, p), c: C.policy,  label: "policy",  side: "B" },
     ];
 
     for (const r of rings) {
@@ -343,12 +461,10 @@
 
     // The intersection, by actual clipping — so the shape on screen is the algebra,
     // not an artist's impression of it.
-    const glow = env(t, 2.5, 10, 0.6);
+    const glow = env(t, 2.2, 99, 0.6);
     if (glow > 0.001) {
       ctx.save();
-      for (const r of rings) {
-        ctx.beginPath(); ctx.arc(r.x, r.y, R, 0, Math.PI * 2); ctx.clip();
-      }
+      for (const r of rings) { ctx.beginPath(); ctx.arc(r.x, r.y, R, 0, Math.PI * 2); ctx.clip(); }
       ctx.globalAlpha = glow * (0.55 + 0.12 * Math.sin(t * 2.4));
       ctx.fillStyle = C.policy;
       ctx.fillRect(0, 0, W, H);
@@ -356,22 +472,28 @@
     }
 
     rings.forEach(r => {
-      const lx = r.x + (r.label === "policy" ? 0 : (r.label === "surface" ? -R - 14 : R + 14));
-      const ly = r.label === "policy" ? r.y + R + 34 : r.y - R + 6;
+      const lx = r.side === "B" ? r.x : r.x + (r.side === "L" ? -R - 14 : R + 14);
+      const ly = r.side === "B" ? r.y + R + 29 : r.y - R + 6;
       txt(r.label, lx, ly, {
         size: 17, alpha: p * 0.95, color: r.c, spacing: 2.4,
-        align: r.label === "policy" ? "center" : (r.label === "surface" ? "right" : "left"),
+        align: r.side === "B" ? "center" : (r.side === "L" ? "right" : "left"),
       });
     });
 
-    txt("effective  =  surface  ∩  scope  ∩  policy", W / 2, 706,
-        { size: 27, align: "center", alpha: env(t, 3.2, 10, 0.5), color: C.ink, spacing: 1.2 });
+    // The algebra, then the product boundary drawn straight onto its terms.
+    const fa = env(t, 2.6, 99, 0.5);
+    const span = formula(cx, 650, fa);
+    const oa = env(t, 3.6, 99, 0.5);
+    owner(span.surface[0], span.surface[1], 674, C.surface, "warden-connect", "at issuance", oa);
+    owner(span.scope[0], span.policy[1], 674, C.policy, "warden", "at authentication · per call", oa);
 
-    caption("A contract is a ceiling.", null, env(t, 5.0, 7.4, 0.4));
-    caption("Never a grant.", "it can only ever subtract", env(t, 7.5, 10, 0.4));
+    caption("A contract is a ceiling. Never a grant.", null, env(t, 5.0, 6.9, 0.4));
+    caption("warden-connect draws it. warden decides inside it.",
+            "neither is a control on its own", env(t, 7.0, 9, 0.4));
   }
 
-  function s5_enforce(t) {              // 34 → 43.5  and a ceiling with no floor is a PDF
+  function s6_enforce(t) {              // 38.5 → 46   a ceiling with no floor is a PDF
+    act("II  ·  ENFORCEMENT", 1);
     const y = 392, ax = 250, sx = 1350, px = 800;
 
     line(ax, y, px - 108, y, C.rule, 1, 0.75);
@@ -386,37 +508,38 @@
     txt("the proxy already", px, y + 12, { size: 16, align: "center", color: C.dim });
     txt("carrying this traffic", px, y + 36, { size: 16, align: "center", color: C.dim });
 
-    // The contract falls into the path it will govern.
-    const drop = sm(0.2, 1.5, t);
+    // The contract from Act I falls into the path it will govern.
+    const drop = sm(0.15, 1.3, t);
     if (drop > 0) {
       const cyy = lerp(120, y - 66, easeOut(drop));
       box(px, cyy, 132, 34, { stroke: C.surface, fill: C.film, alpha: drop, r: 2 });
-      txt("contract", px, cyy + 5, { size: 14, align: "center", color: C.surface, alpha: drop, spacing: 1.6 });
+      txt("contract", px, cyy + 5, { size: 14, align: "center", color: C.surface,
+                                     alpha: drop, spacing: 1.6 });
       if (drop >= 1) {
-        const f = Math.max(0, 1 - (t - 1.5) * 2.2);
+        const f = Math.max(0, 1 - (t - 1.3) * 2.2);
         box(px, y, 216, 132, { stroke: C.surface, alpha: f * 0.9, width: 2, r: 3 });
       }
     }
 
     // A contracted call goes through.
-    const g = (t - 2.6) / 1.9;
-    if (g > 0 && g < 1.25) {
+    const g = (t - 2.0) / 1.6;
+    if (g > 0 && g < 1.3) {
       const k = cl(g, 0, 1);
-      dot(lerp(ax, sx, k), y, 5.5, C.policy, Math.min(1, (1.25 - g) * 3));
+      dot(lerp(ax, sx, k), y, 5.5, C.policy, Math.min(1, (1.3 - g) * 3));
       txt("get_balance", lerp(ax, sx, k), y - 26, { size: 14, align: "center",
-          color: C.policy, alpha: Math.min(1, (1.25 - g) * 3) * 0.9 });
+          color: C.policy, alpha: Math.min(1, (1.3 - g) * 3) * 0.9 });
     }
 
     // An uncontracted one does not. It never reaches the callee — that is the whole point.
-    const b = (t - 4.9) / 1.5;
+    const b = (t - 4.0) / 1.4;
     if (b > 0) {
       const k = cl(b, 0, 1);
       const bx = k < 0.62 ? lerp(ax, px - 108, k / 0.62) : lerp(px - 108, ax + 130, (k - 0.62) / 0.38);
-      const a = b < 2.9 ? 1 : Math.max(0, 1 - (b - 2.9) * 2);
+      const a = b < 2.4 ? 1 : Math.max(0, 1 - (b - 2.4) * 2);
       dot(bx, y, 5.5, C.refuse, a);
       txt("transfer_funds", bx, y - 26, { size: 14, align: "center", color: C.refuse, alpha: a * 0.9 });
       if (k >= 0.62) {
-        const f = env(t, 5.85, 9.5, 0.35);
+        const f = env(t, 4.9, 7.5, 0.35);
         line(px - 108, y - 62, px - 108, y + 62, C.refuse, 2, f * 0.85);
         txt("WC-4002  uncontracted tool", px - 128, y + 96,
             { size: 17, align: "right", color: C.refuse, alpha: f, spacing: 0.8 });
@@ -424,17 +547,18 @@
     }
 
     caption("Enforced inside the hop you already run.", "no new proxy · no new latency budget",
-            env(t, 6.4, 9.5, 0.5));
+            env(t, 5.2, 7.5, 0.45));
   }
 
-  function s6_revoke(t) {               // 43.5 → 51.5  contained, and on the record
+  function s7_revoke(t) {               // 46 → 53.5   contained, and on the record
+    act("II  ·  ENFORCEMENT", 1 - sm(6.9, 7.5, t));
     const cx = 800, cy = 132;
     const posts = [400, 800, 1200], py = 322;
 
     box(cx, cy, 260, 46, { stroke: C.rule, fill: C.panel });
     txt("control plane", cx, cy + 5, { size: 15, align: "center", color: C.muted, spacing: 1.8 });
 
-    const wave = (t - 0.6) * 620;
+    const wave = (t - 0.5) * 620;
     posts.forEach(x => {
       const d = Math.hypot(x - cx, py - cy);
       const hit = wave > d;
@@ -448,21 +572,20 @@
       dot(x, py + 82, 5, hit ? C.rule : C.surface, 0.9);
     });
     if (wave > 0) {
-      const rr = wave;
       ctx.save();
-      ctx.globalAlpha = Math.max(0, 0.5 - rr / 1400);
+      ctx.globalAlpha = Math.max(0, 0.5 - wave / 1400);
       ctx.strokeStyle = C.refuse; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, wave, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
       txt("revoke", cx, cy - 40, { size: 17, align: "center", color: C.refuse,
-                                   alpha: Math.max(0, 1 - (t - 0.6) / 3), spacing: 2.6 });
+                                   alpha: Math.max(0, 1 - (t - 0.5) / 3), spacing: 2.6 });
     }
 
     // Every decision, linked to the one before it.
     const bl = 8, bw = 120, gap = 26, total = bl * bw + (bl - 1) * gap;
     const x0 = (W - total) / 2 + bw / 2, by = 560;
     for (let i = 0; i < bl; i++) {
-      const a = env(t, 2.0 + i * 0.22, 8, 0.3);
+      const a = env(t, 1.6 + i * 0.2, 7.5, 0.3);
       if (a <= 0.001) continue;
       const x = x0 + i * (bw + gap);
       box(x, by, bw, 50, { stroke: C.rule, fill: C.panel, alpha: a });
@@ -471,34 +594,37 @@
       if (i > 0) line(x - bw / 2 - gap, by, x - bw / 2, by, C.surface, 1, a * 0.7);
     }
     txt("hash-chained  ·  an edit anywhere invalidates every row after it", W / 2, 636,
-        { size: 15, align: "center", color: C.muted, alpha: env(t, 3.6, 8, 0.4), spacing: 1.3 });
+        { size: 15, align: "center", color: C.muted, alpha: env(t, 3.2, 7.5, 0.4), spacing: 1.3 });
 
-    caption("Revoke once. Everywhere. On the record.", null, env(t, 5.0, 8, 0.5));
+    caption("Revoke once. Everywhere. On the record.", null, env(t, 4.4, 7.5, 0.45));
   }
 
-  function s7_close(t) {                // 51.5 → 56
+  function s8_close(t) {                // 53.5 → 58
     const a = env(t, 0.15, 4.5, 0.55);
-    txt("warden-connect", W / 2, 396, { size: 84, font: SERIF, align: "center", alpha: a,
+    txt("warden-connect", W / 2, 384, { size: 84, font: SERIF, align: "center", alpha: a,
                                         color: C.ink, weight: "300" });
-    line(W / 2 - 236, 434, W / 2 + 236, 434, C.rule, 1, a * 0.7);
-    txt("the connection control plane for AI agents", W / 2, 480,
+    line(W / 2 - 236, 422, W / 2 + 236, 422, C.rule, 1, a * 0.7);
+    txt("the connection control plane for AI agents", W / 2, 468,
         { size: 21, align: "center", alpha: a * 0.86, color: C.muted, spacing: 3.2 });
 
     const b = env(t, 0.85, 4.5, 0.5);
-    [[-190, C.surface, "surface"], [0, C.scope, "scope"], [190, C.policy, "policy"]]
-      .forEach(([dx, c]) => dot(W / 2 + dx, 566, 5, c, b));
-    txt("Envoy   ·   Kong   ·   inline mediator", W / 2, 626,
+    txt("it draws the ceiling.   warden decides inside it.", W / 2, 546,
+        { size: 17, align: "center", alpha: b * 0.9, color: C.ink, spacing: 1.4 });
+    [[-190, C.surface], [0, C.scope], [190, C.policy]]
+      .forEach(([dx, c]) => dot(W / 2 + dx, 594, 5, c, b));
+    txt("Envoy   ·   Kong   ·   inline mediator", W / 2, 652,
         { size: 15, align: "center", alpha: b * 0.7, color: C.dim, spacing: 2.6 });
   }
 
   const SCENES = [
-    { at: 0,    to: 7.5,  fn: s1_proliferate, name: "the estate wires itself" },
-    { at: 7.5,  to: 15,   fn: s2_freeze,      name: "nobody signed for it" },
-    { at: 15,   to: 24,   fn: s3_split,       name: "two questions" },
-    { at: 24,   to: 34,   fn: s4_algebra,     name: "a ceiling, never a grant" },
-    { at: 34,   to: 43.5, fn: s5_enforce,     name: "enforced in the existing hop" },
-    { at: 43.5, to: 51.5, fn: s6_revoke,      name: "revoked, and on the record" },
-    { at: 51.5, to: DUR,  fn: s7_close,       name: "warden-connect" },
+    { at: 0,    to: 6,    fn: s1_proliferate, name: "the estate wires itself" },
+    { at: 6,    to: 11.5, fn: s2_freeze,      name: "nobody signed for it" },
+    { at: 11.5, to: 17.5, fn: s3_split,       name: "two questions, two products" },
+    { at: 17.5, to: 29.5, fn: s4_creation,    name: "I · contract creation", act: true },
+    { at: 29.5, to: 38.5, fn: s5_algebra,     name: "II · a ceiling, and whose", act: true },
+    { at: 38.5, to: 46,   fn: s6_enforce,     name: "enforced in the existing hop" },
+    { at: 46,   to: 53.5, fn: s7_revoke,      name: "revoked, and on the record" },
+    { at: 53.5, to: DUR,  fn: s8_close,       name: "warden-connect" },
   ];
 
   function render(t) {
@@ -597,11 +723,12 @@
     if (e.key === " " && e.target === document.body) { toggle(); e.preventDefault(); }
   });
 
-  // Chapter ticks, so a viewer can jump to the beat they want to re-read.
+  // Chapter ticks. The two act openings are taller — the film has two halves.
   const $ch = document.getElementById("chapters");
   SCENES.slice(1).forEach(s => {
     const i = document.createElement("i");
     i.style.left = (s.at / DUR) * 100 + "%";
+    if (s.act) i.className = "act";
     i.title = s.name;
     $ch.appendChild(i);
   });
@@ -612,7 +739,7 @@
     resize();
     const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (!still) { playing = true; last = performance.now(); }
-    else { clock = 28; render(clock); }   // the algebra: the one frame that carries the idea
+    else { clock = 34; render(clock); }   // the algebra, with the product boundary on it
     chrome();
     requestAnimationFrame(frame);
   }
