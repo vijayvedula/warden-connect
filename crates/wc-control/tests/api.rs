@@ -307,7 +307,13 @@ fn harness(tag: &str) -> Harness {
         ],
     )
     .with_token(READER, &[roles::READ])
-    .with_token(MEDIATOR_TOKEN, &[roles::MEDIATOR]);
+    .with_token(MEDIATOR_TOKEN, &[roles::MEDIATOR])
+    // The feed the plane publishes at /v1/revocations. Absent from this harness until now,
+    // which is why the serving plane's failure to append to it survived: with no feed
+    // configured the append is skipped, so a test could exercise a quarantine end to end and
+    // never touch the line that was missing.
+    .with_revocation_feed(&tmp.0.join("revocations.jsonl"))
+    .unwrap();
 
     let api = Arc::new(Api(Arc::new(cp)));
     let shutdown = Arc::new(Shutdown::default());
@@ -906,6 +912,78 @@ fn a_revoked_contract_is_named_in_removed_rather_than_simply_absent() {
     );
     assert_eq!(set.json()["active"].as_array().unwrap().len(), 0);
     assert_eq!(set.json()["removed"][0], cid);
+}
+
+#[test]
+fn revoking_one_connection_cuts_it_and_leaves_the_party_s_others_standing() {
+    // Quarantine takes a party and every contract it appears in. Cutting ONE connection had no
+    // route, so an estate running a control plane could reach the blunt instrument and not the
+    // narrow one: `connect revoke --cid` opens the store directly and fails WC-8003 while a
+    // plane is serving, because the event log is single-writer.
+    let h = harness("revoke-one");
+    let mut cids = Vec::new();
+    for (n, tool) in [("rv-1", "get_balance"), ("rv-2", "list_transactions")] {
+        let issued = call(
+            h.port,
+            "POST",
+            "/v1/connections",
+            Some(ADMIN),
+            Some(n),
+            Some(request_body(&ledger_id(), &[tool])),
+        );
+        assert_eq!(issued.status, 201, "{}", issued.body);
+        cids.push(issued.json()["cid"].as_str().unwrap().to_string());
+    }
+
+    let cut = call(
+        h.port,
+        "POST",
+        &format!("/v1/connections/{}/revoke", cids[0]),
+        Some(ADMIN),
+        Some("rv-cut"),
+        Some(json!({"reason": "SOC-3310 issued in error"})),
+    );
+    assert_eq!(cut.status, 202, "{}", cut.body);
+    assert_eq!(cut.json()["cid"], cids[0]);
+
+    // Narrow: the other contract of the same pair is untouched. A revoke that quietly behaved
+    // like a quarantine would pass a test that only looked at the cid it named.
+    let set = call(
+        h.port,
+        "GET",
+        &format!("/v1/mediators/{}/contracts", MEDIATOR.replace(':', "%3A")),
+        Some(MEDIATOR_TOKEN),
+        None,
+        None,
+    );
+    let active = set.json()["active"].as_array().unwrap().clone();
+    assert_eq!(active.len(), 1, "one contract must survive: {}", set.body);
+    assert_eq!(set.json()["removed"][0], cids[0]);
+
+    // And the deny-list, not just the absence. Dropping out of the published set is
+    // allow-list-by-omission, which a mediator holding a stale set undoes by itself.
+    let feed = call(
+        h.port,
+        "GET",
+        "/v1/revocations",
+        Some(MEDIATOR_TOKEN),
+        None,
+        None,
+    );
+    assert_eq!(feed.status, 200, "{}", feed.body);
+    let events = feed.json()["events"].as_array().unwrap().clone();
+    assert_eq!(
+        events.len(),
+        1,
+        "the feed must carry the cut: {}",
+        feed.body
+    );
+    // Each entry is the event alongside the JWS a mediator verifies it by, and
+    // `RevocationEvent::revoked` is `#[serde(flatten)]` over a tagged enum — so the
+    // discriminant and the cid sit directly on `event`.
+    assert_eq!(events[0]["event"]["kind"], "connection");
+    assert_eq!(events[0]["event"]["cid"], cids[0]);
+    assert!(!events[0]["jws"].as_str().unwrap().is_empty());
 }
 
 #[test]

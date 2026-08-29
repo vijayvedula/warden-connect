@@ -28,7 +28,7 @@ use serde_json::{json, Value};
 
 use wc_core::contract::{ContractStatus, IssuerKey, Surface, Terms};
 use wc_core::error::{Code, Mode, Result, WcError};
-use wc_core::model::{Entity, EntityId, HumanRef, Lifecycle, Posture};
+use wc_core::model::{Cid, Entity, EntityId, HumanRef, Lifecycle, Posture};
 use wc_core::util::sha256_hex;
 
 use crate::cpolicy::ConnectPolicy;
@@ -866,6 +866,17 @@ fn route(cp: &Arc<ControlPlane>, caller: &Caller, req: &Request) -> Result<Respo
             idempotent(cp, req, |cp| clear_quarantine(cp, caller, req))
         }
 
+        // Quarantine cuts a party and every contract it appears in. Cutting ONE connection
+        // had no route at all, so the only way to do it was `connect revoke --cid`, which
+        // opens the store directly and therefore fails `WC-8003` whenever a plane is serving
+        // — the event log is single-writer. An estate running a control plane could revoke a
+        // whole party or nothing, and the narrow instrument was the one it could not reach.
+        ("POST", ["v1", "connections", cid, "revoke"]) => {
+            require_role(cp, caller, roles::SECOPS)?;
+            let cid = (*cid).to_string();
+            idempotent(cp, req, |cp| revoke_connection(cp, caller, req, &cid))
+        }
+
         // --- the data plane ---
         ("GET", ["v1", "mediators", mid, "contracts"]) => {
             require_role(cp, caller, roles::MEDIATOR)?;
@@ -1614,6 +1625,82 @@ fn deny_request(
     Ok(Response::json(
         200,
         json!({"request": id, "status": "Denied"}).to_string(),
+    ))
+}
+
+/// Revoke one connection, leaving every other contract of both parties standing.
+///
+/// The narrow counterpart to [`quarantine`]. Both cut, and the difference is blast radius: a
+/// quarantine names a party and takes every contract it appears in, which is the right
+/// instrument for a compromised workload and much too big for a connection that merely should
+/// not have been issued.
+///
+/// Like `quarantine`, this appends to the revocation feed as well as revoking in the register.
+/// Dropping the contract out of the published set is allow-list-by-omission, and a mediator
+/// holding a stale or partial set brings it back; the deny-list is what holds regardless.
+fn revoke_connection(
+    cp: &Arc<ControlPlane>,
+    caller: &Caller,
+    req: &Request,
+    cid: &str,
+) -> Result<Response> {
+    let body = body_json(req)?;
+    let cid = Cid::new(cid)?;
+    let reason = field(&body, "reason")?.to_string();
+
+    let now = (cp.now)();
+    let held = {
+        let store = lock(&cp.store);
+        store
+            .projection
+            .contracts
+            .get(&cid)
+            .cloned()
+            .ok_or_else(|| {
+                WcError::with_detail(Code::CONTRACT_NOT_FOUND, format!("{cid} is not known here"))
+            })?
+    };
+    {
+        let mut store = lock(&cp.store);
+        store
+            .registry(actor_for(caller), now)
+            .revoke_contract(&cid, &reason)?;
+    }
+
+    {
+        let mut evidence = lock(&cp.evidence);
+        evidence.record(
+            &crate::evidence::LifecycleEvent::new(
+                crate::evidence::EventKind::Revoke,
+                caller.subject.clone(),
+            )
+            .with_cid(cid.as_str())
+            .with_contract_jti(held.jti.as_str())
+            .with_entities([held.caller.as_str(), held.callee.as_str()])
+            .with_reason(reason.clone()),
+            now,
+        )?;
+    }
+
+    if let Some(feed) = &cp.revocations {
+        let mut feed = lock(feed);
+        feed.append(
+            crate::contain::Revoked::Connection { cid: cid.clone() },
+            &reason,
+            caller.subject.as_str(),
+            now,
+            &cp.signer,
+        )?;
+    }
+
+    Ok(Response::json(
+        202,
+        json!({
+            "cid": cid.as_str(),
+            "caller": held.caller.as_str(),
+            "callee": held.callee.as_str(),
+        })
+        .to_string(),
     ))
 }
 
