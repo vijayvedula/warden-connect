@@ -90,6 +90,19 @@ pub struct Config {
     /// Seconds the contract set may go without a refresh before every call is refused.
     #[serde(default)]
     pub max_stale: u64,
+    /// The control plane to pull contract sets and revocations from.
+    ///
+    /// Without it this worker holds whatever it loaded from disk at start, forever — and a
+    /// revocation reaches it never. With it, each worker refreshes on its own background
+    /// thread, which is also how it hears about containment.
+    #[serde(default)]
+    pub contracts_url: Option<String>,
+    /// The bearer token for that plane. Needs the `connect.mediator` role.
+    #[serde(default)]
+    pub token: Option<String>,
+    /// Seconds between pulls. Default 5.
+    #[serde(default)]
+    pub refresh_secs: Option<u64>,
     /// Allow any zone pair rather than requiring the same trust level.
     #[serde(default)]
     pub any_zone: bool,
@@ -133,10 +146,20 @@ pub struct Handle {
     pub mode: Mode,
     /// Where identity comes from.
     pub identity: IdentitySource,
+    /// Stops the refresh thread when the handle is freed.
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The decision trail, when one is configured.
     pub evidence: Option<Arc<wc_mediator::evidence::FileSink>>,
     /// Where an XFCC header may be believed from. Empty under `identity = "tls"`.
     pub mesh: wc_mediator::peer::MeshTrust,
+}
+
+impl Drop for Handle {
+    /// Stop the refresh thread. It checks the flag once per interval, so a worker shutting down
+    /// waits at most that long — and never blocks on it, because nothing joins.
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl Handle {
@@ -292,8 +315,107 @@ impl Handle {
             None => None,
         };
 
+        // The refresh loop, on its own OS thread.
+        //
+        // NOT a Lua timer calling in: `ControlPlaneClient` is blocking (ureq), and a blocking
+        // fetch from `ngx.timer` stalls the whole worker's event loop for as long as the
+        // control plane takes to answer — unbounded if it hangs. A dedicated thread never
+        // touches the loop, and `Cache` is already behind an `RwLock`, so installing a snapshot
+        // from another thread is what it was built for.
+        //
+        // Started HERE, which is the first request in each worker, and that timing is
+        // load-bearing: nginx forks its workers, and a thread created before the fork does not
+        // survive into the child. Moving handle construction into Kong's `init` phase — as
+        // opposed to `init_worker` or `access` — would silently produce workers whose refresher
+        // is not running, and nothing about them would look wrong.
+        let contracts = Arc::new(contracts);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(url) = &cfg.contracts_url {
+            let Some(token) = cfg.token.clone() else {
+                return Err(
+                    "contracts_url needs a token with the connect.mediator role; without one \
+                     every pull is refused and this worker would silently keep a set that can \
+                     never be revoked"
+                        .to_string(),
+                );
+            };
+            let every = cfg.refresh_secs.unwrap_or(5).max(1);
+            let client =
+                wc_mediator::client::ControlPlaneClient::new(url, &cfg.mediator_id, &token);
+            let cache = contracts.cache();
+            let set = Arc::clone(&contracts);
+            let (med, iss) = (cfg.mediator_id.clone(), cfg.issuer_id.clone());
+            let stop_flag = Arc::clone(&stop);
+            let worker = cfg.worker_id.unwrap_or(0);
+            std::thread::spawn(move || {
+                let mut trust = trust;
+                let (mut seq, mut rev_seq) = (0u64, 0u64);
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(every));
+                    if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    let at = crate::now();
+                    let (keys, warn) = trust.keys(at);
+                    if let Some(e) = warn {
+                        eprintln!("wc-kong[{worker}]: issuer key set refresh failed: {e}");
+                    }
+                    let Ok(keys) = keys else {
+                        // Contracts are not pulled in this state: verifying against a trust set
+                        // this process has decided it cannot vouch for would be worse than
+                        // holding the old one. `max_stale` turns it into a refusal eventually.
+                        continue;
+                    };
+                    let trusted = wc_mediator::cache::Trust {
+                        keys,
+                        mediator_id: &med,
+                        issuer: &iss,
+                    };
+                    match wc_mediator::client::refresh(&client, &cache, &trusted, seq, rev_seq, at)
+                    {
+                        Ok(report) => {
+                            seq = report.seq;
+                            if let Some(rev) = &report.revocations {
+                                rev_seq = rev.applied_seq;
+                                if rev.applied > 0 {
+                                    eprintln!(
+                                        "wc-kong[{worker}]: applied {} revocation(s), feed at \
+                                         seq {}",
+                                        rev.applied, rev.applied_seq
+                                    );
+                                }
+                            }
+                            // Only a CLEAN refresh counts as fresh. A partial one leaves this
+                            // worker holding a set the plane did not fully hand over, and
+                            // treating that as current is how a withdrawn contract keeps
+                            // working.
+                            if report.is_clean() {
+                                set.mark_fresh(at);
+                            }
+                        }
+                        Err(e) => eprintln!(
+                            "wc-kong[{worker}]: refresh failed: {} {}",
+                            e.code(),
+                            e.detail()
+                        ),
+                    }
+                }
+            });
+            eprintln!(
+                "wc-kong: refreshing from {url} every {every}s; revocations reach this worker \
+                 within one interval"
+            );
+        } else if !contracts.is_empty() {
+            // Said out loud, because the alternative is a PEP that looks configured and cannot
+            // be contained: it will serve what it loaded until those contracts expire.
+            eprintln!(
+                "wc-kong: no contracts_url, so this worker holds the artifacts it loaded and NO \
+                 REVOCATION CAN REACH IT. Contract expiry is the only containment"
+            );
+        }
+
         Ok(Handle {
-            contracts: Arc::new(contracts),
+            contracts,
             routes,
             pins: (!cfg.no_pin).then(|| Arc::new(PinLedger::new())),
             pin_max_age: cfg.pin_max_age,
@@ -301,6 +423,7 @@ impl Handle {
             identity: cfg.identity,
             mesh,
             evidence,
+            stop,
         })
     }
 }
