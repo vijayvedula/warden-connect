@@ -22,6 +22,7 @@ code, not recalled.
 | **3.2** | both bindings ship | `wc-extproc`, `libwc_kong.so` and the plugin's Lua half are built, digested and attested. The artifact list was repeated in four places and is now one, which is why shipping a binding meant remembering four |
 | **3.3** | install without a checkout | [install.md](install.md), per binding, verification first. Every flag and config key in it was checked against `--help` and `schema.lua` |
 | **4.4** | Path A is walked | it always was — `attest-drill.sh` phase 4 executes a contracted call and refuses an uncontracted one, in enforce mode, over stdio. The plan entry saying otherwise was wrong. Confirmed by running it. Coverage is thinner than the bindings' (no catalogue-filter, batch, pin-drift or revocation phase) and it lives in a drill named for attestation, where nobody would look |
+| **4.2** | the gates are covered | `scripts/gate-mutation-check.sh` breaks five gates in the decision core — uncontracted tool, no identity, staleness, batch, unverified pin — and requires a test to notice. All five are caught; in CI |
 | **1.2** | `Terms` audit | every field traced to what binds it — table below. One term was bound by nothing anywhere, and the check meant to announce that class of term was itself an instance of it |
 
 ## What binds each term
