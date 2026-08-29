@@ -41,6 +41,20 @@ pub struct Resolved {
 pub trait Contracts: Send + Sync + 'static {
     /// The admitted connection for this pair, or `None` if there is no contract.
     fn resolve(&self, caller: Option<&str>, callee: &str) -> Option<Resolved>;
+
+    /// Report that a call PROCEEDED on this connection.
+    ///
+    /// Recorded when a call proceeds rather than at admission: admission says a connection was
+    /// *established*, which is not the question a re-certification review is asking. A contract
+    /// whose consumer connects on every deploy and calls nothing is exactly the one to withdraw.
+    ///
+    /// A no-op by default so a test stub need not care. That default is also why this was
+    /// missing for so long: `Cache::mark_used` existed and only the stdio gate called it, so the
+    /// control plane's dormant view saw no traffic through either gateway binding and every
+    /// contract enforced at a gateway looked unused.
+    fn mark_used(&self, cid: &str, at: u64) {
+        let _ = (cid, at);
+    }
 }
 
 /// A contract set held in memory and refreshed by whatever installed it.
@@ -190,6 +204,10 @@ impl ContractSet {
 }
 
 impl Contracts for ContractSet {
+    fn mark_used(&self, cid: &str, at: u64) {
+        self.cache.mark_used(cid, at);
+    }
+
     fn resolve(&self, caller: Option<&str>, callee: &str) -> Option<Resolved> {
         // A set nobody has been able to refresh is a set a revocation cannot reach. Refusing
         // is the only honest answer: the alternative is admitting calls on a contract that may

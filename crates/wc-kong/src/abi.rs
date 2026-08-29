@@ -166,6 +166,11 @@ pub struct WcStream {
     caller: String,
     callee: String,
     mode: &'static str,
+    /// So a proceeding call can be reported as usage, through the same trait method the Envoy
+    /// binding uses. `Cache::mark_used` was called only by the stdio gate, so the plane's
+    /// re-certification view saw no traffic through either gateway binding and every contract
+    /// enforced at a gateway looked dormant.
+    contracts: Option<std::sync::Arc<dyn Contracts>>,
 }
 
 impl WcStream {
@@ -401,6 +406,10 @@ pub unsafe extern "C" fn wc_stream_new(
         // Captured before `admitted` moves into the filter: a Decision needs the connection's
         // identity, and an absent contract still deserves a record — a refused call is the one
         // an auditor asks about.
+        let cid_for_use = resolved
+            .as_ref()
+            .map(|r| r.admitted.cid.as_str().to_string())
+            .unwrap_or_default();
         let (cid, jti, delivery) = match &resolved {
             Some(r) => (
                 r.admitted.cid.as_str().to_string(),
@@ -435,6 +444,7 @@ pub unsafe extern "C" fn wc_stream_new(
                 wc_core::error::Mode::Enforce => "enforce",
                 wc_core::error::Mode::Observe => "observe",
             },
+            contracts: (!cid_for_use.is_empty()).then(|| handle.contracts_arc()),
         }))
     })
 }
@@ -507,6 +517,16 @@ pub unsafe extern "C" fn wc_on_request(
                         "the decision could not be recorded and this contract's evidence \
                          delivery is blocking",
                     );
+                }
+                // Reported here rather than at admission: admission says a connection was
+                // ESTABLISHED, which is not what a re-certification review is asking. A
+                // contract whose consumer connects on every deploy and calls nothing is
+                // exactly the one to withdraw.
+                let st = &*s;
+                if let Some(c) = &st.contracts {
+                    if !st.cid.is_empty() {
+                        c.mark_used(&st.cid, crate::now());
+                    }
                 }
                 if (*s).filter.is_catalog() {
                     WC_BUFFER

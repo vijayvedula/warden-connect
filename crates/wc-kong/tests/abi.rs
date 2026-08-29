@@ -1139,3 +1139,59 @@ fn a_trail_shared_by_several_workers_is_refused() {
         "worker 3 must write its own trail"
     );
 }
+
+/// `Cache::mark_used` was called only by the stdio gate, so the control plane's
+/// re-certification view saw no traffic through either gateway binding — every contract enforced
+/// at a gateway looked dormant, and the dormant view is what feeds a withdrawal decision.
+#[test]
+fn a_call_that_proceeds_is_reported_as_usage() {
+    let h = init(&setup(
+        "usage",
+        &["get_balance", "list_transactions"],
+        "payments",
+    ))
+    .unwrap();
+    let p = peer("payments", Some(CERT));
+    // SAFETY: h is live for the whole test.
+    unsafe {
+        assert!(
+            (*h).contracts.cache().take_usage().is_empty(),
+            "nothing has been called yet"
+        );
+        verify_pin(h, &p);
+        let used = (*h).contracts.cache().take_usage();
+        assert!(
+            used.contains_key("conn_7f3a91c4"),
+            "a forwarded call must report the connection as used, got {used:?}"
+        );
+        wc_free(h);
+    }
+}
+
+/// And a refused call must NOT: a contract whose consumer connects on every deploy and is
+/// refused every time is exactly the one a review should see as dormant.
+#[test]
+fn a_refused_call_is_not_reported_as_usage() {
+    let h = init(&setup("usage-refused", &["get_balance"], "payments")).unwrap();
+    let p = peer("payments", Some(CERT));
+    verify_pin(h, &p);
+    // SAFETY: h is live.
+    unsafe {
+        let _ = (*h).contracts.cache().take_usage();
+    }
+    let (v, _, code) = request(
+        h,
+        &p,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"transfer_funds"}}"#,
+    );
+    assert_eq!(v, WC_REFUSE);
+    assert_eq!(code, 4002);
+    // SAFETY: h is live.
+    unsafe {
+        assert!(
+            (*h).contracts.cache().take_usage().is_empty(),
+            "a refusal is not usage"
+        );
+        wc_free(h);
+    }
+}
