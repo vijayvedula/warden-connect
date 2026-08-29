@@ -18,6 +18,7 @@ code, not recalled.
 | **3.1d** | revocation custody | the feed takes a key of its own. `revoke` and `quarantine` have had `--revocation-key` since custody existed; `serve` took no such flag, so the separation was present where an operator acts by hand and absent from the path an estate runs. Without one, `serve` now says so at startup |
 | **1.2b** | documented-but-absent sweep | 11 of 82 error codes were never emitted, 6 named in the LLD and 3 traced from a use case. Each now carries a `RESERVED:` reason or is emitted, `scripts/code-emission.sh` fails the build on a new one, and the doc claims that were wrong are corrected |
 | **2.3** | the trail is checkable | `connect evidence verify PATH` and `evidence since PATH --seq N`. The chain was tamper-evident to the drills and to nobody operating it. `since` verifies the whole trail before returning a row, so an edited file yields nothing |
+| **3.4** | a config fails at deploy | `connect gateway check --plugin-config FILE` runs the binding's own `Handle::open`. A separate checker agrees with what it checks only by maintenance, and the first drift makes it worse than nothing |
 | **1.2** | `Terms` audit | every field traced to what binds it — table below. One term was bound by nothing anywhere, and the check meant to announce that class of term was itself an instance of it |
 
 ## What binds each term
@@ -61,7 +62,6 @@ Three findings, of which one is fixed:
 | 2.4 | anchor the chain head on the ack, so the trail is tamper-*evident* and not merely tamper-detecting | M |
 | 3.2 | neither binding ships; `release.yml` has no reference to `wc-extproc` or `wc-kong` | M |
 | 3.3 | install path per binding without a repo checkout | S |
-| 3.4 | `connect gateway check --config`, so a bad config fails at deploy | S |
 | 4.1 | **independent security review** — submitted for external review | L |
 | 4.2 | mutation testing has never covered `wc-gateway` or `wc-kong` | M |
 | 4.3 | cluster scale unverified | L |

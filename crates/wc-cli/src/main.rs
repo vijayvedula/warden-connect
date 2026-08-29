@@ -151,6 +151,7 @@ const TWO_WORD: &[&str] = &[
     "register server",
     "register agent",
     "audit verify",
+    "gateway check",
     "evidence verify",
     "evidence since",
     "policy lint",
@@ -223,6 +224,7 @@ const COMMANDS: &[&str] = &[
     "caep ingest",
     "tenants",
     "audit verify",
+    "gateway check",
     "evidence verify",
     "evidence since",
     "backup",
@@ -532,6 +534,7 @@ fn accepted_flags(command: &str) -> &'static [&'static str] {
         ],
         "blast-radius" => &["id", "depth", "services"],
         "audit verify" => &["anchor-pub"],
+        "gateway check" => &["plugin-config", "json"],
         "evidence verify" => &["path", "json"],
         "evidence since" => &["path", "seq", "json"],
         "backup" => &["out", "anchor-pub", "now"],
@@ -794,6 +797,7 @@ fn dispatch(args: &mut Args) -> std::result::Result<(), Failure> {
         "need apply" => need_apply_cmd(args)?,
         "scm probe" => scm_probe_cmd(args)?,
         "audit verify" => audit_verify(args)?,
+        "gateway check" => gateway_check_cmd(args)?,
         "evidence verify" => evidence_verify_cmd(args)?,
         "evidence since" => evidence_since_cmd(args)?,
         "backup" => backup_cmd(args)?,
@@ -7347,6 +7351,48 @@ fn evidence_since_cmd(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// Validate an enforcement point's configuration before it is deployed.
+///
+/// Runs the binding's own `Handle::open`, which is what a worker does on its first request —
+/// not a reimplementation of it. A separate checker agrees with the thing it checks only by
+/// careful maintenance, and the first drift makes it worse than nothing: it passes a config the
+/// binding then refuses, at request rate, in production.
+///
+/// Everything this catches was previously found the same way: traffic arrived, the plugin built
+/// its handle, and the refusal appeared in an nginx error log.
+fn gateway_check_cmd(args: &Args) -> Result<()> {
+    // `--plugin-config`, not `--config`: the latter is the CLI's own global TOML settings file
+    // and would be parsed as TOML before this command ever ran.
+    let path = require(args, "plugin-config")?;
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        WcError::with_detail(Code::CONFIG_INVALID, format!("cannot read {path}")).with_source(e)
+    })?;
+    let cfg: wc_kong::config::Config = serde_json::from_str(&text).map_err(|e| {
+        WcError::with_detail(
+            Code::CONFIG_INVALID,
+            format!("{path} is not a plugin config: {e}"),
+        )
+    })?;
+
+    // Opening is the check. It reads and verifies every contract, resolves the route map,
+    // enforces `%w` when there is more than one worker, and opens the evidence trail — which
+    // does create the file if it is absent, exactly as a deploy would.
+    let handle = wc_kong::config::Handle::open(&cfg)
+        .map_err(|why| WcError::with_detail(Code::CONFIG_INVALID, why))?;
+    let contracts = handle.contracts.len();
+    drop(handle);
+
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({"config": path, "contracts": contracts, "ok": true}))?
+        );
+    } else {
+        println!("config ok · {contracts} contract(s) verified");
+    }
+    Ok(())
+}
+
 fn audit_verify(args: &Args) -> Result<()> {
     let p = paths(args);
     let anchor_pub = match args.get("anchor-pub") {
@@ -9892,6 +9938,15 @@ POLICY
   policy lint    [--policy FILE] [--json]
   policy show    [--policy FILE] [--json]      resolved zone bars + standing caps
   policy dry-run [--policy FILE] [--json]      what a change does to live contracts
+
+GATEWAY
+  gateway check --plugin-config FILE [--json]
+            validate an enforcement point's configuration before deploying it.
+            Runs the binding's OWN startup path, not a second copy of it, so a
+            config this accepts is one a worker accepts. Catches a contract that
+            will not verify, a contracts_url with no token, and an evidence path
+            two workers would interleave into a trail that never verifies
+            exit 1 with the message the worker would have logged at request rate
 
 TOOLS
   offer publish --surface FILE --terms FILE [--kind mcp|a2a]
