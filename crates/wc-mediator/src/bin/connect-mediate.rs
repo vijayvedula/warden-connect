@@ -473,6 +473,27 @@ fn run() -> Result<(), String> {
     // the staleness alert cannot tell "never started" from "started recently".
     wc_mediator::cache::announce_withdrawn_ceilings(&cache.snapshot(), "connect-mediate");
 
+    // This binary writes NO decision trail. Both enforcement-point bindings do, and a
+    // contract that asks for a blocking one is refused there (`WC-7001`) when the record
+    // cannot be written. Here there is no sink at all, so the same contract, mediated by this
+    // process, proceeds without the trail it stipulates — and would do it silently.
+    //
+    // Announced rather than ignored, on the same principle as the withdrawn ceilings above:
+    // the term reads as configured and does nothing on this path, and an operator comparing
+    // two enforcement points would have no way to know the difference.
+    if cache
+        .snapshot()
+        .all()
+        .any(|c| c.payload.terms.evidence.delivery == "blocking")
+    {
+        eprintln!(
+            "connect-mediate: NOTE a contract asks for BLOCKING evidence delivery, and this \
+             mediator writes no decision trail. On the Envoy and Kong bindings a record that \
+             cannot be written is itself a refusal (WC-7001); here the call proceeds and \
+             nothing is recorded. Put the connection behind a binding if the trail is load-bearing"
+        );
+    }
+
     let has_revocation_source = client.is_some();
     if !has_revocation_source {
         // Said out loud for the same reason `--peer-mode configured` is: this process
