@@ -16,7 +16,7 @@ Usage: .stub-plane.py PORT FIXTURE_DIR ARM_FILE
 import json
 import os
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(sys.argv[1])
 FIX = sys.argv[2]
@@ -71,4 +71,10 @@ class Plane(BaseHTTPRequestHandler):
         pass
 
 
-HTTPServer(("127.0.0.1", PORT), Plane).serve_forever()
+# Threading, not the plain HTTPServer this started as. Every nginx worker runs its own refresh
+# thread, so N workers poll this concurrently; a single-threaded server hands them out one at a
+# time and a client holding a connection stalls the rest. That is not a hypothetical -- it failed
+# CI as "the contract was still honoured after the party was revoked", because the worker that
+# served the probe was the one whose poll was still queued behind another worker's. The drill was
+# reporting the enforcement point as broken when the fault was in the drill's own control plane.
+ThreadingHTTPServer(("127.0.0.1", PORT), Plane).serve_forever()

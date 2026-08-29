@@ -522,19 +522,42 @@ else
 
   # 15 ------------------------------------------------------------------------
   touch "$ARM"
-  sleep 4
-  R=$(call client /mcp "$GET")
-  if printf '%s' "$R" | grep -q 'WC-4001'; then
-    if docker logs "$(cat "$CID_FILE")" 2>&1 | grep -q 'applied 1 revocation'; then
-      ok "15 · a revocation reached the nginx worker, via the deny-list"
+
+  # A bounded poll, not a fixed sleep. `refresh_secs` is 1, so this normally lands within a
+  # second or two; the ceiling exists for a loaded runner, and the elapsed time is printed so a
+  # revocation that starts taking twenty seconds shows up as a number rather than as a pass.
+  START=$(date +%s)
+  DEADLINE=$((START + 30))
+  R=""
+  while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+    R=$(call client /mcp "$GET")
+    printf '%s' "$R" | grep -q 'WC-4001' && break
+    sleep 1
+  done
+  ELAPSED=$(( $(date +%s) - START ))
+
+  if ! printf '%s' "$R" | grep -q 'WC-4001'; then
+    bad "15 · the contract was still honoured ${ELAPSED}s after the party was revoked"
+    printf '       %s\n' "$(printf '%s' "$R" | head -c 200)"
+    docker logs "$(cat "$CID_FILE")" 2>&1 | grep -iE 'revocation|refresh|contracts_url|warden' \
+      | tail -8 | sed 's/^/       /'
+  else
+    # One refusal only proves the worker that served it. Each worker refreshes on its own
+    # thread, so a revocation can reach one and not another, and a single probe would call that
+    # a pass -- with the estate still honouring the contract on every other worker.
+    STRAGGLER=0
+    for _ in $(seq 1 12); do
+      printf '%s' "$(call client /mcp "$GET")" | grep -q 'WC-4001' || STRAGGLER=1
+    done
+    if [ "$STRAGGLER" = 1 ]; then
+      bad "15 · one worker refused and another still honoured the contract"
+    elif docker logs "$(cat "$CID_FILE")" 2>&1 | grep -q 'applied 1 revocation'; then
+      ok "15 · a revocation reached every nginx worker, via the deny-list (${ELAPSED}s)"
       docker logs "$(cat "$CID_FILE")" 2>&1 | grep -o 'applied 1 revocation(s), feed at seq [0-9]*' \
         | tail -1 | sed 's/^/       /'
     else
-      bad "15 · refused, but the worker never applied a revocation — set membership, not the feed"
+      bad "15 · refused, but no worker applied a revocation — set membership, not the feed"
     fi
-  else
-    bad "15 · the contract was still honoured after the party was revoked"
-    printf '       %s\n' "$(printf '%s' "$R" | head -c 200)"
   fi
 fi
 
