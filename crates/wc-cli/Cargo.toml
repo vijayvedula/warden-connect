@@ -24,15 +24,15 @@ path = "src/main.rs"
 # `path` for this workspace, `version` for the registry: Cargo prefers the path when
 # building here and rewrites it to the version on publish. Without the version,
 # crates.io refuses the crate — a wildcard path dependency is not resolvable there.
-wc-core = { package = "warden-connect-core", path = "../wc-core", version = "0.1" }
-wc-control = { package = "warden-connect-control", path = "../wc-control", version = "0.1" }
+wc-core = { package = "warden-connect-core", path = "../wc-core", version = "0.2" }
+wc-control = { package = "warden-connect-control", path = "../wc-control", version = "0.2" }
 # For `evidence verify|since`. The decision trail an enforcement point writes is this module's
 # format, and reading it anywhere else would be a second implementation of the row layout.
-wc-mediator = { package = "warden-connect-mediator", path = "../wc-mediator", version = "0.1" }
+wc-mediator = { package = "warden-connect-mediator", path = "../wc-mediator", version = "0.2" }
 # For `gateway check`. The check runs the binding's OWN startup validation rather than a second
 # copy of it, because a checker that agrees with the thing it checks only by careful maintenance
 # is a checker that will one day pass a config the binding refuses.
-wc-kong = { package = "warden-connect-kong", path = "../wc-kong", version = "0.1" }
+wc-kong = { package = "warden-connect-kong", path = "../wc-kong", version = "0.2" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
