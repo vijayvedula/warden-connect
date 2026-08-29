@@ -376,6 +376,12 @@ jobs:
         working-directory: warden-connect
         run: ./scripts/spawn-adoption.sh
 
+      # The codes are the product's public vocabulary; the docs trace use cases to them. One
+      # that nothing emits is a signal an operator can alert on and never receive.
+      - name: Every error code is emitted or reserved
+        working-directory: warden-connect
+        run: ./scripts/code-emission.sh
+
       # This repository ships a CycloneDX BOM *generator* (`export::cyclonedx_bom`, for a
       # tool surface) and shipped no BOM of itself. A component that asks an estate to
       # inventory its agents while being uninventoriable is asking for a trust it does not

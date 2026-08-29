@@ -63,8 +63,16 @@ impl Code {
     /// An identifier is syntactically invalid (entity id, cid, jti, owner, zone).
     pub const MALFORMED_IDENTIFIER: Code = Code(2005);
     /// Unknown zone pair — treated as most restrictive.
+    ///
+    /// RESERVED: an unknown zone pair is resolved to the most restrictive bar, which is a
+    /// decision rather than a refusal, so nothing raises this.
     pub const ZONE_PAIR_UNKNOWN: Code = Code(2011);
     /// Discovery throttled (anti-enumeration).
+    ///
+    /// RESERVED, and deliberately unreachable. `broker` throttles by TRUNCATING --
+    /// `truncated: true` with an empty tail, never a refusal -- because a status that changes
+    /// when a caller crosses a threshold is itself the enumeration signal throttling exists to
+    /// deny. Emitting this code would reintroduce that oracle. Kept so the number is not reused.
     pub const DISCOVERY_THROTTLED: Code = Code(2020);
     /// Asker is not registered or not attested.
     pub const ASKER_NOT_ATTESTED: Code = Code(2021);
@@ -92,10 +100,18 @@ impl Code {
     /// A mint-time precondition failed.
     pub const MINT_PRECONDITION_FAILED: Code = Code(3012);
     /// Requested TTL exceeds the zone assurance bar; narrowed.
+    ///
+    /// RESERVED: a TTL above the zone bar is clamped to the bar during the policy fold,
+    /// not refused.
     pub const TTL_EXCEEDS_ZONE_BAR: Code = Code(3013);
     /// Requested terms would widen a ceiling.
+    ///
+    /// RESERVED: widening is prevented by intersection -- authority can only shrink -- so
+    /// there is no point at which a widened term exists to be refused.
     pub const TERMS_WOULD_WIDEN: Code = Code(3014);
     /// Standing-policy cap reached; escalated to a human.
+    ///
+    /// RESERVED: standing caps downgrade the decision rather than refusing it.
     pub const STANDING_CAP_REACHED: Code = Code(3015);
     /// Approver lacks the required role.
     pub const APPROVER_ROLE_MISSING: Code = Code(3020);
@@ -118,8 +134,13 @@ impl Code {
     /// The same human approved both sides, and the zone bar requires two.
     pub const APPROVERS_NOT_DISTINCT: Code = Code(3027);
     /// Renewal blocked: posture degraded.
+    ///
+    /// RESERVED: a degraded party is refused by the posture check in `cpolicy`, which
+    /// denies with its own reason rather than this code.
     pub const RENEWAL_POSTURE_DEGRADED: Code = Code(3030);
     /// Renewal blocked: re-attestation failed.
+    ///
+    /// RESERVED: see `REATTEST_FAILED` -- reported as posture, not as an error.
     pub const RENEWAL_REATTEST_FAILED: Code = Code(3031);
     /// Contract already revoked or expired.
     pub const CONTRACT_ALREADY_ENDED: Code = Code(3032);
@@ -173,6 +194,8 @@ impl Code {
     /// Concurrency or fan-out ceiling exceeded.
     pub const CONCURRENCY_CEILING: Code = Code(4005);
     /// Egress term violated (data class or jurisdiction).
+    ///
+    /// RESERVED: no enforcement point inspects egress payloads, so nothing can raise this.
     pub const EGRESS_TERM_VIOLATED: Code = Code(4006);
     /// Catalogue could not be filtered; an empty list was returned.
     pub const CATALOG_UNFILTERABLE: Code = Code(4007);
@@ -183,10 +206,16 @@ impl Code {
 
     // --- WC-50xx posture ---
     /// Re-attestation failed.
+    ///
+    /// RESERVED: a failed re-attestation moves the party to `Posture::Degraded`, which
+    /// stops renewal and new contracts. The mechanism is a state change, not a refusal, so an
+    /// operator alerting on this code would never see it fire.
     pub const REATTEST_FAILED: Code = Code(5001);
     /// Material drift detected.
     pub const DRIFT_MATERIAL: Code = Code(5002);
     /// Credential expiring or expired.
+    ///
+    /// RESERVED: expiry is surfaced as a gauge, not a refusal.
     pub const CREDENTIAL_EXPIRING: Code = Code(5010);
     /// Blast-radius depth limit reached; result truncated.
     pub const BLAST_DEPTH_TRUNCATED: Code = Code(5030);
@@ -211,6 +240,8 @@ impl Code {
     /// Export failed.
     pub const EXPORT_FAILED: Code = Code(7010);
     /// External PDP unreachable.
+    ///
+    /// RESERVED: policy is evaluated in-process; there is no remote PDP to be unreachable.
     pub const PDP_UNREACHABLE: Code = Code(7020);
 
     // --- WC-80xx platform ---

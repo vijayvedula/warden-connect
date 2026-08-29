@@ -16,6 +16,7 @@ code, not recalled.
 | **0.4** | the gate is deterministic | not a second scm race: concurrent spawns inherited each other's pipes, so a shim that exited 0 having printed its verdict was recorded as never answering. Every spawn is gated; 4 hangs in 60 runs became 0 in 180 |
 | **3.1c** | connection-level revocation | `POST /v1/connections/{cid}/revoke` — the narrow cut, symmetric with quarantine: register, evidence, and the deny-list. The API harness had no revocation feed at all, which is why the serving plane's failure to append to one survived a full suite |
 | **3.1d** | revocation custody | the feed takes a key of its own. `revoke` and `quarantine` have had `--revocation-key` since custody existed; `serve` took no such flag, so the separation was present where an operator acts by hand and absent from the path an estate runs. Without one, `serve` now says so at startup |
+| **1.2b** | documented-but-absent sweep | 11 of 82 error codes were never emitted, 6 named in the LLD and 3 traced from a use case. Each now carries a `RESERVED:` reason or is emitted, `scripts/code-emission.sh` fails the build on a new one, and the doc claims that were wrong are corrected |
 | **1.2** | `Terms` audit | every field traced to what binds it — table below. One term was bound by nothing anywhere, and the check meant to announce that class of term was itself an instance of it |
 
 ## What binds each term
@@ -56,7 +57,6 @@ Three findings, of which one is fixed:
 | # | Item | Effort |
 |---|---|---|
 | 1.2c | `human_oversight` and `delegation.attenuation` are declared and unchecked — enforce, or refuse to mint | S |
-| 1.2b | sweep for documented-but-absent mechanisms — six found in one session | S–M |
 | 2.3 | `connect evidence verify\|since` — needs a `wc-cli → wc-mediator` edge | S |
 | 2.4 | anchor the chain head on the ack, so the trail is tamper-*evident* and not merely tamper-detecting | M |
 | 3.2 | neither binding ships; `release.yml` has no reference to `wc-extproc` or `wc-kong` | M |
