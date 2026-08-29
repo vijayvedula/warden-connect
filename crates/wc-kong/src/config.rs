@@ -141,7 +141,7 @@ pub struct Config {
 /// increment 6 makes the operator say it out loud.
 pub struct Handle {
     /// Verified contracts, resolved by (caller, callee).
-    pub contracts: ContractSet,
+    pub contracts: std::sync::Arc<ContractSet>,
     /// Route key to callee.
     pub routes: Routes,
     /// Ceiling counters, keyed by contract.
@@ -161,6 +161,15 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// The contract set as a trait object, for reporting usage.
+    #[must_use]
+    pub fn contracts_arc(
+        &self,
+    ) -> std::sync::Arc<dyn warden_connect_gateway::contracts::Contracts> {
+        std::sync::Arc::clone(&self.contracts)
+            as std::sync::Arc<dyn warden_connect_gateway::contracts::Contracts>
+    }
+
     /// Build a handle from configuration.
     ///
     /// # Errors
@@ -351,7 +360,7 @@ impl Handle {
         };
 
         Ok(Handle {
-            contracts,
+            contracts: Arc::new(contracts),
             routes,
             ceilings: Registry::new(),
             pins: (!cfg.no_pin).then(|| Arc::new(PinLedger::new())),

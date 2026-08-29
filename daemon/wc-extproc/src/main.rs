@@ -292,6 +292,9 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
                         };
                         note = Some(Note {
                             sink: evidence.clone(),
+                            contracts: (!rec_cid.is_empty()).then(|| {
+                                std::sync::Arc::clone(&contracts) as std::sync::Arc<dyn Contracts>
+                            }),
                             delivery: rec_delivery,
                             cid: rec_cid,
                             jti: rec_jti,
@@ -379,6 +382,8 @@ impl<C: Contracts> ExternalProcessor for Verifier<C> {
 /// about where a trail lives, which is what lets both bindings share it.
 struct Note {
     sink: Option<std::sync::Arc<wc_mediator::evidence::FileSink>>,
+    /// So a proceeding call can be reported as usage.
+    contracts: Option<std::sync::Arc<dyn Contracts>>,
     delivery: Option<wc_mediator::evidence::Delivery>,
     cid: String,
     jti: String,
@@ -388,6 +393,17 @@ struct Note {
 }
 
 impl Note {
+    /// Report that this connection was used. Recorded when a call PROCEEDS, not at admission:
+    /// admission says a connection was established, which is not what a re-certification review
+    /// is asking.
+    fn mark_used(&self, at: u64) {
+        if let Some(c) = &self.contracts {
+            if !self.cid.is_empty() {
+                c.mark_used(&self.cid, at);
+            }
+        }
+    }
+
     /// Append one decision. Returns false only when the write failed and this contract's
     /// `terms.evidence.delivery` is blocking — in which case the call must be refused.
     fn write(&self, verdict: &str, code: &str, tool: &str, micros: u64) -> bool {
@@ -441,12 +457,17 @@ fn on_request_body(
                  blocking",
             )
         }
-        Verdict::Forward => ProcessingResponse {
-            response: Some(processing_response::Response::RequestBody(
-                BodyResponse::default(),
-            )),
-            ..Default::default()
-        },
+        Verdict::Forward => {
+            if let Some(n) = note {
+                n.mark_used(now());
+            }
+            ProcessingResponse {
+                response: Some(processing_response::Response::RequestBody(
+                    BodyResponse::default(),
+                )),
+                ..Default::default()
+            }
+        }
         Verdict::Refuse { code, detail } => {
             // A refusal is recorded too, and a failed write does not un-refuse it.
             write("deny", &code.to_string(), &tool, micros);
