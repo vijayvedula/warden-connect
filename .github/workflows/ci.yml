@@ -382,6 +382,12 @@ jobs:
         working-directory: warden-connect
         run: ./scripts/code-emission.sh
 
+      # A suite that guards the central claim, never itself checked for whether it guards
+      # anything. Each gate is broken deliberately and a test must notice.
+      - name: Gate mutations are caught
+        working-directory: warden-connect
+        run: ./scripts/gate-mutation-check.sh
+
       # This repository ships a CycloneDX BOM *generator* (`export::cyclonedx_bom`, for a
       # tool surface) and shipped no BOM of itself. A component that asks an estate to
       # inventory its agents while being uninventoriable is asking for a trust it does not
