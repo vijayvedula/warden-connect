@@ -29,6 +29,10 @@ wc-control = { package = "warden-connect-control", path = "../wc-control", versi
 # For `evidence verify|since`. The decision trail an enforcement point writes is this module's
 # format, and reading it anywhere else would be a second implementation of the row layout.
 wc-mediator = { package = "warden-connect-mediator", path = "../wc-mediator", version = "0.1" }
+# For `gateway check`. The check runs the binding's OWN startup validation rather than a second
+# copy of it, because a checker that agrees with the thing it checks only by careful maintenance
+# is a checker that will one day pass a config the binding refuses.
+wc-kong = { package = "warden-connect-kong", path = "../wc-kong", version = "0.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
