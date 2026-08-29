@@ -565,9 +565,17 @@ QUAR=$(curl -s -o quarantine.log -w '%{http_code}' -X POST \
   -H "idempotency-key: drill-quarantine-1" \
   --data "{\"party\":\"$CALLER\",\"reason\":\"drill: revocation reach\",\"approvers\":[\"human:drill@org\"]}" \
   "http://127.0.0.1:$API_PORT/v1/quarantine")
-if [ "$QUAR" != "200" ] && [ "$QUAR" != "201" ]; then
-  bad "9b · the quarantine was not accepted (HTTP $QUAR)"
-  sed 's/^/       /' quarantine.log | head -3
+# Any 2xx. Containment answers 202 — it is accepted and then applied, and the body names the
+# connections it cut. A check for 200 alone rejected a successful quarantine.
+case "$QUAR" in
+  2*) : ;;
+  *)
+    bad "9b · the quarantine was not accepted (HTTP $QUAR)"
+    sed 's/^/       /' quarantine.log | head -3
+    ;;
+esac
+if [ "${QUAR#2}" = "$QUAR" ]; then
+  : # already reported above
 else
   # Two refresh intervals, so a single slow poll cannot make this flaky.
   sleep 5
