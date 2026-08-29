@@ -36,12 +36,6 @@ return {
           { max_stale = { type = "number", default = 0 } },
           { any_zone = { type = "boolean", default = false } },
 
-          -- Required once any loaded contract bounds a rate or concurrency ceiling: those
-          -- counters are per worker, so the ceiling in force is the configured one times
-          -- worker_processes. "node" is refused by the library as not built, rather than
-          -- accepted as a value that changes nothing.
-          { ceiling_scope = { type = "string", one_of = { "worker", "node" } } },
-
           -- Where the decision trail is appended. %w is replaced with the worker id and is
           -- REQUIRED when worker_processes > 1: each worker keeps its own hash chain, and two
           -- appending to one file interleave into a trail that never verifies.

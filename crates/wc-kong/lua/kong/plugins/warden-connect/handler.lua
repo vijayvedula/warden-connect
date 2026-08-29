@@ -29,7 +29,7 @@ local init_error = nil
 local CONFIG_KEYS = {
   "contracts", "routes", "identity", "mesh_origin", "issuer_pub", "jwks_file",
   "jwks_url", "kid", "mediator_id", "issuer_id", "mode", "pin_max_age",
-  "max_stale", "any_zone", "no_pin", "ceiling_scope",
+  "max_stale", "any_zone", "no_pin",
   "evidence_path", "evidence_delivery",
 }
 
@@ -41,8 +41,8 @@ local function config_json(conf)
     end
   end
   -- Not a configuration field: the number of workers is nginx's, and asking an operator to
-  -- restate it is asking them to get it wrong. The library uses it to report what the
-  -- configured ceilings actually come to across the fleet.
+  -- restate it is asking them to get it wrong. The library uses it to require a per-worker
+  -- evidence path, since two workers appending to one hash chain never verifies.
   t.workers = ngx.worker and ngx.worker.count() or 1
   -- The worker id, so each worker writes its own chain. nginx owns both numbers; asking an
   -- operator to restate either is asking them to get it wrong.
@@ -202,7 +202,7 @@ end
 
 function WardenConnect:log(conf) -- luacheck: no unused args
   -- Deterministic release. The stream holds this contract's concurrency slot, so leaving it to
-  -- the collector would let a finished request keep consuming a ceiling.
+  -- the collector would hold the stream, and with it the contract state it borrows.
   local s = kong.ctx.plugin.stream
   if s then
     wc.stream_free(s)

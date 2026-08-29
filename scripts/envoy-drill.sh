@@ -121,7 +121,7 @@ callee_zone = "internal.*"
 decision = "require_approval"
 approver_role = "drill.operator"
 ttl_max = "7d"
-terms = { evidence_sink = "ocsf://siem", evidence_delivery = "fail-safe", max_calls_per_hour = 3, max_concurrent = 2 }
+terms = { evidence_sink = "ocsf://siem", evidence_delivery = "fail-safe" }
 reason = "the drill approves by hand"
 P
 for k in issuer approver; do
@@ -424,7 +424,7 @@ except Exception:
   fi
 fi
 
-# --- 2 and 3 · the ceiling, and whether it actually stopped the traffic ------------
+# --- 2 and 3 · the surface ceiling, and whether it stopped the traffic -------------
 : > "$UPSTREAM_LOG"
 OUT=$(call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"wire_funds","arguments":{"amount":9999}}}')
 if printf '%s' "$OUT" | grep -q "WC-4002"; then
@@ -516,37 +516,6 @@ else:
   esac
 fi
 
-# --- 9 · the rate ceiling, through Envoy ----------------------------------------
-# The policy rule caps this contract at 3 calls/hour and phase 1b already spent one. Rather
-# than count exactly — brittle if a phase above changes — call until a refusal arrives and
-# assert both that it arrives AND that at least one call succeeded first. A ceiling that
-# refused everything from the start would pass a refusal-only check.
-# The verifier was restarted in phase 8 and the pin ledger is IN MEMORY, so nothing is
-# verified again. That is fail-closed and self-healing — the first client to list tools
-# restores it — but it does mean the first tool call after any restart is refused. Worth
-# knowing before someone reads it as an outage.
-call '{"jsonrpc":"2.0","id":8,"method":"tools/list"}' >/dev/null
-allowed=0; refused=""
-for _ in $(seq 1 8); do
-  R=$(call '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"get_balance","arguments":{}}}')
-  if printf '%s' "$R" | grep -q "executed get_balance"; then
-    allowed=$((allowed + 1))
-  elif printf '%s' "$R" | grep -q "WC-4003"; then
-    refused="yes"; break
-  else
-    refused="other"; printf '%s\n' "$R" | sed 's/^/       /' | head -1; break
-  fi
-done
-if [ "$refused" = "yes" ] && [ "$allowed" -ge 1 ]; then
-  ok "9 · the rate ceiling holds across separate streams ($allowed allowed, then WC-4003)"
-elif [ "$refused" = "yes" ]; then
-  bad "9 · the ceiling refused every call, including the first"
-elif [ -z "$refused" ]; then
-  bad "9 · 8 calls admitted against a ceiling of 3 — the ceiling counts nothing across streams"
-else
-  bad "9 · the ceiling phase ended on an unexpected refusal"
-fi
-
 # --- 9b · a revocation reaches the enforcement point ------------------------------
 # The phase this drill never had, for a loop that was never joined: `revocations` on the control
 # plane was initialised to None and set by nothing, so every mediator asking for the feed was
@@ -580,10 +549,9 @@ else
   # Two refresh intervals, so a single slow poll cannot make this flaky.
   sleep 5
   R=$(call '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"get_balance","arguments":{}}}')
-  # A revoked party fails at RESOLUTION, before the ceiling is consulted, so the client sees
-  # WC-4001 and not the WC-4003 phase 9 just exhausted. The reason is WC-3105 and it appears only
-  # in the verifier's log — an operator staring at the client response cannot tell a revoked
-  # connection from one that was never issued.
+  # A revoked party fails at RESOLUTION, so the client sees WC-4001 — the same code as a
+  # contract that was never issued. The reason is WC-3105 and it appears only in the verifier's
+  # log, so an operator staring at the client response cannot tell the two apart.
   if printf '%s' "$R" | grep -q "WC-4001"; then
     # Refused — but by WHICH mechanism? Containment reaches a mediator two ways and only one of
     # them is monotonic:

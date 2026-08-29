@@ -72,7 +72,7 @@ trusts.
 | Inventory | `wc-control::inventory` | Reserved-path sweep across SCM hosts |
 | Evidence | `wc-control::chain`, `evidence`, `export` | Tamper-evident chain, DORA/CPS230/OSCAL/OCSF |
 | Portal | `wc-control::portal` | Read-only, server-rendered discovery view |
-| Mediator | `wc-mediator` | Contract verification, surface filter, ceilings |
+| Mediator | `wc-mediator` | Contract verification, surface filter, terms |
 | Contract | `wc-core::contract` | Payload, canonical form, verification, the algebra |
 
 ---
@@ -156,9 +156,6 @@ type `application/warden-connection+jws`; asymmetric signatures only
   "terms": {
     "data_classes": ["internal"],
     "jurisdictions": ["SG", "AU"],
-    "max_calls_per_hour": 500,
-    "max_concurrent": 8,
-    "max_spend_usd_per_day": 200,
     "human_oversight": "required_above:10000_usd",
     "delegation": { "max_depth": 2, "attenuation": "monotonic" },
     "evidence": { "sink": "ocsf://siem", "delivery": "blocking" }
@@ -194,7 +191,7 @@ verify(contract, peer_caller, peer_callee, presented_surface_hash)
  13. schema version known                                             else WC-3120
  14. contract within size bound                                       else WC-3121
 
-  → Admit; install surface filter, ceilings and terms for this connection
+  → Admit; install the surface filter and terms for this connection
 ```
 
 Steps 1–5 are local constant-time checks. Steps 6–7 come from already-established
@@ -301,7 +298,7 @@ by **two signed artifacts and one identifier**, never a shared library.
 
 warden-connect owns the first set, the terms and the `cid`. It hands that ceiling
 to warden and never learns what warden decides inside it. Signal runs the other
-way too: denied-action patterns and ceiling breaches feed posture scoring in
+way too: denied-action patterns feed posture scoring in
 connect, so repeated denials degrade a party and shorten its re-attestation
 interval.
 
@@ -372,7 +369,7 @@ to a spawned stdio child (`--upstream CMD`) or to a remote server over MCP
 Streamable HTTP (`--upstream-url URL`) — the latter being the common shape once
 a team wraps an existing API as an MCP server. Both are the same `Upstream`
 trait behind the same decorator, so the gates, the catalogue filter and the
-ceilings are identical on either; the transport decides where the server lives,
+the surface ceiling is identical on either; the transport decides where the server lives,
 not what is enforced. LLD §8.6.7.
 
 What is **not** yet built is the mediator as an HTTP *listener* — the shared
@@ -432,7 +429,7 @@ design started at rung 4 — which is why nobody could adopt it.
 | 6 | Is the mediator ready for the shared-gateway topology? | **Partly.** Two bindings are built and drilled against real proxies. Envoy `ext_proc` (E5): mesh identity, the surface ceiling, gate 8 including streams that carry no catalogue, route mapping, rate and concurrency ceilings, contract refresh with a staleness bound, fail-closed. Kong (E6): peer-certificate identity, catalogue filtering, six refusal classes, surface drift and pin revocation, 11/11 through a real Kong with real mTLS. The inline mediator's own listener is still not built |
 | 8 | Can a live estate be revoked? | **Partly, and not the way the CLI suggests.** `connect revoke --cid` writes to the event log, and a serving plane holds the single-writer lock — so it fails `WC-8003` against exactly the estate anyone would need to revoke. `POST /v1/quarantine` works on a live plane and contains a **party**; there is no route for connection-level revocation at all. Until there is, `--cid` is an offline-only tool and party quarantine is the containment path that works. LLD §8.6b |
 | 9 | Do the ceilings bind fleet-wide? | **No.** Counters are per process, so the effective ceiling is `configured × instances` — four nginx workers turn `10/hour` into 40. Kong refuses to start unless the operator sets `ceiling_scope = "worker"`, and prints the arithmetic per contract, so the number is stated rather than discovered. Making it actually node-wide needs shared memory and is not built. LLD §8.6b.5 |
-| 7 | Does `terms.max_spend_usd_per_day` bind anything? | **No,** and it cannot yet. `Ceilings::charge` needs an amount and nothing in the data plane produces one — an MCP response carries no cost and there is no price list. Carried, narrowed and federated correctly; bounds nothing at runtime. LLD §8.6.5 |
+| 7 | Do rate, concurrency and spend ceilings bind anything? | **They are gone, deliberately.** Counters lived in one process, so a contract saying `10/hour` admitted ten per nginx worker per node — the number an owner signed was never the number in force. Every fix meant redefining the term, dividing a budget across instances that come and go, or putting a dependency on the hot path §7.11 forbids. Envoy and Kong rate-limit properly, so volume is theirs. warden-connect now claims **one axis**: which capabilities a caller may reach on a callee. The fields survive one more version because `deny_unknown_fields` would break already-signed artifacts; they are enforced nowhere and announced at startup when a legacy artifact carries one |
 
 ---
 

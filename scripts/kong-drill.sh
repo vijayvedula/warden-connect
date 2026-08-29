@@ -227,7 +227,6 @@ plugins:
       mediator_id: "$MED"
       issuer_id: "$ISS"
       mode: enforce
-      ceiling_scope: worker
       evidence_path: /wc/evidence/trail-%w.jsonl
 YAML
 mkdir -p "$WORK/evidence" && chmod 777 "$WORK/evidence"
@@ -293,13 +292,6 @@ if klog | grep -q 'contract(s) verified'; then
 else
   bad "1 · the plugin did not report a verified contract"
   klog | tail -20
-fi
-
-# 2 ---------------------------------------------------------------------------
-if klog | grep -q 'in force'; then
-  ok "2 · the per-worker ceiling arithmetic was reported at startup"
-else
-  bad "2 · no ceiling note; the multiplier was not stated"
 fi
 
 # 3 ---------------------------------------------------------------------------

@@ -24,7 +24,6 @@ local function conf(over)
     issuer_pub = t.ROOT .. "/fixtures/keys/test_issuer_es256_pub.pem",
     kid = "wc-test-es256",
     mode = "enforce",
-    ceiling_scope = "worker",
   }
   for k, v in pairs(over or {}) do c[k] = v end
   return c
@@ -214,18 +213,8 @@ t.case("the response phase does nothing when nothing was buffered", function()
   stub.phase(rec, function() h:log(c) end, "log")
 end)
 
--- --- ceilings across workers -------------------------------------------------
+-- --- worker identity ----------------------------------------------------------
 
-t.case("a bounded ceiling without an acknowledgement refuses to start", function()
-  local h = fresh()
-  -- Removed explicitly: `{ ceiling_scope = nil }` is not a key in a Lua table literal, so
-  -- passing it to conf() would have changed nothing and quietly tested the opposite case.
-  local c = conf()
-  c.ceiling_scope = nil
-  local rec, how = run(h, c, req())
-  t.eq(how, "exited", "a PEP that will not start must not forward")
-  t.eq(rec.exit.status, 503, "no verdict is available")
-end)
 
 t.case("the worker count reaches the library from nginx, not from configuration", function()
   local h = fresh()

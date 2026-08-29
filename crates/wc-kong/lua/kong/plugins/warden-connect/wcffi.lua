@@ -92,8 +92,8 @@ end
 
 --- Open a stream. Returns stream, or nil plus the reason.
 --
--- The finaliser is a backstop, not the plan: a stream holds this contract's concurrency slot
--- until it is dropped, so waiting for the collector would let a leaked stream consume a ceiling.
+-- The finaliser is a backstop, not the plan: a leaked stream holds Rust-side state until the
+-- collector runs, and a request path should not depend on when that happens.
 -- The handler frees it in `log`; this catches the paths where `log` never runs.
 function M.stream(h, peer_json)
   local out = M.out()
