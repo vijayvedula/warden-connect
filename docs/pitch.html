@@ -102,7 +102,7 @@
 <div class="reel">
   <div class="frame">
     <canvas id="stage" role="img"
-      aria-label="A two-minute-nine animated walkthrough in two acts, eleven slides, each holding its finished frame for five seconds before the cut. The problem: an agent called recon-bot holds a token scoped payments colon star and is wired to an MCP server, payments-mcp, which unfolds five tools — get_balance, list_transactions, transfer_funds, issue_refund, close_account — every one marked reachable, five of five. The token admits the server and the server admits every tool: reachable is not approved, and nothing in the picture can tell them apart. That pair multiplies into an estate which freezes while three unanswerable questions appear, and the problem splits into two planes: may this connection exist, owned by warden-connect, and may this call proceed, owned by warden. Act one is contract creation as GitOps, across three slides. First, two lanes that never touch: the provider merges warden slash offer dot toml under its own approvers, the consumer merges warden slash needs dot toml under different approvers, neither party reviews the other pull request, and they join only at the control plane, which confirms both merges with the source host rather than the pipelines. Second, the disposition — one need, three outcomes: pre-granted goes straight to a minted contract with no person involved, because the provider approved a class once in a reviewed commit; gated routes to the callee owner and nothing is minted while the whole need waits on one item; refused stops, because no term covers this consumer and approval cannot help. Third, where the contract then lives: git holds a receipt and never the signed artifact, the control plane holds the artifact and the register, and every enforcement point holds a verified copy in memory that refreshes and expires — which is why a revocation has somewhere to arrive. Act two is enforcement. First the algebra: effective equals surface intersect scope intersect policy, with surface bracketed as warden-connect at issuance and scope and policy bracketed as warden at authentication and per call. Then the three enforcement points, side by side, sharing one decision core. Envoy runs wc-extproc as an ext_proc gRPC filter one hop away, with request_body_mode set to BUFFERED because the tool name is in the JSON-RPC body rather than a header, and failure_mode_allow set to false so an unreachable verifier refuses instead of failing open; identity comes from an mTLS certificate or XFCC. Kong loads libwc_kong.so into the nginx worker over LuaJIT FFI and decides in the Lua access phase at priority 1000 — no socket, no serialisation, one handle per worker; identity comes from a client certificate or XFCC. The inline mediator, connect-mediate, spawns the real server over stdio and sits in the path rather than beside it; its identity is configured rather than proven, and it writes no decision trail. Every verdict comes from the same wc-gateway core with the same gates and the same WC codes. Then the refusal itself: an uncontracted tool is refused WC-4002 inside the hop already carrying the traffic; and finally one revocation reaches every enforcement point while every decision is written to a hash-chained trail."></canvas>
+      aria-label="A two-minute-nine animated walkthrough in two acts, eleven slides, each holding its finished frame for five seconds before the cut. The problem: an agent called recon-bot holds a token scoped payments colon star and is wired to an MCP server, payments-mcp, which unfolds five tools — get_balance, list_transactions, transfer_funds, issue_refund, close_account — every one marked reachable, five of five. The token admits the server and the server admits every tool: reachable is not approved, and nothing in the picture can tell them apart. That pair multiplies into an estate which freezes while three unanswerable questions appear, and the problem splits into two planes: may this connection exist, owned by warden-connect, and may this call proceed, owned by warden. Act one is contract creation as GitOps, across three slides. First, two lanes that never touch: the provider merges warden slash offer dot toml under its own approvers, the consumer merges warden slash needs dot toml under different approvers, neither party reviews the other pull request, and they join only at the control plane, which confirms both merges with the source host rather than the pipelines. Second, the disposition — one need, three outcomes: pre-granted goes straight to a minted contract with no person involved, because the provider approved a class once in a reviewed commit; gated routes to the callee owner and nothing is minted while the whole need waits on one item; refused stops, because no term covers this consumer and approval cannot help. Third, where the contract then lives: git holds a receipt and never the signed artifact, the control plane holds the artifact and the register, and every enforcement point holds a verified copy in memory that refreshes and expires — which is why a revocation has somewhere to arrive. Act two is enforcement. First the algebra: effective equals surface intersect scope intersect policy, with surface bracketed as warden-connect at issuance and scope and policy bracketed as warden at authentication and per call. Then the three enforcement points, side by side, sharing one decision core. Envoy runs wc-extproc as an ext_proc gRPC filter one hop away, with request_body_mode set to BUFFERED because the tool name is in the JSON-RPC body rather than a header, and failure_mode_allow set to false so an unreachable verifier refuses instead of failing open; identity comes from an mTLS certificate or XFCC. Kong loads libwc_kong.so into the nginx worker over LuaJIT FFI and decides in the Lua access phase at priority 1000 — no socket, no serialisation, one handle per worker; identity comes from a client certificate or XFCC. The inline mediator, connect-mediate, spawns the real server over stdio and sits in the path rather than beside it; its identity is configured rather than proven, and it writes no decision trail. Every verdict comes from the same wc-gateway core with the same gates and the same WC codes. Then the refusal itself, run three times in the same order and the same colours as those columns: one contract feeds all three placements, and in each of them get_balance passes through to payments-mcp while transfer_funds is stopped at the enforcement point and refused WC-4002 — refused at the hop by Envoy, inside the worker by Kong, and in the agent own path by the mediator. Three placements, one core, the same code. Finally one revocation reaches every enforcement point while every decision is written to a hash-chained trail."></canvas>
   </div>
 
   <div class="transport">
@@ -799,75 +799,80 @@
             env(t, 6.7, 13, 0.4));
   }
 
-  function s6_enforce(t) {              // 40.5 → 47   a ceiling with no floor is a PDF
+  // The refusal, three times — same order and same colours as the columns on the slide before,
+  // so this reads as a continuation of them rather than a fresh diagram. One contract feeds all
+  // three; the verdict is identical; only the placement differs.
+  const LANE_Y = [300, 470, 640];
+  const REFUSE_AT = 615, PEP_X = 740, CALLEE_X = 1330, CALLER_X = 250;
+  const RUNS = [
+    { c: C.surface, tag: "ENVOY",    pep: "Envoy  +  wc-extproc",  note: "the verdict returns over gRPC" },
+    { c: C.policy,  tag: "KONG",     pep: "Kong  ·  nginx worker", note: "decided in-process, no socket" },
+    { c: C.scope,   tag: "MEDIATOR", pep: "connect-mediate",       note: "in the agent's own path" },
+  ];
+
+  function s6_enforce(t) {              // one uncontracted call, refused in three placements
     act("II  ·  ENFORCEMENT", 1);
-    const y = 392, ax = 250, sx = 1350, px = 800;
 
-    line(ax, y, px - 108, y, C.rule, 1, 0.75);
-    line(px + 108, y, sx, y, C.rule, 1, 0.75);
-    dot(ax, y, 7, C.ink, 0.95);
-    txt("agent", ax, y + 34, { size: 15, align: "center", color: C.muted, spacing: 1.4 });
-    box(sx, y, 190, 52, { stroke: "#3C4A5C", fill: C.panel });
-    txt("payments", sx, y + 5, { size: 15, align: "center", color: C.ink, spacing: 1.2 });
+    // One contract, feeding every placement. Drawn before the boxes so they occlude it.
+    const ac = env(t, 0.2, 99, 0.4);
+    box(PEP_X, 100, 150, 34, { stroke: C.surface, fill: C.film, alpha: ac, r: 2 });
+    txt("contract", PEP_X, 105, { size: 14, align: "center", color: C.surface,
+                                  alpha: ac, spacing: 1.6 });
+    line(PEP_X, 117, PEP_X, LANE_Y[2] - 24, C.surface, 1, ac * 0.35, [4, 7]);
 
-    box(px, y, 216, 132, { stroke: C.rule, fill: C.panel, r: 3 });
-    txt("ENVOY · KONG", px, y - 30, { size: 14, align: "center", color: C.muted, spacing: 2.2 });
-    txt("the proxy already", px, y + 12, { size: 16, align: "center", color: C.dim });
-    txt("carrying this traffic", px, y + 36, { size: 16, align: "center", color: C.dim });
+    RUNS.forEach((r, i) => {
+      const T = 0.6 + i * 2.5;
+      const a = env(t, T, 99, 0.4);
+      if (a <= 0.001) return;
+      const y = LANE_Y[i];
 
-    // The contract from Act I falls into the path it will govern.
-    const drop = sm(0.15, 1.2, t);
-    if (drop > 0) {
-      const cyy = lerp(110, y - 98, easeOut(drop));
-      box(px, cyy, 132, 34, { stroke: C.surface, fill: C.film, alpha: drop, r: 2 });
-      txt("contract", px, cyy + 5, { size: 14, align: "center", color: C.surface,
-                                     alpha: drop, spacing: 1.6 });
-      // It sits ABOVE the hop and feeds into it. It used to come to rest straddling the box's
-      // own top border, so the chip and the border drew through each other.
-      if (drop >= 1) line(px, cyy + 17, px, y - 66, C.surface, 1, 0.5);
-      if (drop >= 1) {
-        const f = Math.max(0, 1 - (t - 1.2) * 2.2);
-        box(px, y, 216, 132, { stroke: C.surface, alpha: f * 0.9, width: 2, r: 3 });
+      txt(r.tag, 64, y + 5, { size: 13, color: r.c, alpha: a, spacing: 2.4 });
+
+      dot(CALLER_X, y, 7, C.ink, a * 0.95);
+      line(CALLER_X + 12, y, REFUSE_AT, y, C.rule, 1, a * 0.7);
+      line(PEP_X + 125, y, CALLEE_X - 95, y, C.rule, 1, a * 0.7);
+
+      box(PEP_X, y, 250, 48, { stroke: r.c, fill: C.panel, alpha: a, width: 1.4 });
+      txt(r.pep, PEP_X, y + 5, { size: 14, align: "center", color: r.c, alpha: a });
+      txt(r.note, PEP_X, y + 40, { size: 12.5, align: "center", color: C.muted, alpha: a * 0.8 });
+
+      box(CALLEE_X, y, 190, 48, { stroke: "#3C4A5C", fill: C.panel, alpha: a });
+      txt("payments-mcp", CALLEE_X, y + 5, { size: 13, align: "center", color: C.ink, alpha: a });
+
+      // The contracted call goes all the way through.
+      const g = (t - (T + 0.3)) / 1.2;
+      if (g > 0 && g < 1.3) {
+        const k = cl(g, 0, 1), gx = lerp(CALLER_X, CALLEE_X, k);
+        const fade = Math.min(1, (1.3 - g) * 3);
+        dot(gx, y, 5.5, C.policy, fade);
+        const clearOfBoxes = Math.min(sm(126, 218, Math.abs(gx - PEP_X)),
+                                      sm(96, 186, Math.abs(gx - CALLEE_X)));
+        txt("get_balance", gx, y - 26, { size: 13, align: "center", color: C.policy,
+                                         alpha: fade * clearOfBoxes * 0.9 });
       }
-    }
 
-    // A contracted call goes through.
-    const g = (t - 1.7) / 1.4;
-    if (g > 0 && g < 1.3) {
-      const k = cl(g, 0, 1), gx = lerp(ax, sx, k), fade = Math.min(1, (1.3 - g) * 3);
-      dot(gx, y, 5.5, C.policy, fade);
-      // The name fades while it is over the proxy and returns on the far side. Without this it
-      // overprints "ENVOY · KONG" for about a third of a second; with it, the call reads as
-      // passing THROUGH the box rather than across it.
-      // Clear of BOTH boxes: the proxy it passes through and the callee it arrives at. The
-      // second one was missed until the layout harness learned what a box is.
-      const clearOfBoxes = Math.min(sm(118, 210, Math.abs(gx - px)),
-                                    sm(96, 186, Math.abs(gx - sx)));
-      txt("get_balance", gx, y - 26, { size: 14, align: "center",
-          color: C.policy, alpha: fade * clearOfBoxes * 0.9 });
-    }
-
-    // An uncontracted one does not. It never reaches the callee — that is the whole point.
-    const b = (t - 3.5) / 1.2;
-    if (b > 0) {
-      const k = cl(b, 0, 1);
-      const bx = k < 0.62 ? lerp(ax, px - 108, k / 0.62) : lerp(px - 108, ax + 130, (k - 0.62) / 0.38);
-      const a = b < 2.4 ? 1 : Math.max(0, 1 - (b - 2.4) * 2);
-      dot(bx, y, 5.5, C.refuse, a);
-      // Right-aligned, trailing the packet. Centred, it straddled the proxy's left edge at
-      // exactly the moment the refusal happens — the one frame a reader looks hardest at.
-      txt("transfer_funds", bx - 14, y - 26,
-          { size: 14, align: "right", color: C.refuse, alpha: a * 0.9 });
-      if (k >= 0.62) {
-        const f = env(t, 4.3, 11.5, 0.3);
-        line(px - 108, y - 62, px - 108, y + 62, C.refuse, 2, f * 0.85);
-        txt("WC-4002  uncontracted tool", px - 128, y + 96,
-            { size: 17, align: "right", color: C.refuse, alpha: f, spacing: 0.8 });
+      // The uncontracted one stops at the enforcement point. It never reaches the callee, in
+      // any of the three — which is the only thing this slide is claiming.
+      const b = (t - (T + 1.5)) / 0.9;
+      if (b > 0) {
+        const k = cl(b, 0, 1), bx = lerp(CALLER_X, REFUSE_AT, k);
+        const ba = b < 2.2 ? 1 : Math.max(0, 1 - (b - 2.2) * 1.6);
+        dot(bx, y, 5.5, C.refuse, ba);
+        txt("transfer_funds", bx - 14, y - 26, { size: 13, align: "right",
+                                                 color: C.refuse, alpha: ba * 0.9 });
       }
-    }
+      const badge = env(t, T + 2.2, 99, 0.3);
+      if (badge > 0.001) {
+        line(REFUSE_AT, y - 30, REFUSE_AT, y + 30, C.refuse, 2, badge * 0.9);
+        txt("WC-4002", REFUSE_AT, y - 42, { size: 13, align: "center",
+                                            color: C.refuse, alpha: badge, spacing: 0.8 });
+      }
+    });
 
-    caption("Enforced inside the hop you already run.", "no new proxy · no new latency budget",
-            env(t, 4.6, 11.5, 0.35));
+    caption("Envoy refuses it at the hop.", null, env(t, 0.9, 3.2, 0.4));
+    caption("Kong refuses it inside the worker.", null, env(t, 3.4, 5.7, 0.4));
+    caption("And the mediator, in the agent's own path.",
+            "three placements   ·   one core   ·   the same WC-4002", env(t, 5.9, 11.5, 0.4));
   }
 
   function s7_revoke(t) {               // 47 → 53.5   contained, and on the record
