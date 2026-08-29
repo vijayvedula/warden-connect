@@ -65,7 +65,7 @@ Three findings, of which one is fixed:
 | 1.2c | `human_oversight` and `delegation.attenuation` are declared and unchecked — enforce, or refuse to mint | S |
 | 2.4 | anchor the chain head on the ack, so the trail is tamper-*evident* and not merely tamper-detecting | M |
 | 4.1 | **independent security review** — submitted for external review | L |
-| 4.2 | mutation testing has never covered `wc-gateway` or `wc-kong` | M |
+| 4.2b | the gate mutations cover `wc-gateway`, the shared decision core. `wc-kong`'s own layer — the FFI boundary, config parsing, the per-worker trail — is not mutation-checked | S |
 | 4.3 | cluster scale unverified | L |
 | 4.4b | Path A writes no decision trail — `connect-mediate` has no `--evidence`, so `terms.evidence.delivery = "blocking"` cannot bind there. Announced at startup; pending **D1** | S |
 
