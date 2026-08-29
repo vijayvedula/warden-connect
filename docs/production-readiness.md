@@ -21,6 +21,7 @@ code, not recalled.
 | **3.4** | a config fails at deploy | `connect gateway check --plugin-config FILE` runs the binding's own `Handle::open`. A separate checker agrees with what it checks only by maintenance, and the first drift makes it worse than nothing |
 | **3.2** | both bindings ship | `wc-extproc`, `libwc_kong.so` and the plugin's Lua half are built, digested and attested. The artifact list was repeated in four places and is now one, which is why shipping a binding meant remembering four |
 | **3.3** | install without a checkout | [install.md](install.md), per binding, verification first. Every flag and config key in it was checked against `--help` and `schema.lua` |
+| **4.4** | Path A is walked | it always was — `attest-drill.sh` phase 4 executes a contracted call and refuses an uncontracted one, in enforce mode, over stdio. The plan entry saying otherwise was wrong. Confirmed by running it. Coverage is thinner than the bindings' (no catalogue-filter, batch, pin-drift or revocation phase) and it lives in a drill named for attestation, where nobody would look |
 | **1.2** | `Terms` audit | every field traced to what binds it — table below. One term was bound by nothing anywhere, and the check meant to announce that class of term was itself an instance of it |
 
 ## What binds each term
@@ -65,7 +66,7 @@ Three findings, of which one is fixed:
 | 4.1 | **independent security review** — submitted for external review | L |
 | 4.2 | mutation testing has never covered `wc-gateway` or `wc-kong` | M |
 | 4.3 | cluster scale unverified | L |
-| 4.4 | Path A (the stdio mediator) has never been walked end to end | S |
+| 4.4b | Path A writes no decision trail — `connect-mediate` has no `--evidence`, so `terms.evidence.delivery = "blocking"` cannot bind there. Announced at startup; pending **D1** | S |
 
 ## Open decisions
 
