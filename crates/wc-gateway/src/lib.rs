@@ -195,15 +195,6 @@ pub struct Filter {
     limits: wc_core::canon::Limits,
     /// Clock, injected so a test can pin it.
     now: u64,
-    /// The contract's ceilings, SHARED between every stream on the same contract.
-    ///
-    /// The mediator keeps these on its own stack because one process is one connection. A
-    /// gateway sees one HTTP stream per call, so per-stream counters would reset on every
-    /// request and a rate ceiling of 10/min would admit 10 per REQUEST — a ceiling that reads as
-    /// configured and counts nothing. They are keyed by the contract, upstream of this type.
-    ceilings: Option<std::sync::Arc<wc_mediator::ceiling::Ceilings>>,
-    /// Held for the life of the stream; released when this filter is dropped.
-    slot: Option<wc_mediator::ceiling::OwnedSlot>,
     /// What has been pinned, shared across streams. `None` disables the requirement.
     pins: Option<std::sync::Arc<PinLedger>>,
     /// Seconds a pin verification stays good. Zero means it never expires.
@@ -239,7 +230,6 @@ impl Filter {
     pub fn new(
         admitted: Option<wc_core::contract::Admitted>,
         contract: Option<std::sync::Arc<wc_core::contract::VerifiedContract>>,
-        ceilings: Option<std::sync::Arc<wc_mediator::ceiling::Ceilings>>,
         now: u64,
         cfg: &FilterCfg,
     ) -> Filter {
@@ -249,8 +239,6 @@ impl Filter {
             callee: cfg.callee.clone(),
             limits: wc_core::canon::Limits::default(),
             now,
-            ceilings,
-            slot: None,
             pins: cfg.pins.clone(),
             pin_max_age: cfg.pin_max_age,
             kind: StreamKind::Unknown,
@@ -328,28 +316,17 @@ impl Filter {
                 }
             }
 
-            // The contract's terms, which until now were carried and enforced by nothing on
-            // this path. Order matters: the rate ceiling RECORDS the call, so it goes after the
-            // surface check — otherwise a refused tool would still consume the caller's budget.
-            if let Some(ceilings) = &self.ceilings {
-                if let Err(e) = ceilings.reserve(&admitted.terms, self.now) {
-                    return Verdict::Refuse {
-                        code: e.code(),
-                        detail: e.detail().to_string(),
-                    };
-                }
-                match ceilings.enter_owned(&admitted.terms) {
-                    // Held on the filter, so the slot is released when the stream ends. A slot
-                    // dropped here instead would make every concurrency ceiling unreachable.
-                    Ok(slot) => self.slot = slot,
-                    Err(e) => {
-                        return Verdict::Refuse {
-                            code: e.code(),
-                            detail: e.detail().to_string(),
-                        }
-                    }
-                }
-            }
+            // Rate, concurrency and spend ceilings USED to be enforced here and no longer are.
+            //
+            // Counters live in one process. A contract saying `10/hour` admitted ten per nginx
+            // worker per node, so the number an owner wrote was never the number in force, and
+            // the only ways to fix that were to redefine the term, divide the budget, or add a
+            // hot-path dependency the latency NFR (§7.11) forbids. Meanwhile Envoy and Kong both
+            // rate-limit properly, and a proxy is where traffic shaping belongs.
+            //
+            // So warden-connect no longer claims a quantitative bound of any kind. It decides
+            // WHICH capabilities a caller may reach on a callee — one axis, enforced exactly.
+            // Volume is the proxy's, and `connect offer lint` refuses a term that says otherwise.
             return Verdict::Forward;
         }
 
@@ -502,7 +479,7 @@ mod tests {
     /// A live stream with no contract carried, so these exercise the phase machine alone.
     /// Gate 8 needs a real minted contract and lives in `tests/pin.rs`.
     fn live(items: &[&str]) -> Filter {
-        Filter::new(Some(admitted(items)), None, None, 0, &cfg(Mode::Enforce))
+        Filter::new(Some(admitted(items)), None, 0, &cfg(Mode::Enforce))
     }
 
     fn call(tool: &str) -> (String, Value) {
@@ -534,142 +511,18 @@ mod tests {
         }
     }
 
-    /// A live stream whose contract carries `terms`, with ceilings shared as `c`.
-    fn live_limited(
-        items: &[&str],
-        terms: wc_core::contract::Terms,
-        c: &std::sync::Arc<wc_mediator::ceiling::Ceilings>,
-    ) -> Filter {
-        let mut a = admitted(items);
-        a.terms = terms;
-        Filter::new(
-            Some(a),
-            None,
-            Some(std::sync::Arc::clone(c)),
-            0,
-            &cfg(Mode::Enforce),
-        )
-    }
-
-    #[test]
-    fn the_rate_ceiling_counts_across_streams_not_within_one() {
-        // The failure this exists to prevent: per-stream counters reset every request, so a
-        // ceiling of 2/window would admit 2 per REQUEST and count nothing.
-        let terms = wc_core::contract::Terms {
-            max_calls_per_hour: Some(2),
-            ..wc_core::contract::Terms::default()
-        };
-        let c = std::sync::Arc::new(wc_mediator::ceiling::Ceilings::new());
-        let (m, p) = call("summarize_statement");
-
-        for i in 1..=2 {
-            let mut f = live_limited(&["summarize_statement"], terms.clone(), &c);
-            assert_eq!(f.on_request(&m, &p), Verdict::Forward, "call {i} refused");
-        }
-        // A THIRD stream, a fresh Filter, and the ceiling must still bite.
-        let mut third = live_limited(&["summarize_statement"], terms, &c);
-        match third.on_request(&m, &p) {
-            Verdict::Refuse { code, .. } => assert_eq!(code, Code::RATE_CEILING),
-            Verdict::Forward => panic!("the rate ceiling did not carry across streams"),
-        }
-    }
-
-    #[test]
-    fn an_uncontracted_tool_does_not_consume_the_rate_budget() {
-        // Order matters: `reserve` records the call, so it must run after the surface check.
-        // Otherwise a caller could burn a victim's budget with tools it may not even name.
-        let terms = wc_core::contract::Terms {
-            max_calls_per_hour: Some(1),
-            ..wc_core::contract::Terms::default()
-        };
-        let c = std::sync::Arc::new(wc_mediator::ceiling::Ceilings::new());
-        let mut f = live_limited(&["allowed"], terms.clone(), &c);
-        let (m, p) = call("not_allowed");
-        assert!(matches!(f.on_request(&m, &p), Verdict::Refuse { .. }));
-        assert_eq!(c.calls_in_window(), 0, "a refused tool consumed the budget");
-
-        // And the one contracted call still gets through.
-        let mut g = live_limited(&["allowed"], terms, &c);
-        assert_eq!(
-            g.on_request(&call("allowed").0, &call("allowed").1),
-            Verdict::Forward
-        );
-    }
-
-    #[test]
-    fn the_concurrency_slot_is_held_for_the_stream_and_released_with_it() {
-        let terms = wc_core::contract::Terms {
-            max_concurrent: Some(1),
-            ..wc_core::contract::Terms::default()
-        };
-        let c = std::sync::Arc::new(wc_mediator::ceiling::Ceilings::new());
-        let (m, p) = call("summarize_statement");
-
-        let mut first = live_limited(&["summarize_statement"], terms.clone(), &c);
-        assert_eq!(first.on_request(&m, &p), Verdict::Forward);
-        assert_eq!(c.in_flight(), 1, "the slot was not taken");
-
-        // A second concurrent stream is refused while the first is open.
-        let mut second = live_limited(&["summarize_statement"], terms.clone(), &c);
-        assert!(matches!(
-            second.on_request(&m, &p),
-            Verdict::Refuse {
-                code: Code::CONCURRENCY_CEILING,
-                ..
-            }
-        ));
-
-        // The first stream ends. Its slot must go with it.
-        drop(first);
-        assert_eq!(
-            c.in_flight(),
-            0,
-            "the slot was not released when the stream ended"
-        );
-        let mut third = live_limited(&["summarize_statement"], terms, &c);
-        assert_eq!(third.on_request(&m, &p), Verdict::Forward);
-    }
-
-    #[test]
-    fn a_contract_with_no_terms_is_not_rate_limited_into_the_ground() {
-        // No ceiling in the terms means no ceiling, not a ceiling of zero.
-        let c = std::sync::Arc::new(wc_mediator::ceiling::Ceilings::new());
-        let (m, p) = call("summarize_statement");
-        for _ in 0..50 {
-            let mut f = live_limited(
-                &["summarize_statement"],
-                wc_core::contract::Terms::default(),
-                &c,
-            );
-            assert_eq!(f.on_request(&m, &p), Verdict::Forward);
-        }
-    }
-
-    #[test]
-    fn a_malformed_tool_call_is_refused_rather_than_forwarded() {
-        // No `name`. Forwarding it would reach the server with something the ceiling never saw.
-        let v = live(&["x"]).on_request("tools/call", &json!({"arguments": {}}));
-        assert!(matches!(
-            v,
-            Verdict::Refuse {
-                code: Code::FRAME_MALFORMED,
-                ..
-            }
-        ));
-    }
-
     #[test]
     fn no_contract_refuses_in_enforce_and_forwards_in_observe() {
         let (m, p) = call("anything");
         assert!(matches!(
-            Filter::new(None, None, None, 0, &cfg(Mode::Enforce)).on_request(&m, &p),
+            Filter::new(None, None, 0, &cfg(Mode::Enforce)).on_request(&m, &p),
             Verdict::Refuse {
                 code: Code::NO_CONTRACT,
                 ..
             }
         ));
         assert_eq!(
-            Filter::new(None, None, None, 0, &cfg(Mode::Observe)).on_request(&m, &p),
+            Filter::new(None, None, 0, &cfg(Mode::Observe)).on_request(&m, &p),
             Verdict::Forward
         );
     }

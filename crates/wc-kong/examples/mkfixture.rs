@@ -8,7 +8,7 @@
 //!
 //! Keys: `caller`, `callee`, `tools` (comma separated), `served` (comma separated),
 //! `served_file` (a JSON surface as the callee emits it, which overrides `served`),
-//! `rate`, `concurrent`, `mediator`, `issuer`. Everything has a default, so the Lua spec
+//! `mediator`, `issuer`. Everything has a default, so the Lua spec
 //! passes only a directory and the drill overrides the identities it generated certificates
 //! for.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -46,8 +46,6 @@ fn main() {
     let issuer = get("issuer", "https://connect.internal");
     let tools = list("tools", "get_balance,list_transactions");
     let served_names = list("served", "get_balance,list_transactions,transfer_funds");
-    let rate: Option<u32> = kv.get("rate").map(|v| v.parse().unwrap());
-    let concurrent: Option<u32> = kv.get("concurrent").map(|v| v.parse().unwrap());
 
     std::fs::create_dir_all(&dir).unwrap();
     let at = std::time::SystemTime::now()
@@ -110,22 +108,7 @@ fn main() {
     payload.nbf = at - 100;
     payload.exp = at + 3_600;
     payload.surface = surface;
-    // Bounded by default: the Lua suite has to exercise the ceiling acknowledgement, and a
-    // fixture with no ceiling would leave that path untested in the binding that has the
-    // problem. `rate=` and `concurrent=` override; an explicit 0 means unbounded.
-    payload.terms = Terms {
-        max_calls_per_hour: match rate {
-            Some(0) => None,
-            Some(n) => Some(n),
-            None => Some(10),
-        },
-        max_concurrent: match concurrent {
-            Some(0) => None,
-            Some(n) => Some(n),
-            None => Some(3),
-        },
-        ..Terms::default()
-    };
+    payload.terms = Terms::default();
     payload.assurance = Assurance::default();
 
     let jws = mint(

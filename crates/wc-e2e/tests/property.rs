@@ -1130,7 +1130,6 @@ fn mediate_recording(
     use std::sync::Arc;
     use wc_core::contract::{AnyZone, PeerIdentity};
     use wc_mediator::cache::{Cache, Snapshot};
-    use wc_mediator::ceiling::Ceilings;
     use wc_mediator::gate::{GateCfg, MediatedUpstream};
 
     let keys = verifier();
@@ -1153,8 +1152,5 @@ fn mediate_recording(
     );
     cfg.mode = wc_core::error::Mode::Enforce;
     cfg.zones = Box::new(AnyZone);
-    (
-        MediatedUpstream::new(Box::new(stub), cache, cfg).with_ceilings(Ceilings::new()),
-        recorder,
-    )
+    (MediatedUpstream::new(Box::new(stub), cache, cfg), recorder)
 }

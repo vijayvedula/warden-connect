@@ -43,7 +43,6 @@ use warden::{approvals::Approvals, audit::AuditLog, gateway::Gateway, policy::Po
 use wc_core::error::Mode;
 use wc_core::model::EntityId;
 use wc_mediator::cache::Cache;
-use wc_mediator::ceiling::Ceilings;
 use wc_mediator::client::{self, ControlPlaneClient};
 use wc_mediator::gate::{GateCfg, MediatedUpstream};
 use wc_mediator::jwks::KeySource;
@@ -473,15 +472,14 @@ fn run() -> Result<(), String> {
     // interval writes **no file at all** — a per-task agent invocation is exactly that — and
     // the staleness alert cannot tell "never started" from "started recently".
     if cache.snapshot().has_rate_or_spend_ceiling() {
-        // The ceiling is honoured exactly, within this process. `max_calls_per_hour` is
-        // signed into the contract and reads as an estate-wide rate; the counter is in
-        // memory, so a restart starts it again. Measured: a 3-per-hour contract executed
-        // 3 calls per process and 9 across three processes inside one hour.
+        // Carried by an artifact signed before these terms were withdrawn. Announced rather than
+        // ignored: a term that reads as configured and does nothing is the defect this project
+        // exists to catch, and staying silent about a legacy one would be committing it.
         eprintln!(
-            "connect-mediate: NOTE a contract sets a rate or spend ceiling. Ceilings count \
-             within THIS process — a restart resets them, so a short-lived per-task mediator \
-             enforces a fraction of an hourly figure. Keep this process alive for the window \
-             you are limiting, or treat the ceiling as per-invocation"
+            "connect-mediate: NOTE a contract carries a rate, concurrency or spend ceiling. \
+             These terms are NO LONGER ENFORCED — counters lived in one process, so the number \
+             an owner wrote was never the number in force. Set the limit on your proxy (Envoy \
+             and Kong both do this properly) and re-issue the contract without the term"
         );
     }
 
@@ -632,8 +630,7 @@ fn run() -> Result<(), String> {
             }
         };
 
-    let mediated =
-        MediatedUpstream::new(real, Arc::clone(&cache), cfg).with_ceilings(Ceilings::new());
+    let mediated = MediatedUpstream::new(real, Arc::clone(&cache), cfg);
 
     eprintln!(
         "connect-mediate: mediating {caller} → {callee} as {mediator_id} ({:?}, {})",

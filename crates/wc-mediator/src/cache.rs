@@ -242,18 +242,17 @@ impl Snapshot {
         self.by_cid.len()
     }
 
-    /// Whether any held contract carries a rate or spend ceiling.
+    /// Whether any held contract carries a rate, concurrency or spend ceiling.
     ///
-    /// Exists so the startup banner can say the one thing a signed
-    /// `max_calls_per_hour` does not: [`crate::ceiling::Ceilings`] counts **in this
-    /// process**, so a mediator that lives less than an hour enforces a fraction of an
-    /// hourly ceiling and the next process starts from zero. Measured: a 3-per-hour
-    /// contract executed three calls per process and nine across three, in the same hour.
+    /// These terms are **no longer enforced anywhere**. Counters lived in one process, so the
+    /// number an owner signed was never the number in force — a 3-per-hour contract executed
+    /// three calls per process and nine across three, in the same hour. There was no fix that
+    /// did not either redefine the term or put a dependency on the hot path, which §7.11
+    /// forbids, and Envoy and Kong both rate-limit properly.
     ///
-    /// A long-lived sidecar in front of a long-running agent enforces it as written; a
-    /// per-task invocation does not. The mediator cannot know which it is, and the
-    /// operator can — so it is stated rather than assumed either way.
-    #[must_use]
+    /// This exists only so a binding can ANNOUNCE a legacy artifact that still carries one.
+    /// Silence would be the defect this project is about: a term that reads as configured and
+    /// does nothing.
     pub fn has_rate_or_spend_ceiling(&self) -> bool {
         self.by_cid.values().any(|c| {
             let terms = &c.payload.terms;
