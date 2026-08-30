@@ -5,7 +5,11 @@ const code = fs.readFileSync(process.argv[2], 'utf8').match(/<script>([\s\S]*)<\
 const AT = Number(process.argv[3]);
 
 let font = '10px mono', align = 'left', texts = [], circles = [], rects = [], depth = 0;
-const sizeOf = f => parseFloat(f) || 10;
+// The px size, NOT the first number in the string. A font with a weight reads
+// `300 84px "Newsreader"...`, and parseFloat took the 300 — measuring the wordmark as
+// three hundred point and its box as 2100px wide. Conservative, so it never hid a real
+// overlap, but it meant the largest text in the film was never actually checked.
+const sizeOf = f => { const m = /(\d+(?:\.\d+)?)px/.exec(f); return m ? parseFloat(m[1]) : 10; };
 const isMono = f => /mono|Menlo|Consolas|SF Mono/i.test(f);
 const advance = (s, f) => s.length * sizeOf(f) * (isMono(f) ? 0.60 : 0.50);
 
