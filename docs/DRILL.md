@@ -1,6 +1,6 @@
 # The warden-connect Rust Drill
 
-> A build ladder that ships [docs/08-lld.md](docs/08-lld.md) and teaches Rust at
+> A build ladder that ships [docs/08-lld.md](08-lld.md) and teaches Rust at
 > the same time. Fourteen sessions, one module per sitting, each one a committed
 > unit with tests green.
 >

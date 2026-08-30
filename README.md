@@ -177,8 +177,8 @@ can live in an HSM, a smartcard or a KMS and never reach this process.
 | [docs/08-lld.md](docs/08-lld.md) | Low-level design — every crate, every module, every check, the error taxonomy, the build order |
 | [docs/use-cases/](docs/use-cases/) | Ten use cases, one file each, with a sequence diagram per use case |
 | [sdk/python/](sdk/python) · [examples/](examples) | A dependency-free client for the control-plane API, and three runnable examples |
-| [DRILL.md](DRILL.md) | How this was built, module by module |
-| [SECURITY.md](SECURITY.md) | Reporting a vulnerability; what is in and out of scope |
+| [docs/DRILL.md](docs/DRILL.md) | How this was built, module by module |
+| [SECURITY.md](.github/SECURITY.md) | Reporting a vulnerability; what is in and out of scope |
 
 > `docs/` was rebuilt on 2026-08-21. The previous set — capability matrices, journey maps,
 > threat model, limitations, production readiness, key custody, runbook, deployment,

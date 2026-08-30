@@ -286,7 +286,7 @@ mode this component exists to prevent, occurring inside it:
   What still requires SPIFFE is the mediator's *authenticated* peer modes (`mtls`, `mesh`,
   `jwt-svid`), which resolve through a SPIFFE URI. `configured` — the default and the honest
   mode for a sidecar — accepts a derived id, so the sidecar topology loses nothing.
-  [`docs/identity-without-spire.md`](docs/identity-without-spire.md) has the per-issuer
+  `docs/identity-without-spire.md`, the register retired in the 2026-08-21 docs rewrite (git history at `3f30697`), had the per-issuer
   settings and the two things it does not change.
 
 Closing the remaining **Unbuilt** items that a commit can close — and one of them turned out

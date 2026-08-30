@@ -15,3 +15,8 @@ warden-connect.cdx.json
 # dozen times. The small looping GIF the README needs lives in docs/media/; the MP4s belong
 # on a release, which is where this repository already puts binaries.
 /build
+
+# Artefacts the drills mint. `oidc-drill.sh` runs in `mktemp -d` and makes its own, but an
+# `evil.jwt` from an older revision of that script had been committed at the repository root
+# and sat there — a stray signed token in a security product's tree, referenced by nothing.
+*.jwt

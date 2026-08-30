@@ -44,7 +44,7 @@ unicode-normalization = "0.1"
 # now *expressible*.
 warden = { package = "warden-agent", version = "0.1" }
 
-# House rules from DRILL.md §2, enforced by the compiler rather than by memory.
+# House rules from docs/DRILL.md §2, enforced by the compiler rather than by memory.
 [workspace.lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"

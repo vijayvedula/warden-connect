@@ -382,6 +382,11 @@ jobs:
         working-directory: warden-connect
         run: ./scripts/code-emission.sh
 
+      # Nine links had been dead for a week, in the three READMEs a newcomer follows first.
+      - name: Documentation links resolve
+        working-directory: warden-connect
+        run: ./scripts/doc-links.sh
+
       # A suite that guards the central claim, never itself checked for whether it guards
       # anything. Each gate is broken deliberately and a test must notice.
       - name: Gate mutations are caught

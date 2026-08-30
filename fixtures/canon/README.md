@@ -8,7 +8,7 @@ digests. So two implementations that disagree about the bytes do not merely diff
 them will report drift that did not happen, or miss drift that did. Until this directory
 existed there were unit tests and a fuzz target and **no published expected-digest set**,
 which meant `wcs1` was only ever verifiable against our own implementation.
-[`docs/limitations.md`](../../docs/limitations.md) called that the most valuable thing
+`docs/limitations.md` — the register retired in the 2026-08-21 docs rewrite (git history at `3f30697`) — called that the most valuable thing
 missing.
 
 ## Running them
@@ -106,8 +106,8 @@ harness can say which version it checked rather than assuming.
   can canonicalise identically and still disagree about what is an injection.
 * **A signed distribution.** These are files in a git repository. Nothing yet attests that
   the set you downloaded is the set we published — the same gap
-  [`releasing.md`](../../docs/releasing.md) records for the contract vectors.
+  `docs/releasing.md` recorded for the contract vectors, before the register retired in the 2026-08-21 docs rewrite (git history at `3f30697`).
 
 A canonicalisation disagreement is a finding whoever turns out to be wrong. In a format meant
 to be interoperable, disagreeing about the bytes **is** the bug —
-[`SECURITY.md`](../../SECURITY.md) has the disclosure process.
+[`SECURITY.md`](../../.github/SECURITY.md) has the disclosure process.

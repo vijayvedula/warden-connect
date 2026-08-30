@@ -54,19 +54,19 @@ false — and concluded nothing had happened while a human was already looking a
 
 **`WC-*` codes survive.** `ConnectError.code` is the code the control plane returned, not a
 re-interpretation into an exception hierarchy this SDK invented. It is what an operator greps
-for and what the alert rules in [observability.md](../../docs/observability.md) group by.
+for and what the alert rules in [docs/08-lld.md §8.14](../../docs/08-lld.md) group by.
 
 ## What it cannot do, on purpose
 
 **Sign an approval.** `approve()` records a decision; it cannot mint the approver's
 signature, because that needs a private key this client must never hold. Approval proofs are
 minted by `connect approve --approver-key` / `--approver-signer`, on the approver's own
-machine or against their token. See [key-custody.md](../../docs/key-custody.md): an approver
+machine or against their token. See [docs/08-lld.md §8.12.1](../../docs/08-lld.md): an approver
 key the service could reach makes dual control theatre, and afterwards the evidence chain
 cannot tell the difference.
 
 **Mint or verify a contract.** Verification is the conformance kit's territory — see
-[conformance.md](../../docs/conformance.md) — and a Python verifier here would be a second
+[docs/07-hld.md § Conformance](../../docs/07-hld.md) — and a Python verifier here would be a second
 implementation of the eleven checks with no vectors run against it.
 
 ## Roles
