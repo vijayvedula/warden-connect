@@ -72,10 +72,12 @@ vm.createContext(sb); vm.runInContext(code, sb, { timeout: 15000 });
       if (hit(boxes[i], boxes[j])) bad.push(`TEXT/TEXT  "${boxes[i].s}"  ×  "${boxes[j].s}"`);
 
   // Text sitting on top of a ring outline is the reported defect.
-  // The Venn rings only. The revocation pulse is also a large circle, but it is a moving
-  // sweep that is MEANT to cross the enforcement boxes, and it originates at the control-plane
-  // node — so it is excluded by origin rather than by radius, which it shares with the rings.
-  const rings = circles.filter(c => c.r > 90 && !(c.x === 800 && c.y === 132));
+  // The Venn rings only. The revocation pulse is also a large circle, but it is a moving sweep
+  // that is MEANT to cross the enforcement boxes. It was excluded by its exact origin, which
+  // broke silently the moment that node moved twenty-four pixels — every frame of the revoke
+  // scene then reported a false overlap. The rings live in the middle of the frame and the
+  // pulse starts near the top, so the band is the stable discriminator, not the coordinate.
+  const rings = circles.filter(c => c.r > 90 && c.y > 220);
   for (const b of boxes)
     for (const c of rings) {
       const cxp = Math.max(b.x0, Math.min(c.x, b.x1));
