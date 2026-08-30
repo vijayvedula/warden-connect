@@ -7,25 +7,19 @@
 
 | | |
 |---|---|
-| **Version** | v0.1.1 · Rust 2021 · MSRV 1.89 |
-| **Scale** | 5 crates · 64 modules · 82 error codes · 1,286 tests |
+| **Version** | v0.2.0 · Rust 2021 · MSRV 1.89 |
+| **Scale** | 7 crates · 73 modules · 82 error codes · 1,439 tests |
 | **Companion** | [07-hld.md](07-hld.md) for the model · [use-cases/](use-cases/) for the flows |
 
 ---
 
 ## 8.1 How to read this document
 
-Three rules govern everything below.
-
-1. **A contract is a ceiling, never a grant.** Every algorithm here either
-   narrows or refuses. Nothing widens. If you find code that widens, it is a bug
-   regardless of what it was trying to do.
-2. **Fail closed, and say which dependency failed.** A control that degrades to
-   "allow" on a dependency failure is the defect class this system produces.
-   Every dependency has a named code in §8.11.
-3. **Configured is not enforced.** A flag parsed and never read, a role required
-   and never checked, a gate that passes with its body deleted — these are the
-   bugs that survive review here. §8.15 exists because of them.
+| Rule | What it means |
+|---|---|
+| A contract is a ceiling, never a grant | Every algorithm here narrows or refuses. Nothing widens. Code that widens is a bug, whatever it was for |
+| Fail closed, and name the dependency that failed | A control that degrades to "allow" on a dependency failure is the defect class this system produces. Every dependency has a code in §8.11 |
+| Configured is not enforced | A flag parsed and never read, a role required and never checked, a gate that passes with its body deleted. §8.15 exists because of these |
 
 ---
 
@@ -42,14 +36,14 @@ Three rules govern everything below.
 
 ### The async-runtime constraint, stated precisely
 
-The claim used to read "no `async fn` in any crate". That was true until the `ext_proc` verifier
-needed a gRPC server, and it is better narrowed deliberately than left quietly false.
+The ban used to read "no `async fn` in any crate". The `ext_proc` verifier needs
+a gRPC server, so the rule is narrowed rather than left false.
 
-What the ban protects is one property: `wc-core` and its dependents are linked into processes
-this project does not own — warden's proxy under the `warden-proxy` feature, a provider's Python
-server through a PyO3 wheel, a gateway filter in someone's data path. A crate that brings its own
-runtime is unembeddable there, and inside a host that already has one it is a second runtime in
-the same process.
+The ban protects one property. `wc-core` and its dependents are linked into
+processes this project does not own: warden's proxy under the `warden-proxy`
+feature, a provider's Python server through a PyO3 wheel, a gateway filter in
+someone's data path. A crate that brings its own runtime cannot be embedded
+there, and inside a host that already has one it is a second runtime.
 
 | | Embeddable crates (`crates/*`) | Daemons (`daemon/*`) |
 |---|---|---|
@@ -58,11 +52,11 @@ the same process.
 | Async runtime | **banned** — `deny.toml`, and `dep-count.sh` greps `cargo tree --workspace` | permitted |
 | Gated by | dependency ceilings + the ban list | its own `dep-count.sh` clause |
 
-`daemon/` is excluded from the workspace in the root `Cargo.toml`, which is what keeps
-`cargo tree --workspace` answering the question the ban is about. The boundary is asserted from
-the daemon's side: `dep-count.sh` runs `cargo tree --invert tokio` against each daemon and fails
-if any `warden-connect-*` crate appears, which is the signal that a runtime has crossed back into
-the embeddable surface. Verified by adding `tokio` to `wc-gateway` and watching both clauses fire.
+`daemon/` is excluded from the workspace, which keeps `cargo tree --workspace`
+answering the question the ban is about. `dep-count.sh` also runs `cargo tree
+--invert tokio` against each daemon and fails if a `warden-connect-*` crate
+appears — a runtime crossing back into the embeddable surface. Verified by
+adding `tokio` to `wc-gateway` and watching both clauses fire.
 
 ---
 
@@ -71,12 +65,12 @@ the embeddable surface. Verified by adding `tokio` to `wc-gateway` and watching 
 ```
 warden-connect/
 ├── crates/
-│   ├── wc-core/          shared types, the artifact, the codes   (9 modules)
+│   ├── wc-core/          shared types, the artifact, the codes  (10 modules)
 │   ├── wc-control/       the control plane                      (39 modules)
 │   ├── wc-mediator/      the data plane                         (13 modules)
-│   ├── wc-gateway/       the PEP decision core + shared wiring   (4 modules)
-│   ├── wc-kong/          C ABI over wc-gateway, for LuaJIT FFI   (2 modules)
-│   ├── wc-cli/           the `connect` binary                    (3 modules)
+│   ├── wc-gateway/       the PEP decision core + shared wiring    (4 modules)
+│   ├── wc-kong/          C ABI over wc-gateway, for LuaJIT FFI    (3 modules)
+│   ├── wc-cli/           the `connect` binary                     (3 modules)
 │   └── wc-e2e/           end-to-end and property tests
 ├── daemon/
 │   └── wc-extproc/       Envoy ext_proc binding. OUTSIDE the workspace (§8.2)
@@ -99,19 +93,27 @@ plane through a linked library.
 
 ## 8.4 Module inventory
 
-### `wc-core` — 9 modules
+### `wc-core` — 10 modules
 
 | Module | Responsibility |
 |---|---|
 | `contract` | The connection contract: surface, terms, registry record, JWS sign/verify |
 | `canon` | `wcs1` canonical surface serialisation and pinning; depth-bounded |
-| `error` | The `WC-*` taxonomy — 79 codes — and `WcError` |
+| `error` | The `WC-*` taxonomy — 82 codes — and `WcError` |
 | `model` | Identifiers, entities, pins, `Lifecycle`, `Posture` |
 | `zone` | The zone lattice: structure, ordering, zone-pair resolution |
 | `obs` | Labelled metrics and structured decision logs |
+| `proc` | `spawn_piped` — the one way this workspace spawns a child with piped stdio |
 | `thresholds` | The §8.10.3 latency ceilings, in one place |
 | `util` | Canonical JSON, hashing |
 | `lib` | Re-exports |
+
+`proc` exists because creating a pipe and marking it close-on-exec are two steps,
+not one. A thread that forks in between inherits a sibling's pipe ends, and the
+thread waiting on the real child waits for a writer that will never write. The
+symptom misleads: a shim that exited 0 having printed its verdict is recorded as
+"no answer within 20s". `spawn_piped` holds a process-wide lock across the
+spawn, and all three spawn sites use it.
 
 ### `wc-control` — 39 modules
 
@@ -157,7 +159,7 @@ plane through a linked library.
 | `bench` | Performance gates | 8.10.3 |
 | `lib` | Composition root |
 
-### `wc-mediator` — 12 modules
+### `wc-mediator` — 13 modules
 
 | Module | Responsibility | § |
 |---|---|---|
@@ -167,6 +169,7 @@ plane through a linked library.
 | `filter` | Catalogue filtering | 8.6.4 |
 | `peer` | Where peer identity actually comes from | 8.6.6 |
 | `drain` | What happens to in-flight work when a revocation lands | 8.6.5 |
+| `evidence` | The decision trail an enforcement point writes, and the hash chain over it | 8.5.9 |
 | `client` | Pull a contract set from the control plane, acknowledge it | 8.6.2 |
 | `upstream` | The two transports: a spawned stdio child, or a remote server over Streamable HTTP | 8.6.7 |
 | `mcp` | The few MCP shapes the mediation path needs | 8.9.1 |
@@ -174,10 +177,16 @@ plane through a linked library.
 | `obs` | Decision log and the metric families the mediator owns | 8.14 |
 | `lib` | Composition root |
 
-`peer` also owns `spiffe_from_cert_pem` — a dependency-free DER walk to a
-certificate's URI SAN. It lives in the identity module rather than in the
-binding that needed it, because a security-critical parser buried in a binding
-is a parser that escapes review. §8.6b.4.
+Two notes on placement:
+
+* `peer` also owns `spiffe_from_cert_pem`, a dependency-free DER walk to a
+  certificate's URI SAN. It lives in the identity module rather than in the
+  binding that needed it, because a security-critical parser buried in a binding
+  is a parser that escapes review. §8.6b.4.
+* `evidence` writes a local file rather than speaking a SIEM protocol. `wc-kong`
+  is a cdylib inside an nginx worker and §8.2 forbids an async runtime there, so
+  an HTTP client with retries and backpressure has no home. `ocsf://siem` in
+  `terms.evidence.sink` means *point a shipper at the file*.
 
 ### `wc-gateway` — 4 modules
 
@@ -196,7 +205,7 @@ ceiling is what stops an async runtime arriving through this door (§8.2).
 | Module | Responsibility | § |
 |---|---|---|
 | `abi` | The eleven `extern "C"` symbols, every one panic-isolated | 8.6b.3 |
-| `config` | `Config`, `Handle`, `Peer`, `IdentitySource`, `CeilingScope` | 8.6b.4 |
+| `config` | `Config`, `Handle`, `Peer`, `IdentitySource`, `ModeCfg` | 8.6b.4 |
 | `lib` | The `panic = abort` build guard, and the crate's re-exports | 8.6b.3 |
 
 Ships with `include/wc_kong.h` (hand-written, tested against the Rust) and
@@ -204,10 +213,10 @@ Ships with `include/wc_kong.h` (hand-written, tested against the Rust) and
 
 ### `daemon/wc-extproc`
 
-Outside the workspace, because it owns `main` and may carry tokio (§8.2). Three
-modules: the `ext_proc` service, plus thin wiring over `wc-gateway::contracts`
-and `::routes`, which used to live here and were lifted when a second binding
-needed them.
+Outside the workspace, because it owns `main` and may carry tokio (§8.2). One
+module: `main.rs`, holding the `ext_proc` service. The contract-set and route
+handling used to live here and was lifted into `wc-gateway::contracts` and
+`::routes` when a second binding needed it.
 
 ---
 
@@ -216,8 +225,8 @@ needed them.
 ### 8.5.1 Composition
 
 `wc-control::lib` is a composition root and nothing else. Every module takes its
-dependencies as parameters; none reaches for a global. This is what makes the
-1,273 tests possible without a running service.
+dependencies as parameters; none reaches for a global. That is what makes 1,439
+tests possible without a running service.
 
 ### 8.5.2 `store` and `lock` — the system of record
 
@@ -231,13 +240,12 @@ one thing that must survive every upgrade.
 **`lock`** is the single-writer lock. Only one process may write the registry at
 a time; readers never take it.
 
-> **Implementation note — the macOS `flock` race.** `acquire` retries 8 times
-> with backoff (~63 ms total) because on macOS a `flock` taken immediately after
-> a release **on the same inode** can transiently return `EWOULDBLOCK`. This was
-> reproduced with a minimal probe: 20,000 cycles clean in isolation, blocking
-> within one run under load. Set `WARDEN_CONNECT_TRACE_LOCKS` to a file path to
-> get pid + inode traces (a path, not stdout, because cargo captures stdout per
-> test). Failure code: `WC-8003`.
+> **The macOS `flock` race.** `acquire` retries 8 times with backoff (~63 ms
+> total) because on macOS a `flock` taken immediately after a release **on the
+> same inode** can transiently return `EWOULDBLOCK`. A minimal probe ran 20,000
+> cycles clean in isolation and blocked within one run under load. Set
+> `WARDEN_CONNECT_TRACE_LOCKS` to a file path for pid + inode traces — a path,
+> not stdout, because cargo captures stdout per test. Code: `WC-8003`.
 
 Commands that only read — `need check`, `entities` — **must not take the writer
 lock**. A source-scanning guard test enforces this.
@@ -263,24 +271,25 @@ Five stages, each fail-closed, in this order:
 
 <img src="diagrams/lld-2.svg" alt="The five admission stages, each fail-closed, with the code each refusal produces" width="100%">
 
-Ordering matters: the surface is captured **before** it is screened, and screened
+Order matters: the surface is captured **before** it is screened, and screened
 **before** it is pinned. Pinning unscreened text would make the pin an assertion
 that the text was reviewed when it was not.
 
-`attest` holds the real verifiers for stages 1, 3 and 4. On OIDC specifically:
-a verified OIDC token satisfies the **identity stage only**. It does not reach
-`Attested` — provenance and surface capture are separate stages with separate
-evidence.
+`attest` holds the real verifiers for stages 1, 3 and 4. A verified OIDC token
+satisfies the **identity stage only** and does not reach `Attested`; provenance
+and surface capture are separate stages with separate evidence.
 
 ### 8.5.5 `cpolicy` — may this contract exist?
 
 Distinct from warden policy in every dimension: different question, different
-moment, different owner. Inputs are zone pair, tier, requested surface, data
-classes, jurisdictions and requester authority. Output is a `Disposition`.
+moment, different owner.
 
-Assurance bars are declared per zone and include `max_delegation_depth`. Terms
-narrow by `min` when a standing stanza and a specific stanza both apply — the
-tighter always wins, never the more recent.
+| | |
+|---|---|
+| Inputs | zone pair, tier, requested surface, data classes, jurisdictions, requester authority |
+| Output | a `Disposition` |
+| Assurance bars | declared per zone, including `max_delegation_depth` |
+| Two stanzas apply | terms narrow by `min` — the tighter wins, never the more recent |
 
 ### 8.5.6 `broker` — discovery
 
@@ -289,63 +298,62 @@ schemas. An empty result is deliberately indistinguishable from "exists but not
 visible to you" (`WC-2021` asker not attested).
 
 Throttling **truncates and never refuses**: overflow returns `truncated: true`
-with an empty tail. `WC-2020 DISCOVERY_THROTTLED` is therefore reserved and
-unreachable by design — a status that changes when a caller crosses a threshold
-is itself the enumeration signal throttling exists to deny. This paragraph named
-it as a refusal the broker emits, which contradicted the module's own principle
-3 and would have sent anyone implementing to it reintroduce the oracle.
+with an empty tail. `WC-2020 DISCOVERY_THROTTLED` is reserved and unreachable by
+design — a status that changes when a caller crosses a threshold is itself the
+enumeration signal throttling exists to deny.
 
 ### 8.5.7 `assurance` — the loop
 
 Re-attestation on a tier-derived interval; drift classified benign or material
-(§8.7.5); posture scored from denial patterns fed back from
-the data plane. Material drift suspends every contract referencing the pin
-(`WC-5002`).
+(§8.7.5); posture scored from denial patterns fed back from the data plane.
+Material drift suspends every contract referencing the pin (`WC-5002`).
 
 ### 8.5.8 `contain`, `dist`, `caep` — containment
 
-`contain` writes the signed revocation feed and fans out to every mediator with
-an acknowledgement deadline. A mediator that does not acknowledge produces
-`WC-6003` — **not confirmed**, reported as such, never assumed benign.
-
-`dist` tracks which mediators hold the current contract set. `caep` ingests
-signals from other people's systems, refusing signals from parties not
-authorised to send them (`WC-2035`).
+| Module | Does |
+|---|---|
+| `contain` | Writes the signed revocation feed and fans out to every mediator with an acknowledgement deadline. A mediator that does not acknowledge produces `WC-6003` — **not confirmed**, reported as such, never assumed benign |
+| `dist` | Tracks which mediators hold the current contract set |
+| `caep` | Ingests signals from other people's systems, refusing signals from parties not authorised to send them (`WC-2035`) |
 
 ### 8.5.9 `chain`, `evidence`, `sink`, `export`, `rekor` — evidence
 
-`chain` is an append-only hash chain with periodically signed anchors. Its whole
-value is that an auditor can verify it **without trusting the plane that wrote
-it**. It must never move to a database — a queryable chain that requires trusting
-the query engine is not evidence.
+| Module | Does |
+|---|---|
+| `chain` | An append-only hash chain with periodically signed anchors. Its value is that an auditor can verify it **without trusting the plane that wrote it**. It must never move to a database — a queryable chain that requires trusting the query engine is not evidence |
+| `evidence` | Facade from lifecycle events to chain to sinks |
+| `sink` | Composes format × transport × filter × delivery. A **blocking** sink that is unavailable refuses the call (`WC-7001`), configurable per contract via `terms.evidence.delivery` |
+| `export` | Produces DORA, CPS230, OSCAL, OCSF and CSV, always with an explicit exceptions section rather than a silent omission. A broken chain refuses the export (`WC-7003`) |
+| `rekor` | Transparency-log inclusion, verified offline |
 
-`sink` composes format × transport × filter × delivery. A **blocking** sink that
-is unavailable refuses the call (`WC-7001`); that is a deliberate choice, and it
-is configurable per contract via `terms.evidence.delivery`.
-
-`export` produces DORA, CPS230, OSCAL, OCSF and CSV, always with an explicit
-exceptions section rather than a silent omission. A broken chain refuses the
-export (`WC-7003`).
+Enforcement points write their own trail through `wc-mediator::evidence` (§8.4).
+Appending JSON lines gives an operator a log, not evidence: anyone who can write
+the file can rewrite it. Each row carries the hash of the row before it, so an
+edit anywhere invalidates every row after, and `verify` finds the first break.
 
 ### 8.5.10 `api`, `http`, `portal` — the surfaces
 
-`http` is a minimal HTTP/1.1 server — no framework, which is what keeps the
-dependency budget. `api` is the control-plane surface. `portal` is **read-only**
-and server-rendered: catalogue, shadow usage, pending requests, blast radius,
-evidence lookup by `cid`, and a command generator that emits the CLI line rather
-than performing the action.
+| Module | Does |
+|---|---|
+| `http` | A minimal HTTP/1.1 server — no framework, which is what keeps the dependency budget |
+| `api` | The control-plane surface |
+| `portal` | **Read-only** and server-rendered: catalogue, shadow usage, pending requests, blast radius, evidence lookup by `cid`, and a command generator that emits the CLI line rather than performing the action |
 
-The portal deliberately has no write path and no session state. Discovery in the
-browser, execution in the CLI.
+The portal has no write path and no session state. Discovery in the browser,
+execution in the CLI.
 
 ### 8.5.11 `offer`, `need`, `pipeline`, `scm`, `proposal`, `receipt`, `inventory`
 
 The GitOps path — waves W1 to W7.
 
-**`offer`** parses `warden/offer.toml`: what a provider makes available, and to
-whom. `TermApproval` is either `PreGranted` or `NamedConsumer`.
-
-**`need`** parses `warden/needs.toml` and returns a `Disposition`:
+| Module | Reads / writes | Does |
+|---|---|---|
+| `offer` | `warden/offer.toml` | What a provider makes available, and to whom. `TermApproval` is `PreGranted` or `NamedConsumer` |
+| `need` | `warden/needs.toml` | What a consumer asks for; returns a `Disposition` |
+| `pipeline` | — | Whether the calling pipeline may speak for this asset |
+| `scm` | the source host | What was merged, through an operator-supplied shim, with per-host `jq` extractors loaded by `jq -f` and never copied inline |
+| `receipt` | `warden/contracts/<cid>.toml` | What goes back to the repository. **Never a JWS** |
+| `inventory` | reserved paths | Sweeps repositories. Probes nothing. Reports `watermark` and `repos_skipped` so a partial sweep never reads as complete coverage |
 
 ```rust
 pub enum Disposition {
@@ -355,18 +363,12 @@ pub enum Disposition {
 }
 ```
 
-Refusals outrank gating; one gated item holds the whole need. Accessors are
-**consuming** (`granted()`, `refusals()`, `gated()`) — the borrowing versions
-dangled on temporaries.
+Refusals outrank gating; one gated item holds the whole need. The accessors
+`granted()`, `refusals()` and `gated()` are **consuming** — the borrowing
+versions dangled on temporaries.
 
-**`pipeline`** answers whether the calling pipeline may speak for this asset.
-**`scm`** asks the source host what was merged through an operator-supplied
-shim, with per-host `jq` extractors loaded by `jq -f` (never copied inline).
-
-**`receipt`** writes `warden/contracts/<cid>.toml`. It **never carries a JWS**.
-
-**`authority`** holds `ApprovalBlock` — `[approval]` in both manifests, naming who may approve a
-change to them:
+**Who may approve (W8).** `authority` holds `ApprovalBlock` — the `[approval]`
+key in both manifests, naming who may approve a change to them:
 
 ```toml
 [approval]
@@ -374,39 +376,25 @@ approvers = ["s.iyer", "p.rao"]
 min       = 2
 ```
 
-Read at the merge's **base commit**, never at the head. A pull request that adds its own author to
-the list must not be approvable by that author — the list that governs a change is the one already
-on the branch. `MergeEvidence.base_sha` is what makes that readable; a host that does not report one
-refuses (`WC-3025`) rather than falling back to the head, which would reinstate the hole. Quorum is
-counted against declared approvers only (`WC-3026`).
+| Rule | Detail |
+|---|---|
+| Read at the **base commit**, never the head | A pull request that adds its own author to the list must not be approvable by that author. `MergeEvidence.base_sha` is what makes that readable; a host that does not report one refuses (`WC-3025`) rather than falling back to the head |
+| Quorum counts declared approvers only | `WC-3026` |
+| No `[approval]` key at base | Nobody has declared yet — the registry owner stands in for that one merge. `MergeApproval.bootstrap` records it, so an estate migrating onto declared approvers can watch the count go to zero (W8.4) |
+| `approvers = []` at base | Somebody wrote "nobody" — refuse. An instruction, not a gap |
+| The fallback never widens | It supplies a list where there was none. A declared list that excludes the owner still excludes them |
 
-**Bootstrap (W8.4).** A manifest's first commit has no list behind it, so the registry owner stands
-in — for that one merge, and only when the `[approval]` key is **absent**. `MergeApproval.bootstrap`
-records that it happened, so an estate migrating onto declared approvers can watch that count go to
-zero. Two distinctions keep it from becoming a default:
+**Approver drift (W8.6).** `Offer` holds the `[approval]` block it was published
+with, and `approval_digest()` reduces it to a stable value — sorted, lower-cased,
+`human:` stripped, `min` folded in. Reordering is not drift; adding, removing or
+changing `min` is.
 
-| At base | Meaning | Behaviour |
-|---|---|---|
-| no `[approval]` key | nobody has declared yet | registry owner stands in |
-| `approvers = []` | somebody wrote "nobody" | refuse — an instruction, not a gap |
-
-The fallback never widens: it supplies a list where there was none, and a declared list that
-excludes the owner still excludes them.
-
-**Approver drift (W8.6).** `Offer` holds the `[approval]` block it was published with, and
-`approval_digest()` reduces it to a stable value — sorted, lower-cased, `human:` stripped, `min`
-folded in. Reordering the list is not drift; adding, removing, or changing `min` is. `offer publish`
-compares the held digest against the incoming one and reports a change.
-
-Reported, not refused. The change is already *governed* — the base-commit read means moving the
-list takes a merge the previous list approved. What was missing was the trace: an auditor reading
-the registry could not tell the approver set had moved.
-
-Both sides, symmetrically. `store::NeedRecord` and the `need.declared` event give the consumer the
-durable record it lacked — the needs themselves settle into requests and contracts, but who may
-approve a change to the manifest had nowhere to be compared against. `offer::approval_digest` is a
-free function used by both, because two implementations of "has the approver set moved" would drift
-and the one that mattered would be whichever side the estate looked at.
+Drift is reported, not refused: the base-commit read already means moving the
+list takes a merge the previous list approved. What was missing was the trace —
+an auditor could not tell the approver set had moved. `store::NeedRecord` and
+the `need.declared` event give the consumer side the same record.
+`offer::approval_digest` is one free function used by both sides, because two
+implementations of "has the approver set moved" would drift apart.
 
 | | Offer | Need |
 |---|---|---|
@@ -414,23 +402,19 @@ and the one that mattered would be whichever side the estate looked at.
 | Conflict rule | highest version wins | last write wins — a needs manifest has no version |
 | Compared at | `offer publish` | `need apply` |
 
-**Distinct approvers (W8.5).** `require_distinct_approvers` on the zone assurance bar refuses a
-contract whose two sides were approved by the same human (`WC-3027`). Off inside a zone — one
-accountable owner on both sides is defensible there — on for `partner` and `public`, where it is one
-person's decision wearing two hats.
+**Distinct approvers (W8.5).** `require_distinct_approvers` on the zone
+assurance bar refuses a contract whose two sides were approved by the same human
+(`WC-3027`).
 
-Distinct from `dual_control`, which asks for two approvers on one side. This asks that the
-provider's approver and the consumer's are different people; one approval each is normal, and the
-point is that nobody decides alone that A may call B. `strictest` ORs it, like every other
-tightening. Break-glass sets it false explicitly: it has no merges at all, so asserting a property
-of a two-sided merge would be a condition nothing can satisfy.
+| | `dual_control` | `require_distinct_approvers` |
+|---|---|---|
+| Asks for | two approvers on one side | the provider's approver and the consumer's to be different people |
+| Default | per zone | off inside a zone, on for `partner` and `public` |
 
-The check sits **above** the `owner_merge_approves` early return. Below it, opting into merge
-consent would silently opt out of distinctness — which the test caught.
-
-**`inventory`** sweeps reserved paths across repositories. It probes nothing. It
-reports `watermark` and `repos_skipped` so a partial sweep never reads as
-complete coverage.
+One approval each is normal; the point is that nobody decides alone that A may
+call B. `strictest` ORs it. Break-glass sets it false explicitly, having no
+merges at all. The check sits **above** the `owner_merge_approves` early return:
+below it, opting into merge consent would silently opt out of distinctness.
 
 ---
 
@@ -439,12 +423,12 @@ complete coverage.
 ### 8.6.1 `gate` — the decorator
 
 The mediator is an `Upstream` decorator, not a proxy of its own. Standalone by
-default; the `warden-proxy` feature compiles it into warden's proxy so per-action
-policy applies in the same process, with no extra hop.
+default; the `warden-proxy` feature compiles it into warden's proxy so
+per-action policy applies in the same process, with no extra hop.
 
-The 14 verification gates are §7.4 of the HLD, implemented in `wc-core::contract`
-and driven from here. Every one is fail-closed; the single exception is posture
-in observe mode, which admits and logs.
+The 14 verification gates are §7.4 of the HLD, implemented in
+`wc-core::contract` and driven from here. Every one is fail-closed, except
+posture in observe mode, which admits and logs.
 
 ### 8.6.2 `cache` and `client`
 
@@ -456,45 +440,46 @@ is the hot path.
 ### 8.6.3 `jwks`
 
 Issuer keys are pulled from a published key set so rotation is not a deployment.
-Both EC and **RSA** branches are implemented — the RSA branch yields its `alg`
-and falls through to the shared verification tail. (GitHub's OIDC JWKS is
-RSA-only; skipping RSA made it unreachable.)
+Both EC and **RSA** branches are implemented; the RSA branch yields its `alg`
+and falls through to the shared verification tail. GitHub's OIDC JWKS is
+RSA-only, so skipping RSA made it unreachable.
 
 ### 8.6.4 `filter` — the catalogue
 
 `tools/list` is filtered down to `surface.tools` before the response reaches the
-agent. This is the single most valuable thing the mediator does: **the model
-never sees the tool it is not contracted for**, so it cannot be talked into
-attempting it. A catalogue that cannot be filtered is refused (`WC-4007`).
+agent, so **the model never sees the tool it is not contracted for** and cannot
+be talked into attempting it. A catalogue that cannot be filtered is refused
+(`WC-4007`).
 
 ### 8.6.5 `drain`
 
-**Rate, concurrency and spend ceilings were removed.** `ceiling.rs` is deleted
-and `WC-4003`, `WC-4004` and `WC-4005` are unreachable — retired rather than
-deleted from the taxonomy, because a code is a stable contract and removing one
-makes old evidence unreadable.
+`drain` decides what happens to in-flight work when a revocation lands — `drain`
+or `abort`, per policy.
 
-Why: counters live in one process. A contract saying `max_calls_per_hour = 10`
+**Rate, concurrency and spend ceilings were removed.** `ceiling.rs` is deleted
+and `WC-4003`, `WC-4004` and `WC-4005` are unreachable. They are retired rather
+than deleted from the taxonomy, because a code is a stable contract and removing
+one makes old evidence unreadable.
+
+Counters live in one process. A contract saying `max_calls_per_hour = 10`
 admitted ten **per nginx worker per node**, so the number an owner signed was
 never the number in force. Measured: a 3-per-hour contract executed three calls
-per process and nine across three, in the same hour. The available fixes were to
-redefine the term as per-instance, divide the budget across instances that come
-and go, or put a shared counter on the hot path — which §7.11 forbids outright.
+in one process and nine across three, in the same hour.
+
+| Fix considered | Why it failed |
+|---|---|
+| Redefine the term as per-instance | The owner signed a fleet number, not a per-instance one |
+| Divide the budget across instances | Instances come and go; 3 across 4 workers is 0 (deny everything) or 1 (12 in force) |
+| A shared counter on the hot path | §7.11 forbids it outright |
+
 Envoy and Kong both rate-limit properly, and traffic shaping belongs in a proxy.
+This component claims **one axis** — which capabilities a caller may reach on a
+callee — and enforces it exactly.
 
-So this component claims **one axis**: which capabilities a caller may reach on
-a callee, enforced exactly. That is a smaller claim than the design started with
-and it is the one that is true.
-
-The fields stay in `Terms` for one more version. `ContractPayload` carries
-`deny_unknown_fields`, so deleting them now would make every already-signed
-artifact fail to verify. They are enforced nowhere, cannot be set on a new
-contract, and a binding that loads a legacy artifact carrying one **says so at
-startup** — an inert term that nobody announces is exactly the defect this
-document keeps naming.
-
-`drain` is unaffected and stays: it decides what happens to in-flight work when
-a revocation lands — `drain` or `abort`, per policy.
+The fields stay in `Terms` for one more version: `ContractPayload` carries
+`deny_unknown_fields`, so deleting them would make every already-signed artifact
+fail to verify. They cannot be set on a new contract, and a binding that loads a
+legacy artifact carrying one **says so at startup**.
 
 ### 8.6.6 `peer`
 
@@ -504,61 +489,49 @@ makes gates 6 and 7 meaningful.
 
 ### 8.6.7 `upstream` — the two transports
 
-The mediator decorates an `Upstream`, and there are two implementations of that
-trait. Both sit behind the same `MediatedUpstream`, so the 14 gates, the
-catalogue filter and the ceilings are the same code on either path — the
-transport decides where the server lives, not what is enforced.
+The mediator decorates an `Upstream`, and there are two implementations. Both
+sit behind the same `MediatedUpstream`, so the 14 gates and the catalogue filter
+are the same code on either path. The transport decides where the server lives,
+not what is enforced.
 
 | | flag | topology |
 |---|---|---|
 | `StdioUpstream` | `--upstream CMD` | the MCP server is spawned as a child; one agent, one server, one sidecar |
 | `HttpUpstream` | `--upstream-url URL` | the MCP server is remote, over MCP Streamable HTTP; the common shape once a team wraps an existing API |
 
-`HttpUpstream` POSTs one JSON-RPC frame per request and accepts either response
-content type. `application/json` is one frame. `text/event-stream` is parsed by
-`sse_frame_for`, which matters more than it looks:
+`HttpUpstream` POSTs one JSON-RPC frame per request. `application/json` is one
+frame; `text/event-stream` is parsed by `sse_frame_for`:
 
-* A single logical payload may span several `data:` lines. They are joined with
-  a **newline**, per the spec — not concatenated. For JSON the two are usually
-  indistinguishable, because JSON ignores whitespace between tokens; they differ
-  when a token is split across lines, where joining correctly yields invalid
-  JSON and concatenation would silently reassemble a frame the server never
-  sent.
-* Frames are matched on `id`. A server may interleave progress notifications and
-  log events ahead of the answer, and a notification carries no `id`, so it can
-  never satisfy a request. Taking the first frame instead would report a
-  progress event as the result of a `tools/call`.
-* `Mcp-Session-Id` returned at `initialize` is echoed on every later request. A
-  stateful server rejects everything after `initialize` without it.
+| Detail | Why it matters |
+|---|---|
+| `data:` lines are joined with a **newline**, per the spec, not concatenated | The two differ when a token is split across lines: joining correctly yields invalid JSON, and concatenation would silently reassemble a frame the server never sent |
+| Frames are matched on `id` | A server may interleave progress notifications ahead of the answer. A notification carries no `id`, so taking the first frame would report a progress event as the result of a `tools/call` |
+| `Mcp-Session-Id` from `initialize` is echoed on every later request | A stateful server rejects everything after `initialize` without it |
 
 Two configuration refusals, both at startup:
 
-* `--upstream` and `--upstream-url` together is an **error**. Two upstreams is
-  two beliefs about what is being mediated, and picking one by precedence would
-  mediate a server the operator did not point at.
-* Plaintext `http://` to anything other than loopback is **refused** unless
-  `--upstream-allow-plaintext` is passed. The mediator's decisions are worth no
-  more than the channel carrying them; loopback is the development case, and the
-  opt-out exists for a sidecar proxy that terminates TLS on the same host.
+| Refusal | Why |
+|---|---|
+| `--upstream` and `--upstream-url` together | Two upstreams is two beliefs about what is being mediated. Picking one by precedence would mediate a server the operator did not point at |
+| Plaintext `http://` to anything but loopback, without `--upstream-allow-plaintext` | The mediator's decisions are worth no more than the channel carrying them. The opt-out exists for a sidecar proxy that terminates TLS on the same host |
 
-`--upstream-header 'Name: value'` (repeatable) forwards a header — typically an
-`Authorization` for the provider's own gateway. The name/value split is on the
-**first** colon, because values legitimately contain colons; a name carrying
-whitespace or a control character is refused rather than sent, since verbatim it
-would inject a second header line.
+`--upstream-header 'Name: value'` (repeatable) forwards a header, typically an
+`Authorization` for the provider's own gateway. The split is on the **first**
+colon, because values contain colons. A name carrying whitespace or a control
+character is refused, since sending it verbatim would inject a second header
+line.
 
 `scripts/http-mode-drill.sh` runs a contract, the surface pin and the surface
-ceiling against a real HTTP MCP server in **enforce** mode — over
+ceiling against a real HTTP MCP server in **enforce** mode: over
 `application/json`, then over `text/event-stream` with the result behind a
-progress notification, then against a server that refuses any request not
-echoing the session id.
+progress notification, then against a server that requires the session id.
 
 ---
 
 ## 8.6b Enforcement-point bindings
 
-Two proxies now run the same decision. The split that makes that possible, and
-the parts of it that are easy to get wrong, are here.
+Two proxies run the same decision. The split that makes that possible, and the
+parts of it that are easy to get wrong, are here.
 
 ### 8.6b.1 The three layers
 
@@ -568,22 +541,19 @@ the parts of it that are easy to get wrong, are here.
 | **Shared wiring** | `wc-gateway::adapter`, `::contracts`, `::routes` | the parts that must be *identical* across bindings, not merely similar |
 | **Binding** | `daemon/wc-extproc`, `crates/wc-kong` | transport. Gathers evidence, moves bytes, holds no policy |
 
-`wc-gateway` is where the Kong build paid for itself. It did **not** survive a
-second binding unchanged — it had to grow by five, because each was about to be
-written twice:
+`wc-gateway` did not survive a second binding unchanged. Four things moved into
+`adapter`, each because it was about to be written twice:
 
 | Lifted into `adapter` | Why it cannot be per-binding |
 |---|---|
 | `refusal_frame` | an agent must see the same refusal whichever PEP refused it |
-| `Registry` | a rate ceiling counted per binding is a different ceiling |
 | `placeholder_callee` | the "no contract" path must not become a second way to say it |
 | `parse_request_frame` | **refusing a JSON-RPC batch is a security property.** A binding that parsed the frame itself would pass every test it wrote and stop enforcing whenever a client batched |
 | `caller_from_tls` / `caller_from_xfcc` | where identity comes from is not a per-binding opinion |
 
-`set_binding` is there for a smaller reason with the same shape: `contracts`
-and `routes` were lifted out of the Envoy daemon still saying `wc-extproc:` in
-four diagnostics, which would have sent a Kong operator to a binary they do not
-run.
+`set_binding` has the same shape: `contracts` and `routes` were lifted out of
+the Envoy daemon still saying `wc-extproc:` in four diagnostics, which would
+have sent a Kong operator to a binary they do not run.
 
 ### 8.6b.2 The two bindings
 
@@ -594,30 +564,29 @@ run.
 | Identity | XFCC, origin-checked | peer certificate URI SAN, or XFCC |
 | Route key | `xds.cluster_name` / `xds.route_name` | `kong.router.get_service().name` / `get_route().name` |
 | Buffering decided at | **response** headers, via `mode_override` | **request** phase, via `enable_buffering()` |
-| Ceiling scope | per verifier process | per nginx **worker** |
 | Async runtime | tokio, allowed because it owns `main` | none — the ceiling in `dep-count.sh` forbids it |
 
-One route table serves both: Kong's *service* name occupies the `cluster`
-column of `routes.toml`, because it is the same slot.
+One route table serves both: Kong's *service* name occupies the `cluster` column
+of `routes.toml`, because it is the same slot.
 
 **Buffering is the one place Kong is the better shape.** Envoy honours
 `mode_override` only from a header phase, so the filter cannot know whether to
 buffer until the response headers arrive — by which time the request body that
-would have said "this is a catalogue" is gone. Kong decides before it proxies,
-so `wc_on_request` answers `WC_BUFFER` directly from the request frame.
+said "this is a catalogue" is gone. Kong decides before it proxies, so
+`wc_on_request` answers `WC_BUFFER` from the request frame.
 
 ### 8.6b.3 The C ABI
 
-Eleven symbols, verified present in the built library by the ABI suite. JSON for
-configuration and peer evidence rather than
-`#[repr(C)]` structs: a struct layout has to be kept in step with a hand-written
-`ffi.cdef`, and a field added on one side is a silent misread on the other.
+Eleven symbols, verified present in the built library by the ABI suite.
+Configuration and peer evidence cross as JSON, not `#[repr(C)]` structs: a
+struct layout must be kept in step with a hand-written `ffi.cdef`, and a field
+added on one side is a silent misread on the other.
 
 | Symbol | Returns |
 |---|---|
 | `wc_init(cfg_json)` | handle, or `NULL` with the reason. Refuses to start on bad config |
 | `wc_free`, `wc_contract_count`, `wc_version` | lifecycle |
-| `wc_stream_new(handle, peer_json)` | a stream. **Never `NULL` for "no contract"** — that is a verdict, not an error |
+| `wc_stream_new(handle, peer_json)`, `wc_stream_free` | a stream. **Never `NULL` for "no contract"** — that is a verdict, not an error |
 | `wc_on_request` | `FORWARD` \| `REFUSE` \| `BUFFER` |
 | `wc_on_response_headers` | `BUFFER` \| `SKIP` \| `REFUSE` |
 | `wc_on_response_body` | `PASS` \| `REWRITE` \| `REFUSE` |
@@ -635,14 +604,14 @@ Rules, all of them fail-closed:
 | a worker that cannot start exits **503**, not 200 | no library verdict exists; a JSON-RPC refusal would be claiming one |
 
 `wc_refusal` exists because a caught panic leaves no verdict body and the client
-is still owed an answer. Without it the Lua side would carry a hardcoded JSON
-string — a second refusal format that nothing keeps in step.
+is still owed an answer. Without it Lua would carry a hardcoded JSON string — a
+second refusal format that nothing keeps in step.
 
 ### 8.6b.4 The peer, and what is not in it
 
-`Peer` carries evidence, never an assertion. There is no `caller` field: a
-field in which Lua states an identity is a field in which anything reaching Lua
-states an identity.
+`Peer` carries evidence, never an assertion. There is no `caller` field: a field
+in which Lua states an identity is a field in which anything reaching Lua states
+an identity.
 
 | `identity` | Evidence | Gate |
 |---|---|---|
@@ -653,36 +622,26 @@ Required, with no default, and **configuring both is a startup error.** Falling
 back from one source to the other is worse than guessing: it means whoever can
 suppress one source selects the other.
 
-`spiffe_from_cert_pem` (`wc_mediator::peer`) is a dependency-free DER walk to
-the URI SAN. It verifies nothing, and that ordering is the whole safety
-argument: the chain, expiry and CA are the terminator's job, so a mis-parse
-yields a *wrong* identity — which resolves to no contract — and cannot yield a
-forged one. Exactly one `spiffe://` URI is accepted; zero is not an SVID, and
-more than one would let the holder pick which identity to be.
+`spiffe_from_cert_pem` (`wc_mediator::peer`) is a dependency-free DER walk to the
+URI SAN. It verifies nothing, and that is the safety argument: the chain, expiry
+and CA are the terminator's job, so a mis-parse yields a *wrong* identity, which
+resolves to no contract, and cannot yield a forged one. Exactly one `spiffe://`
+URI is accepted; zero is not an SVID, and more than one would let the holder
+pick which identity to be.
 
-Two details the tests exist for: `extnValue` is taken as the **last** element of
-the extension, because the optional `critical` BOOLEAN sits between the OID and
-the value and a fixed index reads the boolean on any certificate that marks its
-SAN critical; and indefinite length (`0x30 0x80`) is refused, because it is
-legal BER and never legal DER, and accepting it means parsing a structure the
-verifier upstream never agreed to.
+| Detail | Why the test exists |
+|---|---|
+| `extnValue` is the **last** element of the extension | The optional `critical` BOOLEAN sits between the OID and the value, so a fixed index reads the boolean on any certificate that marks its SAN critical |
+| indefinite length (`0x30 0x80`) is refused | It is legal BER and never legal DER. Accepting it means parsing a structure the verifier upstream never agreed to |
 
 ### 8.6b.5 Why there is no ceiling here
 
-There was one, and it is gone. `Registry` counted per process, so a contract
-saying `max_calls_per_hour = 10` admitted up to 40 across four nginx workers on
-one node, and more across a fleet. Kong made the operator acknowledge the
-multiplier with `ceiling_scope = "worker"`, which converted a silent wrong
-number into a stated one and left it wrong.
-
-The fixes all failed on something structural. Dividing by the worker count turns
-3 across 4 workers into 0 (deny everything) or 1 (12 in force, still not 3).
-Shared memory fixes one node and not a fleet, and splits the ceiling into Lua.
-A shared counter across nodes is a hot-path network call, which §7.11 forbids.
-
-So rate, concurrency and spend were removed as a capability (§8.6.5). Envoy and
-Kong both rate-limit properly and traffic shaping belongs in a proxy; this
-binding claims one axis and enforces it exactly.
+There was one, and it is gone. `Registry` counted per process, so
+`max_calls_per_hour = 10` admitted up to 40 across four nginx workers on one
+node. Kong made the operator acknowledge the multiplier with a scope setting,
+which turned a silent wrong number into a stated one and left it wrong. Every
+fix failed on something structural (§8.6.5), so rate, concurrency and spend were
+removed as a capability.
 
 ### 8.6b.6 What each test layer can and cannot reach
 
@@ -693,12 +652,10 @@ binding claims one axis and enforces it exactly.
 | Lua suite (18, LuaJIT) | the real handler against the real cdylib, Kong stubbed; the `cdef` against the header | Kong's own phase restrictions |
 | `scripts/kong-drill.sh` (14) | real Kong, real mTLS, curl as the client, the `.so` built **for the container** | a cluster |
 
-The layers are not redundant, and the drill earned its place immediately:
+The layers are not redundant. The drill earned its place immediately:
 `kong.response.set_raw_body` is `body_filter`-only, so every catalogue returned
-`An unexpected error occurred` — the filter had already run and recorded the
-pin, then the rewrite raised. The stub had accepted the call in any phase, so
-the Lua suite was green. It now models the restriction and fails the way Kong
-did.
+`An unexpected error occurred`. The stub had accepted the call in any phase, so
+the Lua suite was green; it now models the restriction.
 
 The container build is itself a phase. A glibc or architecture mismatch is a
 class of failure no test on the build host can reach, and this repository is
@@ -709,7 +666,7 @@ developed on macOS while Kong runs Linux.
 | Limit | Status |
 |---|---|
 | several contracts per `(caller, callee)` | supported. Resolution picks by **tool**, a catalogue shows the union and must satisfy every pin, and two contracts claiming one tool is a conflict reported at load and refused at the call |
-| hot reload | **built.** `contracts_url` + `token` refresh on a background OS thread per worker, so the contract set and the revocation feed arrive together. Not a Lua timer: `ControlPlaneClient` is blocking, and a blocking fetch from `ngx.timer` stalls the worker's event loop for as long as the plane takes. The spawn happens on the first request in each worker, which is **after nginx forks** — a thread created before the fork does not survive into the child, so moving handle construction into Kong's `init` phase would silently produce workers whose refresher is not running. Without a URL a worker holds what it loaded and says so at startup; expiry is then the only containment |
+| hot reload | **built.** `contracts_url` + `token` refresh on a background OS thread per worker, so the contract set and the revocation feed arrive together. Not a Lua timer: `ControlPlaneClient` is blocking, and a blocking fetch from `ngx.timer` stalls the worker's event loop. The spawn happens on the first request in each worker, **after nginx forks** — a thread created before the fork does not survive into the child, so building the handle in Kong's `init` phase would produce workers whose refresher is not running. Without a URL a worker holds what it loaded and says so at startup; expiry is then the only containment |
 | `no_pin` exists | for a staged rollout only. Gate 8 is not optional, which is why the flag is spelled out rather than looking like a tuning knob |
 | rate, concurrency and spend | **removed as a capability** (§8.6.5). Set volume limits on the proxy |
 
@@ -727,9 +684,9 @@ meet(a, b).jurisdictions  = a.jurisdictions ∩ b.jurisdictions
 meet(a, b).exp            = min(a.exp, b.exp)
 ```
 
-`meet` is commutative, associative and idempotent, and the property tests assert
-all three plus the crucial one: `meet(a,b) ≤ a` and `meet(a,b) ≤ b`, always.
-**There is no `join`.** The absence is the design.
+`meet` is commutative, associative and idempotent. The property tests assert all
+three plus the one that matters: `meet(a,b) ≤ a` and `meet(a,b) ≤ b`, always.
+**There is no `join`.**
 
 ### 8.7.2 Issuance — `issuance`, `authority`
 
@@ -744,8 +701,7 @@ request → cpolicy → Disposition
 `#[serde(default)]` so an old event log still replays.
 
 Approval by merge is the keyless path: the provider approves by merging a pull
-request, and no key ceremony is required of them. The choke point that keeps it
-honest is:
+request, with no key ceremony. The choke point that keeps it honest is:
 
 ```rust
 fn merge_evidence_cannot_stand_in_for(
@@ -754,28 +710,22 @@ fn merge_evidence_cannot_stand_in_for(
 ) -> Result<()>
 ```
 
-A merge cannot satisfy a request that requires a role holder unless
-`owner_merge_approves` was explicitly opted into. `authority` resolves who is
-entitled to say a connection was approved, and the owner is re-read from the
-registry **at approval time**, not at request time.
-
-`ApprovalFile` binds by digest *and* restates the parties, items and TTL in
-words, so a human reviewing the pull request sees what they are approving without
-computing a hash.
-
-Break-glass (`WC-6004` outside policy) explicitly sets `owner_must_approve: false`
-— visibly, in code, rather than by omission.
+| Rule | Detail |
+|---|---|
+| A merge cannot satisfy a request that requires a role holder | unless `owner_merge_approves` was explicitly opted into |
+| The owner is re-read from the registry | at **approval** time, not at request time |
+| `ApprovalFile` binds by digest *and* restates the parties, items and TTL in words | so a human reviewing the pull request sees what they are approving without computing a hash |
+| Break-glass (`WC-6004`, outside policy) sets `owner_must_approve: false` | visibly, in code, rather than by omission |
 
 ### 8.7.3 Admission — see §8.5.4
 
 ### 8.7.4 Screening — `screen`
 
 Declared-surface text is screened against `screen-rules.toml` for
-instruction-injection shapes. It runs at admission and again at every
-re-attestation, because the text can change under a stable endpoint.
-
-Blocking is `WC-1005`, and the finding quotes the offending text — a screening
-result that says "blocked" without saying what triggered it is unactionable.
+instruction-injection shapes, at admission and again at every re-attestation,
+because the text can change under a stable endpoint. Blocking is `WC-1005`, and
+the finding quotes the offending text — "blocked" without a trigger is
+unactionable.
 
 ### 8.7.5 Drift classification — `assurance`
 
@@ -800,8 +750,8 @@ stop new issuance (`WC-2034`) while existing contracts run to `exp`.
 ### 8.7.7 Canonicalisation — `wc-core::canon`
 
 `wcs1`: deterministic key ordering, no insignificant whitespace, depth bounded at
-32. Two implementations of `wcs1` must agree byte-for-byte, or the pin is
-meaningless across implementations. `connect canon` exposes it for conformance.
+32. Two implementations must agree byte-for-byte or the pin is meaningless
+across them. `connect canon` exposes it for conformance.
 
 ---
 
@@ -829,8 +779,8 @@ is `WC-4008`.
 
 ### 8.9.2 The contract JWS
 
-`application/warden-connection+jws`. Asymmetric only. Size-bounded
-(`WC-3121`); unknown schema versions refused (`WC-3120`).
+`application/warden-connection+jws`. Asymmetric only. Size-bounded (`WC-3121`);
+unknown schema versions refused (`WC-3120`).
 
 ### 8.9.3 Receipts
 
@@ -842,16 +792,12 @@ TOML at `warden/contracts/<cid>.toml`. Human-readable, digest-bound, and
 `bundle export` / `bundle verify` move a contract set across an air gap without a
 network path between the planes.
 
-The artifacts directory is derived once, in `tenant::TenantPaths`, from the state root plus
-`store::ARTIFACT_DIR`. It used to be spelled twice — `base/artifacts` in `TenantPaths`,
-`state/contracts` in `Store` — and each side was self-consistent, so every test that built both
-from its own helper agreed with itself. Only a real tenant disagreed, and `bundle export` reported
-zero contracts on an estate that had them. The test now asserts the path against a real `Store`
-write rather than against a second literal.
+Two fixes worth recording:
 
-**A missing artifact refuses.** It was a warning printed *after* the file was written, exit 0 — so
-an air-gap transfer would ship a bundle short of live contracts and be told it worked. A bundle
-that omits a live contract addressed to that mediator is not a smaller bundle, it is a wrong one.
+| Defect | Fix |
+|---|---|
+| The artifacts directory was spelled twice — `base/artifacts` in `TenantPaths`, `state/contracts` in `Store`. Each side was self-consistent, so every test that built both from its own helper agreed with itself. Only a real tenant disagreed, and `bundle export` reported zero contracts on an estate that had them | Derived once, in `tenant::TenantPaths`, from the state root plus `store::ARTIFACT_DIR`. The test asserts the path against a real `Store` write, not a second literal |
+| A missing artifact was a warning printed *after* the file was written, exit 0. An air-gap transfer would ship a bundle short of live contracts and be told it worked | **A missing artifact refuses.** A bundle that omits a live contract addressed to that mediator is not a smaller bundle, it is a wrong one |
 
 ---
 
@@ -865,7 +811,7 @@ read-mostly.
 
 ### 8.10.2 The hot path
 
-Contract verification performs **no network call**. Everything gate 1–14 needs is
+Contract verification performs **no network call**. Everything gates 1–14 need is
 either in the contract, in the cache, or already established by the transport.
 
 ### 8.10.3 Ceilings — `thresholds`, `bench`
@@ -890,7 +836,7 @@ fail a regression.
 | Approval | `WC-3020`–`WC-3027` | Roles, staleness, dual control, signatures, owner, declared approvers, cross-side distinctness |
 | Renewal | `WC-3030`–`WC-3033` | Posture, re-attestation, ended contracts, withdrawal |
 | **Mediation** | `WC-3101`–`WC-3121` | The 14 verification gates |
-| Runtime | `WC-4001`–`WC-4020` | No contract, uncontracted tool, ceilings, egress, frames, peer headers |
+| Runtime | `WC-4001`–`WC-4020` | No contract, uncontracted tool, egress, frames, peer headers. `WC-4003`–`WC-4005` are retired ceilings (§8.6.5) |
 | Assurance | `WC-5001`–`WC-5030` | Re-attestation, drift, credentials, blast-radius truncation |
 | Containment | `WC-6001`–`WC-6004` | Dual control, feed, acknowledgement, break-glass |
 | Evidence | `WC-7001`–`WC-7020` | Sinks, chain, export, PDP |
@@ -899,6 +845,10 @@ fail a regression.
 Every code carries a fail direction. `Code::fail_direction` and `is_fail_closed`
 are an exhaustive match — adding a code without deciding its direction does not
 compile.
+
+Eleven codes ship reserved: defined and never emitted, each marked `RESERVED:` in
+`error.rs`. `scripts/code-emission.sh` fails CI when a code is neither emitted
+nor marked.
 
 ---
 
@@ -910,16 +860,11 @@ Six signing operations, each with its own key: issuer, anchor, revocation,
 approver, second approver, bundle. `custody` enforces which key signs what and
 the rules that keep them apart.
 
-**Every key flag has a delegated partner.** `--signer COMMAND` runs an
-operator-supplied command — stdin is the base64url signing input, stdout is the
-signature — so the process never holds the key. Two guard tests enforce the
-pairing across every command that accepts a key.
-
-`--require-external-signing` refuses to start if any key is on local disk. It is
-deliberately satisfiable: a delegated key passes, so the posture is not a way to
-refuse everything.
-
-**Which loss is unrecoverable:** the anchor key. Move it first.
+| Control | Detail |
+|---|---|
+| Every key flag has a delegated partner | `--signer COMMAND` runs an operator-supplied command — stdin is the base64url signing input, stdout is the signature — so the process never holds the key. Two guard tests enforce the pairing across every command that accepts a key |
+| `--require-external-signing` | Refuses to start if any key is on local disk. Deliberately satisfiable: a delegated key passes, so the posture is not a way to refuse everything |
+| The unrecoverable loss | The anchor key. Move it first |
 
 ### 8.12.2 What never leaves
 
@@ -932,9 +877,9 @@ refuse everything.
 
 ### 8.12.3 The `open_pr` token
 
-Needs `contents:write` and `pull-requests:write` on one repository, and **must not
-be able to merge**. There is no merge operation in the shim protocol, by design —
-the shim cannot merge even if its token could.
+Needs `contents:write` and `pull-requests:write` on one repository, and **must
+not be able to merge**. There is no merge operation in the shim protocol, so the
+shim cannot merge even if its token could.
 
 ---
 
@@ -952,9 +897,9 @@ path component.
 
 ### 8.13.1 The Kong plugin's configuration
 
-Passed as JSON to `wc_init` and validated there, not in Lua. `schema.lua`
-catches a shape error at `kong config` time; it is not a second validator and
-defaults nothing the library does not default.
+Passed as JSON to `wc_init` and validated there, not in Lua. `schema.lua` catches
+a shape error at `kong config` time; it is not a second validator and defaults
+nothing the library does not default.
 
 | Key | Required | Note |
 |---|---|---|
@@ -964,15 +909,16 @@ defaults nothing the library does not default.
 | `mesh_origin` | with `xfcc` | leading `/` means a unix socket, otherwise an address. Setting it with `identity = "tls"` is an error, not a precedence rule |
 | `issuer_pub` + `kid`, or `jwks_file`, or `jwks_url` | one of | issuer keys |
 | `mediator_id`, `issuer_id` | ✓ | who the contracts must be addressed to, and from which plane |
-| `ceiling_scope` | when a contract bounds a ceiling | `worker` acknowledges the multiplier; `node` is refused as not built |
+| `contracts_url` + `token` | together | hot reload. A URL without a token is refused, because a set no revocation can reach is worse than no set |
+| `refresh_secs`, `max_stale` | | refresh period, and the seconds a worker may run on an unrefreshed set before every call is refused |
+| `evidence_path`, `evidence_delivery` | | the decision trail. Must contain `%w` when `worker_processes > 1` — each worker keeps its own chain |
 | `mode` | | `enforce` (default) \| `observe` |
-| `pin_max_age`, `max_stale` | | seconds; `0` means no bound |
+| `pin_max_age` | | seconds; `0` means no bound |
 | `any_zone`, `no_pin` | | both default false. `no_pin` is for a staged rollout only |
 | `library_path` | | absolute path to `libwc_kong.so`, or a name for the dynamic loader |
 
-`workers` is **not** a configuration key. The handler reads
-`ngx.worker.count()`; asking an operator to restate nginx's own number is asking
-them to get it wrong.
+`workers` is **not** a configuration key. The handler reads `ngx.worker.count()`;
+asking an operator to restate nginx's own number is asking them to get it wrong.
 
 ---
 
@@ -980,12 +926,11 @@ them to get it wrong.
 
 Metric families are declared once in `wc-core::obs` and populated by
 `wc-control::obs` and `wc-mediator::obs`. Each family documents **where its
-number comes from**, so a dashboard that shows zero can be distinguished from a
-metric nobody increments.
+number comes from**, so a dashboard showing zero can be told apart from a metric
+nobody increments.
 
-Decision logs are structured and carry `cid` as the correlation root, which is
-what lets a warden audit row, a mediator decision and a control-plane lifecycle
-event be joined after the fact.
+Decision logs carry `cid` as the correlation root, which lets a warden audit
+row, a mediator decision and a control-plane lifecycle event be joined later.
 
 ---
 
@@ -997,51 +942,33 @@ event be joined after the fact.
 | Property | `meet` narrows, always | `wc-e2e/tests/property.rs` |
 | Conformance | Fixture vectors verify identically | `fixtures/contracts/` |
 | End-to-end | The whole loop, including federation | `wc-e2e/tests/` |
-| Drills | 12 scripted drills + `parse-drill` | `scripts/`, all in CI |
+| Drills | 15 scripted drills in `scripts/`, plus `scripts/scm/parse-drill.sh`. Ten of them and `parse-drill` run in GitHub CI; `adoption`, `inventory`, `proposal`, `rotation` and `scale` are run on demand | `scripts/` |
 | **ABI** | Null handling, ownership, panic isolation, and the C header matching the Rust it describes | `wc-kong/tests/abi.rs` |
 | **Lua** | The real Kong handler against the real cdylib, with Kong stubbed | `wc-kong/lua/spec/`, LuaJIT |
 | **Real proxy** | Envoy and Kong, real mTLS, the library built for the container | `scripts/envoy-drill.sh`, `scripts/kong-drill.sh` |
-| **Mutation** | That the tests would notice | standard practice here |
+| **Mutation** | That the tests would notice | `scripts/gate-mutation-check.sh`, in CI |
 
-**Three statements of one ABI can disagree.** Rust declares the C surface,
-`wc-kong/include/wc_kong.h` describes it, and `wcffi.lua`'s `cdef` restates it
-for LuaJIT. A disagreement is not a crash — it is Lua reading a field at the
-wrong offset and acting on a verdict that means something else. The header is
-compared against the Rust in `tests/abi.rs`, and the `cdef` against the header
-in `spec/abi_spec.lua`.
+Four rules this repository learned the hard way:
 
-**A stub that is more permissive than the host is a green suite and a broken
-plugin.** The Lua stub accepted `kong.response.set_raw_body` in any phase; Kong
-allows it only in `body_filter`, so every catalogue failed on the first real
-request. The stub now models the restriction. When a drill finds something a
-stub allowed, the stub is what needs the fix.
-
-**Mutation testing is not optional.** It has repeatedly exposed weak tests and
-dead code in this repository — including a drill phase that passed with its guard
-deleted, and a redundant sort in `receipt.rs`. If a mutant survives, the test is
-decorative.
+| Rule | What happened |
+|---|---|
+| Three statements of one ABI can disagree | Rust declares the C surface, `include/wc_kong.h` describes it, `wcffi.lua`'s `cdef` restates it. A disagreement is not a crash — it is Lua reading a field at the wrong offset. `tests/abi.rs` compares the header against the Rust; `spec/abi_spec.lua` compares the `cdef` against the header |
+| A stub more permissive than the host is a green suite and a broken plugin | When a drill finds something a stub allowed, the stub is what needs the fix |
+| Mutation testing is not optional | It has exposed a drill phase that passed with its guard deleted and a redundant sort in `receipt.rs`. If a mutant survives, the test is decorative |
+| A number in a table is not executable | The Lua suite said 19 against 18 cases; the Kong drill said 11 after four phases were added. `scripts/doc-claims.sh` checks the counted claims above against the tree |
 
 `cargo test --workspace` aborts at the first failing crate. Use `--no-fail-fast`.
 
 ### Known flake
 
-SCM shim tests fail under parallel load. The first CI runs put it near one run
-in two on a shared runner, against 2 in 55 locally — and because `cargo test`
-runs before the drills, it was stopping the drills from ever executing.
+SCM shim tests fail under parallel load — near one run in two on a shared
+runner, against 2 in 55 locally. Because `cargo test` runs before the drills, it
+was stopping the drills from executing at all.
 
-One of the two causes was **not a flake at all**. A shim that exits 127 races
-the parent's write to its stdin, and returning on the write error meant one
-misconfiguration reported two unrelated diagnoses: `WC-8004 ... not found or not
-executable` when the write won, `WC-1001 ... cannot write the query` when it
-lost. A broken pipe there is a symptom of the child having exited, not a verdict,
-so it now falls through to the exit-status classification that was already
-correct. Pinned by a test that repeats the case 64 times, because once proves
-nothing about a race.
-
-The second cause is open: `a_ref_the_host_disagrees_with_is_an_error_not_a_downgrade`
-still fails under 8-thread contention at roughly 3 runs in 25, and the failing
-detail has not been captured — it reproduces on a loaded machine and not on an
-idle one. Tracked, not retried away.
+| Cause | Status |
+|---|---|
+| A shim that exits 127 races the parent's write to its stdin | **Fixed.** Returning on the write error made one misconfiguration report two diagnoses: `WC-8004 ... not executable` when the write won, `WC-1001 ... cannot write the query` when it lost. A broken pipe there means the child exited; it now falls through to the exit-status classification. Pinned by a test that repeats the case 64 times |
+| `a_ref_the_host_disagrees_with_is_an_error_not_a_downgrade` under 8-thread contention | **Open**, roughly 3 runs in 25. The failing detail has not been captured — it reproduces on a loaded machine, not an idle one |
 
 ---
 
@@ -1057,14 +984,14 @@ idle one. Tracked, not retried away.
 | 6 | `proposal`, `receipt`, `dist` |
 | 7 | `inventory`, `portal` |
 | 8 | E5 — `wc-gateway` and the Envoy `ext_proc` binding |
-| 9 | E6 — the Kong binding: `wc-gateway` shared surface, `wc-kong` C ABI, `spiffe_from_cert_pem`, the Lua plugin, `ceiling_scope`, the Kong drill |
+| 9 | E6 — the Kong binding: `wc-gateway` shared surface, `wc-kong` C ABI, `spiffe_from_cert_pem`, the Lua plugin, the Kong drill |
 
 ## 8.16b Deliberately not built: a database adapter
 
 The event log and the evidence chain are files on purpose. A database would make
-them queryable and simultaneously destroy the property that makes them evidence:
-that they can be verified by someone who does not trust the system that wrote
-them. This is a permanent decision, not a backlog item.
+them queryable and destroy the property that makes them evidence: that they can
+be verified by someone who does not trust the system that wrote them. Permanent
+decision, not a backlog item.
 
 ---
 
@@ -1086,7 +1013,7 @@ them. This is a permanent decision, not a backlog item.
 | [UC-01](use-cases/UC-01-register-and-admit-an-agent.md) | `admission`, `attest`, `screen`, `registry` | `WC-1001`–`WC-1010` |
 | [UC-02](use-cases/UC-02-onboard-a-tool-server.md) | `admission`, `canon`, `screen` | `WC-1002`, `WC-1005`, `WC-1010` |
 | [UC-03](use-cases/UC-03-mediated-capability-discovery.md) | `broker` | `WC-2021` (throttling truncates, see §8.5.6) |
-| [UC-04](use-cases/UC-04-establish-a-connection.md) | `issuance`, `cpolicy`, `authority`, `gate`, `filter` | `WC-3010`–`WC-3121`, `WC-4002`–`WC-4005` |
+| [UC-04](use-cases/UC-04-establish-a-connection.md) | `issuance`, `cpolicy`, `authority`, `gate`, `filter` | `WC-3010`–`WC-3121`, `WC-4001`, `WC-4002` |
 | [UC-05](use-cases/UC-05-cross-organisation-federation.md) | `federate` | `WC-2030`–`WC-2035` |
 | [UC-06](use-cases/UC-06-surface-drift.md) | `assurance`, `canon`, `screen` | `WC-5002`, `WC-3108` (a failed re-attestation reports as `Posture::Degraded`, not `WC-5001`) |
 | [UC-07](use-cases/UC-07-emergency-quarantine.md) | `contain`, `dist`, `caep` | `WC-6001`–`WC-6004`, `WC-5030` |
@@ -1098,12 +1025,10 @@ them. This is a permanent decision, not a backlog item.
 
 ## 8.19 The three claims this design has to keep
 
-1. **A contract can only narrow.** If any path widens authority, the artifact is
-   unsafe to hand to a party you do not fully trust, and the whole premise fails.
-2. **A compromised control plane cannot manufacture a contract.** Verification is
-   against issuer keys, never against a database the mediator trusts.
-3. **The evidence is verifiable by someone who does not trust us.** The moment the
-   chain requires trusting the plane that wrote it, it stops being evidence and
-   becomes a claim.
+| # | Claim | What breaks without it |
+|---|---|---|
+| 1 | A contract can only narrow | If any path widens authority, the artifact is unsafe to hand to a party you do not fully trust, and the premise fails |
+| 2 | A compromised control plane cannot manufacture a contract | Verification is against issuer keys, never against a database the mediator trusts |
+| 3 | The evidence is verifiable by someone who does not trust us | The moment the chain requires trusting the plane that wrote it, it stops being evidence and becomes a claim |
 
 Every design decision above is downstream of one of these three.
