@@ -19,8 +19,8 @@ calls happen inside.
   <sub>
     The full walkthrough is <b>2:36</b> — the problem, contract creation as GitOps,
     and enforcement at Envoy, Kong and the inline mediator.<br>
-    Open <a href="docs/pitch.html">docs/pitch.html</a> in a browser, or download the MP4 from
-    the <a href="../../releases">latest release</a>.
+    Open <a href="docs/pitch.html">docs/pitch.html</a> in a browser, or download it from the
+    <a href="../../releases">latest release</a> — <b>2160p</b> for watching, 1080p for posting.
   </sub>
 </p>
 

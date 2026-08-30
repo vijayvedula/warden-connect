@@ -29,18 +29,38 @@ readonly FPS=30
 readonly NAME=warden-connect-pitch
 
 [ -d "$FRAMES" ] || { echo "no frames — run scripts/record-pitch.mjs first" >&2; exit 1; }
-COUNT=$(find "$FRAMES" -name 'f*.jpg' | wc -l | tr -d ' ')
-echo "  $COUNT frames at ${FPS}fps"
+COUNT=$(find "$FRAMES" -name 'f*.png' | wc -l | tr -d ' ')
+echo "  $COUNT frames at ${FPS}fps, 3840x2160 -> 1920x1080"
 
-# --- 1 · the master. Kept because re-recording costs four minutes and a re-encode costs none.
-ffmpeg -y -loglevel error -framerate "$FPS" -i "$FRAMES/f%06d.jpg" \
+# Every encode downsamples 2:1 with Lanczos. That is where the sharpness comes from: the text
+# was rasterised at twice the output resolution, so the downsample averages four samples per
+# pixel instead of guessing at one.
+readonly DOWN="scale=1920:1080:flags=lanczos"
+
+# --- 1 · the master, at the resolution it was actually drawn.
+#
+# The frames are 3840x2160 because that is what the browser rasterises at devicePixelRatio 2 —
+# what any Retina screen shows. Encoding only a 1080p output threw three quarters of those
+# pixels away, and a viewer comparing the video against the live page on the same screen was
+# comparing an upscaled 1080p against a native 2160p. It looked soft because it WAS soft.
+# Measured: the encoder loses 0.55/255 against the captured frame, so resolution was the only
+# thing left that could account for it. No rescale here; this is pixel-exact.
+ffmpeg -y -loglevel error -framerate "$FPS" -i "$FRAMES/f%06d.png" \
   -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -movflags +faststart \
+  "$OUT/$NAME-2160p.mp4"
+
+# --- 1b · and a 1080p downsample, for anywhere that wants a smaller file.
+ffmpeg -y -loglevel error -framerate "$FPS" -i "$FRAMES/f%06d.png" \
+  -vf "$DOWN" -c:v libx264 -preset slow -crf 16 -pix_fmt yuv420p -movflags +faststart \
   "$OUT/$NAME-1080p.mp4"
 
 # --- 2 · the one that gets posted. H.264 + a silent 48 kHz AAC track, capped under 8 Mbps.
-ffmpeg -y -loglevel error -framerate "$FPS" -i "$FRAMES/f%06d.jpg" \
+# 1080p, because that is what both platforms call the safe default and both transcode anyway.
+# If a feed's own transcode looks soft, upload the 2160p instead — LinkedIn accepts up to
+# 4096x2304 and Substack accepts 4K.
+ffmpeg -y -loglevel error -framerate "$FPS" -i "$FRAMES/f%06d.png" \
   -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
-  -c:v libx264 -preset slow -crf 21 -maxrate 7M -bufsize 14M -pix_fmt yuv420p \
+  -vf "$DOWN" -c:v libx264 -preset slow -crf 19 -maxrate 7M -bufsize 14M -pix_fmt yuv420p \
   -c:a aac -b:a 96k -ar 48000 -shortest -movflags +faststart \
   "$OUT/$NAME-social-1080p.mp4"
 
@@ -52,17 +72,17 @@ ffmpeg -y -loglevel error -framerate "$FPS" -i "$FRAMES/f%06d.jpg" \
 # end of the slide and into the next one. The first GIF built here was exactly that.
 readonly LOOP_FROM=88 LOOP_SECS=11.5
 START=$(python3 -c "print(int($LOOP_FROM * $FPS))")
-ffmpeg -y -loglevel error -start_number "$START" -framerate "$FPS" -i "$FRAMES/f%06d.jpg" \
+ffmpeg -y -loglevel error -start_number "$START" -framerate "$FPS" -i "$FRAMES/f%06d.png" \
   -t "$LOOP_SECS" -vf "fps=12,scale=1120:-1:flags=lanczos,palettegen=stats_mode=diff" \
   "$OUT/palette.png"
-ffmpeg -y -loglevel error -start_number "$START" -framerate "$FPS" -i "$FRAMES/f%06d.jpg" \
+ffmpeg -y -loglevel error -start_number "$START" -framerate "$FPS" -i "$FRAMES/f%06d.png" \
   -i "$OUT/palette.png" -t "$LOOP_SECS" \
   -lavfi "fps=12,scale=1120:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3" \
   -loop 0 "$OUT/$NAME-loop.gif"
 rm -f "$OUT/palette.png"
 
 # --- 4 · a poster frame, for anywhere that wants a thumbnail rather than a player.
-ffmpeg -y -loglevel error -i "$FRAMES/f000090.jpg" -vf scale=1920:-1 "$OUT/$NAME-poster.jpg"
+ffmpeg -y -loglevel error -i "$FRAMES/f000090.png" -vf "$DOWN" -q:v 2 "$OUT/$NAME-poster.jpg"
 
 echo
 printf '  %-44s %s\n' "file" "size"
