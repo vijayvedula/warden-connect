@@ -124,7 +124,7 @@ runner and passes on a bigger one, which this project got wrong twice with laten
 
 ## House rules for the code
 
-From [DRILL.md](../docs/DRILL.md) §2, and they are not negotiable in review:
+House rules, and they are not negotiable in review:
 
 1. **No `unwrap()` or `expect()` outside `#[cfg(test)]`.** Enforced by clippy lints in
    the workspace `Cargo.toml`. In tests they are fine and idiomatic.
