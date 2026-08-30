@@ -387,6 +387,12 @@ jobs:
         working-directory: warden-connect
         run: ./scripts/doc-links.sh
 
+      # The LLD quotes suite sizes. Two had drifted; a number in a table is not executable
+      # until something executes it.
+      - name: Counted claims in the LLD match the tree
+        working-directory: warden-connect
+        run: ./scripts/doc-claims.sh
+
       # A suite that guards the central claim, never itself checked for whether it guards
       # anything. Each gate is broken deliberately and a test must notice.
       - name: Gate mutations are caught

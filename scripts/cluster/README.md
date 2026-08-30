@@ -1,7 +1,7 @@
 # The cluster items, as commands
 
-`docs/proving-ground.md` §2 names six items that need a Kubernetes cluster and says what each one
-must prove. This directory is the same six as **commands you can run**, so the work between
+The proving-ground register — retired in the 2026-08-21 docs rewrite, in git history at `3f30697` — named six items that need a Kubernetes cluster
+and said what each one must prove. This directory is the same six as **commands you can run**, so the work between
 "provisioned" and "measured" is not a fresh act of interpretation at the end of a long day.
 
 > **Everything here is UNVERIFIED.** No warden-connect deployment has run on a cluster from this
@@ -10,7 +10,7 @@ must prove. This directory is the same six as **commands you can run**, so the w
 > starting point that will need edits, not a recipe. Where a command is a guess, it says so.
 >
 > The honest reason this is not verified: a cluster costs money and somebody has to own the
-> account. That is exactly the boundary `docs/proving-ground.md` §0 draws.
+> account. That is exactly the boundary that register drew.
 
 ## What is already closed locally, so do not re-litigate it
 
@@ -160,7 +160,7 @@ takeover happened or a fresh process started.
 
 ## 2.5 · A 10⁵-contract estate, operated
 
-**Largely closed locally** — `scripts/scale-drill.sh`, with numbers in `docs/limitations.md`. Run
+**Largely closed locally** — `scripts/scale-drill.sh`, with numbers in the limitations register, retired in the 2026-08-21 docs rewrite, in git history at `3f30697`. Run
 it on a cluster node to get the same table on hardware you did not choose:
 
 ```sh
