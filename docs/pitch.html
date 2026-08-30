@@ -102,7 +102,7 @@
 <div class="reel">
   <div class="frame">
     <canvas id="stage" role="img"
-      aria-label="A two-minute-twenty-three animated walkthrough in two acts, twelve slides, each holding its finished frame for five seconds before the cut. The problem: an agent called recon-bot holds a token scoped payments colon star and is wired to an MCP server, payments-mcp, which unfolds five tools — get_balance, list_transactions, transfer_funds, issue_refund, close_account — every one marked reachable, five of five. The token admits the server and the server admits every tool: reachable is not approved, and nothing in the picture can tell them apart. That pair multiplies into an estate which freezes while three unanswerable questions appear, and the problem splits into two planes: may this connection exist, owned by warden-connect, and may this call proceed, owned by warden. Act one is contract creation as GitOps, across three slides. First, two lanes that never touch: the provider merges warden slash offer dot toml under its own approvers, the consumer merges warden slash needs dot toml under different approvers, neither party reviews the other pull request, and they join only at the control plane, which confirms both merges with the source host rather than the pipelines. Four source hosts are supported — GitHub, GitLab, Azure Repos and Bitbucket — each asked through an operator supplied shim, so a fifth host is a script rather than a release. Second, the disposition — one need, three outcomes: pre-granted goes straight to a minted contract with no person involved, because the provider approved a class once in a reviewed commit; gated routes to the callee owner and nothing is minted while the whole need waits on one item; refused stops, because no term covers this consumer and approval cannot help. Third, where the contract then lives: git holds a receipt and never the signed artifact, the control plane holds the artifact and the register, and every enforcement point holds a verified copy in memory that refreshes and expires — which is why a revocation has somewhere to arrive. Act two is enforcement. First the algebra: effective equals surface intersect scope intersect policy, with surface bracketed as warden-connect at issuance and scope and policy bracketed as warden at authentication and per call. Then the three enforcement points, side by side, sharing one decision core. Envoy runs wc-extproc as an ext_proc gRPC filter one hop away, with request_body_mode set to BUFFERED because the tool name is in the JSON-RPC body rather than a header, and failure_mode_allow set to false so an unreachable verifier refuses instead of failing open; identity comes from an mTLS certificate or XFCC. Kong loads libwc_kong.so into the nginx worker over LuaJIT FFI and decides in the Lua access phase at priority 1000 — no socket, no serialisation, one handle per worker; identity comes from a client certificate or XFCC. The inline mediator, connect-mediate, spawns the real server over stdio and sits in the path rather than beside it; its identity is configured rather than proven, and it writes no decision trail. Every verdict comes from the same wc-gateway core with the same gates and the same WC codes. Then the refusal itself, run three times in the same order and the same colours as those columns: one contract feeds all three placements, and in each of them get_balance passes through to payments-mcp while transfer_funds is stopped at the enforcement point and refused WC-4002 — refused at the hop by Envoy, inside the worker by Kong, and in the agent own path by the mediator. Three placements, one core, the same code. Then one revocation reaches every enforcement point while every decision is written to a hash-chained trail. The last diagram lays the whole system out at once, in three columns. Git holds the desired state — offer, needs and the contract receipts — reviewed under a declared approval block, across four source hosts. The control plane holds the capabilities: admission, policy, issuance, custody, revocation, assurance, broker and federation, reached over HTTP slash v1 under four roles with dual control, and it is the only thing that mints a contract. Enforcement holds the three points — Envoy, Kong and the inline mediator — each running the same gates over a verified copy bounded by max_stale, with no network call on the hot path. Between them move artifacts rather than calls: a confirmed merge and a receipt on one side, a contract set, revocations and an acknowledgement on the other. Underneath, evidence leaves as a decision trail at the edge and a lifecycle chain in the plane, and warden receives the ceiling and decides every call. The film closes on the wordmark, the line "the connection control plane for AI agents", and the three enforcement points."></canvas>
+      aria-label="A two-minute-twenty-three animated walkthrough in two acts, twelve slides, each holding its finished frame for five seconds before the cut. The problem: an agent called recon-bot holds a token scoped payments colon star and is wired to an MCP server, payments-mcp, which unfolds five tools — get_balance, list_transactions, transfer_funds, issue_refund, close_account — every one marked reachable, five of five. The token admits the server and the server admits every tool: reachable is not approved, and nothing in the picture can tell them apart. That pair multiplies into an estate which freezes while three unanswerable questions appear, and the problem splits into two planes: may this connection exist, which warden-connect answers on its own, and may this call proceed, which the optional companion product warden answers. Act one is contract creation as GitOps, across three slides. First, two lanes that never touch: the provider merges warden slash offer dot toml under its own approvers, the consumer merges warden slash needs dot toml under different approvers, neither party reviews the other pull request, and they join only at the control plane, which confirms both merges with the source host rather than the pipelines. Four source hosts are supported — GitHub, GitLab, Azure Repos and Bitbucket — each asked through an operator supplied shim, so a fifth host is a script rather than a release. Second, the disposition — one need, three outcomes: pre-granted goes straight to a minted contract with no person involved, because the provider approved a class once in a reviewed commit; gated routes to the callee owner and nothing is minted while the whole need waits on one item; refused stops, because no term covers this consumer and approval cannot help. Third, where the contract then lives: git holds a receipt and never the signed artifact, the control plane holds the artifact and the register, and every enforcement point holds a verified copy in memory that refreshes and expires — which is why a revocation has somewhere to arrive. Act two is enforcement. First the algebra: effective equals surface intersect scope intersect policy, with surface bracketed as warden-connect at issuance and scope and policy bracketed as warden, optional and per call. warden-connect enforces the limit on its own; warden is not required, and if it is deployed it narrows the limit further on each call. Then the three enforcement points, side by side, sharing one decision core. Envoy runs wc-extproc as an ext_proc gRPC filter one hop away, with request_body_mode set to BUFFERED because the tool name is in the JSON-RPC body rather than a header, and failure_mode_allow set to false so an unreachable verifier refuses instead of failing open; identity comes from an mTLS certificate or XFCC. Kong loads libwc_kong.so into the nginx worker over LuaJIT FFI and decides in the Lua access phase at priority 1000 — no socket, no serialisation, one handle per worker; identity comes from a client certificate or XFCC. The inline mediator, connect-mediate, spawns the real server over stdio and sits in the path rather than beside it; its identity is configured rather than proven, and it writes no decision trail. Every verdict comes from the same wc-gateway core with the same gates and the same WC codes. Then the refusal itself, run three times in the same order and the same colours as those columns: one contract feeds all three placements, and in each of them get_balance passes through to payments-mcp while transfer_funds is stopped at the enforcement point and refused WC-4002 — refused at the hop by Envoy, inside the worker by Kong, and in the agent own path by the mediator. Three placements, one core, the same code. Then one revocation reaches every enforcement point while every decision is written to a hash-chained trail. The last diagram lays the whole system out at once, in three columns. Git holds the desired state — offer, needs and the contract receipts — reviewed under a declared approval block, across four source hosts. The control plane holds the capabilities: admission, policy, issuance, custody, revocation, assurance, broker and federation, reached over HTTP slash v1 under four roles with dual control, and it is the only thing that mints a contract. Enforcement holds the three points — Envoy, Kong and the inline mediator — each running the same gates over a verified copy bounded by max_stale, with no network call on the hot path. Between them move artifacts rather than calls: a confirmed merge and a receipt on one side, a contract set, revocations and an acknowledgement on the other. Underneath, evidence leaves as a decision trail at the edge and a lifecycle chain in the plane, and a dashed box marks warden as optional: if you deploy it, it decides each call inside the ceiling. The film closes on the wordmark, the line "the connection control plane for AI agents", and the three enforcement points."></canvas>
   </div>
 
   <div class="transport">
@@ -117,8 +117,8 @@
 
   <div class="legend">
     <span class="s-surface"><b>surface</b> warden-connect · at issuance</span>
-    <span class="s-scope"><b>scope</b> warden · at authentication</span>
-    <span class="s-policy"><b>policy</b> warden · per call</span>
+    <span class="s-scope"><b>scope</b> warden, optional · at authentication</span>
+    <span class="s-policy"><b>policy</b> warden, optional · per call</span>
   </div>
 </div>
 
@@ -218,13 +218,15 @@
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.restore();
   }
 
-  function box(x, y, w, h, { stroke = C.rule, fill = null, alpha = 1, width = 1, r = 2 } = {}) {
+  function box(x, y, w, h, { stroke = C.rule, fill = null, alpha = 1, width = 1, r = 2,
+                              dash = null } = {}) {
     if (alpha <= 0.001) return;
     ctx.save(); ctx.globalAlpha = alpha; ctx.lineWidth = width;
     ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(x - w / 2, y - h / 2, w, h, r);
     else ctx.rect(x - w / 2, y - h / 2, w, h);
     if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    if (dash) ctx.setLineDash(dash);
     if (stroke) { ctx.strokeStyle = stroke; ctx.stroke(); }
     ctx.restore();
   }
@@ -463,7 +465,7 @@
     }
 
     caption("These are two separate questions.",
-            "The second one is well solved. The first one has never had an owner.",
+            "warden-connect answers the first one on its own. The second one is already well solved.",
             env(t, 2.6, 99, 0.4));
   }
 
@@ -571,8 +573,6 @@
   ];
 
   function s4b_disposition(t) {         // the gated path, and the two that are not
-    txt("one need   ·   three dispositions", W / 2, 150,
-        { size: 17, align: "center", color: C.muted, alpha: env(t, 0.3, 99, 0.4), spacing: 2.2 });
 
     const arrow = (x1, x2, y, c, a) => {
       line(x1, y, x2 - 8, y, c, 1, a * 0.7);
@@ -743,13 +743,13 @@
     const span = formula(cx, 650, fa);
     const oa = env(t, 3.6, 99, 0.5);
     owner(span.surface[0], span.surface[1], 674, C.surface, "warden-connect", "at issuance", oa);
-    owner(span.scope[0], span.policy[1], 674, C.policy, "warden", "at authentication · per call", oa);
+    owner(span.scope[0], span.policy[1], 674, C.policy, "warden", "optional  ·  per call", oa);
 
     capTop("A contract sets a limit. It never grants access.",
             "It can only reduce what an agent is already allowed to do.",
             env(t, 4.5, 99, 0.4));
-    caption("warden-connect sets the limit. warden works within it.",
-            "Neither product is a complete control on its own.", env(t, 6.4, 99, 0.4));
+    caption("warden-connect enforces the limit on its own.",
+            "warden is optional. If you deploy it, it narrows the limit further, per call.", env(t, 6.4, 99, 0.4));
   }
 
   // The three enforcement points, told apart. They share `wc-gateway` — the same gates and the
@@ -781,8 +781,6 @@
   ];
 
   function s5b_points(t) {              // where the decision actually runs
-    txt("three enforcement points   ·   one decision core", W / 2, 158,
-        { size: 17, align: "center", color: C.muted, alpha: env(t, 0.3, 99, 0.4), spacing: 2.2 });
 
     PEPS.forEach((p, i) => {
       const a = env(t, 0.4 + i * 1.0, 99, 0.5);
@@ -1046,11 +1044,14 @@
       txt("decision trail at the edge   ·   lifecycle chain in the plane", 600, 668,
           { size: 13, align: "center", color: C.ink, alpha: ao });
 
-      box(1290, 650, 560, 80, { stroke: C.policy, fill: C.panel, alpha: ao, r: 3 });
-      txt("WARDEN", 1290, 634, { size: 12, align: "center", color: C.policy,
-                                 alpha: ao * 0.9, spacing: 2.6 });
-      txt("receives the ceiling   ·   decides every call", 1290, 668,
-          { size: 13, align: "center", color: C.ink, alpha: ao });
+      // Dashed, and named optional. warden is a separate product that this one does not
+      // require: `wc-mediator` builds standalone by default and the Warden core is an
+      // adapter behind a cargo feature, not a dependency.
+      box(1290, 650, 560, 80, { stroke: C.policy, fill: C.panel, alpha: ao, r: 3, dash: [5, 5] });
+      txt("WARDEN   ·   OPTIONAL", 1290, 634, { size: 12, align: "center", color: C.policy,
+                                                alpha: ao * 0.9, spacing: 2.6 });
+      txt("If you deploy it, it decides each call inside the ceiling.", 1290, 668,
+          { size: 13, align: "center", color: C.muted, alpha: ao * 0.9 });
     }
 
     capTop("Each part of the system has one job.",
