@@ -339,14 +339,18 @@
       txt("reachable", bx + 14, 434, { size: 13, color: C.muted, alpha: aB * 0.85 });
     }
 
-    txt("the token admits the server.   the server admits every tool.", SRV.x, 606,
+    txt("The token lets the agent reach the server, and the server offers every tool it has.",
+        800, 606,
         { size: 15, align: "center", color: C.muted, alpha: env(t, 4.6, 99, 0.4) * 0.9,
           spacing: 0.6 });
 
-    caption("The token names a service.", "and stops there", env(t, 0.5, 2.5, 0.4));
-    caption("The server exposes its surface.", "five tools  ·  to anyone the token admits",
+    caption("The token only names a service.",
+            "It says nothing about which tools the agent may use.", env(t, 0.5, 2.5, 0.4));
+    caption("The server offers every tool that it has.",
+            "All five of them are available to anyone the token lets through.",
             env(t, 2.7, 4.7, 0.4));
-    caption("Reachable is not approved.", "and nothing in this picture can tell them apart",
+    caption("Being able to reach it is not the same as approval.",
+            "Nobody ever decided that this agent may call transfer_funds.",
             env(t, 4.9, 11.5, 0.4));
   }
 
@@ -379,7 +383,9 @@
       txt(q, QX, 330 + i * 62, { size: 27, align: "center", alpha: a, color: C.ink, spacing: 0.4 });
       line(QX - 320, 348 + i * 62, QX + 320, 348 + i * 62, C.rule, 1, a * 0.35);
     });
-    caption("Three questions. No system of record.", null, env(t, 3.3, 10.5, 0.4));
+    caption("Nothing in the estate can answer these questions.",
+            "There is no record of who approved any of these connections.",
+            env(t, 3.3, 10.5, 0.4));
   }
 
   function s3_split(t) {                // 12 → 17.5   two questions, two products
@@ -437,7 +443,8 @@
       dot(lerp(220, W - 220, k), yB + 62, 3, C.policy, aB * 0.8);
     }
 
-    caption("Everyone built the second one.", "the first has never had an owner",
+    caption("These are two separate questions.",
+            "The second one is well solved. The first one has never had an owner.",
             env(t, 2.6, 10.5, 0.4));
   }
 
@@ -519,15 +526,17 @@
                                        alpha: ah * 0.85, spacing: 3 });
     txt("GitHub   ·   GitLab   ·   Azure Repos   ·   Bitbucket", COL[1], 586,
         { size: 15, align: "center", color: C.ink, alpha: ah });
-    txt("asked through an operator's shim — a fifth is a script, not a release", COL[1], 614,
+    txt("Each host is asked through a small script that the operator supplies.", COL[1], 614,
         { size: 12.5, align: "center", color: C.muted, alpha: ah * 0.8 });
 
-    caption("Two repositories. Two reviews.", "the provider offers   ·   the consumer asks",
+    caption("Each side writes what it wants in its own repository.",
+            "The provider lists what it offers. The consumer lists what it needs.",
             env(t, 0.6, 3.8, 0.4));
-    caption("Neither reviews the other's pull request.", "the offer waits until a need arrives",
+    caption("Neither side reviews the other's pull request.",
+            "The offer is published first, and it waits until a matching need arrives.",
             env(t, 4.2, 7.0, 0.4));
-    caption("Both merges confirmed with the source host.",
-            "the pipeline asserts   ·   only the host can confirm", env(t, 7.2, 14, 0.4));
+    caption("The source host confirms the merge, not the pipeline.",
+            "A pipeline can claim anything about a commit, so the host is asked directly.", env(t, 7.2, 14, 0.4));
   }
 
   // The three ways a need can land. Two of them never involve a person, and saying so is the
@@ -580,13 +589,13 @@
       }
     });
 
-    caption("Most needs never reach a person.",
-            "the provider approved a class once, in a reviewed commit", env(t, 0.7, 3.4, 0.4));
-    caption("Some do — and the whole need waits.",
-            "one gated item holds all of it   ·   nothing is minted meanwhile",
+    caption("Most requests never need a person to approve them.",
+            "The provider already approved this whole class of consumer in a reviewed commit.", env(t, 0.7, 3.4, 0.4));
+    caption("Some requests do need someone to approve them.",
+            "Nothing is issued until the owner answers, even if only one item needs approval.",
             env(t, 3.7, 6.2, 0.4));
-    caption("And some cannot be approved at all.",
-            "no term covers this consumer   ·   refusal outranks gating", env(t, 6.5, 13, 0.4));
+    caption("Some requests cannot be approved by anyone.",
+            "The provider never offered these tools to this consumer, so approval would not help.", env(t, 6.5, 13, 0.4));
   }
 
   const HOMES = [
@@ -621,10 +630,11 @@
         { size: 13, align: "center", color: k === 0 ? C.ink : C.muted, alpha: a * (k ? 0.85 : 1) }));
     });
 
-    caption("One artifact. Three places it lives.", "three different things, deliberately",
+    caption("The contract is then stored in three places.",
+            "Each place keeps something different, and that is deliberate.",
             env(t, 0.8, 3.4, 0.4));
     caption("Only the copy at the edge expires.",
-            "which is why a revocation has somewhere to arrive", env(t, 3.7, 11, 0.4));
+            "Because it expires it must be refreshed, and a revocation arrives with it.", env(t, 3.7, 11, 0.4));
   }
 
   // ---- ACT II · what the artifact then does ------------------------------
@@ -718,9 +728,11 @@
     owner(span.surface[0], span.surface[1], 674, C.surface, "warden-connect", "at issuance", oa);
     owner(span.scope[0], span.policy[1], 674, C.policy, "warden", "at authentication · per call", oa);
 
-    caption("A contract is a ceiling. Never a grant.", null, env(t, 4.5, 6.3, 0.4));
-    caption("warden-connect draws it. warden decides inside it.",
-            "neither is a control on its own", env(t, 6.4, 13, 0.4));
+    caption("A contract sets a limit. It never grants access.",
+            "It can only reduce what an agent is already allowed to do.",
+            env(t, 4.5, 6.3, 0.4));
+    caption("warden-connect sets the limit. warden works within it.",
+            "Neither product is a complete control on its own.", env(t, 6.4, 13, 0.4));
   }
 
   // The three enforcement points, told apart. They share `wc-gateway` — the same gates and the
@@ -797,17 +809,18 @@
       });
     });
 
-    txt("every verdict comes from the same wc-gateway core  ·  the same gates, the same WC-* codes",
+    txt("Every verdict comes from the same core, so all three apply exactly the same rules.",
         W / 2, 616, { size: 15, align: "center", color: C.muted,
                       alpha: env(t, 3.6, 99, 0.4) * 0.9, spacing: 0.5 });
 
-    caption("Three places to put it.", "one decision core in all of them",
+    caption("There are three places to run the check.",
+            "All three of them use exactly the same decision code.",
             env(t, 0.7, 3.4, 0.4));
-    caption("Where it runs decides the cost.",
-            "a gRPC hop   ·   no hop at all   ·   or in the agent's own process",
+    caption("Where you run it changes what it costs.",
+            "One network call, no network call, or inside the agent's own process.",
             env(t, 3.7, 6.4, 0.4));
-    caption("What differs is what they can prove.",
-            "two authenticate the caller   ·   the sidecar is told who it is",
+    caption("They differ in what they can prove about the caller.",
+            "Envoy and Kong verify the caller. The mediator is simply told who it is.",
             env(t, 6.7, 13, 0.4));
   }
 
@@ -881,10 +894,10 @@
       }
     });
 
-    caption("Envoy refuses it at the hop.", null, env(t, 0.9, 3.2, 0.4));
-    caption("Kong refuses it inside the worker.", null, env(t, 3.4, 5.7, 0.4));
-    caption("And the mediator, in the agent's own path.",
-            "three placements   ·   one core   ·   the same WC-4002", env(t, 5.9, 11.5, 0.4));
+    caption("Envoy blocks the call at the network hop.", null, env(t, 0.9, 3.2, 0.4));
+    caption("Kong blocks the call inside the nginx worker.", null, env(t, 3.4, 5.7, 0.4));
+    caption("The mediator blocks it in the agent's own process.",
+            "The result is the same in all three, because the code is the same.", env(t, 5.9, 11.5, 0.4));
   }
 
   function s7_revoke(t) {               // 47 → 53.5   contained, and on the record
@@ -933,7 +946,9 @@
     txt("hash-chained  ·  an edit anywhere invalidates every row after it", W / 2, 636,
         { size: 15, align: "center", color: C.muted, alpha: env(t, 2.8, 11.5, 0.32), spacing: 1.3 });
 
-    caption("Revoke once. Everywhere. On the record.", null, env(t, 3.9, 11.5, 0.4));
+    caption("One revocation reaches every enforcement point.",
+            "Every decision is written to a record that cannot be edited unnoticed.",
+            env(t, 3.9, 11.5, 0.4));
   }
 
   // The whole thing at once. Three columns because the product is three places — desired state
@@ -1026,12 +1041,14 @@
           { size: 13, align: "center", color: C.ink, alpha: ao });
     }
 
-    caption("Git decides. The plane mints. The edge enforces.", null, env(t, 0.8, 4.2, 0.4));
-    caption("Nothing crosses without an artifact.",
-            "a contract, a revocation, a receipt   ·   never a shared secret",
+    caption("Each part of the system has one job.",
+            "Git records what was asked for, the control plane decides, the edge enforces.",
+            env(t, 0.8, 4.2, 0.4));
+    caption("Everything that crosses a boundary is signed.",
+            "A contract, a revocation and a receipt move between them. No secret is shared.",
             env(t, 4.5, 7.6, 0.4));
-    caption("And every decision leaves a record.",
-            "hash-chained at the edge   ·   hash-chained in the plane", env(t, 7.9, 14, 0.4));
+    caption("Every decision is written down.",
+            "The edge records each call. The plane records each change to a contract.", env(t, 7.9, 14, 0.4));
   }
 
   function s8_close(t) {                // 53.5 → 58
