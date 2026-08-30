@@ -690,8 +690,8 @@ binding claims one axis and enforces it exactly.
 |---|---|---|
 | `wc-gateway` unit + `tests/pin.rs` | every verdict, gate 8 against a minted contract | anything about a transport |
 | `wc-kong` ABI tests (39) | null handling, ownership, panic isolation, the header matching the Rust | whether Lua calls it correctly |
-| Lua suite (19, LuaJIT) | the real handler against the real cdylib, Kong stubbed; the `cdef` against the header | Kong's own phase restrictions |
-| `scripts/kong-drill.sh` (11) | real Kong, real mTLS, curl as the client, the `.so` built **for the container** | a cluster |
+| Lua suite (18, LuaJIT) | the real handler against the real cdylib, Kong stubbed; the `cdef` against the header | Kong's own phase restrictions |
+| `scripts/kong-drill.sh` (14) | real Kong, real mTLS, curl as the client, the `.so` built **for the container** | a cluster |
 
 The layers are not redundant, and the drill earned its place immediately:
 `kong.response.set_raw_body` is `body_filter`-only, so every catalogue returned

@@ -1,6 +1,6 @@
 # Fuzz targets
 
-Five targets, mirroring `warden/fuzz` (`docs/08-lld.md` §8.15.2). Each covers one
+Five targets, mirroring `warden/fuzz` (`docs/08-lld.md` §8.15). Each covers one
 place where bytes somebody else controls enter the system.
 
 | Target | Input | Beyond no-panic |
@@ -49,7 +49,7 @@ Two things the mirrored harness does that a checked-in corpus cannot:
 
 ## Corpora
 
-`corpus/<target>/` holds the seeds. `parse_contract`'s are the §8.15.3 conformance
+`corpus/<target>/` holds the seeds. `parse_contract`'s are the §8.15 conformance
 vectors — the same files `connect verify` is the ground truth for — so the two
 tiers cannot drift apart. The rest are hand-written: oversize and deeply nested
 surfaces, a zone lattice with a cycle, descriptions carrying bidi and zero-width

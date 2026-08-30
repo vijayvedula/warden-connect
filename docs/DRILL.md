@@ -224,7 +224,7 @@ Worth installing when we reach the session that needs it:
 |---|---|---|
 | `rustup component add rust-analyzer` | now, if your editor lacks it | inline types and errors — this alone will double your speed |
 | `cargo install cargo-nextest` | 7 | much faster, clearer test output |
-| `cargo install cargo-fuzz` | 6 | the `canon_surface` fuzz target from §8.15.2 |
+| `cargo install cargo-fuzz` | 6 | the `canon_surface` fuzz target from §8.15 |
 | `cargo install cargo-expand` | 1 stretch | see what `macro_rules!` and `derive` actually generate |
 
 Two habits worth forming now: read the **first** compiler error only and
