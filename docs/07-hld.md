@@ -1,8 +1,9 @@
 # 7 · warden-connect — High-Level Design
 
 warden-connect decides whether a connection between two parties may **exist**.
-warden decides whether each **call** on that connection may proceed. The
-interface between them is two signed artifacts and one identifier.
+A policy engine in the call path decides whether each **call** on that
+connection may proceed. The interface between them is two signed artifacts and
+one identifier.
 
 | | |
 |---|---|
@@ -19,11 +20,11 @@ until this date.
 
 | Not | Because |
 |---|---|
-| A policy engine | warden already is one. This produces the ceiling warden intersects |
+| A policy engine | This produces the ceiling a policy engine intersects. It evaluates no per-call policy itself |
 | An identity provider | Identity arrives already proven; this binds to it |
 | A service mesh | No traffic management, retries or load balancing |
 | A secrets manager | No credential is minted, held or distributed here |
-| A gateway product | `wc-mediator` runs standalone or compiles into warden's proxy |
+| A gateway product | `wc-mediator` runs standalone, or compiles into an existing proxy as a decorator |
 
 <img src="diagrams/hld-1.svg" alt="System context — offers and needs merge into the control plane, which issues contracts to the mediator" width="100%">
 
@@ -82,8 +83,9 @@ Approval        id, cid, approver (human), signature, ticket,
 PostureEvent    entity, kind (drift | reattest | expiry | screening |
                 quarantine), diff, severity, ts
 
-AuditEntry      warden's shape, extended with cid, contract_jti,
-                entity ids, policy_version — folded into row_hash
+AuditEntry      the policy engine's audit row, extended with cid,
+                contract_jti, entity ids, policy_version — folded
+                into row_hash
 ```
 
 <img src="diagrams/hld-2.svg" alt="Entity lifecycle — pending, active, suspended, retired; retired never returns" width="100%">
@@ -238,34 +240,33 @@ port scans, no endpoint calls, no fetching what a repository has not published.
 
 ### Two policies, two moments
 
-| | `connect-policy.toml` | warden policy |
+| | `connect-policy.toml` | the policy engine |
 |---|---|---|
 | Question | May this contract exist? | May this call proceed? |
 | Evaluated | at issuance | per call |
-| Owned by | warden-connect | warden |
+| Owned by | warden-connect | whoever runs the engine |
 | Inputs | zone, tier, surface, data class, jurisdiction, authority | token scope, context, action |
 
-## 7.7 Integration with the family
+## 7.7 Integration with a policy engine
 
-The family — warden, warden-connect, warden-delegate, warden-trace — is coupled
-by two signed artifacts and one identifier, never a shared library.
+Coupling is two signed artifacts and one identifier, never a shared library.
 
 | Term in `effective` | Owned by | Decided |
 |---|---|---|
 | `contract.surface` | warden-connect | at issuance |
-| `token.scope` | warden | at authentication |
-| `policy_decision` | warden | per call |
-| `effective` | warden, which computes the intersection | per call |
+| `token.scope` | the policy engine | at authentication |
+| `policy_decision` | the policy engine | per call |
+| `effective` | the policy engine, which computes the intersection | per call |
 
-warden-connect owns the first set, the terms and the `cid`. It hands that ceiling
-to warden and never learns what warden decides inside it. Signal runs the other
-way: denied-action patterns feed posture scoring, so repeated denials degrade a
-party and shorten its re-attestation interval.
+warden-connect owns the first set, the terms and the `cid`. It hands that
+ceiling over and never learns what the engine decides inside it. Signal runs the
+other way: denied-action patterns feed posture scoring, so repeated denials
+degrade a party and shorten its re-attestation interval.
 
 `wc-mediator` builds **standalone by default** — connection enforcement with no
-warden and no `warden.policy.toml`. The `warden-proxy` build feature adds the
-decorator topology, compiling the mediator into warden's proxy so per-action
-policy applies as well. One process, no extra hop.
+policy engine deployed. The `warden-proxy` build feature adds the decorator
+topology, compiling the mediator into an existing proxy so per-action policy
+applies as well. One process, no extra hop.
 
 ## 7.8 Trust and threat model
 
@@ -298,8 +299,8 @@ what exposes it.
 
 | Topology | Mediator placement | When |
 |---|---|---|
-| Standalone | Its own process in the path | No warden deployed; connection enforcement only |
-| Decorator | Compiled into warden's proxy (`warden-proxy` feature) | warden already in the path |
+| Standalone | Its own process in the path | No policy engine deployed; connection enforcement only |
+| Decorator | Compiled into an existing proxy (`warden-proxy` feature) | A proxy already in the path |
 | Sidecar | One mediator per agent | Enforcement at the edge |
 | Observe-only | In the path, refusing nothing | Stage ① — inventory before enforcement |
 
@@ -361,7 +362,7 @@ which is why it could not be adopted.
 
 | # | Question | Stance |
 |---|---|---|
-| 1 | Does `terms.delegation.max_depth` bind anything today? | No. It is carried, narrowed and federated correctly, but no chain exists to measure against it. warden-delegate is designed to fill this |
+| 1 | Does `terms.delegation.max_depth` bind anything today? | No. It is carried, narrowed and federated correctly, but no delegation chain exists here to measure against it |
 | 2 | Are Azure Repos and Bitbucket at parity with GitHub? | Merge parsing is. The `repos` and `open_pr` shim operations are GitHub-only. Only the GitHub path has been exercised end to end against a live host. The Azure Repos and Bitbucket shims are written but untested against a live organisation; read them as templates |
 | 3 | Cluster-scale behaviour | Unverified. Needs a real cluster |
 | 4 | What happens to a contract when the basis of its approval changes? | Undesigned. See §7.14 |

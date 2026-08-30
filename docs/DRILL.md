@@ -31,7 +31,7 @@ grip check means the module is re-explained, not waved through.
 | 4 | Borrow before you clone. When reaching for `.clone()`, say why the borrow will not work |
 | 5 | `cargo fmt` before every review; `cargo clippy -- -D warnings` clean before every commit |
 | 6 | Tests are part of the module. A session is done when its tests pass and clippy is quiet |
-| 7 | Match the surrounding code. Extend Warden core's idiom rather than importing a new one |
+| 7 | Match the surrounding code. Extend the idiom already in this repository rather than importing a new one |
 
 ## 3 · The ladder
 

@@ -41,9 +41,9 @@ Discovery reads declared files at reserved paths. It does not scan ports, does n
 ```sh
 connect inventory --org acme --declared --state-repo acme/warden-connect-state --quiet
 connect inventory promote --from inventory.json --target org/payments-mcp \
-  --owner human:ops@org --zone internal.payments --raise-pr --contracts-repo acme/warden-contracts
+  --owner human:ops@org --zone internal.payments --raise-pr --contracts-repo acme/connect-contracts
 connect posture --unattested
-connect proposals apply --dir proposals/ --repo acme/warden-contracts
+connect proposals apply --dir proposals/ --repo acme/connect-contracts
 ```
 
 ## Alternate and exception flows
