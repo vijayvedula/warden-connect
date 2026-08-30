@@ -203,13 +203,6 @@
                                         color: C.muted, spacing: 1.5 });
   }
 
-  /** Which act we are in. The film is a creation half and an enforcement half. */
-  function act(label, alpha) {
-    if (alpha <= 0.001) return;
-    line(64, 64, 92, 64, C.muted, 1, alpha * 0.6);
-    txt(label, 104, 70, { size: 13, color: C.muted, alpha: alpha * 0.85, spacing: 3.4 });
-  }
-
   function line(x1, y1, x2, y2, color, width = 1, alpha = 1, dash = null) {
     if (alpha <= 0.001) return;
     ctx.save();
@@ -489,8 +482,6 @@
   const MINT = { x: 1330, y: 340, w: 290, h: 250 };
 
   function s4_lanes(t) {                // two lanes that never touch, and the join
-    act("I  ·  CONTRACT CREATION  ·  GITOPS", env(t, 0.3, 99, 0.5));
-
     LANES.forEach(L => {
       const a0 = env(t, 0.3, 99, 0.5);
       txt(L.tag, COL[0] - BW / 2, L.y - 50, { size: 13, color: L.c, alpha: a0, spacing: 3 });
@@ -580,7 +571,6 @@
   ];
 
   function s4b_disposition(t) {         // the gated path, and the two that are not
-    act("I  ·  CONTRACT CREATION  ·  DISPOSITION", env(t, 0.3, 99, 0.5));
     txt("one need   ·   three dispositions", W / 2, 150,
         { size: 17, align: "center", color: C.muted, alpha: env(t, 0.3, 99, 0.4), spacing: 2.2 });
 
@@ -634,8 +624,6 @@
   ];
 
   function s4c_homes(t) {               // where the thing actually is, afterwards
-    act("I  ·  CONTRACT CREATION  ·  WHERE IT LIVES", env(t, 0.3, 99, 0.5));
-
     const a0 = env(t, 0.3, 99, 0.5);
     box(800, 190, 240, 62, { stroke: C.surface, fill: C.film, alpha: a0, width: 1.6, r: 3 });
     txt("one contract", 800, 195, { size: 15, align: "center", color: C.surface,
@@ -707,8 +695,6 @@
   }
 
   function s5_algebra(t) {              // 32.5 → 40.5   the ceiling, and whose it is
-    act("II  ·  ENFORCEMENT", env(t, 0.3, 99, 0.5));
-
     const p = sm(0.2, 2.2, t);
     const cx = 800, R = 140;
     const rings = [
@@ -795,7 +781,6 @@
   ];
 
   function s5b_points(t) {              // where the decision actually runs
-    act("II  ·  ENFORCEMENT  ·  THE THREE POINTS", env(t, 0.3, 99, 0.5));
     txt("three enforcement points   ·   one decision core", W / 2, 158,
         { size: 17, align: "center", color: C.muted, alpha: env(t, 0.3, 99, 0.4), spacing: 2.2 });
 
@@ -867,8 +852,6 @@
   ];
 
   function s6_enforce(t) {              // one uncontracted call, refused in three placements
-    act("II  ·  ENFORCEMENT", 1);
-
     // One contract, feeding every placement. Drawn before the boxes so they occlude it.
     const ac = env(t, 0.2, 99, 0.4);
     box(PEP_X, 152, 150, 34, { stroke: C.surface, fill: C.film, alpha: ac, r: 2 });
@@ -932,7 +915,6 @@
   }
 
   function s7_revoke(t) {               // 47 → 53.5   contained, and on the record
-    act("II  ·  ENFORCEMENT", 1 - sm(10.9, 11.5, t));
     const cx = 800, cy = 166;
     const posts = [400, 800, 1200], py = 322;
 
@@ -1001,7 +983,6 @@
                 ["revocation", "assurance"], ["broker", "federation"]];
 
   function s7b_architecture(t) {        // everything, laid out once
-    act("THE WHOLE THING", env(t, 0.2, 99, 0.5));
     txt("warden-connect   ·   logical architecture", 800, 158,
         { size: 18, align: "center", color: C.muted, alpha: env(t, 0.2, 99, 0.4), spacing: 2.4 });
 
