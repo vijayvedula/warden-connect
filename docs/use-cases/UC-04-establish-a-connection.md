@@ -8,7 +8,7 @@ Two parties consent through separate pipelines. The contract they produce is a c
 | **Primary actor** | Agent Developer (consumer side) |
 | **Supporting** | Issuance (`wc-control::issuance`), Security Architect or a reviewed merge, channel mediator (`wc-mediator`) |
 | **Trigger** | A discovered capability is required by a real workload |
-| **Preconditions** | Both parties registered and attested; caller holds a valid warden session token |
+| **Preconditions** | Both parties registered and attested; caller holds a valid session token from the policy engine |
 | **Stage** | ② Register → ③ Enforce |
 | **Command** | `connect request` → `connect approve` (or approval by merge) → `connect receipt` |
 
@@ -30,7 +30,7 @@ They meet in the registry. Neither party can produce a contract alone.
 5. The contract is distributed to the mediators on the path. A **receipt** — never the signed JWS — is written to `warden/contracts/<cid>.toml`.
 6. At runtime the mediator verifies the contract, verifies **both** peer identities, checks presented hashes against the pins, and admits the channel.
 7. The mediator **filters `tools/list`** down to `surface.tools`. The agent's model never sees `wire_funds`, so it cannot be manipulated into attempting it.
-8. Each `tools/call` is then enforced by warden inside that ceiling: `effective = surface ∩ token.scope ∩ policy_decision`.
+8. Each `tools/call` is then enforced by the policy engine inside that ceiling: `effective = surface ∩ token.scope ∩ policy_decision`.
 9. Every action is recorded with `cid` as the correlation root.
 
 ## Sequence
@@ -76,7 +76,7 @@ connect verify --file contract.jws --jwks issuer.jwks --mediator-id warden:media
 | | |
 |---|---|
 | **Controls** | T3.1–T3.8, T4.1, T4.4, T4.7, T7.1, T7.7 |
-| **Evidence** | Signed contract · approval record with approver and ticket · per-connection lifecycle events · per-action warden audit rows carrying `cid` |
+| **Evidence** | Signed contract · approval record with approver and ticket · per-connection lifecycle events · per-action policy-engine audit rows carrying `cid` |
 | **Threats mitigated** | T2 tool misuse · T3 privilege compromise · T10 human-in-the-loop fatigue (approve the relationship, not each call) |
 | **Success measure** | 100% of production connections contracted; median request-to-connected under 1 business day; mean exposed tools per connection trending down |
 

@@ -15,10 +15,10 @@
 
 ## The model
 
-warden-connect decides whether a connection may **exist**. warden decides
-whether each **call** on that connection may proceed. warden is optional:
-`wc-mediator` builds standalone by default and enforces contract, surface pin
-and revocation without it.
+warden-connect decides whether a connection may **exist**. A policy engine in
+the call path decides whether each **call** on that connection may proceed. That
+engine is optional: `wc-mediator` builds standalone by default and enforces
+contract, surface pin and revocation without one.
 
 ```
 effective = contract.surface ∩ token.scope ∩ policy_decision
@@ -27,12 +27,11 @@ effective = contract.surface ∩ token.scope ∩ policy_decision
 | Term | Owned by | Decided |
 |---|---|---|
 | `contract.surface` | warden-connect | at issuance |
-| `token.scope` | warden | at authentication |
-| `policy_decision` | warden | per call |
-| `effective` | warden | per call |
+| `token.scope` | the policy engine | at authentication |
+| `policy_decision` | the policy engine | per call |
+| `effective` | the policy engine | per call |
 
-The interface between the two products is two signed artifacts and one
-identifier (`cid`).
+The interface is two signed artifacts and one identifier (`cid`).
 
 ## The declarative interface
 

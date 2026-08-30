@@ -23,7 +23,7 @@
 
 ---
 
-## 8.2 Design constraints inherited from warden
+## 8.2 Design constraints
 
 | Constraint | Consequence |
 |---|---|
@@ -40,7 +40,7 @@ The ban used to read "no `async fn` in any crate". The `ext_proc` verifier needs
 a gRPC server, so the rule is narrowed rather than left false.
 
 The ban protects one property. `wc-core` and its dependents are linked into
-processes this project does not own: warden's proxy under the `warden-proxy`
+processes this project does not own: an existing proxy under the `warden-proxy`
 feature, a provider's Python server through a PyO3 wheel, a gateway filter in
 someone's data path. A crate that brings its own runtime cannot be embedded
 there, and inside a host that already has one it is a second runtime.
@@ -281,7 +281,7 @@ and surface capture are separate stages with separate evidence.
 
 ### 8.5.5 `cpolicy` — may this contract exist?
 
-Distinct from warden policy in every dimension: different question, different
+Distinct from per-call policy in every dimension: different question, different
 moment, different owner.
 
 | | |
@@ -423,7 +423,7 @@ below it, opting into merge consent would silently opt out of distinctness.
 ### 8.6.1 `gate` — the decorator
 
 The mediator is an `Upstream` decorator, not a proxy of its own. Standalone by
-default; the `warden-proxy` feature compiles it into warden's proxy so
+default; the `warden-proxy` feature compiles it into an existing proxy so
 per-action policy applies in the same process, with no extra hop.
 
 The 14 verification gates are §7.4 of the HLD, implemented in
@@ -929,8 +929,9 @@ Metric families are declared once in `wc-core::obs` and populated by
 number comes from**, so a dashboard showing zero can be told apart from a metric
 nobody increments.
 
-Decision logs carry `cid` as the correlation root, which lets a warden audit
-row, a mediator decision and a control-plane lifecycle event be joined later.
+Decision logs carry `cid` as the correlation root, which lets a policy-engine
+audit row, a mediator decision and a control-plane lifecycle event be joined
+later.
 
 ---
 
@@ -1002,7 +1003,7 @@ decision, not a backlog item.
 | Q1 · Where does approval authority live? | `authority`, resolved at approval time from the registry (§8.7.2) |
 | Q2 · Can a provider approve without holding a key? | Yes — approval by merge, with `merge_evidence_cannot_stand_in_for` as the choke point |
 | Q3 · How does discovery scale to thousands of repositories? | Reserved paths, read not probed, with a reported watermark (§8.5.11) |
-| Q4 · One policy or two? | Two. `connect-policy.toml` gates existence; warden policy gates calls (§8.5.5) |
+| Q4 · One policy or two? | Two. `connect-policy.toml` gates existence; the policy engine gates calls (§8.5.5) |
 
 ---
 

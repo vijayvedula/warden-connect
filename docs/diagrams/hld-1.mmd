@@ -8,7 +8,7 @@ flowchart LR
     subgraph Data["data plane"]
         MED[wc-mediator]
     end
-    DEV[Agent Developer] -->|offer.toml / needs.toml| SCM[(GitHub / Azure DevOps / Bitbucket)]
+    DEV[Agent Developer] -->|offer.toml / needs.toml| SCM[(GitHub / GitLab / Azure Repos / Bitbucket)]
     SCM -->|reviewed merge| ISS
     ISS -->|signed contract| MED
     ISS --> REG
@@ -16,5 +16,5 @@ flowchart LR
     ISS --> CHN
     AGENT[Calling agent] --> MED
     MED --> SRV[MCP tool server]
-    MED -->|effective = surface ∩ scope ∩ policy| WARDEN[warden]
+    MED -->|effective = surface ∩ scope ∩ policy| PDP[policy engine]
     CHN --> SIEM[(SIEM / GRC)]
