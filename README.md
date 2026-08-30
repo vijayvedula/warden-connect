@@ -13,6 +13,17 @@ calls happen inside.
 > limitations and production-readiness registers were retired in the 2026-08-21 docs
 > rewrite and live in git history at `3f30697`.
 
+[![warden-connect — a contract is a ceiling, never a grant](docs/media/pitch-loop.gif)](docs/pitch.html)
+
+<p align="center">
+  <sub>
+    The full walkthrough is <b>2:36</b> — the problem, contract creation as GitOps,
+    and enforcement at Envoy, Kong and the inline mediator.<br>
+    Open <a href="docs/pitch.html">docs/pitch.html</a> in a browser, or download the MP4 from
+    the <a href="../../releases">latest release</a>.
+  </sub>
+</p>
+
 ---
 
 ## The problem
