@@ -102,17 +102,17 @@
 <div class="reel">
   <div class="frame">
     <canvas id="stage" role="img"
-      aria-label="A two-minute-nine animated walkthrough in two acts, eleven slides, each holding its finished frame for five seconds before the cut. The problem: an agent called recon-bot holds a token scoped payments colon star and is wired to an MCP server, payments-mcp, which unfolds five tools — get_balance, list_transactions, transfer_funds, issue_refund, close_account — every one marked reachable, five of five. The token admits the server and the server admits every tool: reachable is not approved, and nothing in the picture can tell them apart. That pair multiplies into an estate which freezes while three unanswerable questions appear, and the problem splits into two planes: may this connection exist, owned by warden-connect, and may this call proceed, owned by warden. Act one is contract creation as GitOps, across three slides. First, two lanes that never touch: the provider merges warden slash offer dot toml under its own approvers, the consumer merges warden slash needs dot toml under different approvers, neither party reviews the other pull request, and they join only at the control plane, which confirms both merges with the source host rather than the pipelines. Second, the disposition — one need, three outcomes: pre-granted goes straight to a minted contract with no person involved, because the provider approved a class once in a reviewed commit; gated routes to the callee owner and nothing is minted while the whole need waits on one item; refused stops, because no term covers this consumer and approval cannot help. Third, where the contract then lives: git holds a receipt and never the signed artifact, the control plane holds the artifact and the register, and every enforcement point holds a verified copy in memory that refreshes and expires — which is why a revocation has somewhere to arrive. Act two is enforcement. First the algebra: effective equals surface intersect scope intersect policy, with surface bracketed as warden-connect at issuance and scope and policy bracketed as warden at authentication and per call. Then the three enforcement points, side by side, sharing one decision core. Envoy runs wc-extproc as an ext_proc gRPC filter one hop away, with request_body_mode set to BUFFERED because the tool name is in the JSON-RPC body rather than a header, and failure_mode_allow set to false so an unreachable verifier refuses instead of failing open; identity comes from an mTLS certificate or XFCC. Kong loads libwc_kong.so into the nginx worker over LuaJIT FFI and decides in the Lua access phase at priority 1000 — no socket, no serialisation, one handle per worker; identity comes from a client certificate or XFCC. The inline mediator, connect-mediate, spawns the real server over stdio and sits in the path rather than beside it; its identity is configured rather than proven, and it writes no decision trail. Every verdict comes from the same wc-gateway core with the same gates and the same WC codes. Then the refusal itself, run three times in the same order and the same colours as those columns: one contract feeds all three placements, and in each of them get_balance passes through to payments-mcp while transfer_funds is stopped at the enforcement point and refused WC-4002 — refused at the hop by Envoy, inside the worker by Kong, and in the agent own path by the mediator. Three placements, one core, the same code. Finally one revocation reaches every enforcement point while every decision is written to a hash-chained trail."></canvas>
+      aria-label="A two-minute-twenty-three animated walkthrough in two acts, twelve slides, each holding its finished frame for five seconds before the cut. The problem: an agent called recon-bot holds a token scoped payments colon star and is wired to an MCP server, payments-mcp, which unfolds five tools — get_balance, list_transactions, transfer_funds, issue_refund, close_account — every one marked reachable, five of five. The token admits the server and the server admits every tool: reachable is not approved, and nothing in the picture can tell them apart. That pair multiplies into an estate which freezes while three unanswerable questions appear, and the problem splits into two planes: may this connection exist, owned by warden-connect, and may this call proceed, owned by warden. Act one is contract creation as GitOps, across three slides. First, two lanes that never touch: the provider merges warden slash offer dot toml under its own approvers, the consumer merges warden slash needs dot toml under different approvers, neither party reviews the other pull request, and they join only at the control plane, which confirms both merges with the source host rather than the pipelines. Four source hosts are supported — GitHub, GitLab, Azure Repos and Bitbucket — each asked through an operator supplied shim, so a fifth host is a script rather than a release. Second, the disposition — one need, three outcomes: pre-granted goes straight to a minted contract with no person involved, because the provider approved a class once in a reviewed commit; gated routes to the callee owner and nothing is minted while the whole need waits on one item; refused stops, because no term covers this consumer and approval cannot help. Third, where the contract then lives: git holds a receipt and never the signed artifact, the control plane holds the artifact and the register, and every enforcement point holds a verified copy in memory that refreshes and expires — which is why a revocation has somewhere to arrive. Act two is enforcement. First the algebra: effective equals surface intersect scope intersect policy, with surface bracketed as warden-connect at issuance and scope and policy bracketed as warden at authentication and per call. Then the three enforcement points, side by side, sharing one decision core. Envoy runs wc-extproc as an ext_proc gRPC filter one hop away, with request_body_mode set to BUFFERED because the tool name is in the JSON-RPC body rather than a header, and failure_mode_allow set to false so an unreachable verifier refuses instead of failing open; identity comes from an mTLS certificate or XFCC. Kong loads libwc_kong.so into the nginx worker over LuaJIT FFI and decides in the Lua access phase at priority 1000 — no socket, no serialisation, one handle per worker; identity comes from a client certificate or XFCC. The inline mediator, connect-mediate, spawns the real server over stdio and sits in the path rather than beside it; its identity is configured rather than proven, and it writes no decision trail. Every verdict comes from the same wc-gateway core with the same gates and the same WC codes. Then the refusal itself, run three times in the same order and the same colours as those columns: one contract feeds all three placements, and in each of them get_balance passes through to payments-mcp while transfer_funds is stopped at the enforcement point and refused WC-4002 — refused at the hop by Envoy, inside the worker by Kong, and in the agent own path by the mediator. Three placements, one core, the same code. Then one revocation reaches every enforcement point while every decision is written to a hash-chained trail. The last diagram lays the whole system out at once, in three columns. Git holds the desired state — offer, needs and the contract receipts — reviewed under a declared approval block, across four source hosts. The control plane holds the capabilities: admission, policy, issuance, custody, revocation, assurance, broker and federation, reached over HTTP slash v1 under four roles with dual control, and it is the only thing that mints a contract. Enforcement holds the three points — Envoy, Kong and the inline mediator — each running the same gates over a verified copy bounded by max_stale, with no network call on the hot path. Between them move artifacts rather than calls: a confirmed merge and a receipt on one side, a contract set, revocations and an acknowledgement on the other. Underneath, evidence leaves as a decision trail at the edge and a lifecycle chain in the plane, and warden receives the ceiling and decides every call."></canvas>
   </div>
 
   <div class="transport">
     <button class="play" id="play" aria-label="Play">▶</button>
     <div class="track" id="track" role="slider" tabindex="0"
-         aria-label="Timeline" aria-valuemin="0" aria-valuemax="129" aria-valuenow="0">
+         aria-label="Timeline" aria-valuemin="0" aria-valuemax="143" aria-valuenow="0">
       <div class="bed"></div><div class="fill" id="fill"></div>
       <div class="chapters" id="chapters"></div><div class="head" id="head"></div>
     </div>
-    <div class="clock" id="clock">0:00 / 2:09</div>
+    <div class="clock" id="clock">0:00 / 2:23</div>
   </div>
 
   <div class="legend">
@@ -126,7 +126,7 @@
 (() => {
   "use strict";
 
-  const W = 1600, H = 900, DUR = 129;
+  const W = 1600, H = 900, DUR = 143;
   const SERIF = '"Newsreader", Georgia, "Times New Roman", serif';
   const MONO  = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
 
@@ -509,6 +509,18 @@
       const flash = Math.max(0, 1 - (t - 8.0) * 1.6);
       box(MINT.x, MINT.y, MINT.w, MINT.h, { stroke: C.surface, alpha: flash * 0.8, width: 2, r: 3 });
     }
+
+    // Which hosts, because "confirmed with the source host" invites the question immediately.
+    // Four shims ship (scripts/scm/), and scm.rs integrates none of them in-crate on purpose:
+    // four vendor API clients would be four HTTP stacks inside a crate with a dependency
+    // ceiling, to answer two questions a fifteen-line script can answer with the vendor's CLI.
+    const ah = env(t, 5.6, 99, 0.5);
+    txt("SOURCE HOSTS", COL[1], 556, { size: 12, align: "center", color: C.muted,
+                                       alpha: ah * 0.85, spacing: 3 });
+    txt("GitHub   ·   GitLab   ·   Azure Repos   ·   Bitbucket", COL[1], 586,
+        { size: 15, align: "center", color: C.ink, alpha: ah });
+    txt("asked through an operator's shim — a fifth is a script, not a release", COL[1], 614,
+        { size: 12.5, align: "center", color: C.muted, alpha: ah * 0.8 });
 
     caption("Two repositories. Two reviews.", "the provider offers   ·   the consumer asks",
             env(t, 0.6, 3.8, 0.4));
@@ -924,6 +936,104 @@
     caption("Revoke once. Everywhere. On the record.", null, env(t, 3.9, 11.5, 0.4));
   }
 
+  // The whole thing at once. Three columns because the product is three places — desired state
+  // in git, decisions in the plane, enforcement at the edge — and every capability belongs to
+  // exactly one of them. The two boxes underneath are what leaves: a record, and a ceiling
+  // handed to warden.
+  const ARCH = [
+    { x: 265,  c: C.scope,   name: "GIT",           sub: "desired state, reviewed",
+      foot: "GitHub · GitLab · Azure Repos · Bitbucket",
+      lines: ["warden/offer.toml", "warden/needs.toml", "warden/contracts/<cid>.toml", null,
+              "[approval]   ·   min = 2", "the merge is the approval", "four source hosts, by shim"] },
+    { x: 1335, c: C.policy,  name: "ENFORCEMENT",   sub: "wc-gateway  ·  one core",
+      foot: "no network call on the hot path",
+      lines: ["Envoy  ·  wc-extproc", "Kong  ·  libwc_kong.so", "inline  ·  connect-mediate",
+              null, "identity · contract · surface · pin", "a verified copy · max_stale",
+              "the decision trail"] },
+  ];
+  const CAPS = [["admission", "policy"], ["issuance", "custody"],
+                ["revocation", "assurance"], ["broker", "federation"]];
+
+  function s7b_architecture(t) {        // everything, laid out once
+    act("THE WHOLE THING", env(t, 0.2, 99, 0.5));
+    txt("warden-connect   ·   logical architecture", 800, 132,
+        { size: 18, align: "center", color: C.muted, alpha: env(t, 0.2, 99, 0.4), spacing: 2.4 });
+
+    const head = (col, a) => {
+      txt(col.name, col.x, 204, { size: 17, align: "center", color: col.c, alpha: a, spacing: 2.6 });
+      txt(col.sub, col.x, 230, { size: 12.5, align: "center", color: C.muted, alpha: a * 0.8 });
+      box(col.x, 400, 400, 300, { stroke: col.c, fill: C.panel, alpha: a, width: 1.3, r: 3 });
+      txt(col.foot, col.x, 578, { size: 12, align: "center", color: C.muted, alpha: a * 0.8 });
+    };
+
+    // 1 · git, and 3 · the edge
+    ARCH.forEach((col, i) => {
+      const a = env(t, 0.4 + i * 2.4, 99, 0.5);
+      if (a <= 0.001) return;
+      head(col, a);
+      col.lines.forEach((l, k) => {
+        const y = 294 + k * 34;
+        if (l === null) { line(col.x - 170, y - 8, col.x + 170, y - 8, C.rule, 1, a * 0.5); return; }
+        txt(l, col.x - 170, y, { size: 13, color: k > 3 ? C.muted : C.ink, alpha: a * (k > 3 ? 0.85 : 1) });
+      });
+    });
+
+    // 2 · the control plane, and every capability that lives in it
+    const a2 = env(t, 1.6, 99, 0.5);
+    if (a2 > 0.001) {
+      head({ x: 800, c: C.surface, name: "CONTROL PLANE", sub: "connect  ·  the register",
+             foot: "the only thing that mints a contract" }, a2);
+      CAPS.forEach((pair, r) => pair.forEach((cap, cc) => {
+        const cx = 800 + (cc ? 102 : -102), cy = 292 + r * 46;
+        const ca = env(t, 2.0 + (r * 2 + cc) * 0.12, 99, 0.35);
+        box(cx, cy, 192, 38, { stroke: C.rule, fill: C.film, alpha: ca });
+        txt(cap, cx, cy + 5, { size: 13, align: "center", color: C.ink, alpha: ca });
+      }));
+      line(630, 490, 970, 490, C.rule, 1, a2 * 0.5);
+      txt("HTTP /v1   ·   four roles   ·   dual control", 800, 518,
+          { size: 12.5, align: "center", color: C.muted, alpha: a2 * 0.85 });
+    }
+
+    // What moves between them. Each arrow is an artifact, not a "call".
+    const flow = (x1, x2, y, label, c, a) => {
+      if (a <= 0.001) return;
+      const back = x2 < x1;
+      line(x1, y, x2, y, c, 1, a * 0.7);
+      line(x2 + (back ? 9 : -9), y - 5, x2, y, c, 1, a * 0.7);
+      line(x2 + (back ? 9 : -9), y + 5, x2, y, c, 1, a * 0.7);
+      txt(label, (x1 + x2) / 2, y - 11, { size: 11.5, align: "center", color: C.muted, alpha: a });
+    };
+    const af = env(t, 4.4, 99, 0.5);
+    flow(470, 596, 348, "merge confirmed", C.scope, af);
+    flow(596, 470, 470, "receipt", C.scope, af);
+    flow(1004, 1131, 330, "contract set", C.surface, af);
+    flow(1004, 1131, 412, "revocations", C.refuse, af);
+    flow(1131, 1004, 494, "ack", C.surface, af);
+
+    // And what leaves the system entirely.
+    const ao = env(t, 5.8, 99, 0.5);
+    if (ao > 0.001) {
+      box(600, 650, 700, 80, { stroke: C.rule, fill: C.panel, alpha: ao, r: 3 });
+      txt("EVIDENCE", 600, 634, { size: 12, align: "center", color: C.muted,
+                                  alpha: ao * 0.9, spacing: 2.6 });
+      txt("decision trail at the edge   ·   lifecycle chain in the plane", 600, 668,
+          { size: 13, align: "center", color: C.ink, alpha: ao });
+
+      box(1290, 650, 560, 80, { stroke: C.policy, fill: C.panel, alpha: ao, r: 3 });
+      txt("WARDEN", 1290, 634, { size: 12, align: "center", color: C.policy,
+                                 alpha: ao * 0.9, spacing: 2.6 });
+      txt("receives the ceiling   ·   decides every call", 1290, 668,
+          { size: 13, align: "center", color: C.ink, alpha: ao });
+    }
+
+    caption("Git decides. The plane mints. The edge enforces.", null, env(t, 0.8, 4.2, 0.4));
+    caption("Nothing crosses without an artifact.",
+            "a contract, a revocation, a receipt   ·   never a shared secret",
+            env(t, 4.5, 7.6, 0.4));
+    caption("And every decision leaves a record.",
+            "hash-chained at the edge   ·   hash-chained in the plane", env(t, 7.9, 14, 0.4));
+  }
+
   function s8_close(t) {                // 53.5 → 58
     const a = env(t, 0.15, 9.5, 0.55);
     txt("warden-connect", W / 2, 384, { size: 84, font: SERIF, align: "center", alpha: a,
@@ -954,7 +1064,8 @@
     { at: 83.5,  to: 96.5, fn: s5b_points,       name: "II · Envoy, Kong, inline mediator" },
     { at: 96.5,  to: 108,  fn: s6_enforce,       name: "II · the refusal at the hop" },
     { at: 108,   to: 119.5, fn: s7_revoke,       name: "revoked, and on the record" },
-    { at: 119.5, to: DUR,  fn: s8_close,         name: "warden-connect" },
+    { at: 119.5, to: 133.5, fn: s7b_architecture, name: "the whole thing, laid out", act: true },
+    { at: 133.5, to: DUR,  fn: s8_close,         name: "warden-connect" },
   ];
 
   function render(t) {
