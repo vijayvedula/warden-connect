@@ -1,7 +1,6 @@
 # UC-03 · Mediated capability discovery
 
-> An empty result is never distinguishable from "it exists, but you may not see it".
-> The broker does not confirm existence.
+Discovery returns capability summaries only. An empty result does not distinguish "nothing matches" from "exists, but not visible to you".
 
 | Field | Detail |
 |---|---|
@@ -40,7 +39,7 @@ connect serve --portal --read-only --listen 127.0.0.1:8080
 | Ref | Condition | Behaviour |
 |---|---|---|
 | **A1** | No eligible entries | Empty result. Indistinguishable from "exists but not visible to you" — by design |
-| **A2** | Enumeration pattern detected | Throttled (`WC-2020`) and raised as a reconnaissance finding |
+| **A2** | Enumeration pattern detected | The result is truncated (`truncated: true`) and the query is logged. Discovery never refuses: a status that changes at a threshold is itself an enumeration signal |
 | **A3** | Asker not attested | Refused, `WC-2021` |
 
 ## Postconditions

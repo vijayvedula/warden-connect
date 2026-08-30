@@ -1,9 +1,8 @@
 # Use cases
 
-Ten use cases, one file each. Every file carries the same template — actors,
-trigger, preconditions, main flow, a **sequence diagram**, alternate and
-exception flows, postconditions, controls, evidence, threats and a success
-measure.
+Ten use cases, one file each. Every file uses the same template: actors,
+trigger, preconditions, main flow, a sequence diagram, alternate and exception
+flows, postconditions, controls, evidence, threats and a success measure.
 
 | Use case | Stage | Primary persona | Command entry point |
 |---|---|---|---|
@@ -18,12 +17,18 @@ measure.
 | [UC-09 · Renewal, review, offboarding](UC-09-renewal-review-offboarding.md) | ② → ③ | Service owner | `connect contracts --dormant` |
 | [UC-10 · Regulatory register and evidence](UC-10-regulatory-register-and-evidence.md) | ③ | Risk & Compliance | `connect export` |
 
-**The wedge.** UC-01, UC-02, UC-03 and UC-08 all land in stage ① and require no
-behaviour change from any developer. The estate becomes visible before anything
-becomes enforced.
+UC-01, UC-02, UC-03 and UC-08 all land in stage ① and require no behaviour
+change from any developer.
 
-**Actor glossary.** *Agent Developer* builds and owns an agent · *Security
-Architect* approves connections · *AppSec Engineer* owns surface and supply
-chain · *SecOps Analyst* owns containment · *Platform Operator* runs the plane ·
-*Risk & Compliance Officer* owns evidence · *Partner Agent Operator* is external ·
-*Calling Agent* and *Callee* are the non-human actors.
+## Actors
+
+| Actor | Owns |
+|---|---|
+| Agent Developer | builds and owns an agent |
+| Security Architect | approves connections |
+| AppSec Engineer | surface and supply chain |
+| SecOps Analyst | containment |
+| Platform Operator | runs the control plane |
+| Risk & Compliance Officer | evidence |
+| Partner Agent Operator | an external party |
+| Calling Agent, Callee | the non-human actors |

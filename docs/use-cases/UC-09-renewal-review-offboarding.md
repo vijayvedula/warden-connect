@@ -1,7 +1,6 @@
 # UC-09 · Renewal, review and offboarding
 
-> Silence terminates. It never renews.
-> Renewal is a re-decision, not an extension — it re-runs admission from the top.
+Renewal re-runs admission from the top. A contract with no owner response lapses at `exp`.
 
 | Field | Detail |
 |---|---|
@@ -54,8 +53,8 @@ connect retention --contracts --retire --anchor-pub anchor.pub
 |---|---|---|---|
 | **A1** | No owner response | The contract lapses at `exp`. Silence terminates | `WC-3103` |
 | **A2** | Owner has left the organisation | Connection flagged **orphaned**; the business service owner must reassign or it lapses | `WC-1008` |
-| **A3** | Re-attestation fails at renewal | No renewal; the connection lapses on schedule | `WC-3031` |
-| **A4** | Posture degraded at renewal | No renewal | `WC-3030` |
+| **A3** | Re-attestation fails at renewal | No renewal; the connection lapses on schedule | — (reported as `Posture::Degraded`) |
+| **A4** | Posture degraded at renewal | No renewal; `cpolicy` denies on the posture check with its own reason | — |
 | **A5** | Contract already ended | Renewal refused; a new request is required | `WC-3032` |
 | **A6** | Scheduled withdrawal is due | Flagged so it cannot be quietly missed | `WC-3033` |
 

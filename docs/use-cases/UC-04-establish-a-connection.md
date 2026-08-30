@@ -1,7 +1,6 @@
 # UC-04 · Establish a connection
 
-> The core loop. Everything else in this system supports it.
-> Two parties consent through separate pipelines, and the artifact they produce is a **ceiling**.
+Two parties consent through separate pipelines. The contract they produce is a ceiling.
 
 | Field | Detail |
 |---|---|

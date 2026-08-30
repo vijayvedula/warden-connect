@@ -1,7 +1,6 @@
 # UC-02 · Onboard a tool server and pin its surface
 
-> This is where a poisoned tool description is caught — **before any agent's model has read it**.
-> There is no "register on trust": if the handshake does not complete, nothing is pinned.
+A tool server is pinned only after a completed handshake. Nothing is registered on trust.
 
 | Field | Detail |
 |---|---|
