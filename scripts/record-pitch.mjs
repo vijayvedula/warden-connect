@@ -31,10 +31,19 @@ const arg = (name, dflt) => {
   return i > -1 ? process.argv[i + 1] : dflt;
 };
 const FPS = Number(arg("fps", 30));
+// Supersample. The film draws its canvas backing store at `devicePixelRatio` capped to 2, so
+// recording at deviceScaleFactor 1 rasterised every glyph at 1x and the result was visibly
+// softer than the same page on any Retina screen — which renders at 2x and downsamples. This
+// captures at 2x and ffmpeg does the downsample, which is what the browser was doing all along.
+const SCALE = Number(arg("scale", 2));
 const OUT = path.resolve(arg("out", "build/pitch"));
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const W = 1920, H = 1080, PORT = 8731, CDP = 9333;
+// PNG, not JPEG. The capture is now one stage of two lossy steps rather than one, and the
+// design puts thin cyan, amber and green text on near-black — exactly what 4:2:0 chroma
+// subsampling smears. H.264 subsamples at the end regardless; doing it twice is a choice.
+const SHOT = { format: "png" };
 
 /** The page, with a recording hook and the player chrome hidden. */
 async function preparePage(dir) {
@@ -136,7 +145,7 @@ const main = async () => {
   const cdp = await connect();
   await cdp.send("Page.enable");
   await cdp.send("Emulation.setDeviceMetricsOverride",
-    { width: W, height: H, deviceScaleFactor: 1, mobile: false });
+    { width: W, height: H, deviceScaleFactor: SCALE, mobile: false });
 
   // The display face has to be present before the first frame, or the opening seconds record
   // in the fallback and then jump when Newsreader arrives.
@@ -146,13 +155,14 @@ const main = async () => {
   if (typeof dur !== "number") throw new Error("the recording hook did not install");
 
   const total = Math.round(dur * FPS);
-  process.stdout.write(`recording ${dur}s at ${FPS}fps = ${total} frames, ${W}x${H}\n`);
+  process.stdout.write(`recording ${dur}s at ${FPS}fps = ${total} frames, ` +
+    `${W * SCALE}x${H * SCALE} (${SCALE}x, downsampled to ${W}x${H} at encode)\n`);
 
   for (let i = 0; i < total; i++) {
     const t = i / FPS;
     await cdp.send("Runtime.evaluate", { expression: `window.__wc.frame(${t})` });
-    const shot = await cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 92 });
-    await writeFile(path.join(frames, `f${String(i).padStart(6, "0")}.jpg`),
+    const shot = await cdp.send("Page.captureScreenshot", SHOT);
+    await writeFile(path.join(frames, `f${String(i).padStart(6, "0")}.png`),
                     Buffer.from(shot.data, "base64"));
     if (i % 300 === 0 || i === total - 1) {
       process.stdout.write(`  ${i + 1}/${total}  t=${t.toFixed(1)}s\n`);
