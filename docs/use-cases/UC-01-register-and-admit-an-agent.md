@@ -1,7 +1,6 @@
 # UC-01 · Register and admit an internal agent
 
-> Registration is not connectivity. A registered agent holds **zero** contracts.
-> This use case ends with an entity that exists and is accountable — nothing more.
+Registration creates an accountable entity. A registered agent holds no contracts.
 
 | Field | Detail |
 |---|---|

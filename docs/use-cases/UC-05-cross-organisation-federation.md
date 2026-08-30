@@ -1,7 +1,6 @@
 # UC-05 · Cross-organisation federation
 
-> External drift is treated more severely than internal drift.
-> A partner agent may not sub-delegate onward, and the callee cannot raise its own ceiling.
+A partner agent may not sub-delegate onward, and a callee cannot raise its own ceiling.
 
 | Field | Detail |
 |---|---|
@@ -54,7 +53,7 @@ connect export --format dora --out third-party-register.json
 |---|---|---|---|
 | **A1** | Partner card changes | Connection **suspended immediately**; re-approval required | `WC-5002` |
 | **A2** | Federation anchor rotation | Existing connections run to `exp`; no new contracts until the anchor is re-verified | `WC-2034` |
-| **A3** | Partner requests deeper delegation | Denied by construction. `max_depth` cannot be raised by the callee | `WC-3014` |
+| **A3** | Partner requests deeper delegation | Denied by construction. `max_depth` cannot be raised by the callee, so no widened term ever exists to refuse | — |
 | **A4** | Exit triggered — contract end, breach, insolvency | `connect revoke --party partner:*` executes the tested exit and produces the evidence | — |
 | **A5** | Signal arrives from an unauthorised party | Rejected | `WC-2035` |
 

@@ -21,10 +21,10 @@ sequenceDiagram
         Owner->>Iss: renew (optionally with reduced surface)
         Iss->>Adm: re-run admission — identity, provenance, pin, screening
         alt re-attestation fails
-            Adm-->>Iss: WC-3031 renewal reattest failed
+            Adm-->>Iss: re-attestation failed, posture degraded
             Iss->>Reg: no renewal, lapses on schedule
         else posture degraded
-            Adm-->>Iss: WC-3030 renewal posture degraded
+            Adm-->>Iss: posture degraded
             Iss->>Reg: no renewal
         end
         Adm-->>Iss: clean

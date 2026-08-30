@@ -1,7 +1,6 @@
 # UC-06 · Detect and respond to surface drift
 
-> The use case that most clearly cannot be served at the action layer.
-> A tool whose description changed yesterday is a different tool, and no per-call policy will notice.
+A tool whose description changed is a different tool. Per-call policy does not detect this; the surface pin does.
 
 | Field | Detail |
 |---|---|
@@ -49,7 +48,7 @@ connect show --id server:payments-mcp
 |---|---|---|---|
 | **A1** | Drift detected at connect time, before the scheduled check | Connection refused on the spot; the same flow runs | `WC-3108` |
 | **A2** | Benign drift under standing policy | Pin auto-updated, event recorded, no suspension | — |
-| **A3** | Repeated drift from one party | Posture degraded, tier escalated, `reattest_every` shortened | `WC-5001` |
+| **A3** | Repeated drift from one party | Posture degraded, tier escalated, `reattest_every` shortened | — (reported as `Posture::Degraded`) |
 | **A4** | Surface unobtainable at re-attestation | Re-attestation fails; posture degrades rather than silently passing | `WC-1002` |
 
 ## Postconditions

@@ -19,7 +19,7 @@ sequenceDiagram
     Brk->>Brk: project to summaries only<br/>(no endpoint, no credential, no schema)
     Brk->>Log: record query + asker identity
     alt enumeration pattern detected
-        Brk-->>Dev: WC-2020 discovery throttled + recon finding
+        Brk-->>Dev: truncated result + recon finding
     end
     Brk-->>Dev: capability summaries
     Note over Dev,Brk: The asker now knows a capability exists.<br/>It still cannot reach anything.

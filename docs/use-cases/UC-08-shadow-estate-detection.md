@@ -1,7 +1,6 @@
 # UC-08 · Shadow agent and shadow MCP detection
 
-> This runs in **observe** mode and requires no behaviour change from any developer.
-> It is the wedge: the estate becomes visible before anything becomes enforced.
+Runs in observe mode and requires no change from any developer.
 
 | Field | Detail |
 |---|---|

@@ -1,7 +1,6 @@
 # UC-10 · Regulatory register and evidence export
 
-> An incomplete register that says it is incomplete is defensible.
-> One that pretends is not.
+The register records what is known and marks what is not.
 
 | Field | Detail |
 |---|---|

@@ -1,7 +1,6 @@
 # UC-07 · Emergency quarantine
 
-> A mediator that does not answer is **not confirmed**. Non-confirmation is reported, never assumed benign.
-> Clearing quarantine requires full re-admission, not a state flip.
+A mediator that does not answer is reported as unconfirmed, never assumed contained. Clearing quarantine requires full re-admission, not a state flip.
 
 | Field | Detail |
 |---|---|

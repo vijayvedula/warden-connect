@@ -1,78 +1,66 @@
 # Production readiness
 
-What stands between `main` and a release. Every gap here was verified against the
-code, not recalled.
-
-**v0.2.0 is released.** What remains below is the backlog for the next one, not a list
-of things blocking a shipment — with the caveat that 4.3 (cluster scale) is unverified
-rather than known-good, and 1.2c is two terms that are declared and unchecked today.
+Every item was verified against the code. **v0.2.0 is released**; what remains
+is the backlog for the next one. Two caveats: 4.3 (cluster scale) is unverified
+rather than known-good, and 1.2c is two terms that ship declared and unchecked.
 
 ## Closed
 
-| | | |
+| # | Item | Result |
 |---|---|---|
-| **P0** | the gate runs | CI green on a hosted runner, same gates as `ci-local.sh`. Nine runs, nine fixes — one product bug, seven of them the harness believing its own setup had worked |
-| **P2.1/2.2** | evidence | both enforcement points write a hash-chained decision trail, asserted in both drills. `terms.evidence.delivery = "blocking"` binds for the first time |
-| **3.1 (Envoy)** | revocation | quarantine → feed → fetch → verify → deny-list → refusal at a real Envoy. Three separate breaks, each invisible alone: the plane set its feed from nowhere, no mediator fetched one, and the serving plane never appended to the feed it published |
-| **1.3** | ceilings | removed as a capability rather than fixed — see the CHANGELOG |
-| **3.1b** | revocation reaches Kong | each worker refreshes on its own background thread — not a Lua timer, which would stall the event loop. Drilled: a revocation applied inside a real nginx worker |
-| **1.4** | several contracts per pair | resolution picks by tool; the catalogue is the union and must satisfy every pin; two contracts claiming one tool is a conflict, reported at load and refused at the call |
-| **0.4** | the gate is deterministic | not a second scm race: concurrent spawns inherited each other's pipes, so a shim that exited 0 having printed its verdict was recorded as never answering. Every spawn is gated; 4 hangs in 60 runs became 0 in 180 |
-| **3.1c** | connection-level revocation | `POST /v1/connections/{cid}/revoke` — the narrow cut, symmetric with quarantine: register, evidence, and the deny-list. The API harness had no revocation feed at all, which is why the serving plane's failure to append to one survived a full suite |
-| **3.1d** | revocation custody | the feed takes a key of its own. `revoke` and `quarantine` have had `--revocation-key` since custody existed; `serve` took no such flag, so the separation was present where an operator acts by hand and absent from the path an estate runs. Without one, `serve` now says so at startup |
-| **1.2b** | documented-but-absent sweep | 11 of 82 error codes were never emitted, 6 named in the LLD and 3 traced from a use case. Each now carries a `RESERVED:` reason or is emitted, `scripts/code-emission.sh` fails the build on a new one, and the doc claims that were wrong are corrected |
-| **2.3** | the trail is checkable | `connect evidence verify PATH` and `evidence since PATH --seq N`. The chain was tamper-evident to the drills and to nobody operating it. `since` verifies the whole trail before returning a row, so an edited file yields nothing |
-| **3.4** | a config fails at deploy | `connect gateway check --plugin-config FILE` runs the binding's own `Handle::open`. A separate checker agrees with what it checks only by maintenance, and the first drift makes it worse than nothing |
-| **3.2** | both bindings ship | `wc-extproc`, `libwc_kong.so` and the plugin's Lua half are built, digested and attested. The artifact list was repeated in four places and is now one, which is why shipping a binding meant remembering four |
-| **3.3** | install without a checkout | [install.md](install.md), per binding, verification first. Every flag and config key in it was checked against `--help` and `schema.lua` |
-| **4.4** | Path A is walked | it always was — `attest-drill.sh` phase 4 executes a contracted call and refuses an uncontracted one, in enforce mode, over stdio. The plan entry saying otherwise was wrong. Confirmed by running it. Coverage is thinner than the bindings' (no catalogue-filter, batch, pin-drift or revocation phase) and it lives in a drill named for attestation, where nobody would look |
-| **4.2** | the gates are covered | `scripts/gate-mutation-check.sh` breaks five gates in the decision core — uncontracted tool, no identity, staleness, batch, unverified pin — and requires a test to notice. All five are caught; in CI |
-| **4.1** | independent security review | conducted outside this repository |
-| **released** | **v0.2.0** | tagged and published: five artifacts, each SLSA-attested, each verified after publication with the command [install.md](install.md) gives operators. Code lives on `origin`; the attested release is cut on the Actions mirror |
-| **1.2** | `Terms` audit | every field traced to what binds it — table below. One term was bound by nothing anywhere, and the check meant to announce that class of term was itself an instance of it |
+| P0 | the gate runs | CI green on a hosted runner, same gates as `ci-local.sh` |
+| 0.4 | the gate is deterministic | concurrent spawns inherited each other's pipes. All spawns now serialise: 4 hangs in 60 runs became 0 in 180 |
+| 1.2 | `Terms` audit | every field traced to what binds it — table below |
+| 1.2b | documented-but-absent sweep | 11 of 82 error codes were never emitted. Each is now emitted or marked `RESERVED:`, enforced by `scripts/code-emission.sh` |
+| 1.3 | ceilings | removed as a capability rather than fixed. See the CHANGELOG |
+| 1.4 | several contracts per pair | resolution picks by tool; the catalogue is the union and must satisfy every pin; two contracts claiming one tool is a conflict |
+| 2.3 | the trail is checkable | `connect evidence verify` and `evidence since`. `since` verifies the whole trail before returning a row |
+| 3.1 | revocation (Envoy) | quarantine → feed → fetch → verify → deny-list → refusal, at a real Envoy |
+| 3.1b | revocation (Kong) | each worker refreshes on its own background thread, not a Lua timer. Drilled inside a real nginx worker |
+| 3.1c | connection-level revocation | `POST /v1/connections/{cid}/revoke`: register, evidence and deny-list |
+| 3.1d | revocation custody | the feed takes its own key. `serve` warns at startup when it has none |
+| 3.2 | both bindings ship | `wc-extproc`, `libwc_kong.so` and the Lua half are built, digested and attested |
+| 3.3 | install without a checkout | [install.md](install.md). Every flag checked against `--help` and `schema.lua` |
+| 3.4 | a config fails at deploy | `connect gateway check --plugin-config FILE` runs the binding's own `Handle::open` |
+| 4.1 | independent security review | conducted outside this repository |
+| 4.2 | the gates are covered | `scripts/gate-mutation-check.sh` breaks five gates and requires a test to notice. All five caught; in CI |
+| 4.4 | Path A is walked | `attest-drill.sh` phase 4 executes a contracted call and refuses an uncontracted one, in enforce mode, over stdio |
+| — | **v0.2.0 released** | five artifacts, each SLSA-attested and verified after publication |
 
 ## What binds each term
 
-The `Terms` audit (1.2), traced against the code. "Policy fact" means a policy rule can read the
-value and refuse at issuance; the gateway builds `Terms::default()` and reads no term at
-enforcement, which is by design — a contract is decided at issuance and is a ceiling, not a
-runtime budget.
+The gateway builds `Terms::default()` and reads no term at enforcement. A
+contract is decided at issuance and is a ceiling, not a runtime budget.
+"Policy fact" means a policy rule can read the value and refuse at issuance.
 
-| Term | Folded | Policy fact | Refuses a mint | Enforced at a call | |
+| Term | Folded | Policy fact | Refuses a mint | Enforced at a call | Verdict |
 |---|---|---|---|---|---|
 | `data_classes` | yes | yes | yes, via `is_closed` | — | binds |
 | `jurisdictions` | yes | yes | yes, via `is_closed` | — | binds |
 | `delegation.max_depth` | yes | yes | — | — | binds at issuance only |
-| `evidence.delivery` | yes | — | — | **yes** — a blocking sink refuses on `WC-7001` | binds |
-| `evidence.sink` | yes | — | — | — | a pointer, not a mechanism, and documented as one |
-| `max_calls_per_hour` | yes | yes | — | withdrawn | announced |
-| `max_spend_usd_per_day` | yes | yes | — | withdrawn | announced |
-| `max_concurrent` | yes | — | — | withdrawn | **was bound by nothing at all** |
-| `human_oversight` | yes | — | — | — | **declared, never checked** |
-| `delegation.attenuation` | written as a constant | — | — | — | **never compared against anything** |
+| `evidence.delivery` | yes | — | — | yes — `WC-7001` on a blocking sink | binds |
+| `evidence.sink` | yes | — | — | — | a pointer to a shipper, not a mechanism |
+| `max_calls_per_hour` | yes | yes | — | withdrawn | announced at load |
+| `max_spend_usd_per_day` | yes | yes | — | withdrawn | announced at load |
+| `max_concurrent` | yes | — | — | withdrawn | announced at load (was bound by nothing) |
+| `human_oversight` | yes | — | — | — | declared, never checked |
+| `delegation.attenuation` | written as a constant | — | — | — | never compared |
 
-Three findings, of which one is fixed:
-
-* `max_concurrent` was the single term with no binding of any kind — and the announcement that
-  exists to say so tested rate and spend while its message read "rate, concurrency or spend".
-  The check written to break a silence was keeping one. Fixed, with a test that fails against
-  the old predicate.
-* That announcement also fired from `connect-mediate` only, so the same legacy artifact loaded
-  into Kong or Envoy was enforced by neither and mentioned by neither. The message and its
-  predicate now live together and all three bindings call them.
-* `human_oversight` and `delegation.attenuation` remain declared and unchecked — carried below
-  as 1.2c rather than fixed here, because each is a product decision (enforce it, or refuse to
-  mint it) and not a defect to patch.
+Two of these were fixed during the audit. `max_concurrent` had no binding of
+any kind, and the announcement meant to report that class of term tested rate
+and spend only while its message said "rate, concurrency or spend". That
+announcement also fired from `connect-mediate` alone, so the same artifact
+loaded into Kong or Envoy was neither enforced nor mentioned. Both are fixed.
 
 ## Remaining
 
 | # | Item | Effort |
 |---|---|---|
-| 1.2c | `human_oversight` and `delegation.attenuation` are declared and unchecked — enforce, or refuse to mint | S |
-| 2.4 | anchor the chain head on the ack, so the trail is tamper-*evident* and not merely tamper-detecting | M |
-| 4.2b | the gate mutations cover `wc-gateway`, the shared decision core. `wc-kong`'s own layer — the FFI boundary, config parsing, the per-worker trail — is not mutation-checked | S |
+| 1.2c | `human_oversight` and `delegation.attenuation` are declared and unchecked. Enforce, or refuse to mint | S |
+| 2.4 | anchor the chain head on the ack, so the trail is tamper-evident and not only tamper-detecting | M |
+| 4.2b | `wc-kong`'s own layer — FFI boundary, config parsing, per-worker trail — is not mutation-checked | S |
 | 4.3 | cluster scale unverified | L |
-| 4.4b | Path A writes no decision trail — `connect-mediate` has no `--evidence`, so `terms.evidence.delivery = "blocking"` cannot bind there. Announced at startup; pending **D1** | S |
+| 4.4b | `connect-mediate` has no `--evidence`, so `terms.evidence.delivery` cannot bind there. Announced at startup; pending D1 | S |
 
 ## Open decisions
 
@@ -81,11 +69,23 @@ Three findings, of which one is fixed:
 | D1 | Path A — keep, demote to developer feedback, or cut. Identity is self-asserted from `argv`, so it is not an assurance boundary for the callee's owner |
 | D3 | External flows — permanently out of scope, or revisit |
 
-## What this is not
+## Coverage
 
-Four enforcement paths exist and three are drilled against real proxies. The gap is
-not coverage. Two things repeat across everything above and are worth reading as one
-finding: **a component can be complete, tested and documented while nothing calls it**,
-and **a harness is far more credulous about its own preconditions than about the
-system it tests**. Six of the nine P0 fixes and all three revocation breaks were one
-or the other.
+Four enforcement paths exist. All four are drilled; two of those drills run
+against a real proxy.
+
+| Path | Binding | Drill | Real proxy |
+|---|---|---|---|
+| stdio mediator | `connect-mediate --upstream` | `attest-drill.sh` | no |
+| HTTP mediator | `connect-mediate --upstream-url` | `http-mode-drill.sh` | no |
+| Envoy | `wc-extproc` | `envoy-drill.sh` | yes |
+| Kong | `libwc_kong.so` | `kong-drill.sh` | yes |
+
+## Two recurring defects
+
+Both appear repeatedly in the items above and are worth naming.
+
+| Pattern | Where it appeared |
+|---|---|
+| A component is complete, tested and documented while nothing calls it | all three revocation breaks; the withdrawn-ceiling announcement; 11 unemitted error codes |
+| A harness is more credulous about its own setup than about the system it tests | six of the nine P0 fixes; the Kong drill reporting a file it loaded as a contract it had pulled |

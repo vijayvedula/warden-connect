@@ -2,43 +2,58 @@
 
 | Document | What it is |
 |---|---|
-| [pitch.html](pitch.html) | **The walkthrough, 2:36, twelve slides, two acts.** Opens on the title card — *contracts that limit what an agent may reach, enforced on every call* — then the problem: all five tools *reachable*, and **reachable is not approved**. **Act I is GitOps** — two lanes that never touch (GitHub · GitLab · Azure Repos · Bitbucket); the disposition (pre-granted, gated, refused); where the contract lives. **Act II is enforcement** — the algebra with the product boundary on it; Envoy, Kong and the inline mediator; the same `WC-4002` in all three. Closes on the logical architecture. Every statement stays on screen, so the whole argument is readable beside the finished diagram |
-| [pitch-storyboard.html](pitch-storyboard.html) | **Production sheet for a generative cut of the pitch.** Twelve five-second Kling shots with copy-ready prompts, a shared style preamble and negative prompt, and the caption track to overlay — because generative video cannot render legible text, and this film is made of exact strings |
-| [contract-and-enforcement.html](contract-and-enforcement.html) | **For CTOs, CIOs and enterprise architects.** A 9-chapter animated explainer, 2:41 — contract × enforcement point, and why neither is a control alone. Canvas-driven, scrubbable, with an interactive intersection and a full transcript. Open it in a browser |
-| [explainer.html](explainer.html) | A 21-slide self-building deck: the problem, the model, the lifecycle, the capabilities. Open it in a browser |
-| [install.md](install.md) | Installing either enforcement point from release artifacts, without a checkout — verification first, then Envoy and Kong |
-| [production-readiness.md](production-readiness.md) | What stands between `main` and a release, and what has been closed |
-| [07-hld.md](07-hld.md) | High-level design — the plane split, the contract, the algebra, the trust model |
-| [08-lld.md](08-lld.md) | Low-level design — every crate, every module, every check, the build order. §8.6b is the enforcement-point bindings: Envoy and Kong over one decision core |
-| [use-cases/](use-cases/) | Ten use cases, one file each, with a sequence diagram per use case |
+| [pitch.html](pitch.html) | Animated walkthrough, 2:36, twelve slides. Open in a browser |
+| [contract-and-enforcement.html](contract-and-enforcement.html) | Animated explainer: how a contract and an enforcement point work together |
+| [explainer.html](explainer.html) | Slide deck: the problem, the model, the lifecycle, the capabilities |
+| [pitch-storyboard.html](pitch-storyboard.html) | Shot list for a generative cut of the pitch |
+| [install.md](install.md) | Installing an enforcement point from release artifacts |
+| [07-hld.md](07-hld.md) | High-level design |
+| [08-lld.md](08-lld.md) | Low-level design, crate by crate |
+| [DRILL.md](DRILL.md) | How the system was built, module by module |
+| [production-readiness.md](production-readiness.md) | What is closed and what is open |
+| [use-cases/](use-cases/) | Ten use cases, one file each |
 
-## The one-paragraph version
+## The model
 
-warden-connect decides whether a connection between two parties may **exist**.
-warden decides whether each **call** on that connection may proceed. The
-interface between them is two signed artifacts and one identifier (`cid`).
-A contract is a **ceiling, never a grant**:
+warden-connect decides whether a connection may **exist**. warden decides
+whether each **call** on that connection may proceed. warden is optional:
+`wc-mediator` builds standalone by default and enforces contract, surface pin
+and revocation without it.
 
 ```
 effective = contract.surface ∩ token.scope ∩ policy_decision
 ```
 
-warden-connect owns `contract.surface`, the terms and the `cid`. warden owns
-`token.scope` and `policy_decision`, and computes the intersection.
+| Term | Owned by | Decided |
+|---|---|---|
+| `contract.surface` | warden-connect | at issuance |
+| `token.scope` | warden | at authentication |
+| `policy_decision` | warden | per call |
+| `effective` | warden | per call |
+
+The interface between the two products is two signed artifacts and one
+identifier (`cid`).
 
 ## The declarative interface
 
 | Path | Written by | Meaning |
 |---|---|---|
-| `warden/offer.toml` | provider | this repo provides capability |
-| `warden/needs.toml` | consumer | this repo consumes capability |
+| `warden/offer.toml` | provider | what this repo provides, and to whom |
+| `warden/needs.toml` | consumer | what this repo consumes |
 | `warden/surface.json` | provider | the declared surface, as captured |
-| `warden/contracts/<cid>.toml` | control plane | a receipt — never a signed JWS |
+| `warden/contracts/<cid>.toml` | control plane | a receipt. Never a signed JWS |
 
-A reviewed merge is the approval. Supported on GitHub, Azure DevOps and
-Bitbucket — same paths, same flow.
+A reviewed merge is the approval. Four source hosts are supported, each through
+an operator-supplied shim in [`scripts/scm/`](../scripts/scm):
 
-## Use cases at a glance
+| Host | Shim |
+|---|---|
+| GitHub | `scripts/scm/github.sh` |
+| GitLab | `scripts/scm/gitlab.sh` |
+| Azure Repos | `scripts/scm/azure-repos.sh` |
+| Bitbucket | `scripts/scm/bitbucket.sh` |
+
+## Use cases
 
 | | Use case | Stage |
 |---|---|---|
@@ -55,33 +70,36 @@ Bitbucket — same paths, same flow.
 
 ## Diagrams
 
-Diagrams are committed as SVG, with the Mermaid source beside each one:
+Committed as SVG with the Mermaid source beside each one:
 
 ```
 docs/diagrams/hld-1.mmd            docs/use-cases/diagrams/uc-01.mmd
 docs/diagrams/hld-1.svg            docs/use-cases/diagrams/uc-01.svg
 ```
 
-GitHub overlays a pan/zoom control cluster on every ```` ```mermaid ```` fence it
-renders, and there is no document-level way to suppress it
-([github/community#178929](https://github.com/orgs/community/discussions/178929)).
-So the documents reference images. The `.mmd` is what you review in a pull
-request; the `.svg` is marked `linguist-generated`.
+| Location | Count |
+|---|---|
+| `docs/diagrams/` | 6 |
+| `docs/use-cases/diagrams/` | 10 |
 
-To regenerate after editing a `.mmd`:
+The documents reference the images rather than using ```` ```mermaid ```` fences,
+because GitHub overlays a pan/zoom control cluster on every fence it renders and
+there is no document-level way to suppress it
+([github/community#178929](https://github.com/orgs/community/discussions/178929)).
+Review the `.mmd`; the `.svg` is marked `linguist-generated`.
+
+Regenerate after editing a `.mmd`:
 
 ```sh
 scripts/render-diagrams.sh
 ```
 
-That script is the only part of the toolchain that needs Node, and it runs only
-when a diagram changes. CI never runs it.
+That script is the only part of the toolchain that needs Node. CI never runs it.
 
 ## Note on this rewrite
 
 `docs/` was rebuilt on 2026-08-21. The previous set — capability matrices,
 journey maps, threat model, limitations, production readiness, key custody,
 runbook, deployment, observability, operations, releasing, conformance,
-prerequisites, physical architecture, twelve-factor, identity-without-SPIRE, and
-the HTML/video explainer estate — is preserved in full at
-`~/aisec/backups/warden-connect-docs-20260821/` and in git history at `3f30697`.
+prerequisites, physical architecture, twelve-factor, identity-without-SPIRE and
+the earlier HTML explainers — is in git history at `3f30697`.
