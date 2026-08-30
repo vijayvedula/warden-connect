@@ -1,151 +1,113 @@
 # The warden-connect Rust Drill
 
-> A build ladder that ships [docs/08-lld.md](08-lld.md) and teaches Rust at
-> the same time. Fourteen sessions, one module per sitting, each one a committed
-> unit with tests green.
->
-> Calibrated for: *some Rust, hit walls on lifetimes / traits / error types /
-> structuring past one file.* Every session names the wall it is there to break.
+A build ladder that ships [docs/08-lld.md](08-lld.md) and teaches Rust while
+doing it. Fourteen sessions, one module each, every session a committed unit
+with tests green.
 
----
+Calibrated for someone with some Rust who stalls on lifetimes, traits, error
+types and structuring past one file. Each session names the wall it breaks.
 
 ## 1 · How we work
 
-| | |
+| Step | Who |
 |---|---|
-| **I write** | The module — types, functions, tests — and then explain it function by function: what it does, the Rust mechanics in play, and which alternatives I rejected and why. |
-| **You read and interrogate** | Push on anything that isn't obvious. "Why not `&str` there", "what breaks if you drop that bound", "why isn't this an enum". The questions are the learning. |
-| **You then own it** | Refactor, rename, disagree. If you'd have written it differently, say so — sometimes you'll be right, and either way you'll know why the code is the shape it is. |
-| **Every module ends with** | A grip check (3 questions, from memory) and a mutation drill (I break one line, you diagnose from the compiler error alone). |
+| Write the module — types, functions, tests | me |
+| Explain it function by function: what it does, the Rust in play, the alternatives rejected | me |
+| Interrogate anything unclear or anything you would have done differently | you |
+| Grip check: three questions from memory, no scrolling | you |
+| Mutation drill: I break one line, you diagnose from the compiler error alone | you |
 
-**The honest trade:** this format gets to working code fastest and builds grip
-more slowly than writing it yourself would. The grip check and the mutation drill
-are what stop it from becoming passive reading — they're the part that tells us
-whether it actually landed. If a grip check goes badly, that module gets
-re-explained, not waved through.
+This reaches working code faster than writing it yourself, and builds grip more
+slowly. The grip check and mutation drill are what test whether it landed. A bad
+grip check means the module is re-explained, not waved through.
 
----
+## 2 · House rules
 
-## 2 · House rules for the code
-
-These are the standing conventions; I'll stop reminding you after session 3.
-
-1. **No `unwrap()` or `expect()` outside `#[cfg(test)]`.** Enforced by clippy in
-   `Cargo.toml`. In tests, `unwrap()` is fine and idiomatic.
-2. **`Result<T>` everywhere a thing can fail**, with a `WcError` carrying a
-   `WC-*` code. No `Option` to mean failure, no sentinel values, no panics on
-   bad input — panics are for broken *invariants*, never for bad *data*.
-3. **Every `pub` item gets a doc comment** saying what it does and what it
-   promises. `#![warn(missing_docs)]` will nag you. The nag is the lesson.
-4. **Borrow before you clone.** When you reach for `.clone()`, say out loud why
-   the borrow wouldn't work. Half the time you'll discover it would.
-5. **`cargo fmt` before every review**, `cargo clippy -- -D warnings` clean
-   before every commit.
-6. **Tests are part of the module, not homework.** A session isn't done when it
-   compiles; it's done when its tests pass and clippy is quiet.
-7. **Match the surrounding code.** We're extending Warden core's idiom
-   (`Result<T, String>` at its edges, `pub fn` verbs, `//!` module docs) — not
-   importing a new house style.
-
----
+| # | Rule |
+|---|---|
+| 1 | No `unwrap()` or `expect()` outside `#[cfg(test)]`. Enforced by clippy in `Cargo.toml` |
+| 2 | `Result<T>` wherever something can fail, carrying a `WcError` with a `WC-*` code. Panics are for broken invariants, never for bad data |
+| 3 | Every `pub` item gets a doc comment. `#![warn(missing_docs)]` enforces it |
+| 4 | Borrow before you clone. When reaching for `.clone()`, say why the borrow will not work |
+| 5 | `cargo fmt` before every review; `cargo clippy -- -D warnings` clean before every commit |
+| 6 | Tests are part of the module. A session is done when its tests pass and clippy is quiet |
+| 7 | Match the surrounding code. Extend Warden core's idiom rather than importing a new one |
 
 ## 3 · The ladder
 
-Order is forced by two things: what compiles without the rest of the tree, and
-which wall you need broken before the next module is even readable.
+Order is forced by what compiles without the rest of the tree, and by which wall
+must break before the next module is readable.
 
-| # | Module | Rust you'll actually learn | The wall it breaks |
+| # | Module | Rust it teaches | Wall it breaks |
 |---|---|---|---|
-| **1** | `wc-core::error` | Newtype pattern · `const` items · `static` tables · `Display`/`Error` traits · `FromStr` · `Box<dyn Error>` · `Option` · exhaustive `match` · type aliases | **Error handling at scale.** Why `Box<dyn Error>` isn't a design, and how a real error type carries a code, a source, and a fail direction. |
-| **2** | `wc-core::model` — ids | Newtypes over `String` · validating constructors · `&str` vs `String` vs `impl Into<String>` · `TryFrom` · `AsRef<str>` · when *not* to `Deref` | **`&str` vs `String`.** The single most common Rust stall. You'll stop guessing and start knowing which one a signature wants. |
-| **3** | `wc-core::model` — entities | `struct`/`enum` design · `serde` derive · `#[serde(rename_all)]` · `Option<T>` fields · `BTreeMap` vs `HashMap` · exhaustive state-machine `match` | **Making illegal states unrepresentable.** The lifecycle table from §8.5.1 becomes unreachable code, not a comment. |
-| **4** | `wc-core::canon` — normalise | Iterators & adaptors (`chars`, `filter`, `map`, `collect`) · `char` vs `u8` vs grapheme · borrowing in loops · `Cow<str>` | **Iterator chains.** And the borrow checker's favourite trap: mutating what you're iterating. |
-| **5** | `wc-core::canon` — project & order | Recursion over `serde_json::Value` · `match` on enums with data · `BTreeMap` ordering · ownership when transforming trees | **Recursive ownership.** Rebuilding a tree while owning parts of it. |
-| **6** | `wc-core::canon` — pin | Traits & generics · `impl Trait` args · trait bounds · writing property tests · `#[cfg(test)]` modules | **Generics vs trait objects** — when each is the right tool. |
-| **7** | `wc-control::store` — `Log<T>` | Generic structs with bounds · `where` clauses · `Serialize`/`DeserializeOwned` · `Drop` · file I/O · `unsafe` at the `libc` boundary (`flock`) | **Generic data structures.** Plus your first justified `unsafe` block, wrapped so callers never see it. |
-| **8** | `wc-control::store` — `Projection` | `HashMap`/`HashSet` · the `entry` API · **borrow splitting** · `&mut self` methods returning references · iterator over map values | **The classic wall:** "cannot borrow `self` as mutable more than once". You'll learn the four standard escapes and when each is right. |
-| **9** | `wc-control::registry` | Structs holding references · **explicit lifetimes** (`Registry<'a>`) · lifetime elision rules · returning `&T` vs `T` vs `Arc<T>` | **Lifetimes.** Not the theory — the three real cases where you must write `'a` and the many where you must not. |
-| **10** | `wc-control::evidence` | Cross-crate deps · path dependencies · trait objects (`Box<dyn Sink>`) · adapting *someone else's* API (Warden core's `audit.rs`) · `From` conversions between error types | **Working inside an existing codebase.** Reuse without forking. |
-| **11** | `wc-core::contract` | Third-party crates (`jsonwebtoken`, `serde_json`) · builder patterns · time handling · `Option` combinators (`map`/`and_then`/`ok_or`) · constant-time comparison | **Reading and driving unfamiliar crate APIs** from docs alone. |
-| **12** | `wc-mediator::cache` | `Arc` · `RwLock` · copy-on-write snapshot swap · `Send`/`Sync` · atomics · interior mutability · why `Arc<Mutex<HashMap>>` is usually the wrong reflex | **Shared mutable state.** The thing that makes people give up on Rust concurrency. |
-| **13** | `wc-mediator::gate` + `filter` | Ordering side effects · early return with `?` · slices & sets · writing an invariant as a property test · benchmarking | **Proving a security property** in code rather than asserting it in prose. |
-| **14** | `wc-control::api` + `wc-cli` | Threads & `move` closures · `'static` bounds · `Arc<T>` across threads · CLI arg parsing without a framework · integration tests | **Wiring a binary together.** The last mile everyone skips. |
+| 1 | `wc-core::error` | Newtype · `const`/`static` tables · `Display`/`Error` · `FromStr` · `Box<dyn Error>` · exhaustive `match` | Error handling at scale |
+| 2 | `wc-core::model` — ids | Newtypes over `String` · validating constructors · `&str` vs `String` vs `impl Into<String>` · `TryFrom` · `AsRef<str>` | `&str` vs `String` |
+| 3 | `wc-core::model` — entities | `struct`/`enum` design · `serde` derive · `Option<T>` fields · `BTreeMap` vs `HashMap` | Making illegal states unrepresentable |
+| 4 | `wc-core::canon` — normalise | Iterators and adaptors · `char` vs `u8` vs grapheme · borrowing in loops · `Cow<str>` | Iterator chains, and mutating what you iterate |
+| 5 | `wc-core::canon` — project & order | Recursion over `serde_json::Value` · `match` on enums with data · `BTreeMap` ordering | Recursive ownership |
+| 6 | `wc-core::canon` — pin | Traits and generics · `impl Trait` args · trait bounds · property tests | Generics vs trait objects |
+| 7 | `wc-control::store` — `Log<T>` | Generic structs with bounds · `where` clauses · `Serialize`/`DeserializeOwned` · `Drop` · file I/O · `unsafe` at the `libc` boundary | Generic data structures, and a justified `unsafe` block |
+| 8 | `wc-control::store` — `Projection` | `HashMap`/`HashSet` · the `entry` API · borrow splitting · `&mut self` returning references | "cannot borrow `self` as mutable more than once" |
+| 9 | `wc-control::registry` | Structs holding references · explicit lifetimes · elision rules · `&T` vs `T` vs `Arc<T>` | Lifetimes |
+| 10 | `wc-control::evidence` | Cross-crate deps · path dependencies · `Box<dyn Sink>` · adapting someone else's API · `From` conversions | Working inside an existing codebase |
+| 11 | `wc-core::contract` | Third-party crates · builder patterns · time handling · `Option` combinators · constant-time comparison | Driving unfamiliar crate APIs from docs |
+| 12 | `wc-mediator::cache` | `Arc` · `RwLock` · copy-on-write snapshot swap · `Send`/`Sync` · atomics · interior mutability | Shared mutable state |
+| 13 | `wc-mediator::gate` + `filter` | Ordering side effects · early return with `?` · slices and sets · invariants as property tests | Proving a security property in code |
+| 14 | `wc-control::api` + `wc-cli` | Threads and `move` closures · `'static` bounds · `Arc<T>` across threads · CLI parsing without a framework | Wiring a binary together |
 
-Sessions 1–6 are `wc-core` and need no dependencies at all — pure Rust, fastest
-possible feedback loop. Sessions 7–14 open the P0 surface from §8.16.
+Sessions 1–6 are `wc-core` and need no dependencies. Sessions 7–14 open the P0
+surface from [§8.16](08-lld.md).
 
----
+## 4 · Per-session ritual
 
-## 4 · The per-session ritual
-
-Same six steps every time. The last two are the ones that build grip.
-
-1. **Brief** (me, ~5 min read) — the design decision behind the module and the
-   Rust concepts in play.
-2. **Write** (me) — the module and its tests, `cargo fmt` / `clippy -D warnings`
-   / `cargo test` all clean before you read a line of it.
-3. **Explain** (me) — function by function, grouped by concept. Not a line-by-line
-   transcript: the *why*, and what the alternatives would have cost.
-4. **Interrogate** (you) — anything unclear, anything you'd have done differently.
-   We stay here as long as it takes; this is the actual session.
-5. **Grip check** (you, from memory, no scrolling) — three questions about code
-   *you just read*. If you can't answer, we haven't finished the session,
-   regardless of whether the tests pass.
-6. **Mutation drill** (me → you) — I break one line in your module and hand you
-   the compiler error or failing test. You diagnose it without looking at the
-   diff. This is the single highest-value five minutes in the whole ritual:
-   reading Rust's errors fluently is most of what "knowing Rust" feels like
-   day to day.
-
-Then: `cargo fmt && cargo clippy -- -D warnings && cargo test`, commit, log it
-in §6.
-
-**Escalation rule.** If a concept doesn't land after two different
-explanations, we stop explaining and shrink the hole — I'll split the function
-into two smaller ones and you'll do the easy half first. Confusion that persists
-is a sizing problem, not an intelligence problem.
-
----
-
-## 5 · Session briefs
-
-### Session 1 · `wc-core::error` — the code table
-
-**Why this first.** Every other module returns `Result<T, WcError>`. Get the
-error type wrong and you refactor 11 kLOC later. It's also the smallest module
-that teaches four traits at once, and it has zero dependencies — pure Rust,
-instant compile.
-
-**The design decision, and the lesson in it.** The LLD says 69 codes, each
-appearing in exactly one place. The obvious Rust answer is a 69-variant enum,
-and it's wrong here:
-
-| | 69-variant `enum` | Newtype `Code(u16)` + `static` table ← ours |
+| # | Step | Notes |
 |---|---|---|
-| Exhaustive `match` | yes — but we never want to match all 69 | no |
-| `as_str()`, `http()`, `fail_direction()` | three 69-arm matches, ~210 lines of mechanical code | one table, three lookups |
+| 1 | Brief | The design decision and the Rust concepts in play |
+| 2 | Write | Module and tests, with fmt, clippy and test clean before you read a line |
+| 3 | Explain | Function by function, grouped by concept: the why, and what the alternatives cost |
+| 4 | Interrogate | As long as it takes. This is the session |
+| 5 | Grip check | Three questions from memory. Failing it means the session is not finished |
+| 6 | Mutation drill | One broken line, diagnosed from the compiler error without the diff |
+
+Then `cargo fmt && cargo clippy -- -D warnings && cargo test`, commit, log in §6.
+
+If a concept does not land after two explanations, the function gets split and
+you take the easier half first. Persistent confusion is a sizing problem.
+
+## 5 · Session 1 · `wc-core::error`
+
+Every other module returns `Result<T, WcError>`, so the error type comes first.
+It is also the smallest module that exercises four traits and has no
+dependencies.
+
+**The design decision.** There are 82 codes, each appearing in one place. A
+82-variant enum is the obvious answer and the wrong one:
+
+| | 82-variant `enum` | Newtype `Code(u16)` + `static` table ← ours |
+|---|---|---|
+| Exhaustive `match` | yes, but matching all 82 is never wanted | no |
+| `as_str()`, `http()`, `fail_direction()` | three 82-arm matches | one table, three lookups |
 | Adding a code | touch every match | one row |
-| Numeric identity (`WC-3108`) | manual discriminants, easy to desync | *is* the representation |
+| Numeric identity (`WC-3108`) | manual discriminants, easy to desync | is the representation |
 
-So: `Code` is a validated newtype over `u16`, and the per-code facts live in one
-sorted `static CODES` table. What we *do* want exhaustive matching on is the
-small `Category` enum (9 variants) and `FailDirection` (4) — so those stay
-enums. **The general lesson: reach for an enum when you want the compiler to
-force you to handle every case; reach for a table when the cases are data.**
+`Code` is a validated newtype over `u16` and the per-code facts live in one
+sorted `static` table. `Category` (9 variants) and `FailDirection` (4) stay
+enums, because exhaustive matching on those is wanted. Use an enum when the
+compiler should force every case; use a table when the cases are data.
 
-**Concepts you'll use** — read these before starting, they're each ~5 min:
+**Concepts to read first**
 
-| Concept | Where it shows up | Reference |
-|---|---|---|
-| Newtype pattern | `struct Code(u16)` | [Rust Book 19.3](https://doc.rust-lang.org/book/ch19-03-advanced-traits.html#using-the-newtype-pattern-to-implement-external-traits-on-external-types) |
-| `Display` vs `Debug` | `impl Display for Code` writing `WC-3108` | [std::fmt](https://doc.rust-lang.org/std/fmt/) |
-| `std::error::Error` + `source()` | error chaining | [std::error::Error](https://doc.rust-lang.org/std/error/trait.Error.html) |
-| `Box<dyn Error + Send + Sync>` | wrapping a cause you don't own | Book 18.2 |
-| `FromStr` | `"WC-3108".parse::<Code>()` | [std::str::FromStr](https://doc.rust-lang.org/std/str/trait.FromStr.html) |
-| `static` + `const` + slices | the `CODES` table, `binary_search_by_key` | [Book 3.1](https://doc.rust-lang.org/book/ch03-01-variables-and-mutability.html) |
-| Match guards & ranges | `Category::of` | Book 18.3 |
+| Concept | Where it shows up |
+|---|---|
+| Newtype pattern | `struct Code(u16)` |
+| `Display` vs `Debug` | `impl Display for Code` writing `WC-3108` |
+| `std::error::Error` + `source()` | error chaining |
+| `Box<dyn Error + Send + Sync>` | wrapping a cause you do not own |
+| `FromStr` | `"WC-3108".parse::<Code>()` |
+| `static`, `const`, slices | the `CODES` table and `binary_search_by_key` |
+| Match guards and ranges | `Category::of` |
 
-**Your holes** (nine, in the order I'd do them):
+**Your holes**, in order
 
 | # | Item | What it teaches |
 |---|---|---|
@@ -154,41 +116,28 @@ force you to handle every case; reach for a table when the cases are data.**
 | 3 | `Code::spec` | `binary_search_by_key`, `Option`, `&'static` |
 | 4 | `impl Display for Code` | `write!`, formatter width (`{:04}`) |
 | 5 | `impl FromStr for Code` | Parsing, `strip_prefix`, error mapping |
-| 6 | `Code::fail_direction` / `is_fail_closed` | Delegating through a lookup; exhaustive match on `FailDirection` |
-| 7 | `WcError::new` / `with_detail` | `impl Into<String>` args — why not `&str`, why not `String` |
+| 6 | `Code::fail_direction` / `is_fail_closed` | Delegating through a lookup; exhaustive match |
+| 7 | `WcError::new` / `with_detail` | `impl Into<String>` args |
 | 8 | `WcError::with_source` | Generic bounds `E: Error + Send + Sync + 'static`, boxing |
-| 9 | `impl Display` + `impl Error for WcError` | The two traits that make an error type *an error type* |
+| 9 | `impl Display` + `impl Error for WcError` | The two traits that make an error type an error type |
 
-Stretch (optional, only if you're enjoying it): `macro_rules! wc_bail` so
-`wc_bail!(Code::PIN_MISMATCH, "presented {presented} != pinned {pinned}")`
-works. Macros are where Rust stops looking like other languages.
+Optional stretch: a `macro_rules! wc_bail` so
+`wc_bail!(Code::PIN_MISMATCH, "presented {presented} != pinned {pinned}")` works.
 
-**Grip-check questions** you'll answer at the end, so read the code with them in
-mind:
+**Grip-check questions**
 
-1. Why does `WcError::with_source` need `+ Send + Sync + 'static`, and what
-   breaks at a call site if you drop each of the three?
-2. `Code::spec` returns `Option<&'static CodeSpec>`. Where does that reference
-   live, and why is no lifetime annotation needed on the method?
-3. Why is `detail: String` and not `&str`, given rule 4 says borrow before you
-   clone?
+1. Why does `WcError::with_source` need `+ Send + Sync + 'static`, and what breaks at a call site if you drop each?
+2. `Code::spec` returns `Option<&'static CodeSpec>`. Where does that reference live, and why does the method need no lifetime annotation?
+3. Why is `detail: String` and not `&str`, given rule 4?
 
----
+## Sessions 2–14
 
-### Sessions 2–14
-
-Briefs are written at the start of each session, not up front — each one is
-shaped by what the review of the previous session showed you'd already
-internalised and what you hadn't. A curriculum written on day one is a
-curriculum that ignores you.
-
----
+Briefs are written at the start of each session rather than up front, shaped by
+what the previous review showed had landed and what had not.
 
 ## 6 · Progress log
 
-Fill the last two columns in yourself; they're the honest record.
-
-| # | Module | Committed | Grip check | What actually cost me time |
+| # | Module | Committed | Grip check | What cost time |
 |---|---|---|---|---|
 | 1 | `wc-core::error` | | | |
 | 2 | `wc-core::model` ids | | | |
@@ -205,28 +154,23 @@ Fill the last two columns in yourself; they're the honest record.
 | 13 | `wc-mediator::gate` + `filter` | | | |
 | 14 | `wc-control::api` + `wc-cli` | | | |
 
----
-
 ## 7 · Tooling
 
 ```sh
-cargo fmt                            # before every review
+cargo fmt                                         # before every review
 cargo clippy --all-targets -- -D warnings
-cargo test                           # whole workspace
-cargo test -p warden-connect-core error::        # one module
-cargo test -- --nocapture            # see your dbg!/println!
-cargo doc --open                     # read your own docs as docs
+cargo test                                        # whole workspace
+cargo test -p warden-connect-core error::         # one module
+cargo test -- --nocapture                         # see dbg!/println!
+cargo doc --open
 ```
-
-Worth installing when we reach the session that needs it:
 
 | Tool | Session | Why |
 |---|---|---|
-| `rustup component add rust-analyzer` | now, if your editor lacks it | inline types and errors — this alone will double your speed |
-| `cargo install cargo-nextest` | 7 | much faster, clearer test output |
-| `cargo install cargo-fuzz` | 6 | the `canon_surface` fuzz target from §8.15 |
-| `cargo install cargo-expand` | 1 stretch | see what `macro_rules!` and `derive` actually generate |
+| `rustup component add rust-analyzer` | now | inline types and errors |
+| `cargo install cargo-nextest` | 7 | faster, clearer test output |
+| `cargo install cargo-fuzz` | 6 | the `canon_surface` fuzz target from [§8.15](08-lld.md) |
+| `cargo install cargo-expand` | 1 stretch | see what `macro_rules!` and `derive` generate |
 
-Two habits worth forming now: read the **first** compiler error only and
-recompile (later ones are usually fallout), and run `rustc --explain E0499` on
-any error code you don't recognise.
+Two habits: read the first compiler error only and recompile, and run
+`rustc --explain E0499` on any error code you do not recognise.
