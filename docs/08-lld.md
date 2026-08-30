@@ -74,7 +74,7 @@ warden-connect/
 │   └── wc-e2e/           end-to-end and property tests
 ├── daemon/
 │   └── wc-extproc/       Envoy ext_proc binding. OUTSIDE the workspace (§8.2)
-├── docs/                 this document, the HLD, the use cases, the explainer
+├── docs/                 this document, the HLD, the use cases
 ├── fixtures/contracts/   conformance vectors
 ├── scripts/              drills, dependency ceilings, SCM shims
 ├── connect-policy.toml   may this contract exist?
@@ -82,8 +82,6 @@ warden-connect/
 ```
 
 **Dependency direction is strictly one-way:**
-
-<img src="diagrams/lld-1.svg" alt="Crate dependency direction — one way, and the mediator never depends on the control plane" width="100%">
 
 `wc-mediator` does **not** depend on `wc-control`. That is what lets it run
 standalone, and what stops a control-plane compromise from reaching the data
@@ -268,8 +266,6 @@ fresh admission that creates a new record.
 ### 8.5.4 `admission` and `attest` — the pipeline
 
 Five stages, each fail-closed, in this order:
-
-<img src="diagrams/lld-2.svg" alt="The five admission stages, each fail-closed, with the code each refusal produces" width="100%">
 
 Order matters: the surface is captured **before** it is screened, and screened
 **before** it is pinned. Pinning unscreened text would make the pin an assertion

@@ -2,15 +2,9 @@
 
 | Document | What it is |
 |---|---|
-| [pitch.html](pitch.html) | Animated walkthrough, 2:36, twelve slides. Open in a browser |
-| [contract-and-enforcement.html](contract-and-enforcement.html) | Animated explainer: how a contract and an enforcement point work together |
-| [explainer.html](explainer.html) | Slide deck: the problem, the model, the lifecycle, the capabilities |
-| [pitch-storyboard.html](pitch-storyboard.html) | Shot list for a generative cut of the pitch |
 | [install.md](install.md) | Installing an enforcement point from release artifacts |
 | [07-hld.md](07-hld.md) | High-level design |
 | [08-lld.md](08-lld.md) | Low-level design, crate by crate |
-| [DRILL.md](DRILL.md) | How the system was built, module by module |
-| [production-readiness.md](production-readiness.md) | What is closed and what is open |
 | [use-cases/](use-cases/) | Ten use cases, one file each |
 
 ## The model
@@ -69,17 +63,8 @@ an operator-supplied shim in [`scripts/scm/`](../scripts/scm):
 
 ## Diagrams
 
-Committed as SVG with the Mermaid source beside each one:
-
-```
-docs/diagrams/hld-1.mmd            docs/use-cases/diagrams/uc-01.mmd
-docs/diagrams/hld-1.svg            docs/use-cases/diagrams/uc-01.svg
-```
-
-| Location | Count |
-|---|---|
-| `docs/diagrams/` | 6 |
-| `docs/use-cases/diagrams/` | 10 |
+The ten use-case sequence diagrams are committed as SVG with the Mermaid source
+beside each one, in `docs/use-cases/diagrams/`.
 
 The documents reference the images rather than using ```` ```mermaid ```` fences,
 because GitHub overlays a pan/zoom control cluster on every fence it renders and

@@ -20,3 +20,12 @@ warden-connect.cdx.json
 # `evil.jwt` from an older revision of that script had been committed at the repository root
 # and sat there — a stray signed token in a security product's tree, referenced by nothing.
 *.jwt
+
+# Docs assets that are not needed to build or run the service.
+# Kept locally, out of the repo: figures, pitch video, HTML explainers,
+# and the two internal registers.
+docs/diagrams/
+docs/media/
+docs/*.html
+docs/DRILL.md
+docs/production-readiness.md

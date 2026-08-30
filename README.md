@@ -13,17 +13,6 @@ calls happen inside.
 > limitations and production-readiness registers were retired in the 2026-08-21 docs
 > rewrite and live in git history at `3f30697`.
 
-[![warden-connect — a contract is a ceiling, never a grant](docs/media/pitch-loop.gif)](docs/pitch.html)
-
-<p align="center">
-  <sub>
-    The full walkthrough is <b>2:36</b> — the problem, contract creation as GitOps,
-    and enforcement at Envoy, Kong and the inline mediator.<br>
-    Open <a href="docs/pitch.html">docs/pitch.html</a> in a browser, or download it from the
-    <a href="../../releases">latest release</a> — <b>2160p</b> for watching, 1080p for posting.
-  </sub>
-</p>
-
 ---
 
 ## The problem
@@ -172,12 +161,10 @@ can live in an HSM, a smartcard or a KMS and never reach this process.
 
 | | |
 |---|---|
-| [docs/explainer.html](docs/explainer.html) | **Start here.** A 21-slide self-building deck: the problem, the model, the lifecycle, the capabilities |
-| [docs/07-hld.md](docs/07-hld.md) | High-level design — the plane split, the artifact, the algebra, the trust and threat model, the adoption ladder |
+| [docs/07-hld.md](docs/07-hld.md) | **Start here.** High-level design — the plane split, the artifact, the algebra, the trust and threat model, the adoption ladder |
 | [docs/08-lld.md](docs/08-lld.md) | Low-level design — every crate, every module, every check, the error taxonomy, the build order |
 | [docs/use-cases/](docs/use-cases/) | Ten use cases, one file each, with a sequence diagram per use case |
 | [sdk/python/](sdk/python) · [examples/](examples) | A dependency-free client for the control-plane API, and three runnable examples |
-| [docs/DRILL.md](docs/DRILL.md) | How this was built, module by module |
 | [SECURITY.md](.github/SECURITY.md) | Reporting a vulnerability; what is in and out of scope |
 
 > `docs/` was rebuilt on 2026-08-21. The previous set — capability matrices, journey maps,

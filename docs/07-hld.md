@@ -26,8 +26,6 @@ until this date.
 | A secrets manager | No credential is minted, held or distributed here |
 | A gateway product | `wc-mediator` runs standalone, or compiles into an existing proxy as a decorator |
 
-<img src="diagrams/hld-1.svg" alt="System context — offers and needs merge into the control plane, which issues contracts to the mediator" width="100%">
-
 ## 7.2 Architecture overview
 
 | Plane | Crate | Decides | Latency budget | Failure stance |
@@ -87,8 +85,6 @@ AuditEntry      the policy engine's audit row, extended with cid,
                 contract_jti, entity ids, policy_version — folded
                 into row_hash
 ```
-
-<img src="diagrams/hld-2.svg" alt="Entity lifecycle — pending, active, suspended, retired; retired never returns" width="100%">
 
 Posture is orthogonal to lifecycle: `Attested`, `Degraded`, `Unattested`,
 `Quarantined`. Quarantined is terminal until a full re-admission.
@@ -201,8 +197,6 @@ Specified in full, with sequence diagrams, in [use-cases/](use-cases/).
 | F4 · Quarantine | [UC-07](use-cases/UC-07-emergency-quarantine.md) | Terminal state, revoke everywhere, report non-confirmation |
 | F5 · Federation | [UC-05](use-cases/UC-05-cross-organisation-federation.md) | Anchors and chains, terms narrowed by `min`, one hop only |
 
-<img src="diagrams/hld-3.svg" alt="Bilateral consent — provider offer and consumer need meet in the registry" width="100%">
-
 Two pipelines, two repositories, two reviews. Neither party can produce a
 contract alone.
 
@@ -269,8 +263,6 @@ topology, compiling the mediator into an existing proxy so per-action policy
 applies as well. One process, no extra hop.
 
 ## 7.8 Trust and threat model
-
-<img src="diagrams/hld-4.svg" alt="Trust boundaries — the mediator verifies against issuer keys, not against the control plane" width="100%">
 
 A compromised control plane cannot mint a valid contract without the signing
 keys. It can withhold, and withholding fails closed.

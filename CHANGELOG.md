@@ -88,7 +88,7 @@ to `0.2`.
 - `max_concurrent` was bound by nothing anywhere, and the announcement that exists to
   catch exactly that said "rate, concurrency or spend" while testing two of the three.
 - `human_oversight` and `delegation.attenuation` remain declared and unchecked. Recorded
-  in [production-readiness](docs/production-readiness.md) as 1.2c rather than quietly
+  in the production-readiness register as 1.2c rather than quietly
   enforced, because enforcing an unchecked term and refusing to mint it are opposite
   answers and the choice is not a defect to patch.
 
@@ -406,7 +406,7 @@ Found by the **first adversarial hardening pass** over the six paths in
 
 ### Known gaps
 
-See [docs/production-readiness.md](docs/production-readiness.md). P0 and P1 are done or
+See the production-readiness register. P0 and P1 are done or
 code-complete; what remains needs something a commit cannot supply:
 
 * **A hardware token and a KMS key** (P0 #5) — the custody seams and their enforcement are
