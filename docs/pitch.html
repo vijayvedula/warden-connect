@@ -981,8 +981,6 @@
                 ["revocation", "assurance"], ["broker", "federation"]];
 
   function s7b_architecture(t) {        // everything, laid out once
-    txt("warden-connect   ·   logical architecture", 800, 158,
-        { size: 18, align: "center", color: C.muted, alpha: env(t, 0.2, 99, 0.4), spacing: 2.4 });
 
     const head = (col, a) => {
       txt(col.name, col.x, 204, { size: 17, align: "center", color: col.c, alpha: a, spacing: 2.6 });
