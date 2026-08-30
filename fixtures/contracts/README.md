@@ -27,7 +27,7 @@ artifact's claim would register the trusted key under the attacker's name and ad
 scripts/conformance.sh ./my-verifier
 ```
 
-See [docs/conformance.md](../../docs/conformance.md) for the calling convention, the
+See [docs/07-hld.md § Conformance](../../docs/07-hld.md) for the calling convention, the
 version policy for this vector set, and what the kit does not yet cover.
 
 The signing keys are in [`../keys/`](../keys) and are **published test keys,

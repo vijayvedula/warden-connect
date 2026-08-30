@@ -59,7 +59,7 @@ cargo test -p wc-e2e --test attest # both fixture sets, one suite
 
 Stages 2 and 3 have no equivalent: there is no reference implementation of an A2A card
 signature to disagree with us. That remains the honest gap, and it is recorded in
-[`docs/limitations.md`](../../docs/limitations.md).
+`docs/limitations.md`, the register retired in the 2026-08-21 docs rewrite (git history at `3f30697`).
 
 > The procedure this section used to give was wrong in three ways, which is worth keeping
 > visible: it piped `spire-agent api fetch jwt` through `sed -n 's/^ *token: *//p'`, which

@@ -230,7 +230,7 @@ else
             "$PASS" "$FAIL" "$DEFERRED"
         printf '\nA disagreement is worth reporting even when you are not sure whose bug it is:\n'
         printf 'in a format meant to be interoperable, disagreeing about what is valid IS the bug.\n'
-        printf 'See SECURITY.md > Conformance findings.\n'
+        printf 'See .github/SECURITY.md > Conformance findings.\n'
     fi
 fi
 

@@ -22,7 +22,7 @@ The most valuable contributions here, roughly in order:
    one, the report alone is a contribution.
 3. **A mediator for an enforcement point we don't cover** — an Envoy filter, an API
    gateway plugin, another agent framework. The eleven checks are specified in
-   [docs/08-lld.md](docs/08-lld.md) and `fixtures/contracts/` is the suite you must pass.
+   [docs/08-lld.md](../docs/08-lld.md) and `fixtures/contracts/` is the suite you must pass.
 4. **Docs, deployment recipes, policy examples.**
 
 ## Running CI locally
@@ -124,7 +124,7 @@ runner and passes on a bigger one, which this project got wrong twice with laten
 
 ## House rules for the code
 
-From [DRILL.md](DRILL.md) §2, and they are not negotiable in review:
+From [DRILL.md](../docs/DRILL.md) §2, and they are not negotiable in review:
 
 1. **No `unwrap()` or `expect()` outside `#[cfg(test)]`.** Enforced by clippy lints in
    the workspace `Cargo.toml`. In tests they are fine and idiomatic.
@@ -156,7 +156,7 @@ From [DRILL.md](DRILL.md) §2, and they are not negotiable in review:
   path where `effective` could end up wider than
   `contract.surface ∩ token.scope ∩ policy_decision` is a blocking objection.
 - **Does a failure fail closed?** Compare against the fail-closed matrix in
-  [docs/07-hld.md §7.8](docs/07-hld.md). A dependency failure that yields "allow" where
+  [docs/07-hld.md §7.8](../docs/07-hld.md). A dependency failure that yields "allow" where
   that table says deny is a bug even if the happy path is fine.
 - **Is the error actionable?** `WC-8004 configuration invalid` with no detail makes an
   operator read source. Say which value, from where, and what it should have been.
