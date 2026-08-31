@@ -162,65 +162,45 @@ Nothing outside this repository is required to build or test it. The optional
 `warden-proxy` feature is the only thing that pulls in a policy engine, and it is off
 by default.
 
-## Try it
+## Try it out
 
-```sh
-# 1 · an issuer key, and the two parties
-connect keys new --kid k-2026-01 --out .keys      # prints the openssl command
-connect register server --endpoint https://payments.internal/mcp \
-    --owner human:vijay --zone internal.payments --surface payments-surface.json
-connect register agent --card recon-agent.json --owner human:vijay \
-    --zone internal.apac-ops
+[**docs/guides/end-to-end.md**](docs/guides/end-to-end.md) takes two empty
+repositories to a contracted call that a real gateway refuses. Every command
+names the directory it runs from and the account that runs it.
 
-# 2 · ask for a connection, and approve it
-connect request --from spiffe://org/ns/agents/sa/recon --to spiffe://org/ns/tools/sa/payments \
-    --tools get_balance,list_transactions --justify "nightly reconciliation" --ttl 30d \
-    --issuer-key .keys/k-2026-01.pem --kid k-2026-01
-connect approve <req-id> --by human:vijay --approver-key .keys/approver.pem \
-    --issuer-key .keys/k-2026-01.pem --kid k-2026-01
+It uses **GitHub** as the source host, and covers all three enforcement points —
+pick one at §14:
 
-# 3 · verify the artifact the way a third party would
-connect verify contract.jws --jwks jwks.json --mediator-id warden:mediator:apac-ops \
-    --issuer-id https://connect.internal
+| Section | Enforcement point | What it needs |
+|---|---|---|
+| §14 · Path A | inline mediator — `connect-mediate` | nothing beyond the binaries |
+| §15 · Path B | Envoy — `wc-extproc` | Envoy, and mesh certificates |
+| §15b · Path C | Kong — `libwc_kong.so` | Docker, and the library built for Kong's container |
 
-# 4 · enforce it, inline, in front of the real server
-connect-mediate --upstream "python payments_mcp.py" \
-    --mediator-id warden:mediator:apac-ops --issuer-id https://connect.internal \
-    --caller spiffe://org/ns/agents/sa/recon --callee spiffe://org/ns/tools/sa/payments \
-    --jwks-url https://connect.internal/v1/jwks.json \
-    --contracts https://connect.internal --token "$MEDIATOR_TOKEN"
-```
+Sections §00–§08 stand the estate up once: three accounts, keys, policy,
+registration, branch protection, and a shim probe. §09–§13 fill the two
+repositories and contract a connection, by the pre-granted path and then the
+gated one. §16–§19 prove it, with eight refusals and where each comes from.
 
-`connect --help` is the full surface: registration and attestation, the connect loop,
-estate queries (`posture`, `blast-radius`, `discover`), keys and rotation, air-gapped
-bundles, CAEP shared signals, evidence export (CSV, JSON, DORA, CPS 230, OSCAL, BOM),
-and `serve`.
+Shims for GitLab, Azure Repos and Bitbucket ship in
+[`scripts/scm/`](scripts/scm/) and answer the same protocol, but only the GitHub
+path has been walked against a live host.
 
-## Running the control plane
+Installing an enforcement point from release artifacts, without a checkout, and
+running the control plane behind a TLS-terminating proxy, are in
+[docs/guides/install.md](docs/guides/install.md).
 
-```sh
-connect serve --listen 0.0.0.0:8787 --issuer-key .keys/k-2026-01.pem --kid k-2026-01 \
-    --behind-tls-proxy --trusted-proxy 10.0.1.5 \
-    --tokens tokens.toml --approvers approvers.toml
-```
-
-`serve` speaks **plain HTTP on purpose** — every supported topology terminates TLS at an ALB,
-an Ingress, HAProxy or Front Door. So a non-loopback listener **refuses to start**
-unless you say how TLS is handled, and with `--behind-tls-proxy` every authenticated
-request must carry `x-forwarded-proto: https` from an address you named. A request that
-reaches the port directly, bypassing the ingress, is refused rather than trusted.
-
-Signing keys have a **delegated form** everywhere they have a PEM form
-([docs/08-lld.md §8.12.1](docs/08-lld.md)): `--signer COMMAND` reads a base64url
-signing input on stdin and writes a base64url signature on stdout, so the private key
-can live in an HSM, a smartcard or a KMS and never reach this process.
-`--require-external-signing` refuses to start if any key would be read from local disk.
+`connect --help` is the full CLI surface: registration and attestation, the
+connect loop, estate queries (`posture`, `blast-radius`, `discover`), keys and
+rotation, air-gapped bundles, CAEP shared signals, evidence export (CSV, JSON,
+DORA, CPS 230, OSCAL, BOM), and `serve`.
 
 ## Documentation
 
 | | |
 |---|---|
-| [docs/07-hld.md](docs/07-hld.md) | **Start here.** High-level design — the plane split, the artifact, the algebra, the trust and threat model, the adoption ladder |
+| [docs/guides/](docs/guides/) | **Start here.** The end-to-end walkthrough, and installing an enforcement point |
+| [docs/07-hld.md](docs/07-hld.md) | High-level design — the plane split, the artifact, the algebra, the trust and threat model, the adoption ladder |
 | [docs/08-lld.md](docs/08-lld.md) | Low-level design — every crate, every module, every check, the error taxonomy, the build order |
 | [docs/use-cases/](docs/use-cases/) | Ten use cases, one file each, with a sequence diagram per use case |
 | [sdk/python/](sdk/python) · [examples/](examples) | A dependency-free client for the control-plane API, and three runnable examples |

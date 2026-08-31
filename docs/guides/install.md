@@ -123,6 +123,30 @@ connect-mediate \
 Use `--upstream-url` instead of `--upstream` for a remote server over Streamable
 HTTP. This binding writes no decision trail.
 
+## Running the control plane
+
+```sh
+connect serve --listen 0.0.0.0:8787 --issuer-key .keys/k-2026-01.pem --kid k-2026-01 \
+    --behind-tls-proxy --trusted-proxy 10.0.1.5 \
+    --tokens tokens.toml --approvers approvers.toml
+```
+
+`serve` speaks **plain HTTP on purpose** — every supported topology terminates TLS
+at an ALB, an Ingress, HAProxy or Front Door. A non-loopback listener therefore
+**refuses to start** unless you say how TLS is handled.
+
+| Flag | Rule |
+|---|---|
+| `--behind-tls-proxy` | Every authenticated request must carry `x-forwarded-proto: https` |
+| `--trusted-proxy ADDR` | …and must arrive from an address you named. A request that reaches the port directly, bypassing the ingress, is refused rather than trusted |
+| `--require-external-signing` | Refuses to start if any key would be read from local disk |
+
+Signing keys have a delegated form everywhere they have a PEM form
+([LLD §8.12.1](../08-lld.md#8121-keys--keys-custody-signer)): `--signer COMMAND`
+reads a base64url signing input on stdin and writes a base64url signature on
+stdout, so the private key can live in an HSM, a smartcard or a KMS and never
+reach this process.
+
 ## Before deploying
 
 ```sh
