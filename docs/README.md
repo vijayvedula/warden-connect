@@ -2,7 +2,7 @@
 
 | Document | What it is |
 |---|---|
-| [install.md](install.md) | Installing an enforcement point from release artifacts |
+| [guides/](guides/) | Task guides: installing an enforcement point, setting up GitHub as a source host |
 | [07-hld.md](07-hld.md) | High-level design |
 | [08-lld.md](08-lld.md) | Low-level design, crate by crate |
 | [use-cases/](use-cases/) | Ten use cases, one file each |

@@ -19,7 +19,7 @@ Nothing yet.
 **The first release that ships an enforcement point.** `v0.1.0` and `v0.1.1` were tagged
 before the bindings existed and were never published, so this is the first version of
 warden-connect that can be installed and put in front of traffic. See
-[docs/install.md](docs/install.md).
+[docs/guides/install.md](docs/guides/install.md).
 
 Breaking, and the reason for the minor bump pre-1.0: rate, concurrency and spend ceilings
 are no longer a capability (below), and inter-crate version requirements move from `0.1`
