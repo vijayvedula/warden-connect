@@ -1,0 +1,67 @@
+name: Security
+
+# ci.yml already gates fmt, clippy, cargo-deny, the six guard scripts and the
+# fuzz targets on every push and pull request. This workflow adds the two
+# things it does not do -- RUSTSEC advisories against the locked tree, and
+# CodeQL -- and re-runs the supply-chain policy weekly, because an advisory
+# disclosed on Tuesday applies to code that has not changed since Friday.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, catches newly-disclosed advisories
+
+# Least privilege at the top level; the codeql job elevates its own scopes.
+permissions:
+  contents: read
+
+jobs:
+  # RUSTSEC advisories on the locked dependency tree.
+  # RUSTSEC-2023-0071 (rsa Marvin) is accepted for the reason recorded in
+  # deny.toml: this tree verifies with RSA public keys and holds no RSA
+  # private key, so there is no private-key operation to time.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - run: cargo install cargo-audit --locked
+      # The daemon is excluded from the workspace (§8.2), so its lockfile is
+      # its own and `cargo audit` at the root would never read it.
+      - run: cargo audit --ignore RUSTSEC-2023-0071
+      - run: cargo audit --ignore RUSTSEC-2023-0071 --file daemon/wc-extproc/Cargo.lock
+
+  # Supply-chain policy: advisories + licenses + bans + sources (deny.toml).
+  # ci.yml runs this per change; here it runs weekly against unchanged code.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
+        with:
+          command: check advisories bans licenses sources
+
+  # Static analysis (CodeQL). Rust uses build-mode: none -- CodeQL extracts from
+  # source + `cargo metadata` rather than tracing a compile.
+  #
+  # Only runs on a PUBLIC repo: uploading results needs GitHub code scanning,
+  # which requires public visibility (or GitHub Advanced Security). While private
+  # the upload fails with "Code scanning is not enabled", so we skip the job
+  # rather than fail the workflow. It activates automatically once public.
+  codeql:
+    if: github.event.repository.visibility == 'public'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: github/codeql-action/init@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
+        with:
+          languages: rust
+          build-mode: none
+      - uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3

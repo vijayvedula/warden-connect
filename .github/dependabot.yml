@@ -1,0 +1,46 @@
+version: 2
+updates:
+  # The Rust workspace: wc-core, wc-control, wc-mediator, wc-gateway, wc-kong,
+  # wc-cli, wc-e2e.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "rust"]
+
+  # The Envoy binding is EXCLUDED from the workspace (§8.2, so that
+  # `cargo tree --workspace` still answers the no-async-runtime question), which
+  # means the entry above never sees it. It carries tokio and tonic, so it is the
+  # one that most needs watching.
+  - package-ecosystem: cargo
+    directory: "/daemon/wc-extproc"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "rust", "daemon"]
+
+  # The fuzz crate is its own workspace too, and its lockfile is gitignored, so
+  # Dependabot resolves it from the manifest.
+  - package-ecosystem: cargo
+    directory: "/fuzz"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "rust", "fuzz"]
+
+  # Python SDK
+  - package-ecosystem: pip
+    directory: "/sdk/python"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "python"]
+
+  # GitHub Actions. security.yml and scorecard.yml pin by SHA; this is what
+  # keeps a pinned SHA from ageing into an unpatched action.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "ci"]

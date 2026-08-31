@@ -1,0 +1,45 @@
+name: ✨ Feature request
+description: Propose a new capability, enforcement point, source-host shim, or improvement.
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the use case, not just the solution. What can't you do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like warden-connect to do. CLI, contract-term or manifest shape if you have one in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What you tried, or what you would do instead if this is not built.
+  - type: checkboxes
+    id: narrowing
+    attributes:
+      label: Does it narrow?
+      description: A contract is a ceiling. Anything that would let a contract widen authority is out of scope by design — see [HLD §7.4](https://github.com/vijayvedula/warden-connect/blob/main/docs/07-hld.md#the-algebra).
+      options:
+        - label: This proposal does not require a contract to grant or widen anything.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Control plane
+        - Contract format or verification
+        - Enforcement point (Envoy, Kong, inline mediator)
+        - Source-host shim
+        - Evidence and compliance export
+        - CLI or SDK
+        - Docs
+    validations:
+      required: true
