@@ -1,14 +1,5 @@
 # warden-connect
 
-<p align="center">
-  <a href="https://github.com/vijayvedula/warden-connect/actions/workflows/ci.yml"><img src="https://github.com/vijayvedula/warden-connect/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/vijayvedula/warden-connect/actions/workflows/security.yml"><img src="https://github.com/vijayvedula/warden-connect/actions/workflows/security.yml/badge.svg" alt="Security scan"></a>
-  <a href="https://securityscorecards.dev/viewer/?uri=github.com/vijayvedula/warden-connect"><img src="https://api.securityscorecards.dev/projects/github.com/vijayvedula/warden-connect/badge" alt="OpenSSF Scorecard"></a>
-  <a href="#licence"><img src="https://img.shields.io/badge/license-FSL--1.1--ALv2-blue.svg" alt="License: FSL-1.1-ALv2"></a>
-  <img src="https://img.shields.io/badge/release-v0.2.0-blue.svg" alt="Release v0.2.0">
-  <a href="docs/"><img src="https://img.shields.io/badge/docs-design%20%26%20guides-informational.svg" alt="Docs"></a>
-</p>
-
 **The connection control plane for AI agents.**
 
 A policy engine decides whether an agent may take *an action*. warden-connect decides
