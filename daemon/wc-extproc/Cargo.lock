@@ -1617,7 +1617,7 @@ dependencies = [
 name = "warden-connect-core"
 version = "0.2.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "hex",
  "jsonwebtoken",
  "serde",
@@ -1641,7 +1641,7 @@ dependencies = [
 name = "warden-connect-mediator"
 version = "0.2.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "jsonwebtoken",
  "serde",
  "serde_json",
