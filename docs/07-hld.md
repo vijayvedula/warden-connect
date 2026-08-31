@@ -11,12 +11,26 @@ one identifier.
 | **Audience** | Architects, reviewers, implementers of a competing verifier |
 | **Companion** | [08-lld.md](08-lld.md) for every module and check · [use-cases/](use-cases/) for the ten flows |
 
+## In one screen
+
+| | |
+|---|---|
+| **What it decides** | May this connection exist? Not: may this call proceed |
+| **The artifact** | One signed JWS, `application/warden-connection+jws`, addressed to one mediator |
+| **The rule** | `per-action authority = contract.surface ∩ token.scope ∩ policy_decision` |
+| **The ceiling** | A contract naming `transfer_funds` does not permit it. It permits *at most* that. No path widens |
+| **The split** | Control plane at human timescale. Data plane sub-millisecond, no network call, 14 gates, all fail closed |
+| **Runs alone** | `wc-mediator` builds standalone; no policy engine need be deployed |
+| **Three claims** | A contract can only narrow · a compromised control plane cannot mint one · the evidence verifies without trusting us |
+
+The rest of this document is the argument for those rows, plus the detail a
+reviewer or a competing implementer needs.
+
 ## 7.1 Scope and context
 
-A connection control plane for AI agents. Authentication answers who is calling.
-Authorization answers what they may do. Neither asks the party being called
-whether it agreed to be called by this caller, for these tools, on these terms,
-until this date.
+A connection control plane for AI agents. Authentication answers who is calling
+and authorization what they may do. Neither asks the party being *called*
+whether it agreed — to this caller, these tools, these terms, until this date.
 
 | Not | Because |
 |---|---|
@@ -34,25 +48,13 @@ until this date.
 | Data | `wc-mediator` | Is this call inside the ceiling? | Sub-millisecond, no network call | Fail closed on every gate |
 | Shared | `wc-core` | The artifact, its canonical form, the 82 codes | — | — |
 
-The control plane can be entirely offline and the data plane still enforces
-against contracts it holds. A compromised control plane can withhold a contract,
-which fails closed. It cannot manufacture one: contracts are verified against
-issuer keys, not looked up in a database the mediator trusts.
+The control plane can be offline and the data plane still enforces against
+contracts it holds. A compromised plane can withhold a contract, which fails
+closed; it cannot manufacture one, because contracts are verified against issuer
+keys rather than looked up in a database the mediator trusts.
 
-| Component | Crate | Responsibility |
-|---|---|---|
-| Registry | `wc-control::registry` | Entities, lifecycle, posture, ownership |
-| Admission | `wc-control::admission` | Identity, provenance, screening, pinning, tiering |
-| Issuance | `wc-control::issuance` | Request → disposition → mint → distribute |
-| Connect policy | `wc-control::cpolicy` | May this contract exist? |
-| Assurance | `wc-control::assurance` | Re-attestation, drift, posture scoring |
-| Containment | `wc-control::contain` | Quarantine, revocation, blast radius |
-| Federation | `wc-control::federate` | Trust anchors, chains, monotonic narrowing |
-| Inventory | `wc-control::inventory` | Reserved-path sweep across SCM hosts |
-| Evidence | `wc-control::chain`, `evidence`, `export` | Hash chain; DORA/CPS230/OSCAL/OCSF export |
-| Portal | `wc-control::portal` | Read-only, server-rendered discovery view |
-| Mediator | `wc-mediator` | Contract verification, surface filter, terms |
-| Contract | `wc-core::contract` | Payload, canonical form, verification, the algebra |
+The 73 modules behind those three planes are inventoried in
+[LLD §8.4](08-lld.md).
 
 ## 7.3 Domain model
 
@@ -60,20 +62,26 @@ issuer keys, not looked up in a database the mediator trusts.
 Entity (agent | mcp_server | a2a_agent)
   id            spiffe:// | urn:                        the wire identity
   owner         human:…                                 accountable, required
-  service       business service reference
   tier          1..4                                    derived at admission
   zone          internal.<domain> | partner.<org> | public
   surface_hash  sha256 of the canonical card/manifest   ← the pin
-  provenance    [slsa | sigstore refs]
   posture       attested | degraded | unattested | quarantined
   lifecycle     pending | active | suspended | retired
-  data_classes  [...]        jurisdictions [...]
 
 Contract        cid, caller→Entity, callee→Entity, surface, terms,
                 assurance, approval, exp                (§7.4)
 
 Zone            id, trust_level, assurance_bar { identity, provenance,
                 ttl_max, approval, oversight, max_delegation_depth }
+```
+
+<details>
+<summary>The remaining entities, and <code>Entity</code>'s other fields</summary>
+
+```
+Entity          service       business service reference
+                provenance    [slsa | sigstore refs]
+                data_classes  [...]        jurisdictions [...]
 
 Approval        id, cid, approver (human), signature, ticket,
                 policy_version, ts
@@ -86,8 +94,13 @@ AuditEntry      the policy engine's audit row, extended with cid,
                 into row_hash
 ```
 
+</details>
+
 Posture is orthogonal to lifecycle: `Attested`, `Degraded`, `Unattested`,
 `Quarantined`. Quarantined is terminal until a full re-admission.
+
+<details>
+<summary>The seven invariants the registry enforces</summary>
 
 | # | Invariant |
 |---|---|
@@ -99,11 +112,30 @@ Posture is orthogonal to lifecycle: `Attested`, `Degraded`, `Unattested`,
 | 6 | A quarantined entity's contracts are revoked; clearing requires new admission |
 | 7 | No signed JWS is ever committed to a repository. Receipts only |
 
+</details>
+
 ## 7.4 The connection contract
 
 The single coupling point. Media type `application/warden-connection+jws`;
 asymmetric signatures only (ES256/ES384/EdDSA/PS256/RS256), which precludes
 algorithm confusion.
+
+The five blocks that make up the payload:
+
+```
+header    typ, alg          asymmetric only
+identity  cid, iss, aud, jti, iat, nbf, exp
+parties   caller { id, card, zone, tier }, callee { id, manifest, zone, tier }
+grant     surface { tools, skills, resources }      ← the ceiling
+bounds    terms, assurance, approval, policy_version
+```
+
+`aud` MUST match the mediator verifying it, and `callee.manifest` is the pin
+gate 8 compares against. A complete signed example is in
+[fixtures/contracts/](../fixtures/contracts/).
+
+<details>
+<summary>The full payload, every field populated</summary>
 
 ```jsonc
 {
@@ -140,6 +172,8 @@ algorithm confusion.
 }
 ```
 
+</details>
+
 ### Verification — fail closed at every step
 
 ```
@@ -175,14 +209,13 @@ per-hop authority     =  contract.terms.delegation ⊇ delegate's attenuation
 federated term        =  min(local_term, superior_term)
 ```
 
-A contract is a ceiling. A contract naming `transfer_funds` does not permit
-`transfer_funds`; it permits at most that. A forged or over-broad contract can
-only fail to widen something.
+Every operator narrows. A forged or over-broad contract can only fail to widen
+something.
 
 ### Conformance
 
 `connect verify <contract>` is ground truth. Any registry may mint contracts; a
-contract is valid if and only if the verifier accepts it. That is what makes the
+contract is valid if and only if the verifier accepts it — which makes the
 artifact a candidate standard rather than a product format.
 
 ## 7.5 Key flows
@@ -204,6 +237,13 @@ contract alone.
 
 ### CLI — 62 commands
 
+Thirteen groups: Admission, Registry, GitOps, Issuance, Containment,
+Distribution, Discovery, Federation, Keys, Evidence, Gateway, Policy, Runtime.
+`connect --help` is ground truth.
+
+<details>
+<summary>All 62 commands, by group</summary>
+
 | Group | Commands |
 |---|---|
 | Admission | `register agent` · `register server` · `activate` · `attest verify` · `attest surface` · `screen` |
@@ -219,6 +259,8 @@ contract alone.
 | Gateway | `gateway check` |
 | Policy | `policy lint` · `policy dry-run` · `policy show` |
 | Runtime | `serve` · `canon` · `verify` · `bench` · `caep ingest` · `version` |
+
+</details>
 
 ### Reserved paths
 
@@ -281,11 +323,10 @@ keys. It can withhold, and withholding fails closed.
 The single exception is posture in observe mode, which admits with `Unattested`
 and logs.
 
-The defect this system produces is not a crash. It is a control that reads as
-configured and does nothing: a flag parsed and never enforced, a role required
-and never checked, a gate deleted with every test still green. Review targets
-that class specifically, and mutation testing is standard practice because it is
-what exposes it.
+The defect this system produces is not a crash but a control that reads as
+configured and does nothing — a flag parsed and never enforced, a gate deleted
+with every test still green. Review targets that class, and mutation testing is
+standard practice because it is what exposes it.
 
 ## 7.9 Deployment topologies
 
@@ -296,27 +337,27 @@ what exposes it.
 | Sidecar | One mediator per agent | Enforcement at the edge |
 | Observe-only | In the path, refusing nothing | Stage ① — inventory before enforcement |
 
-Which proxy is an orthogonal choice. The decision is one crate (`wc-gateway`)
-and each proxy is a binding over it:
+Which proxy is orthogonal: the decision is one crate (`wc-gateway`) and each
+proxy is a binding over it.
 
 | Binding | Where it runs | Caller identity from | Hops added |
 |---|---|---|---|
 | `wc-extproc` | its own process; Envoy calls it over gRPC | `x-forwarded-client-cert`, origin-checked | 1, loopback |
 | `wc-kong` | a `cdylib` in the nginx worker, driven by a Lua plugin over LuaJIT FFI | the peer certificate's URI SAN, or XFCC | 0 |
 
-Istio and Linkerd are Envoy underneath, so they are a deployment recipe for the
-first rather than a third binding. See LLD §8.6b.
+Istio and Linkerd are Envoy underneath — a deployment recipe for the first, not
+a third binding ([LLD §8.6b](08-lld.md)).
 
-Where the tool server lives is orthogonal again. The mediator forwards to a
-spawned stdio child (`--upstream CMD`) or to a remote server over MCP Streamable
-HTTP (`--upstream-url URL`). Both use the same `Upstream` trait behind the same
-decorator, so the gates, the catalogue filter and the surface ceiling are
-identical either way. See LLD §8.6.7.
+Where the tool server lives is orthogonal again: a spawned stdio child
+(`--upstream CMD`) or a remote server over MCP Streamable HTTP
+(`--upstream-url URL`). Both sit behind the same decorator, so the gates, the
+catalogue filter and the surface ceiling are identical either way
+([LLD §8.6.7](08-lld.md)).
 
-Not built: the mediator as an HTTP listener — the shared gateway topology, where
-one mediator fronts many callers. `PeerSource::{Mtls, Mesh, JwtSvid}` exists for
-that, and until a listening transport constructs them, peer identity comes from
-configuration and only the sidecar topology is honest (§7.13).
+**Not built:** the mediator as an HTTP listener, which is the shared-gateway
+topology. `PeerSource::{Mtls, Mesh, JwtSvid}` exists for it, but until a
+listening transport constructs them peer identity comes from configuration, and
+only the sidecar topology is honest (§7.13).
 
 ## 7.10 The adoption ladder
 
@@ -355,26 +396,23 @@ which is why it could not be adopted.
 | # | Question | Stance |
 |---|---|---|
 | 1 | Does `terms.delegation.max_depth` bind anything today? | No. It is carried, narrowed and federated correctly, but no delegation chain exists here to measure against it |
-| 2 | Are Azure Repos and Bitbucket at parity with GitHub? | Merge parsing is. The `repos` and `open_pr` shim operations are GitHub-only. Only the GitHub path has been exercised end to end against a live host. The Azure Repos and Bitbucket shims are written but untested against a live organisation; read them as templates |
+| 2 | Are Azure Repos and Bitbucket at parity with GitHub? | Merge parsing is. `repos` and `open_pr` are GitHub-only, and only GitHub has been exercised against a live host. Read the other shims as templates |
 | 3 | Cluster-scale behaviour | Unverified. Needs a real cluster |
 | 4 | What happens to a contract when the basis of its approval changes? | Undesigned. See §7.14 |
-| 5 | Is the mediator ready for the shared-gateway topology? | Partly. Two bindings are built and drilled against real proxies — Envoy `ext_proc` and Kong, the latter through 14 drill phases with real mTLS. The inline mediator's own listener is not built |
-| 6 | Do rate, concurrency and spend ceilings bind anything? | They are removed. Counters lived in one process, so a contract saying `10/hour` admitted ten per nginx worker per node, and the number an owner signed was never the number in force. Envoy and Kong rate-limit properly, so volume is theirs. warden-connect claims one axis: which capabilities a caller may reach on a callee. The fields survive one more version because `deny_unknown_fields` would break already-signed artifacts; they are enforced nowhere and announced at startup when a legacy artifact carries one |
-
-Closed since the last revision: the independent security review has been
-conducted outside this repository, and connection-level revocation now has a
-route (`POST /v1/connections/{cid}/revoke`) that works against a serving plane.
-`connect revoke --cid` remains offline-only, because it writes to the event log
-and a serving plane holds the single-writer lock.
+| 5 | Is the mediator ready for the shared-gateway topology? | Partly. Envoy and Kong bindings are built and drilled against real proxies. The inline mediator's own listener is not |
+| 6 | Do rate, concurrency and spend ceilings bind anything? | No — removed as a capability, because counters live in one process. Volume belongs to the proxy. [LLD §8.6.5](08-lld.md) |
 
 ## 7.14 Contract maintenance
 
-Assurance watches one thing: the surface. Pin it, re-check on an interval,
-classify benign or material, suspend on material (§7.5 F3).
+Assurance watches the surface: pin it, re-check on an interval, classify benign
+or material, suspend on material (§7.5 F3).
 
 Nothing watches the consent. A contract records who approved it and on what
-basis, and that basis is never revisited until `exp`. Three events change it and
-none is a trigger today:
+basis, and that basis is never revisited until `exp`. Four events change it and
+none is a trigger today; the shape is the same as drift and should reuse it.
+
+<details>
+<summary>The four events, and what blocks a design</summary>
 
 | Event | What changes | Status |
 |---|---|---|
@@ -383,16 +421,12 @@ none is a trigger today:
 | Approver mover | Role or team changed, so the authority they held is gone | undesigned |
 | Approver set moves without a re-apply | `[approval]` is compared at `offer publish` and `need apply`. A manifest whose approver set changes but is never re-applied is never compared | known gap |
 
-The shape is the same as drift and should reuse it: pin the consent basis,
-re-check, classify, suspend on material.
+Three questions block a design: whether a leaver's approval is void or valid to
+`exp`; whether a repo transfer suspends or only degrades posture; and what the
+pinned artifact is — CODEOWNERS content hash, policy id, approver identity, or
+all three.
 
-Open questions before this can be built:
-
-| # | Question |
-|---|---|
-| 1 | Is a leaver's approval retroactively void, or valid until `exp` with a flag? |
-| 2 | Does a repo transfer suspend, or only degrade posture and block renewal? |
-| 3 | What is the pinned artifact — CODEOWNERS content hash, the policy id, the approver identity, or all three? |
+</details>
 
 Until this exists, a contract's approval is checked once, at issuance, and never
 again.
