@@ -1,0 +1,979 @@
+<!doctype html><html><head><meta charset=utf8>
+<title>GitHub Implementation Guide</title><meta name=viewport content="width=device-width,initial-scale=1"></head><body>
+
+<style>
+/* Shared across the three host runbooks. Each page inlines this and overrides --accent. */
+:root {
+  --paper:#F4F5F8; --card:#FFF; --sunk:#E9ECF2; --ink:#1A1E2E; --soft:#565E73;
+  --faint:#868DA0; --rule:#D5D9E3; --rule-soft:#E4E7EE;
+  --accent:#2E3F86; --accent-soft:#E7EAF7;
+  --ok:#1D6A55; --ok-soft:#E2F0EB;
+  --warn:#8A6516; --warn-soft:#F6EFDC;
+  --deny:#9C3427; --deny-soft:#F7E8E5;
+  --code-bg:#14172A; --code-fg:#D9DDEA; --code-rule:#262C45;
+  --serif: ui-serif, Georgia, "Times New Roman", Times, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper:#101320; --card:#171B2A; --sunk:#1D2233; --ink:#E5E8F0; --soft:#A4ACC0;
+    --faint:#737B90; --rule:#2A3044; --rule-soft:#222738;
+    --accent:#8DA2E8; --accent-soft:#1D2440;
+    --ok:#6FC4A8; --ok-soft:#15302A;
+    --warn:#D9B061; --warn-soft:#302614;
+    --deny:#E08A7C; --deny-soft:#331D1A;
+    --code-bg:#0A0D17; --code-fg:#D9DDEA; --code-rule:#1E2438;
+  }
+}
+:root[data-theme="dark"] {
+  --paper:#101320; --card:#171B2A; --sunk:#1D2233; --ink:#E5E8F0; --soft:#A4ACC0;
+  --faint:#737B90; --rule:#2A3044; --rule-soft:#222738;
+  --accent:#8DA2E8; --accent-soft:#1D2440;
+  --ok:#6FC4A8; --ok-soft:#15302A;
+  --warn:#D9B061; --warn-soft:#302614;
+  --deny:#E08A7C; --deny-soft:#331D1A;
+  --code-bg:#0A0D17; --code-fg:#D9DDEA; --code-rule:#1E2438;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+  font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:60rem;margin:0 auto;padding:clamp(1.5rem,4vw,3.5rem) clamp(1.1rem,4vw,2.5rem) 6rem}
+.col{max-width:44rem}
+a{color:var(--accent);text-underline-offset:2px}
+a:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:2px}
+header.mast{padding-bottom:1.5rem;border-bottom:1px solid var(--rule);margin-bottom:2rem}
+.eyebrow{font-family:var(--mono);font-size:.7rem;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--faint);margin:0 0 .8rem}
+h1{font-family:var(--serif);font-weight:600;font-size:clamp(2rem,5vw,2.9rem);line-height:1.1;
+  letter-spacing:-.02em;margin:0 0 .7rem;text-wrap:balance}
+.standfirst{font-size:1.06rem;color:var(--soft);margin:0;max-width:40rem}
+section{margin:3rem 0 0;scroll-margin-top:1.5rem}
+h2{font-family:var(--serif);font-weight:600;font-size:clamp(1.4rem,3vw,1.75rem);
+  letter-spacing:-.014em;line-height:1.2;margin:0 0 .3rem;text-wrap:balance}
+h2 .num{font-family:var(--mono);font-size:.72em;font-weight:400;color:var(--accent);
+  margin-right:.55rem;letter-spacing:0}
+h3{font-weight:650;font-size:1.02rem;margin:2rem 0 .5rem}
+h4{font-family:var(--mono);font-weight:500;font-size:.72rem;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--faint);margin:1.8rem 0 .6rem}
+p{margin:0 0 1rem}
+.lede{color:var(--soft);margin-bottom:1.5rem}
+ul,ol{margin:0 0 1rem;padding-left:1.35rem}
+li{margin-bottom:.4rem}
+li::marker{color:var(--faint)}
+strong{font-weight:650}
+hr{border:0;border-top:1px solid var(--rule-soft);margin:2.5rem 0}
+code{font-family:var(--mono);font-size:.875em;background:var(--sunk);padding:.1em .34em;
+  border-radius:3px;word-break:break-word}
+.wc{font-family:var(--mono);font-size:.82em;font-weight:500;padding:.14em .42em;
+  border-radius:3px;white-space:nowrap}
+.wc-deny{background:var(--deny-soft);color:var(--deny)}
+.wc-warn{background:var(--warn-soft);color:var(--warn)}
+.wc-ok{background:var(--ok-soft);color:var(--ok)}
+.code{background:var(--code-bg);color:var(--code-fg);border-radius:6px;margin:0 0 1.3rem;
+  overflow:hidden;border:1px solid var(--code-rule)}
+.code figcaption{font-family:var(--mono);font-size:.7rem;letter-spacing:.09em;text-transform:uppercase;
+  color:#8892AD;padding:.6rem 1rem .5rem;border-bottom:1px solid var(--code-rule)}
+.code pre{margin:0;padding:1rem 1.1rem;overflow-x:auto;font-family:var(--mono);font-size:.83rem;
+  line-height:1.62;tab-size:2}
+.code pre code{background:none;padding:0;font-size:1em;color:inherit}
+.code .c{color:#7E88A6}.code .p{color:#9BB0EE}.code .s{color:#8FD0B4}.code .v{color:#E0C285}
+.note{border-left:3px solid var(--accent);background:var(--accent-soft);padding:.9rem 1.1rem;
+  border-radius:0 5px 5px 0;margin:0 0 1.3rem}
+.note.caution{border-left-color:var(--warn);background:var(--warn-soft)}
+.note.stop{border-left-color:var(--deny);background:var(--deny-soft)}
+.note.good{border-left-color:var(--ok);background:var(--ok-soft)}
+.note p:last-child{margin-bottom:0}
+.note .tag{display:block;font-family:var(--mono);font-size:.68rem;letter-spacing:.12em;
+  text-transform:uppercase;margin-bottom:.35rem;color:var(--soft)}
+.twrap{overflow-x:auto;margin:0 0 1.3rem;border:1px solid var(--rule);border-radius:6px;background:var(--card)}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{text-align:left;padding:.62rem .9rem;border-bottom:1px solid var(--rule-soft);vertical-align:top}
+th{font-family:var(--mono);font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--faint);font-weight:500;background:var(--sunk);white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+td code{font-size:.83em}
+.step{display:flex;gap:.7rem;align-items:baseline;margin:2rem 0 .5rem}
+.step .id{font-family:var(--mono);font-size:.78rem;font-weight:600;color:var(--accent);
+  background:var(--accent-soft);padding:.12rem .45rem;border-radius:3px;flex:none}
+.step h3{margin:0}
+.verdicts{list-style:none;padding:0;margin:0 0 1.3rem}
+.verdicts li{display:flex;gap:.65rem;padding:.55rem 0;border-bottom:1px solid var(--rule-soft);margin:0}
+.verdicts li:last-child{border-bottom:0}
+.verdicts .mark{font-family:var(--mono);font-weight:600;flex:none;width:1.5rem}
+.verdicts .yes{color:var(--ok)}.verdicts .no{color:var(--deny)}
+details{border:1px solid var(--rule);border-radius:6px;padding:.7rem 1rem;margin:0 0 1rem;background:var(--card)}
+summary{cursor:pointer;font-weight:600;font-size:.95rem}
+details[open] summary{margin-bottom:.7rem}
+footer.end{margin-top:4rem;padding-top:1.5rem;border-top:1px solid var(--rule);
+  font-size:.87rem;color:var(--faint)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* --- copy-to-clipboard -----------------------------------------------------
+   `code{word-break:break-word}` above is right for inline code and wrong inside a block: a
+   long command breaks mid-token, and the break travels with a selection-copy as a real
+   newline. So the shell receives two commands. Reset it here and let the block scroll. */
+.code pre code{white-space:pre;word-break:normal;overflow-wrap:normal}
+.code figcaption{display:flex;align-items:center;gap:.75rem;justify-content:space-between}
+.code figcaption .what{flex:1 1 auto;min-width:0}
+button.copy{flex:none;font-family:var(--mono);font-size:.68rem;letter-spacing:.06em;
+  text-transform:uppercase;color:#8892AD;background:transparent;border:1px solid var(--code-rule);
+  border-radius:4px;padding:.28rem .55rem;cursor:pointer;line-height:1}
+button.copy:hover{color:var(--code-fg);border-color:#4A5372}
+button.copy:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.copy[data-done="1"]{color:var(--ok);border-color:var(--ok)}
+
+/* --- part banners ----------------------------------------------------------
+   Setup is done once; the contract flow repeats per connection. Reading them as one
+   fourteen-step list hides that, and the repeated part is the shorter one. */
+.part{margin:4rem 0 0;padding:1.4rem 0 1.2rem;border-top:2px solid var(--accent);
+  border-bottom:1px solid var(--rule)}
+.part .tag{display:block;font-family:var(--mono);font-size:.68rem;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--accent);margin-bottom:.45rem}
+.part h2{font-family:var(--serif);font-weight:600;font-size:clamp(1.5rem,3.2vw,1.95rem);
+  margin:0 0 .5rem;letter-spacing:-.015em}
+.part p{margin:0;color:var(--soft);font-size:.95rem;max-width:38rem}
+.part .when{display:inline-block;margin-top:.7rem;font-family:var(--mono);font-size:.7rem;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--faint);
+  border:1px solid var(--rule);border-radius:3px;padding:.2rem .5rem}
+.contents{margin:0 0 1.5rem}
+.contents td:first-child{font-family:var(--mono);font-size:.8rem;white-space:nowrap;
+  color:var(--accent)}
+
+:root { --accent:#2E3F86; }
+</style>
+<div class="wrap">
+<header class="mast">
+<p class="eyebrow">warden-connect &middot; implementation guide</p>
+<h1>GitHub</h1>
+<p class="standfirst">Bring one provider and one consumer under connection contracts. Every command
+names the directory it runs from <strong>and the account that runs it</strong>. Every pull-request
+sequence is written out in full, because switching accounts mid-flow is where this goes wrong.</p>
+</header>
+<div class="col">
+<section id="s0">
+<h2><span class="num">0</span>What is where</h2>
+<p class="lede">Three parts. Only the middle one repeats.</p>
+<div class="contents"><div class="twrap"><table><thead><tr><th></th><th>Part</th><th>Sections</th><th>When</th></tr></thead><tbody><tr><td><strong>1</strong></td><td>Set the estate up</td><td>02 prerequisites &middot; 03 workspace &middot; 03b push access &middot; 04 branch protection &middot; 05 probe the shim &middot; 06 register both parties</td><td>once per estate</td></tr><tr><td><strong>2</strong></td><td>Contract one connection</td><td>07 publish the offer &middot; 08 declare a need &middot; 09 the gated path &middot; 10 verify</td><td><strong>per connection</strong></td></tr><tr><td><strong>3</strong></td><td>Harden and reference</td><td>11 declared approvers &middot; 12 the mediator &middot; 13 refusals &middot; 14 checklist</td><td>when the flow works</td></tr></tbody></table></div>
+</div>
+<div class="note"><span class="tag">if you are coming back to this</span><p>Part 1 is already done. Start at <strong>&sect;07</strong> for a new provider, or <strong>&sect;08</strong> to point another consumer at an offer that already exists. &sect;13 is the refusal index.</p></div>
+</section>
+<hr>
+<section id="s00">
+<h2><span class="num">00</span>The three accounts</h2>
+<div class="twrap"><table><thead><tr><th>Repo</th><th>Author &mdash; commits, opens the PR</th><th>Approver &mdash; approves and merges</th><th>Registered owner</th></tr></thead><tbody><tr><td><code>payments-mcp</code></td><td><code>$AUTHOR_LOGIN</code></td><td><code>$PROVIDER_LOGIN</code></td><td><code>$PROVIDER_LOGIN</code></td></tr><tr><td><code>recon-bot</code></td><td><code>$AUTHOR_LOGIN</code></td><td><code>$CONSUMER_LOGIN</code></td><td><code>$CONSUMER_LOGIN</code></td></tr></tbody></table></div>
+<div class="note"><span class="tag">why this shape works</span><p><code>$AUTHOR_LOGIN</code> authors in both repositories, which is fine &mdash; nothing requires authors to differ across sides. What must hold is that in <em>each</em> repository the author and the approver are different people, and that the approver is the account you registered as owner. Both hold here.</p></div>
+<div class="twrap"><table><thead><tr><th>Rule</th><th>Satisfied by</th></tr></thead><tbody><tr><td>Author &ne; approver, per repo</td><td><code>$AUTHOR_LOGIN</code> vs <code>$PROVIDER_LOGIN</code>; <code>$AUTHOR_LOGIN</code> vs <code>$CONSUMER_LOGIN</code></td></tr><tr><td>Approver is the registered owner</td><td><code>$PROVIDER_LOGIN</code> owns the server, <code>$CONSUMER_LOGIN</code> owns the agent</td></tr><tr><td>Approvers differ across the two sides</td><td><code>$PROVIDER_LOGIN</code> and <code>$CONSUMER_LOGIN</code> &mdash; so <code>require_distinct_approvers</code> would also pass</td></tr></tbody></table></div>
+<h4>Which account runs which command</h4>
+<div class="note stop"><span class="tag">the account follows the repo, not the step</span><p>A <code>$C</code> command with <code>--shim</code> shells out to <code>gh</code> and <strong>inherits whichever account is active</strong>. It needs <em>admin</em> on the repository named in <code>--repo</code>, because the shim reads branch protection. Without admin that lookup 404s, the shim reports <code>protected:false</code>, and you get <span class="wc wc-deny">WC-1001 not a guarded ref</span> &mdash; a token problem wearing a policy problem's clothes.</p></div>
+<div class="twrap"><table><thead><tr><th>Command</th><th>Reads</th><th>Must run as</th></tr></thead><tbody><tr><td><code>scm probe --repo $PROVIDER_REPO</code></td><td>payments-mcp</td><td><code>$PROVIDER_LOGIN</code></td></tr><tr><td><code>offer publish</code></td><td>payments-mcp</td><td><code>$PROVIDER_LOGIN</code></td></tr><tr><td><code>approve --merge-repo $PROVIDER_REPO</code></td><td>payments-mcp</td><td><code>$PROVIDER_LOGIN</code></td></tr><tr><td><code>need apply</code></td><td>recon-bot</td><td><code>$CONSUMER_LOGIN</code></td></tr><tr><td><code>register</code>, <code>activate</code>, <code>entities</code>, <code>show</code>, <code>contracts</code>, <code>offer lint</code>, <code>need check</code>, <code>policy lint</code>, <code>receipt --out</code>, <code>verify</code></td><td>nothing &mdash; local state only</td><td>any account</td></tr></tbody></table></div>
+<div class="note caution"><span class="tag">paste whole blocks, do not edit inside them</span><p>Every block is written so nothing needs changing in place &mdash; ids and shas come from variables or from the previous command's output. Editing a line inside a multi-line block is how a stray <code>\</code> gets introduced, and a trailing backslash makes <code>git commit</code> swallow the next line as arguments. If a command looks wrong, run the lines one at a time.</p></div>
+<div class="note caution"><span class="tag">paste whole blocks; do not edit inside them</span><p>Ids and shas come from a variable or from the previous command's output, so no block needs changing in place. Editing a line inside a multi-line block is how a stray <code>\</code> gets introduced &mdash; and a trailing backslash makes <code>git commit</code> swallow the next line as arguments, so the commit never happens and the pull request has nothing in it. If in doubt, run the lines one at a time.</p></div>
+<h4>Switching accounts</h4>
+<figure class="code"><figcaption>every git/gh block below starts with this, so you never guess which identity is active &nbsp;&middot;&nbsp; run from <code>anywhere</code></figcaption>
+<pre><code>gh auth switch --user $PROVIDER_LOGIN      # or $CONSUMER_LOGIN, or $AUTHOR_LOGIN
+gh auth status</code></pre></figure>
+<div class="note caution"><span class="tag">if an account is not logged in yet</span><p><code>gh auth login</code> once per account. Alternatively approve in the browser as that account and use <code>gh</code> only for the author role &mdash; the approval lands in <code>pulls/&lt;n&gt;/reviews</code> either way, which is all warden-connect reads.</p></div>
+</section>
+<hr>
+<section id="s01">
+<h2><span class="num">01</span>What you build</h2>
+<div class="twrap"><table><thead><tr><th>Artifact</th><th>Where</th><th>Written by</th></tr></thead><tbody><tr><td>Surface</td><td><code>warden/surface.json</code>, payments-mcp</td><td><code>$AUTHOR_LOGIN</code></td></tr><tr><td>Offer</td><td><code>warden/offer.toml</code>, payments-mcp</td><td><code>$AUTHOR_LOGIN</code></td></tr><tr><td>Need</td><td><code>warden/needs.toml</code>, recon-bot</td><td><code>$AUTHOR_LOGIN</code></td></tr><tr><td>Approval file</td><td><code>warden/approvals/&lt;req&gt;.toml</code>, payments-mcp</td><td><code>$AUTHOR_LOGIN</code>, gated items only</td></tr><tr><td>Contract</td><td>the control-plane state log</td><td>warden-connect &mdash; signed, never committed</td></tr><tr><td>Receipt</td><td><code>warden/contracts/&lt;cid&gt;.toml</code></td><td>warden-connect &mdash; grants nothing</td></tr></tbody></table></div>
+<div class="note"><span class="tag">the model</span><p>A contract is a <strong>ceiling</strong>: <code>effective = contract.surface &cap; token.scope &cap; policy_decision</code>. Both parties consent by merging a reviewed change in their own repository. Neither can produce a contract alone, and neither needs a signing key.</p></div>
+<div class="twrap"><table><thead><tr><th>Offer term</th><th>Consumer gets</th><th>Provider does</th></tr></thead><tbody><tr><td><code>pre_granted</code></td><td><span class="wc wc-ok">GRANT</span> &mdash; mints on apply</td><td>nothing further</td></tr><tr><td><code>named_consumer</code></td><td><span class="wc wc-warn">PENDING</span></td><td>approves that consumer by merging &mdash; section 09</td></tr></tbody></table></div>
+</section>
+<hr>
+<div class="part"><span class="tag">Part 1 of 3</span>
+<h2>Set the estate up</h2>
+<p>Accounts, repositories, keys and policy. Everything here is done once, and none of it issues a contract &mdash; at the end you have two registered parties holding zero connections.</p>
+<span class="when">once per estate</span></div>
+<section id="s02">
+<h2><span class="num">02</span>Prerequisites</h2>
+<div class="twrap"><table><thead><tr><th>Need</th><th>Held by</th><th>Why</th></tr></thead><tbody><tr><td><code>gh</code> authenticated for all three accounts</td><td>you</td><td>the shim shells out to it</td></tr><tr><td><strong>Admin</strong> on both repos</td><td><code>$PROVIDER_LOGIN</code>, <code>$CONSUMER_LOGIN</code></td><td><code>merge_evidence</code> reads branch protection; without admin it 404s and the ref reads as unprotected</td></tr><tr><td>Public repos, or GitHub Pro</td><td>&mdash;</td><td>branch protection is free only on public personal repos</td></tr><tr><td>Rust 1.89+, <code>jq</code>, <code>openssl</code></td><td>platform operator</td><td>build and keys</td></tr></tbody></table></div>
+</section>
+<hr>
+<section id="s03">
+<h2><span class="num">03</span>Workspace &mdash; platform operator</h2>
+<p class="lede">Three checkouts and one state directory. Nothing here touches GitHub.</p>
+<figure class="code"><figcaption>lay it out &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+mkdir -p ~/wc &amp;&amp; cd ~/wc
+
+git clone https://github.com/&lt;your-org&gt;/warden-connect  warden-connect
+git clone https://github.com/$PROVIDER_LOGIN/payments-mcp        payments-mcp
+git clone https://github.com/$CONSUMER_LOGIN/recon-bot           recon-bot
+
+cargo build --release --workspace --manifest-path warden-connect/Cargo.toml</code></pre></figure>
+  <div class="step"><span class="id">3.1</span><h3>Two variables, in every shell</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+export C=&quot;$HOME/wc/warden-connect/target/release/connect&quot;
+export WARDEN_CONNECT_ROOT=&quot;$HOME/wc/state&quot;
+mkdir -p &quot;$WARDEN_CONNECT_ROOT&quot;</code></pre></figure>
+<div class="note stop"><span class="tag">the single most common way to get stuck</span><p>The state root defaults to <code>.connect</code>, <strong>relative to the working directory</strong>. Register from <code>~/wc</code>, publish from <code>~/wc/payments-mcp</code>, and the second command opens a different, empty registry &mdash; then reports <span class="wc wc-deny">WC-2001 entity not found</span>, which reads as a registration problem. Export it absolute, everywhere.</p></div>
+  <div class="step"><span class="id">3.2</span><h3>Identifiers and accounts</h3></div>
+<figure class="code"><figcaption>OWNER/REPO in full &mdash; a bare name 404s. The <code>human:</code> pair is registry
+notation for --owner and --by; the bare logins are for gh and --expect-approver &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+# the three accounts. AUTHOR must differ from both approvers.
+export PROVIDER_LOGIN=&quot;&lt;provider-owner-login&gt;&quot;
+export CONSUMER_LOGIN=&quot;&lt;consumer-owner-login&gt;&quot;
+export AUTHOR_LOGIN=&quot;&lt;author-login&gt;&quot;
+
+export PROVIDER_REPO=&quot;$PROVIDER_LOGIN/payments-mcp&quot;
+export CONSUMER_REPO=&quot;$CONSUMER_LOGIN/recon-bot&quot;
+
+export PROVIDER_OWNER=&quot;human:$PROVIDER_LOGIN&quot;
+export CONSUMER_OWNER=&quot;human:$CONSUMER_LOGIN&quot;</code></pre></figure>
+  <div class="step"><span class="id">3.3</span><h3>An issuer key</h3></div>
+<figure class="code"><figcaption>two steps because `ecparam -genkey` emits SEC1 and the loader wants PKCS#8 &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+openssl ecparam -name prime256v1 -genkey -noout -out sec1.pem
+openssl pkcs8 -topk8 -nocrypt -in sec1.pem -out issuer.pem
+openssl ec -in issuer.pem -pubout -out issuer.pub
+rm sec1.pem</code></pre></figure>
+<div class="note caution"><span class="tag">walkthrough only</span><p>The contract is a signed JWS, and the mediator verifies it against the issuer's public key rather than by asking the control plane &mdash; that is why a key is needed at all. In production <code>--signer COMMAND</code> keeps it in an HSM or KMS and <code>--require-external-signing</code> refuses to start if any key would be read from local disk.</p></div>
+  <div class="step"><span class="id">3.4</span><h3>A connect policy naming the zones you will register</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+cat &gt; drill-policy.toml &lt;&lt;EOF
+default = &quot;require_approval&quot;
+version = &quot;connect-policy@walkthrough-v1&quot;
+
+[[zone]]
+id = &quot;internal.payments&quot;
+trust = &quot;internal&quot;
+
+[[zone]]
+id = &quot;internal.apac&quot;
+trust = &quot;internal&quot;
+
+[standing]
+enabled = false
+reviewed_at = $(date +%s)
+
+[[rules]]
+decision = &quot;require_approval&quot;
+owner_merge_approves = true
+reason = &quot;the registered owner approving a reviewed merge is the consent&quot;
+EOF
+
+$C policy lint --policy drill-policy.toml</code></pre></figure>
+<div class="note"><span class="tag">two warnings are expected</span><p><em>no <code>approver_role</code></em> &mdash; correct, because consent comes from the merge, and naming a role would refuse merge consent with <span class="wc wc-deny">WC-3020</span>. <em>standing disabled</em> &mdash; correct, every request goes to a human until ceilings are reviewed. The verdict that matters is <code>usable</code>. The shipped <code>connect-policy.toml</code> declares <code>internal.apac-ops</code>, not <code>internal.apac</code>, which is why this walkthrough writes its own.</p></div>
+</section>
+<hr>
+<section id="s03b">
+<h2><span class="num">03b</span>Give the author push access</h2>
+<p class="lede">The author commits and opens pull requests in both repositories, so both owners must add them. Two API calls each &mdash; an invitation, and its acceptance.</p>
+  <div class="step"><span class="id">3b.1</span><h3>Invite, as each repo's owner</h3></div>
+<figure class="code"><figcaption>provider repo &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $PROVIDER_LOGIN
+cd ~/wc
+
+gh api -X PUT repos/$PROVIDER_REPO/collaborators/$AUTHOR_LOGIN -f permission=push</code></pre></figure>
+<figure class="code"><figcaption>consumer repo &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$CONSUMER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $CONSUMER_LOGIN
+cd ~/wc
+
+gh api -X PUT repos/$CONSUMER_REPO/collaborators/$AUTHOR_LOGIN -f permission=push</code></pre></figure>
+  <div class="step"><span class="id">3b.2</span><h3>Accept, as $AUTHOR_LOGIN</h3></div>
+<figure class="code"><figcaption>accepts every pending invitation. A literal id here is a zsh redirect, not a placeholder &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $AUTHOR_LOGIN
+cd ~/wc
+
+gh api user/repository_invitations \
+  -q &#x27;.[] | &quot;\(.id)  \(.repository.full_name)&quot;&#x27;
+
+for id in $(gh api user/repository_invitations -q &#x27;.[].id&#x27;); do
+  gh api -X PATCH &quot;user/repository_invitations/$id&quot; &amp;&amp; echo &quot;accepted $id&quot;
+done</code></pre></figure>
+  <div class="step"><span class="id">3b.3</span><h3>Confirm</h3></div>
+<figure class="code"><figcaption>push must be true on both &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $AUTHOR_LOGIN
+cd ~/wc
+
+for r in &quot;$PROVIDER_REPO&quot; &quot;$CONSUMER_REPO&quot;; do
+  printf &quot;%-34s &quot; &quot;$r&quot;; gh api &quot;repos/$r&quot; -q &quot;.permissions.push&quot;
+done</code></pre></figure>
+<div class="note caution"><span class="tag">push, not admin</span><p><code>$AUTHOR_LOGIN</code> needs write to push a branch and open a pull request &mdash; nothing more. They must never be the approver: author and approver differ per repository, and that is what <code>is_reviewed_merge</code> checks. Write access is not consent.</p></div>
+<div class="note"><span class="tag">the symptom without it</span><p><code>remote: Permission to &hellip; denied</code> on <code>git push</code>, then <code>No commits between main and &lt;branch&gt;</code> from <code>gh pr create</code> — the second is a consequence of the first, not a separate problem.</p></div>
+</section>
+<hr>
+<section id="s04">
+<h2><span class="num">04</span>Guard both branches</h2>
+<p class="lede">An unguarded branch means a merge proves nothing. Every contract would refuse with <span class="wc wc-deny">WC-1001</span>.</p>
+  <div class="step"><span class="id">4.1</span><h3>payments-mcp &mdash; as $PROVIDER_LOGIN</h3></div>
+<figure class="code"><figcaption>a JSON body, not -f flags: -f sends strings and the review count must be an integer,
+and required_status_checks has to be present even when null &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $PROVIDER_LOGIN
+cd ~/wc
+
+gh api -X PUT repos/$PROVIDER_REPO/branches/main/protection --input - &lt;&lt;&#x27;JSON&#x27;
+{
+  &quot;required_status_checks&quot;: null,
+  &quot;enforce_admins&quot;: false,
+  &quot;required_pull_request_reviews&quot;: { &quot;required_approving_review_count&quot;: 1 },
+  &quot;restrictions&quot;: null
+}
+JSON</code></pre></figure>
+  <div class="step"><span class="id">4.2</span><h3>recon-bot &mdash; as $CONSUMER_LOGIN</h3></div>
+<figure class="code"><figcaption>same body, consumer repo &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$CONSUMER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $CONSUMER_LOGIN
+cd ~/wc
+
+gh api -X PUT repos/$CONSUMER_REPO/branches/main/protection --input - &lt;&lt;&#x27;JSON&#x27;
+{
+  &quot;required_status_checks&quot;: null,
+  &quot;enforce_admins&quot;: false,
+  &quot;required_pull_request_reviews&quot;: { &quot;required_approving_review_count&quot;: 1 },
+  &quot;restrictions&quot;: null
+}
+JSON</code></pre></figure>
+<div class="note caution"><span class="tag">leave enforce_admins false</span><p>With it on, GitHub blocks the merge unless the approval comes from an account with write access. Off, the owner can merge regardless &mdash; and the review row is already written, which is all warden-connect reads.</p></div>
+<div class="note caution"><span class="tag">if a later step says the ref is not guarded</span><p>Protection may be set and simply invisible to the account that is active. Check both at once: <code>gh api repos/$CONSUMER_REPO/branches/main/protection</code> as that account &mdash; a 404 means either no protection, or no admin, and the shim cannot tell those apart.</p></div>
+<div class="note"><span class="tag">reviewers are not approvals</span><p>The reviewer dropdown only lists accounts with push access, so you may not be able to <em>request</em> a review. Nothing reads review requests &mdash; only that <code>pulls/&lt;n&gt;/reviews</code> contains an <code>APPROVED</code> entry whose login differs from the author.</p></div>
+</section>
+<hr>
+<section id="s05">
+<h2><span class="num">05</span>Probe the shim first</h2>
+<p class="lede">Merge one throwaway pull request and read it back. Cheapest way to find a token scope or a wrong variable.</p>
+  <div class="step"><span class="id">5.1</span><h3>a throwaway PR &mdash; $AUTHOR_LOGIN authors, $PROVIDER_LOGIN approves</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>cd ~/wc/payments-mcp
+
+gh auth switch --user $AUTHOR_LOGIN
+
+git checkout main &amp;&amp; git pull
+git checkout -b probe
+echo probe &gt; PROBE.md &amp;&amp; git add PROBE.md
+git commit -m &quot;probe&quot;
+git push -u origin probe
+gh pr create --base main --head probe --title probe --body &quot;&quot;</code></pre></figure>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $PROVIDER_LOGIN
+cd ~/wc/payments-mcp
+
+export PR=$(gh pr list --head probe --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on probe}&quot;
+
+gh pr review &quot;$PR&quot; --approve
+gh pr merge &quot;$PR&quot; --merge
+
+export SHA=$(gh pr list --head probe --state merged \
+  --json mergeCommit -q &quot;.[0].mergeCommit.oid&quot;)
+echo &quot;SHA=${SHA:-NONE — probe has no merged pull request}&quot;</code></pre></figure>
+  <div class="step"><span class="id">5.2</span><h3>Read it back</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $PROVIDER_LOGIN
+cd ~/wc
+
+$C scm probe --shim warden-connect/scripts/scm/github.sh --label scm \
+  --repo &quot;$PROVIDER_REPO&quot; --sha &quot;$SHA&quot; \
+  --expect-ref refs/heads/main --expect-protected \
+  --expect-approver &quot;$PROVIDER_LOGIN&quot;</code></pre></figure>
+<div class="twrap"><table><thead><tr><th>Field</th><th>Must be</th><th>If it is not</th></tr></thead><tbody><tr><td><code>merged</code></td><td><code>true</code></td><td>you pushed, or used the branch head instead of the merge commit</td></tr><tr><td><code>protected</code></td><td><code>true</code></td><td>section 04 skipped, or the token lacks admin</td></tr><tr><td><code>author</code></td><td><code>$AUTHOR_LOGIN</code></td><td>the shim is broken; an empty author makes separation of duties vacuous</td></tr><tr><td><code>approvers</code></td><td><code>$PROVIDER_LOGIN</code></td><td>the wrong account approved</td></tr><tr><td><code>base_sha</code></td><td>a commit</td><td>without it every contract refuses with <span class="wc wc-deny">WC-3025</span></td></tr></tbody></table></div>
+</section>
+<hr>
+<section id="s06">
+<h2><span class="num">06</span>Register both parties &mdash; platform operator</h2>
+<p class="lede">Registration is not connectivity. A registered party holds zero contracts. Nothing in this section touches GitHub.</p>
+  <div class="step"><span class="id">6.1</span><h3>The surface goes in the provider repo &mdash; $AUTHOR_LOGIN commits it in 07</h3></div>
+<p>It belongs at the reserved path, because the same file is what section 07 publishes. Registering from a loose copy elsewhere pins a digest no repository can be shown to hold.</p>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc/payments-mcp
+
+mkdir -p warden
+cat &gt; warden/surface.json &lt;&lt;&#x27;JSON&#x27;
+{
+  &quot;tools&quot;: [
+    { &quot;name&quot;: &quot;get_balance&quot;,    &quot;description&quot;: &quot;Read a balance.&quot; },
+    { &quot;name&quot;: &quot;transfer_funds&quot;, &quot;description&quot;: &quot;Move money.&quot; }
+  ]
+}
+JSON</code></pre></figure>
+  <div class="step"><span class="id">6.2</span><h3>Set the ids</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+export PROVIDER=&quot;urn:acme:mcp:payments-mcp&quot;
+export CONSUMER=&quot;urn:acme:agent:recon-bot&quot;</code></pre></figure>
+  <div class="step"><span class="id">6.3</span><h3>Write the consumer's card</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+cat &gt; recon-bot/card.json &lt;&lt;&#x27;JSON&#x27;
+{
+  &quot;name&quot;: &quot;recon&quot;,
+  &quot;description&quot;: &quot;consumer&quot;,
+  &quot;version&quot;: &quot;1.0.0&quot;,
+  &quot;skills&quot;: [ { &quot;id&quot;: &quot;d&quot;, &quot;name&quot;: &quot;d&quot;, &quot;description&quot;: &quot;d&quot; } ]
+}
+JSON</code></pre></figure>
+  <div class="step"><span class="id">6.4</span><h3>Register the provider</h3></div>
+<figure class="code"><figcaption>zone must be one drill-policy.toml declares &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+$C register server --id &quot;$PROVIDER&quot; \
+  --surface payments-mcp/warden/surface.json \
+  --endpoint &quot;npx -y @acme/pay&quot; --owner &quot;$PROVIDER_OWNER&quot; \
+  --zone internal.payments --by &quot;$PROVIDER_OWNER&quot;</code></pre></figure>
+  <div class="step"><span class="id">6.5</span><h3>Register the consumer</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+$C register agent --id &quot;$CONSUMER&quot; --card recon-bot/card.json \
+  --owner &quot;$CONSUMER_OWNER&quot; --zone internal.apac --by &quot;$CONSUMER_OWNER&quot;</code></pre></figure>
+  <div class="step"><span class="id">6.6</span><h3>Activate both</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+$C activate &quot;$PROVIDER&quot; --by &quot;$PROVIDER_OWNER&quot;
+$C activate &quot;$CONSUMER&quot; --by &quot;$CONSUMER_OWNER&quot;</code></pre></figure>
+<div class="note stop"><span class="tag">get the owner right the first time</span><p>An entity's owner <strong>cannot be changed</strong> &mdash; re-registering over an <code>Active</code> record is refused, because a changed party is drift, not an update. The owner must be the account that approves in <em>that</em> repository: <code>$PROVIDER_LOGIN</code> for payments-mcp, <code>$CONSUMER_LOGIN</code> for recon-bot. Get it wrong and <code>need apply</code> refuses with <span class="wc wc-deny">WC-3025</span>.</p></div>
+  <div class="step"><span class="id">6.7</span><h3>Confirm</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+$C entities
+$C show &quot;$PROVIDER&quot;
+$C show &quot;$CONSUMER&quot;</code></pre></figure>
+<p>Empty output means <code>WARDEN_CONNECT_ROOT</code> is not set in this shell.</p>
+</section>
+<hr>
+<div class="part"><span class="tag">Part 2 of 3</span>
+<h2>Contract one connection</h2>
+<p>Offer, need, and &mdash; for a gated item &mdash; the provider's approval. This is the part that repeats: every new consumer, every new tool, every renewal walks this same path.</p>
+<span class="when">per connection</span></div>
+<section id="s07">
+<h2><span class="num">07</span>Provider &mdash; publish the offer</h2>
+  <div class="step"><span class="id">7.1</span><h3>Write the terms &mdash; $AUTHOR_LOGIN</h3></div>
+<figure class="code"><figcaption>written by the command, not by hand &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>cd ~/wc/payments-mcp
+
+cat &gt; warden/offer.toml &lt;&lt;&#x27;TOML&#x27;
+asset = &quot;urn:acme:mcp:payments-mcp&quot;
+
+[[term]]
+items    = [&quot;get_balance&quot;]
+approval = &quot;pre_granted&quot;
+ttl_max  = 604800
+to       = { zone = &quot;internal.*&quot; }
+
+[[term]]
+items    = [&quot;transfer_funds&quot;]
+approval = &quot;named_consumer&quot;
+ttl_max  = 3600
+to       = { zone = &quot;internal.*&quot; }
+TOML</code></pre></figure>
+<p>No consumer is named. A provider writes this before any consumer exists.</p>
+  <div class="step"><span class="id">7.2</span><h3>Lint &mdash; needs no control plane, no account</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc/payments-mcp
+
+$C offer lint</code></pre></figure>
+  <div class="step"><span class="id">7.3</span><h3>Pull request &mdash; $AUTHOR_LOGIN</h3></div>
+<figure class="code"><figcaption>branch, stage, commit, push, open the pull request &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $AUTHOR_LOGIN
+cd ~/wc/payments-mcp
+
+git checkout main &amp;&amp; git pull
+git checkout -b publish-offer
+git add warden/
+git commit -m &quot;publish offer&quot;
+git push -u origin publish-offer
+gh pr create --base main --head publish-offer --title &quot;publish offer&quot; --body &quot;&quot;
+
+export PR=$(gh pr list --head publish-offer --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on publish-offer}&quot;</code></pre></figure>
+  <div class="step"><span class="id">7.4</span><h3>Approve and merge &mdash; $PROVIDER_LOGIN</h3></div>
+<figure class="code"><figcaption>approve, merge, then read the sha from the MERGED pull request &mdash; so re-running
+this block after the merge still works, which $PR alone would not &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $PROVIDER_LOGIN
+cd ~/wc/payments-mcp
+
+export PR=$(gh pr list --head publish-offer --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on publish-offer}&quot;
+
+gh pr review &quot;$PR&quot; --approve
+gh pr merge &quot;$PR&quot; --merge
+
+export SHA=$(gh pr list --head publish-offer --state merged \
+  --json mergeCommit -q &quot;.[0].mergeCommit.oid&quot;)
+echo &quot;SHA=${SHA:-NONE — publish-offer has no merged pull request}&quot;</code></pre></figure>
+<div class="note"><span class="tag">this first merge</span><p>carries no <code>[approval]</code> block, so the registered owner stands in as the approver. That is the bootstrap, and it applies only while the key is absent.</p></div>
+  <div class="step"><span class="id">7.5</span><h3>Publish &mdash; platform operator</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $PROVIDER_LOGIN
+cd ~/wc/payments-mcp
+
+$C offer publish --surface warden/surface.json --terms warden/offer.toml \
+  --repo &quot;$PROVIDER_REPO&quot; --sha &quot;$SHA&quot; \
+  --shim ../warden-connect/scripts/scm/github.sh --shim-label scm</code></pre></figure>
+<figure class="code"><figcaption>expected</figcaption>
+<pre><code>consent    1 approved by $PROVIDER_LOGIN via scm
+published  urn:acme:mcp:payments-mcp
+  version  1
+  surface  sha256:68ad9d18...
+  offers   get_balance, transfer_funds
+  approval none
+  affects  nothing — all 0 live contract(s) sit inside these terms</code></pre></figure>
+</section>
+<hr>
+<section id="s08">
+<h2><span class="num">08</span>Consumer &mdash; the pre-granted path</h2>
+<div class="note stop"><span class="tag">check this first</span><p>Everything below runs in <code>recon-bot</code>, which <code>$AUTHOR_LOGIN</code> has not touched yet. If the consumer half of &sect;03b was skipped, the first <code>git push</code> fails with <code>Permission to &hellip; denied</code> and the pull request then fails with <code>No commits between main and declare-need</code> &mdash; the second being a consequence of the first.</p></div>
+  <div class="step"><span class="id">8.0</span><h3>Confirm $AUTHOR_LOGIN can push to the consumer repo</h3></div>
+<figure class="code"><figcaption>true means go; false means run &sect;03b for the consumer repo &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $AUTHOR_LOGIN
+cd ~/wc
+
+gh api &quot;repos/$CONSUMER_REPO&quot; -q &quot;.permissions.push&quot;</code></pre></figure>
+<figure class="code"><figcaption>if it printed false: invite, as the consumer repo's owner &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$CONSUMER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $CONSUMER_LOGIN
+cd ~/wc
+
+gh api -X PUT repos/$CONSUMER_REPO/collaborators/$AUTHOR_LOGIN -f permission=push</code></pre></figure>
+<figure class="code"><figcaption>then accept, as the author &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $AUTHOR_LOGIN
+cd ~/wc
+
+for id in $(gh api user/repository_invitations -q &#x27;.[].id&#x27;); do
+  gh api -X PATCH &quot;user/repository_invitations/$id&quot; &amp;&amp; echo &quot;accepted $id&quot;
+done
+
+gh api &quot;repos/$CONSUMER_REPO&quot; -q &quot;.permissions.push&quot;</code></pre></figure>
+  <div class="step"><span class="id">8.1</span><h3>Write the need &mdash; $AUTHOR_LOGIN</h3></div>
+<figure class="code"><figcaption>written by the command, not by hand &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>cd ~/wc/recon-bot
+
+mkdir -p warden
+cat &gt; warden/needs.toml &lt;&lt;&#x27;TOML&#x27;
+asset = &quot;urn:acme:agent:recon-bot&quot;
+
+[[need]]
+to      = &quot;urn:acme:mcp:payments-mcp&quot;
+tools   = [&quot;get_balance&quot;]
+justify = &quot;APAC daily reconciliation&quot;
+ttl     = 604800
+TOML</code></pre></figure>
+  <div class="step"><span class="id">8.2</span><h3>Check before committing &mdash; platform operator</h3></div>
+<figure class="code"><figcaption>reads the registry, takes no writer lock &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>cd ~/wc/recon-bot
+
+$C need check --manifest warden/needs.toml --repo &quot;$CONSUMER_REPO&quot; \
+  --policy ~/wc/drill-policy.toml</code></pre></figure>
+<div class="twrap"><table><thead><tr><th>Disposition</th><th>Means</th></tr></thead><tbody><tr><td><span class="wc wc-ok">GRANT</span></td><td>pre-granted to this audience; mints on apply</td></tr><tr><td><span class="wc wc-warn">PENDING</span></td><td>the term is <code>named_consumer</code> &mdash; section 09</td></tr><tr><td><span class="wc wc-deny">REFUSED</span></td><td>not offered to you, with a per-item reason</td></tr></tbody></table></div>
+<div class="note caution"><span class="tag">ttl is bounded by the term</span><p>Asking for more than the term's <code>ttl_max</code> is refused. <code>get_balance</code> allows 604800s; <code>transfer_funds</code> allows 3600s.</p></div>
+  <div class="step"><span class="id">8.3</span><h3>Pull request &mdash; $AUTHOR_LOGIN</h3></div>
+<figure class="code"><figcaption>branch, stage, commit, push, open the pull request &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $AUTHOR_LOGIN
+cd ~/wc/recon-bot
+
+git checkout main &amp;&amp; git pull
+git checkout -b declare-need
+git add warden/
+git commit -m &quot;declare need&quot;
+git push -u origin declare-need
+gh pr create --base main --head declare-need --title &quot;declare need&quot; --body &quot;&quot;
+
+export PR=$(gh pr list --head declare-need --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on declare-need}&quot;</code></pre></figure>
+  <div class="step"><span class="id">8.4</span><h3>Approve and merge &mdash; $CONSUMER_LOGIN</h3></div>
+<figure class="code"><figcaption>approve, merge, then read the sha from the MERGED pull request &mdash; so re-running
+this block after the merge still works, which $PR alone would not &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$CONSUMER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $CONSUMER_LOGIN
+cd ~/wc/recon-bot
+
+export PR=$(gh pr list --head declare-need --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on declare-need}&quot;
+
+gh pr review &quot;$PR&quot; --approve
+gh pr merge &quot;$PR&quot; --merge
+
+export SHA=$(gh pr list --head declare-need --state merged \
+  --json mergeCommit -q &quot;.[0].mergeCommit.oid&quot;)
+echo &quot;SHA=${SHA:-NONE — declare-need has no merged pull request}&quot;</code></pre></figure>
+  <div class="step"><span class="id">8.5</span><h3>Apply &mdash; platform operator</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$CONSUMER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $CONSUMER_LOGIN
+cd ~/wc/recon-bot
+
+$C need apply --manifest warden/needs.toml \
+  --repo &quot;$CONSUMER_REPO&quot; --sha &quot;$SHA&quot; \
+  --shim ../warden-connect/scripts/scm/github.sh --shim-label scm \
+  --mediator &quot;warden:mediator:local&quot; --kid k1 \
+  --issuer-key ~/wc/issuer.pem --policy ~/wc/drill-policy.toml</code></pre></figure>
+<figure class="code"><figcaption>expected</figcaption>
+<pre><code>consumer   3 approved by $CONSUMER_LOGIN via scm
+
+urn:acme:agent:recon-bot -&gt; urn:acme:mcp:payments-mcp
+  minted     conn_5aaa5cd8956fca4d (cx_ee279df0a6f4967c179d8839)
+  items      get_balance
+  ttl        604800s
+  offer      version 1
+
+1 minted · 0 awaiting the provider · 0 already current</code></pre></figure>
+</section>
+<hr>
+<section id="s09">
+<h2><span class="num">09</span>The gated path &mdash; provider approves a named consumer</h2>
+<p class="lede">Everything above used <code>pre_granted</code>. This is the other half, and it crosses both repositories.</p>
+  <div class="step"><span class="id">9.1</span><h3>Ask for the gated tool &mdash; $AUTHOR_LOGIN</h3></div>
+<figure class="code"><figcaption>appended by the command &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>cd ~/wc/recon-bot
+
+cat &gt;&gt; warden/needs.toml &lt;&lt;&#x27;TOML&#x27;
+
+[[need]]
+to      = &quot;urn:acme:mcp:payments-mcp&quot;
+tools   = [&quot;transfer_funds&quot;]
+justify = &quot;settlement runs, quarterly&quot;
+ttl     = 3600
+TOML</code></pre></figure>
+<figure class="code"><figcaption>branch, stage, commit, push, open the pull request &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $AUTHOR_LOGIN
+cd ~/wc/recon-bot
+
+git checkout main &amp;&amp; git pull
+git checkout -b need-transfer-funds
+git add warden/
+git commit -m &quot;need transfer_funds&quot;
+git push -u origin need-transfer-funds
+gh pr create --base main --head need-transfer-funds --title &quot;need transfer_funds&quot; --body &quot;&quot;
+
+export PR=$(gh pr list --head need-transfer-funds --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on need-transfer-funds}&quot;</code></pre></figure>
+  <div class="step"><span class="id">9.2</span><h3>Approve and merge &mdash; $CONSUMER_LOGIN</h3></div>
+<figure class="code"><figcaption>approve, merge, then read the sha from the MERGED pull request &mdash; so re-running
+this block after the merge still works, which $PR alone would not &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$CONSUMER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $CONSUMER_LOGIN
+cd ~/wc/recon-bot
+
+export PR=$(gh pr list --head need-transfer-funds --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on need-transfer-funds}&quot;
+
+gh pr review &quot;$PR&quot; --approve
+gh pr merge &quot;$PR&quot; --merge
+
+export SHA=$(gh pr list --head need-transfer-funds --state merged \
+  --json mergeCommit -q &quot;.[0].mergeCommit.oid&quot;)
+echo &quot;SHA=${SHA:-NONE — need-transfer-funds has no merged pull request}&quot;</code></pre></figure>
+  <div class="step"><span class="id">9.3</span><h3>Apply &mdash; opens a request, mints nothing</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$CONSUMER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $CONSUMER_LOGIN
+cd ~/wc/recon-bot
+
+$C need apply --manifest warden/needs.toml \
+  --repo &quot;$CONSUMER_REPO&quot; --sha &quot;$SHA&quot; \
+  --shim ../warden-connect/scripts/scm/github.sh --shim-label scm \
+  --mediator &quot;warden:mediator:local&quot; --kid k1 \
+  --issuer-key ~/wc/issuer.pem --policy ~/wc/drill-policy.toml</code></pre></figure>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>cd ~/wc
+
+$C requests --all</code></pre></figure>
+<p>Act on the <code>Pending</code> row. A <code>Minted</code> row is already settled and cannot be approved again.</p>
+  <div class="step"><span class="id">9.4</span><h3>Emit the approval file &mdash; platform operator</h3></div>
+<figure class="code"><figcaption>selected by status, so there is nothing to copy &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+export REQ=$($C requests --all --json \
+  | jq -r &#x27;[.[] | select(.status==&quot;Pending&quot;)] | last | .id&#x27;)
+echo &quot;REQ=$REQ&quot;</code></pre></figure>
+<figure class="code"><figcaption>emitted straight into the provider repo. `--approval-file` is used twice — the
+local file to read, AND the path looked up in the repository — so it has to be
+one path that resolves both ways. &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>cd ~/wc
+
+mkdir -p payments-mcp/warden/approvals
+$C approve $REQ --emit payments-mcp/warden/approvals/</code></pre></figure>
+<p>It names the request, the parties, the items and the TTL <em>in words</em>, and binds them by digest &mdash; a reviewer sees what they are agreeing to without computing a hash.</p>
+  <div class="step"><span class="id">9.5</span><h3>Commit it in the PROVIDER repo &mdash; $AUTHOR_LOGIN authors</h3></div>
+<figure class="code"><figcaption>confirm it landed where the repo will carry it &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>cd ~/wc/payments-mcp
+
+git status --short warden/approvals/</code></pre></figure>
+<figure class="code"><figcaption>branch, stage, commit, push, open the pull request &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $AUTHOR_LOGIN
+cd ~/wc/payments-mcp
+
+git checkout main &amp;&amp; git pull
+git checkout -b approve-$REQ
+git add warden/
+git commit -m &quot;approve $REQ&quot;
+git push -u origin approve-$REQ
+gh pr create --base main --head approve-$REQ --title &quot;approve $REQ&quot; --body &quot;&quot;
+
+export PR=$(gh pr list --head approve-$REQ --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on approve-$REQ}&quot;</code></pre></figure>
+  <div class="step"><span class="id">9.6</span><h3>Approve and merge &mdash; $PROVIDER_LOGIN</h3></div>
+<figure class="code"><figcaption>approve, merge, then read the sha from the MERGED pull request &mdash; so re-running
+this block after the merge still works, which $PR alone would not &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $PROVIDER_LOGIN
+cd ~/wc/payments-mcp
+
+export PR=$(gh pr list --head approve-$REQ --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on approve-$REQ}&quot;
+
+gh pr review &quot;$PR&quot; --approve
+gh pr merge &quot;$PR&quot; --merge
+
+export SHA=$(gh pr list --head approve-$REQ --state merged \
+  --json mergeCommit -q &quot;.[0].mergeCommit.oid&quot;)
+echo &quot;SHA=${SHA:-NONE — approve-$REQ has no merged pull request}&quot;</code></pre></figure>
+  <div class="step"><span class="id">9.7</span><h3>Settle it &mdash; platform operator</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $PROVIDER_LOGIN
+cd ~/wc/payments-mcp
+
+$C approve $REQ --merge-repo &quot;$PROVIDER_REPO&quot; --sha &quot;$SHA&quot; \
+  --approval-file warden/approvals/$REQ.toml \
+  --shim ../warden-connect/scripts/scm/github.sh --shim-label scm \
+  --kid k1 --issuer-key ~/wc/issuer.pem --policy ~/wc/drill-policy.toml</code></pre></figure>
+</section>
+<hr>
+<section id="s10">
+<h2><span class="num">10</span>Verify &mdash; platform operator</h2>
+<figure class="code"><figcaption>the newest contract's id, so the blocks below need nothing pasted &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+$C contracts
+
+export CID=$($C contracts --json | jq -r &#x27;max_by(.iat) | .cid&#x27;)
+echo &quot;CID=$CID&quot;</code></pre></figure>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+$C show &quot;$PROVIDER&quot;
+$C blast-radius --id &quot;$CONSUMER&quot; --depth 2 --services</code></pre></figure>
+  <div class="step"><span class="id">10.1</span><h3>Write the receipt back</h3></div>
+<figure class="code"><figcaption>neither --out nor --emit creates the directory &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+mkdir -p payments-mcp/warden/contracts
+$C receipt --cid &quot;$CID&quot; --out payments-mcp/warden/contracts/</code></pre></figure>
+<div class="note stop"><span class="tag">the contract is never committed</span><p>A signed artifact in git verifies until its expiry no matter what the registry says, and git cannot express revocation &mdash; a deletion is another commit and the blob stays reachable. The receipt carries no signature and no key.</p></div>
+<p>Committing the receipt is a normal pull request, authored by <code>$AUTHOR_LOGIN</code> and approved by <code>$PROVIDER_LOGIN</code> like any other.</p>
+  <div class="step"><span class="id">10.2</span><h3>Verify independently</h3></div>
+<div class="note"><span class="tag">the verifier checks the artifact, not the connection</span><p>It confirms size, alg, signature, schema, typ, nbf/exp, aud, revocation and &mdash; with <code>--issuer-id</code> &mdash; the issuer. It cannot check peer identity, the presented surface hash, zone policy or token binding: those need two live peers and a handshake, which is the mediator's job at connect time. A standalone verifier has no peers to compare against, and says so in its own output.</p></div>
+<figure class="code"><figcaption>every mint persists the signed artifact; this is where it lands. --kid and
+--issuer-id are both required: without them it refuses, or reports iss unchecked &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; <em>local only &mdash; no GitHub access</em></figcaption>
+<pre><code>cd ~/wc
+
+ls state/tenants/default/state/contracts/
+
+$C verify --mediator-id warden:mediator:local \
+  --issuer-pub issuer.pub --kid k1 --issuer-id https://connect.internal \
+  --file &quot;state/tenants/default/state/contracts/$CID.warden_mediator_local.jws&quot;</code></pre></figure>
+</section>
+<hr>
+<div class="part"><span class="tag">Part 3 of 3</span>
+<h2>Harden, enforce, and look things up</h2>
+<p>Replace the bootstrap with a declared approver list, put the mediator in the call path, and the reference tables you will come back to.</p>
+<span class="when">when the flow works</span></div>
+<section id="s11">
+<h2><span class="num">11</span>Declare who may approve</h2>
+<p class="lede">Replace the bootstrap with an explicit list &mdash; one pull request per repository, and each is still governed by the bootstrap owner, because at its base there is no list yet.</p>
+<div class="twrap"><table><thead><tr><th>At the base commit</th><th>Behaviour</th></tr></thead><tbody><tr><td>no <code>[approval]</code> key</td><td>registry owner stands in &mdash; this is where you are now</td></tr><tr><td><code>approvers = []</code></td><td><span class="wc wc-deny">refuse</span> &mdash; an instruction, not a gap</td></tr><tr><td><code>approvers = [&hellip;]</code></td><td>that list decides, from the next merge onward</td></tr></tbody></table></div>
+<div class="note caution"><span class="tag">read at the base</span><p>The list comes from the commit the pull request <em>targets</em>, not from the pull request. Adding yourself and approving in one change does not work: joining the list and using it are two merges, and the first is governed by whoever was already on it.</p></div>
+<h4>Provider</h4>
+  <div class="step"><span class="id">11.1</span><h3>Append the block &mdash; $AUTHOR_LOGIN</h3></div>
+<figure class="code"><figcaption>a table after the [[term]] arrays is valid TOML; `offer lint` confirms it &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $AUTHOR_LOGIN
+cd ~/wc/payments-mcp
+
+cat &gt;&gt; warden/offer.toml &lt;&lt;&#x27;TOML&#x27;
+
+[approval]
+approvers = [&quot;$PROVIDER_LOGIN&quot;]
+min       = 1
+TOML
+
+$C offer lint</code></pre></figure>
+  <div class="step"><span class="id">11.2</span><h3>Pull request &mdash; $AUTHOR_LOGIN</h3></div>
+<figure class="code"><figcaption>branch, stage, commit, push, open the pull request &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $AUTHOR_LOGIN
+cd ~/wc/payments-mcp
+
+git checkout main &amp;&amp; git pull
+git checkout -b declare-approvers
+git add warden/
+git commit -m &quot;declare approvers&quot;
+git push -u origin declare-approvers
+gh pr create --base main --head declare-approvers --title &quot;declare approvers&quot; --body &quot;&quot;
+
+export PR=$(gh pr list --head declare-approvers --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on declare-approvers}&quot;</code></pre></figure>
+  <div class="step"><span class="id">11.3</span><h3>Approve and merge &mdash; $PROVIDER_LOGIN</h3></div>
+<figure class="code"><figcaption>approve, merge, then read the sha from the MERGED pull request &mdash; so re-running
+this block after the merge still works, which $PR alone would not &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $PROVIDER_LOGIN
+cd ~/wc/payments-mcp
+
+export PR=$(gh pr list --head declare-approvers --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on declare-approvers}&quot;
+
+gh pr review &quot;$PR&quot; --approve
+gh pr merge &quot;$PR&quot; --merge
+
+export SHA=$(gh pr list --head declare-approvers --state merged \
+  --json mergeCommit -q &quot;.[0].mergeCommit.oid&quot;)
+echo &quot;SHA=${SHA:-NONE — declare-approvers has no merged pull request}&quot;</code></pre></figure>
+  <div class="step"><span class="id">11.4</span><h3>Republish, so the registry sees the new set</h3></div>
+<figure class="code"><figcaption>prints APPROVER SET CHANGED, with the digest before and after &nbsp;&middot;&nbsp; run from <code>~/wc/payments-mcp</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $PROVIDER_LOGIN
+cd ~/wc/payments-mcp
+
+$C offer publish --surface warden/surface.json --terms warden/offer.toml \
+  --repo &quot;$PROVIDER_REPO&quot; --sha &quot;$SHA&quot; \
+  --shim ../warden-connect/scripts/scm/github.sh --shim-label scm</code></pre></figure>
+<h4>Consumer</h4>
+  <div class="step"><span class="id">11.5</span><h3>Append the block &mdash; $AUTHOR_LOGIN</h3></div>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $AUTHOR_LOGIN
+cd ~/wc/recon-bot
+
+cat &gt;&gt; warden/needs.toml &lt;&lt;&#x27;TOML&#x27;
+
+[approval]
+approvers = [&quot;$CONSUMER_LOGIN&quot;]
+min       = 1
+TOML
+
+$C need check --manifest warden/needs.toml --repo &quot;$CONSUMER_REPO&quot; \
+  --policy ~/wc/drill-policy.toml</code></pre></figure>
+  <div class="step"><span class="id">11.6</span><h3>Pull request &mdash; $AUTHOR_LOGIN</h3></div>
+<figure class="code"><figcaption>branch, stage, commit, push, open the pull request &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$AUTHOR_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $AUTHOR_LOGIN
+cd ~/wc/recon-bot
+
+git checkout main &amp;&amp; git pull
+git checkout -b declare-approvers
+git add warden/
+git commit -m &quot;declare approvers&quot;
+git push -u origin declare-approvers
+gh pr create --base main --head declare-approvers --title &quot;declare approvers&quot; --body &quot;&quot;
+
+export PR=$(gh pr list --head declare-approvers --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on declare-approvers}&quot;</code></pre></figure>
+  <div class="step"><span class="id">11.7</span><h3>Approve and merge &mdash; $CONSUMER_LOGIN</h3></div>
+<figure class="code"><figcaption>approve, merge, then read the sha from the MERGED pull request &mdash; so re-running
+this block after the merge still works, which $PR alone would not &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$CONSUMER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $CONSUMER_LOGIN
+cd ~/wc/recon-bot
+
+export PR=$(gh pr list --head declare-approvers --state open --json number -q &quot;.[0].number&quot;)
+echo &quot;PR=${PR:-NONE — no open pull request on declare-approvers}&quot;
+
+gh pr review &quot;$PR&quot; --approve
+gh pr merge &quot;$PR&quot; --merge
+
+export SHA=$(gh pr list --head declare-approvers --state merged \
+  --json mergeCommit -q &quot;.[0].mergeCommit.oid&quot;)
+echo &quot;SHA=${SHA:-NONE — declare-approvers has no merged pull request}&quot;</code></pre></figure>
+  <div class="step"><span class="id">11.8</span><h3>Apply, so the registry sees the new set</h3></div>
+<figure class="code"><figcaption>prints APPROVER SET CHANGED for the consumer side &nbsp;&middot;&nbsp; run from <code>~/wc/recon-bot</code> &nbsp;&middot;&nbsp; as <strong>$CONSUMER_LOGIN</strong></figcaption>
+<pre><code>gh auth switch --user $CONSUMER_LOGIN
+cd ~/wc/recon-bot
+
+$C need apply --manifest warden/needs.toml \
+  --repo &quot;$CONSUMER_REPO&quot; --sha &quot;$SHA&quot; \
+  --shim ../warden-connect/scripts/scm/github.sh --shim-label scm \
+  --mediator &quot;warden:mediator:local&quot; --kid k1 \
+  --issuer-key ~/wc/issuer.pem --policy ~/wc/drill-policy.toml</code></pre></figure>
+<div class="note good"><span class="tag">from here on</span><p>Every later merge to <code>warden/offer.toml</code> needs <code>$PROVIDER_LOGIN</code>, and every later merge to <code>warden/needs.toml</code> needs <code>$CONSUMER_LOGIN</code> &mdash; because those names are now on the branch, at the base of whatever pull request comes next. The registry owner no longer stands in.</p></div>
+</section>
+<hr>
+<section id="s12">
+<h2><span class="num">12</span>Put the mediator in the path</h2>
+<figure class="code"><figcaption> &nbsp;&middot;&nbsp; run from <code>~/wc</code> &nbsp;&middot;&nbsp; as <strong>$PROVIDER_LOGIN</strong></figcaption>
+<pre><code>cd ~/wc
+
+./warden-connect/target/release/connect-mediate --help</code></pre></figure>
+<div class="twrap"><table><thead><tr><th>At connect</th><th>At each call</th></tr></thead><tbody><tr><td>14 gates: signature, alg, expiry, audience, revocation, both peer identities, the pin, posture, zone pair, token binding, issuer, schema, size</td><td><code>tools/list</code> filtered to <code>surface.tools</code>; rate, spend and concurrency ceilings</td></tr></tbody></table></div>
+<p>The catalogue filter is the most valuable thing here: the model never sees the tool it is not contracted for, so it cannot be talked into attempting it.</p>
+</section>
+<hr>
+<section id="s13">
+<h2><span class="num">13</span>Refusals</h2>
+<p class="lede">The first table is every refusal a real run of this walkthrough produced, in order.</p>
+<div class="twrap"><table><thead><tr><th>Refusal</th><th>Cause</th><th>Fix</th></tr></thead><tbody><tr><td><code>src refspec &hellip; does not match any</code></td><td>git</td><td>no branch. <code>git checkout -b</code> and commit before pushing</td></tr><tr><td><span class="wc wc-deny">WC-1001</span> <em>merged onto &lt;empty&gt;</em></td><td><code>$PROVIDER_REPO</code> was a bare name</td><td>the <code>owner/repo</code> form. The shim now exits 3 naming it</td></tr><tr><td><span class="wc wc-deny">WC-1001</span> <em>merged onto &lt;empty&gt;</em></td><td>the branch-head sha, not the merge commit</td><td><code>gh pr view &lt;n&gt; --json mergeCommit</code></td></tr><tr><td><span class="wc wc-deny">WC-3025</span> <em>registry owner standing in</em></td><td>registered owner &ne; approving account</td><td>owner cannot be changed &mdash; owner approves once, or register a new id</td></tr><tr><td><span class="wc wc-deny">WC-1001</span> <em>not a guarded ref</em></td><td>the active <code>gh</code> account had no admin on the repo being read, so the protection lookup 404d</td><td><code>gh auth switch</code> to the account that owns that repo, then re-run</td></tr><tr><td><span class="wc wc-deny">WC-8001</span></td><td>no <code>--policy</code>; the default is relative to cwd</td><td><code>--policy ~/wc/drill-policy.toml</code></td></tr><tr><td><span class="wc wc-deny">WC-8004</span> <em>issuer key</em></td><td>no key generated</td><td>section 3.3</td></tr><tr><td><span class="wc wc-deny">WC-8004</span> <em>cannot write &hellip;</em></td><td>no output flag creates its directory &mdash; <code>--emit</code>, <code>--out</code></td><td><code>mkdir -p</code> the target first</td></tr></tbody></table></div>
+<h4>Others you may meet</h4>
+<div class="twrap"><table><thead><tr><th>Code</th><th>Means</th><th>Look at</th></tr></thead><tbody><tr><td><span class="wc wc-deny">WC-2001</span></td><td>entity not found</td><td><code>WARDEN_CONNECT_ROOT</code> unset in this shell</td></tr><tr><td><span class="wc wc-deny">WC-2011</span></td><td>zone pair unknown</td><td>a zone the policy never declared</td></tr><tr><td><span class="wc wc-deny">WC-3010</span></td><td>requested surface exceeds the offer</td><td>the diff is in the message</td></tr><tr><td><span class="wc wc-deny">WC-3020</span></td><td>no approver held the required role</td><td>remove <code>approver_role</code>, or route through a signed approval</td></tr><tr><td><span class="wc wc-deny">WC-3023</span></td><td>the reviewed file is not the submitted one</td><td>you edited after approval</td></tr><tr><td><span class="wc wc-deny">WC-3024</span></td><td>the registered owner did not approve</td><td><code>$C show &lt;id&gt;</code></td></tr><tr><td><span class="wc wc-deny">WC-3027</span></td><td>the same person approved both sides</td><td>here <code>$PROVIDER_LOGIN</code> and <code>$CONSUMER_LOGIN</code> differ, so this cannot fire</td></tr></tbody></table></div>
+</section>
+<hr>
+<section id="s14">
+<h2><span class="num">14</span>Checklist</h2>
+<ul class="verdicts"><li><span class="mark yes">&#10003;</span><span><code>gh auth status</code> shows the account you intend, before every git block</span></li><li><span class="mark yes">&#10003;</span><span><code>WARDEN_CONNECT_ROOT</code> exported absolute, in every shell</span></li><li><span class="mark yes">&#10003;</span><span><code>main</code> guarded on both repos, <code>enforce_admins=false</code></span></li><li><span class="mark yes">&#10003;</span><span>payments-mcp registered with <code>--owner $PROVIDER_LOGIN</code>; recon-bot with <code>--owner $CONSUMER_LOGIN</code></span></li><li><span class="mark yes">&#10003;</span><span><code>issuer.pem</code> in PKCS#8; <code>drill-policy.toml</code> lints <em>usable</em></span></li><li><span class="mark yes">&#10003;</span><span><code>scm probe</code> reports protected, an author, an approver and <code>base_sha</code></span></li><li><span class="mark yes">&#10003;</span><span>every PR authored by <code>$AUTHOR_LOGIN</code> and approved by the repo's owner</span></li><li><span class="mark yes">&#10003;</span><span>offer published with the MERGE commit sha</span></li><li><span class="mark yes">&#10003;</span><span>need applied; <code>contracts</code> shows a contract</span></li><li><span class="mark yes">&#10003;</span><span>the gated item went PENDING, was approved by merge in the provider repo, and minted</span></li><li><span class="mark yes">&#10003;</span><span>receipt written; no <code>.jws</code> in either repository</span></li><li><span class="mark yes">&#10003;</span><span><code>[approval]</code> added in a second pull request, in both manifests</span></li></ul>
+</section>
+<footer class="end"><p>warden-connect &middot; connection control plane for agents. Reference: <code>docs/07-hld.md</code>, <code>docs/08-lld.md</code>, <code>docs/use-cases/</code>. Azure Repos and Bitbucket follow the same shape and are <strong>not</strong> yet verified against a live tenant.</p></footer>
+</div>
+</div>
+<script>
+(function () {
+  // The Clipboard API needs a secure context AND clipboard-write permission, neither of which
+  // is guaranteed inside an embedded frame. The textarea fallback works where it does not, so
+  // both are wired and the button reports which one succeeded only by turning green.
+  function write(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error('copy refused'));
+    });
+  }
+
+  document.querySelectorAll('figure.code').forEach(function (fig) {
+    var cap = fig.querySelector('figcaption');
+    var code = fig.querySelector('pre code');
+    if (!cap || !code) return;
+
+    // Wrap the existing caption text so the button can sit beside it without the two
+    // fighting over the same flex line.
+    if (!cap.querySelector('.what')) {
+      var what = document.createElement('span');
+      what.className = 'what';
+      while (cap.firstChild) what.appendChild(cap.firstChild);
+      cap.appendChild(what);
+    }
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy';
+    btn.textContent = 'copy';
+    btn.setAttribute('aria-label', 'Copy this block');
+    btn.addEventListener('click', function () {
+      // textContent, not innerText: innerText reflects rendering, and a horizontally
+      // scrolled block can hand back something that is not what the shell needs.
+      write(code.textContent).then(function () {
+        btn.textContent = 'copied';
+        btn.dataset.done = '1';
+      }, function () {
+        btn.textContent = 'select it';
+      });
+      setTimeout(function () {
+        btn.textContent = 'copy';
+        delete btn.dataset.done;
+      }, 1600);
+    });
+    cap.appendChild(btn);
+  });
+})();
+</script>
+
+</body></html>
