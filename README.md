@@ -76,8 +76,11 @@ none.
 
 ## The walkthrough, slide by slide
 
-The two-and-a-half minute film runs twelve slides. Each is below, with the claim
-it makes and what that claim means in the implementation.
+The two-and-a-half minute film runs twelve slides. Each is below: the claim as
+the film states it, what that claim means in the implementation, and a
+**Reference** line into the design documents, the use cases and the walkthrough.
+If you arrived here from the video, those links are where each slide is
+specified in full.
 
 ### 1 · Title — reachable is not approved
 
@@ -85,6 +88,8 @@ it makes and what that claim means in the implementation.
 · Envoy · Kong · inline mediator
 
 The whole argument in one line. Everything after it is evidence.
+
+**Reference** · [HLD](docs/07-hld.md) — the design in one document · [end-to-end guide](docs/guides/end-to-end.md) — walk it yourself
 
 ### 2 · The token only names a service
 
@@ -97,6 +102,8 @@ MCP server then advertises its full catalogue, and the model can attempt any of
 it. Nothing in that exchange records a decision about `transfer_funds`
 specifically. Reachability has quietly become authorisation.
 
+**Reference** · [HLD §7.1 Scope and context](docs/07-hld.md#71-scope-and-context) · [LLD §8.6.4 the catalogue filter](docs/08-lld.md#864-filter--the-catalogue) · [UC-03 · Mediated capability discovery](docs/use-cases/UC-03-mediated-capability-discovery.md)
+
 ### 3 · The same defect, N times
 
 > Nothing in the estate can answer these questions. There is no record of who approved any of these connections.
@@ -104,6 +111,8 @@ specifically. Reachability has quietly become authorisation.
 The estate is not agent-to-tool. It is agent → agent → tool → agent, assembled
 at runtime. Each hop repeats the same gap, so the missing record is not one
 oversight but a property of how the estate is wired.
+
+**Reference** · [HLD §7.1 Scope and context](docs/07-hld.md#71-scope-and-context) · [LLD §8.5.11 inventory](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory) · [UC-08 · Shadow estate detection](docs/use-cases/UC-08-shadow-estate-detection.md)
 
 ### 4 · These are two separate questions
 
@@ -116,6 +125,8 @@ oversight but a property of how the estate is wired.
 
 Conflating them is why the first goes unanswered: per-call authorisation is
 mature, so the standing relationship is assumed rather than decided.
+
+**Reference** · [HLD §7.6 Two policies, two moments](docs/07-hld.md#two-policies-two-moments) · [HLD §7.7 Integration with a policy engine](docs/07-hld.md#77-integration-with-a-policy-engine) · [LLD §8.5.5 may this contract exist?](docs/08-lld.md#855-cpolicy--may-this-contract-exist)
 
 ### 5 · Each side writes what it wants, in its own repository
 
@@ -134,6 +145,8 @@ can assert anything about a commit. Approval is read at the merge's **base
 commit**, so a pull request that adds its own author to the approver list is not
 approvable by that author.
 
+**Reference** · [HLD §7.6 Reserved paths](docs/07-hld.md#reserved-paths) · [LLD §8.5.11 offer, need, scm, authority](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory) · [UC-01 · Register an agent](docs/use-cases/UC-01-register-and-admit-an-agent.md) · [UC-02 · Onboard a tool server](docs/use-cases/UC-02-onboard-a-tool-server.md) · [guide §07–§10](docs/guides/end-to-end.md)
+
 ### 6 · Three dispositions
 
 > Most requests never need a person to approve them. The provider already approved this whole class of consumer in a reviewed commit.
@@ -148,6 +161,8 @@ approvable by that author.
 
 Refusals outrank gating: one gated item holds the whole need, and one refused
 item refuses it.
+
+**Reference** · [LLD §8.5.11 Disposition](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory) · [LLD §8.7.2 Issuance](docs/08-lld.md#872-issuance--issuance-authority) · [UC-04 · Establish a connection](docs/use-cases/UC-04-establish-a-connection.md) · [guide §12–§13](docs/guides/end-to-end.md)
 
 ### 7 · The contract is stored in three places
 
@@ -164,6 +179,8 @@ The expiry is the containment mechanism, not an inconvenience. Because the edge
 copy must be refreshed, the refresh is a channel — the revocation feed arrives
 on it. An enforcement point that cannot refresh refuses once `max_stale` passes.
 
+**Reference** · [LLD §8.8 Storage](docs/08-lld.md#88-storage) · [LLD §8.9.3 Receipts](docs/08-lld.md#893-receipts) · [LLD §8.5.8 containment and distribution](docs/08-lld.md#858-contain-dist-caep--containment) · [HLD §7.11 Non-functional requirements](docs/07-hld.md#711-non-functional-requirements)
+
 ### 8 · A contract sets a limit, never a grant
 
 > A contract sets a limit. It never grants access. It can only reduce what an agent is already allowed to do.
@@ -177,6 +194,8 @@ Every operator narrows. There is no widening operator anywhere in the algebra,
 and the property tests assert it: `meet(a,b) ≤ a` and `meet(a,b) ≤ b`, always.
 That is what makes the artifact safe to hand to a party you do not fully trust —
 the worst a forged or over-broad contract can do is fail to widen anything.
+
+**Reference** · [HLD §7.4 The algebra](docs/07-hld.md#the-algebra) · [LLD §8.7.1 The narrowing algebra](docs/08-lld.md#871-the-narrowing-algebra) · [HLD §7.7 Integration with a policy engine](docs/07-hld.md#77-integration-with-a-policy-engine)
 
 ### 9 · Three places to run the check
 
@@ -194,6 +213,8 @@ The decision core is one crate, `wc-gateway`. Each binding is transport only: it
 gathers evidence and moves bytes, and holds no policy. That is why the third
 column can differ while the verdict cannot.
 
+**Reference** · [HLD §7.9 Deployment topologies](docs/07-hld.md#79-deployment-topologies) · [LLD §8.6b.2 The two bindings](docs/08-lld.md#86b2-the-two-bindings) · [LLD §8.6b.1 The three layers](docs/08-lld.md#86b1-the-three-layers) · [install guide](docs/guides/install.md)
+
 ### 10 · The refusal, three ways
 
 > Envoy blocks the call at the network hop.
@@ -206,6 +227,8 @@ is in the path. The agent never sees the tool either: `tools/list` is filtered
 to the contracted surface before the catalogue reaches the model, so it cannot
 be talked into attempting what it was never offered.
 
+**Reference** · [HLD §7.4 Verification — the 14 gates](docs/07-hld.md#verification--fail-closed-at-every-step) · [LLD §8.6.4 the catalogue filter](docs/08-lld.md#864-filter--the-catalogue) · [UC-04 · Establish a connection](docs/use-cases/UC-04-establish-a-connection.md) · [guide §16–§17](docs/guides/end-to-end.md)
+
 ### 11 · One revocation reaches every enforcement point
 
 > One revocation reaches every enforcement point. Every decision is written to a record that cannot be edited unnoticed.
@@ -215,6 +238,8 @@ deadline. A point that does not acknowledge is reported as **not confirmed** —
 never assumed benign. Each enforcement point writes its own decision trail, and
 each row carries the hash of the row before it, so an edit anywhere invalidates
 every row after it. `connect evidence verify` finds the first break.
+
+**Reference** · [LLD §8.5.8 the revocation feed](docs/08-lld.md#858-contain-dist-caep--containment) · [LLD §8.5.9 the evidence chain](docs/08-lld.md#859-chain-evidence-sink-export-rekor--evidence) · [UC-07 · Emergency quarantine](docs/use-cases/UC-07-emergency-quarantine.md) · [UC-06 · Surface drift](docs/use-cases/UC-06-surface-drift.md) · [UC-10 · Regulatory register and evidence](docs/use-cases/UC-10-regulatory-register-and-evidence.md)
 
 ### 12 · Each part has one job
 
@@ -230,6 +255,8 @@ issuer keys rather than looked up in a database the enforcement point trusts.
 
 
 ---
+
+**Reference** · [HLD §7.2 Architecture overview](docs/07-hld.md#72-architecture-overview) · [LLD §8.3 Crate layout](docs/08-lld.md#83-crate-and-repository-layout) · [HLD §7.8 Trust and threat model](docs/07-hld.md#78-trust-and-threat-model) · [LLD §8.19 The three claims](docs/08-lld.md#819-the-three-claims-this-design-has-to-keep)
 
 ## Layout
 
