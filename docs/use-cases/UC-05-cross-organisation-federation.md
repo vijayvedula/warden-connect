@@ -18,7 +18,7 @@ A partner agent may not sub-delegate onward, and a callee cannot raise its own c
 2. The partner agent is resolved through federation; its signed card is fetched and **pinned locally**. Neither side exposes a full catalogue.
 3. The elevated `zone: partner` admission bar applies — signed card mandatory, provenance mandatory, short `reattest_every`, mandatory human approval, mandatory data-class and jurisdiction declaration.
 4. The DPO reviews declared data classes and cross-border jurisdictions.
-5. A contract is minted with a short TTL, tight ceilings, an explicit oversight term and `delegation.max_depth: 1`.
+5. A contract is minted with a short TTL, a narrow surface, an explicit oversight term and `delegation.max_depth: 1`.
 6. The mediator enforces egress control: only declared data classes may cross, only to declared jurisdictions.
 7. The connection appears in the third-party register with its termination path recorded.
 

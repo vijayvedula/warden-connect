@@ -26,8 +26,7 @@ Renewal re-runs admission from the top. A contract with no owner response lapses
 | Signal | Default proposal |
 |---|---|
 | Tool granted, never called | Drop it |
-| Spend ceiling never approached | Lower it to observed peak plus headroom |
-| Rate ceiling never approached | Lower it |
+| Tool called only from one caller of several | Split the contract, narrow each |
 | Owner unresponsive | Lapse at `exp` |
 
 Every renewal is an opportunity to make the ceiling smaller. It is never an opportunity to make it larger without a fresh approval.
