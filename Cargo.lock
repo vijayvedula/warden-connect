@@ -429,6 +429,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "11.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "881733cbc631fc9e472e24447ce32a64bedf2da498d6d8570b08edc87de71f65"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "getrandom",
+ "hmac",
+ "js-sys",
+ "p256",
+ "p384",
+ "pem",
+ "rand",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2",
+ "signature",
+ "simple_asn1",
+ "zeroize",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1135,7 +1159,7 @@ checksum = "8ceab22d778960eb1e2e6a959ebbb8873148f0d97a36bf808e6f44881ac2a108"
 dependencies = [
  "base64 0.22.1",
  "hex",
- "jsonwebtoken",
+ "jsonwebtoken 10.4.0",
  "libc",
  "serde",
  "serde_json",
@@ -1162,7 +1186,7 @@ name = "warden-connect-control"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
- "jsonwebtoken",
+ "jsonwebtoken 11.0.0",
  "libc",
  "serde",
  "serde_json",
@@ -1177,7 +1201,7 @@ version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "hex",
- "jsonwebtoken",
+ "jsonwebtoken 11.0.0",
  "serde",
  "serde_json",
  "sha2",
@@ -1212,7 +1236,7 @@ name = "warden-connect-mediator"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
- "jsonwebtoken",
+ "jsonwebtoken 11.0.0",
  "serde",
  "serde_json",
  "ureq",
@@ -1276,7 +1300,7 @@ name = "wc-e2e"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
- "jsonwebtoken",
+ "jsonwebtoken 11.0.0",
  "serde",
  "serde_json",
  "warden-connect-control",
