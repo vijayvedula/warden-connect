@@ -17,19 +17,14 @@ calls happen inside.
 
 ## The walkthrough, slide by slide
 
-The two-and-a-half minute film runs twelve slides. Each one is below: the text
-as the film states it, a description of what it means in the implementation,
-and a **Reference** line into the design documents, the use cases and the
-walkthrough. If you arrived here from the video, those links are where the
-slide is specified in full.
+The two-and-a-half minute film runs twelve slides. Each one is below: the slide
+itself, then what it means in the implementation, then a **Reference** line into
+the design documents, the use cases and the end-to-end guide. If you arrived here
+from the video, those links are where the slide is specified in full.
 
 ### 1 · Title
 
 <img src="docs/slides/slide-01.png" alt="Title slide: warden-connect, the connection control plane for AI agents. Envoy, Kong, inline mediator." width="100%">
-
-*warden-connect — the connection control plane for AI agents*
-*contracts that limit what an agent may reach, enforced on every call*
-*Envoy · Kong · inline mediator*
 
 The title slide names the product and the three enforcement points. The eleven
 slides after it describe how a contract is created and how it is enforced.
@@ -39,10 +34,6 @@ slides after it describe how a contract is created and how it is enforced.
 ### 2 · The token only names a service
 
 <img src="docs/slides/slide-02.png" alt="A bearer token addressed to one service, next to that server's full tool catalogue. Nothing links the token to individual tools." width="100%">
-
-> The token only names a service. It says nothing about which tools the agent may use.
-> The server offers every tool that it has — all of them available to anyone the token lets through.
-> Being able to reach it is not the same as approval. Nobody ever decided that this agent may call `transfer_funds`.
 
 A bearer token has an audience of one service. It carries no list of tools. When
 the agent calls `tools/list`, the MCP server returns its whole catalogue, so any
@@ -55,8 +46,6 @@ caller the token admits can attempt any tool the server exposes, including
 
 <img src="docs/slides/slide-03.png" alt="The estate as a graph of agents and tools, every edge an unrecorded connection." width="100%">
 
-> Nothing in the estate can answer these questions. There is no record of who approved any of these connections.
-
 The estate is a graph, not a pair: agent to agent to tool to agent, assembled at
 runtime. Every edge is a separate connection, and every edge has the same
 missing record. `connect inventory` reads the declared paths across an
@@ -68,8 +57,6 @@ any endpoint.
 ### 4 · Two separate questions
 
 <img src="docs/slides/slide-04.png" alt="Two questions side by side: may this connection exist, answered by warden-connect, and may this call proceed, answered by a policy engine." width="100%">
-
-> These are two separate questions. warden-connect answers the first one on its own. The second one is already well solved.
 
 | Question | Answered by | When |
 |---|---|---|
@@ -84,10 +71,6 @@ warden-connect answers the first and does not evaluate per-call policy.
 ### 5 · Each side declares in its own repository
 
 <img src="docs/slides/slide-05.png" alt="Two lanes: the provider merges warden/offer.toml, the consumer merges warden/needs.toml, and the control plane folds them into a contract." width="100%">
-
-> Each side writes what it wants in its own repository. The provider lists what it offers; the consumer lists what it needs.
-> Neither side reviews the other's pull request. The offer is published first, and it waits until a matching need arrives.
-> The source host confirms the merge, not the pipeline. A pipeline can claim anything about a commit, so the host is asked directly.
 
 The provider commits `warden/offer.toml`. The consumer commits
 `warden/needs.toml`. Each is reviewed and merged in its own repository, so
@@ -106,10 +89,6 @@ refused with `WC-3025`.
 
 <img src="docs/slides/slide-06.png" alt="The three dispositions: granted, needs approval, and refused." width="100%">
 
-> Most requests never need a person to approve them. The provider already approved this whole class of consumer in a reviewed commit.
-> Some requests do need someone to approve them. Nothing is issued until the owner answers, even if only one item needs approval.
-> Some requests cannot be approved by anyone. The provider never offered these tools to this consumer, so approval would not help.
-
 `connect need apply` returns one of three values:
 
 | Disposition | Offer term | Result |
@@ -127,9 +106,6 @@ need. One gated item holds the whole need until it is answered.
 
 <img src="docs/slides/slide-07.png" alt="The contract in three locations: the repository receipt, the control plane, and the enforcement point, where only the last expires." width="100%">
 
-> The contract is then stored in three places. Each place keeps something different, and that is deliberate.
-> Only the copy at the edge expires. Because it expires it must be refreshed, and a revocation arrives with it.
-
 | Location | What it holds | Expires |
 |---|---|---|
 | The repository | a receipt, `warden/contracts/<cid>.toml` — human-readable TOML, never the signed artifact | no |
@@ -146,9 +122,6 @@ seconds, the enforcement point refuses every call.
 
 <img src="docs/slides/slide-08.png" alt="The narrowing algebra: effective equals contract surface intersected with token scope and the policy decision." width="100%">
 
-> A contract sets a limit. It never grants access. It can only reduce what an agent is already allowed to do.
-> warden-connect enforces the limit on its own. A policy engine is optional; if you deploy one, it narrows the limit further, per call.
-
 ```
 effective = contract.surface  ∩  token.scope  ∩  policy_decision
 ```
@@ -163,10 +136,6 @@ commutative, idempotent and associative.
 ### 9 · Three places to run the check
 
 <img src="docs/slides/slide-09.png" alt="The three enforcement points compared by network cost and by what each can verify about the caller." width="100%">
-
-> There are three places to run the check. All three use exactly the same decision code.
-> Where you run it changes what it costs — one network call, no network call, or inside the agent's own process.
-> They differ in what they can prove about the caller. Envoy and Kong verify the caller; the mediator is simply told who it is.
 
 | Enforcement point | Network cost | Caller identity |
 |---|---|---|
@@ -185,11 +154,6 @@ differ.
 
 <img src="docs/slides/slide-10.png" alt="The same refusal produced at Envoy, at Kong and at the inline mediator." width="100%">
 
-> Envoy blocks the call at the network hop.
-> Kong blocks the call inside the nginx worker.
-> The mediator blocks it in the agent's own process.
-> The result is the same in all three, because the code is the same.
-
 A call to a tool outside the contract's surface is refused at whichever point is
 in the path, before it reaches the server. The `tools/list` response is filtered
 to the contracted surface first, so the catalogue the model receives lists only
@@ -201,8 +165,6 @@ contracted tools. A catalogue that cannot be filtered is refused with
 ### 11 · One revocation reaches every enforcement point
 
 <img src="docs/slides/slide-11.png" alt="One signed revocation reaching every enforcement point, and the hash-chained decision trail." width="100%">
-
-> One revocation reaches every enforcement point. Every decision is written to a record that cannot be edited unnoticed.
 
 `connect quarantine` writes a signed revocation feed. Each enforcement point
 fetches it on its refresh interval. The control plane records which points have
@@ -219,10 +181,6 @@ match.
 ### 12 · Each part has one job
 
 <img src="docs/slides/slide-12.png" alt="The three planes: Git holds the request and receipt, the control plane decides and signs, the enforcement point verifies and enforces." width="100%">
-
-> Each part of the system has one job. Git records what was asked for, the control plane decides, the edge enforces.
-> Everything that crosses a boundary is signed. A contract, a revocation and a receipt move between them. No secret is shared.
-> Every decision is written down. The edge records each call. The plane records each change to a contract.
 
 | Plane | Job |
 |---|---|
