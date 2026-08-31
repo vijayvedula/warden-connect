@@ -2,7 +2,7 @@
 
 **The connection control plane for AI agents.**
 
-Warden core decides whether an agent may take *an action*. warden-connect decides
+A policy engine decides whether an agent may take *an action*. warden-connect decides
 whether two parties may be *connected at all*, and bounds what that connection can
 ever carry. One is per-call authorisation. The other is the standing relationship the
 calls happen inside.
@@ -47,7 +47,7 @@ effective = contract.surface  ∩  token.scope  ∩  policy_decision
 
 **A contract is a ceiling, never a grant.** It can only ever narrow. A contract naming
 `transfer_funds` does not permit `transfer_funds` — it permits *at most* that, and
-Warden core's policy and the token's scope both still have to agree. This is what makes
+the policy engine and the token's scope both still have to agree. This is what makes
 the artifact safe to hand to a party you do not fully trust: the worst a forged or
 over-broad contract can do is fail to widen anything.
 
@@ -56,23 +56,178 @@ mediator against the issuer's keys — not looked up in a database it trusts. A
 compromised control plane can *withhold* a contract, which fails closed. It cannot
 manufacture one.
 
-## How the family couples
+## Running with a policy engine
 
-Warden core, warden-connect, warden-delegate and warden-trace are coupled by **two
-signed artifacts and one identifier (`cid`)** — never by a shared library. Only
-`wc-mediator` runs **standalone by default** — connection enforcement with no Warden core
-and no `warden.policy.toml`. The `warden-proxy` build feature adds the decorator topology
-back, where the mediator compiles *into* Warden's proxy and per-action policy applies as
-well. Every other
-crate is independently adoptable: you can run this in front of someone else's policy
-engine.
+Coupling is **two signed artifacts and one identifier (`cid`)** — never a shared
+library. `wc-mediator` builds **standalone by default**: connection enforcement with
+no policy engine deployed at all. The `warden-proxy` build feature adds the decorator
+topology, compiling the mediator into an existing proxy so per-action policy applies
+in the same process.
 
 ```
-  agent ──stdio──▶ Warden core Gateway ──▶ MediatedUpstream ──▶ real MCP server
-                   (per-action policy)     (contract, filter, ceilings)
+  agent ──stdio──▶ proxy (per-action policy) ──▶ MediatedUpstream ──▶ real MCP server
+                                                 (contract, surface filter, terms)
 ```
 
-One process, no extra hop.
+One process, no extra hop. Run it in front of whichever policy engine you have, or
+none.
+
+---
+
+## The walkthrough, slide by slide
+
+The two-and-a-half minute film runs twelve slides. Each is below, with the claim
+it makes and what that claim means in the implementation.
+
+### 1 · Title — reachable is not approved
+
+*contracts that limit what an agent may reach, enforced on every call*
+· Envoy · Kong · inline mediator
+
+The whole argument in one line. Everything after it is evidence.
+
+### 2 · The token only names a service
+
+> The token only names a service. It says nothing about which tools the agent may use.
+> The server offers every tool that it has — all of them available to anyone the token lets through.
+> Being able to reach it is not the same as approval. Nobody ever decided that this agent may call `transfer_funds`.
+
+A bearer token addressed to `payments-mcp` is an answer to *which service*. The
+MCP server then advertises its full catalogue, and the model can attempt any of
+it. Nothing in that exchange records a decision about `transfer_funds`
+specifically. Reachability has quietly become authorisation.
+
+### 3 · The same defect, N times
+
+> Nothing in the estate can answer these questions. There is no record of who approved any of these connections.
+
+The estate is not agent-to-tool. It is agent → agent → tool → agent, assembled
+at runtime. Each hop repeats the same gap, so the missing record is not one
+oversight but a property of how the estate is wired.
+
+### 4 · These are two separate questions
+
+> These are two separate questions. warden-connect answers the first one on its own. The second one is already well solved.
+
+| Question | Answered by | When |
+|---|---|---|
+| May these two parties be connected at all? | warden-connect | at issuance, once |
+| May *this call* proceed? | a policy engine | per call |
+
+Conflating them is why the first goes unanswered: per-call authorisation is
+mature, so the standing relationship is assumed rather than decided.
+
+### 5 · Each side writes what it wants, in its own repository
+
+> Each side writes what it wants in its own repository. The provider lists what it offers; the consumer lists what it needs.
+> Neither side reviews the other's pull request. The offer is published first, and it waits until a matching need arrives.
+> The source host confirms the merge, not the pipeline. A pipeline can claim anything about a commit, so the host is asked directly.
+
+Two lanes, two repositories, two reviews. The provider writes
+`warden/offer.toml`; the consumer writes `warden/needs.toml`. Neither party can
+produce a contract alone, and neither needs a signing key — consent is a merge
+each side approved in its own repository.
+
+The last line is the load-bearing one. Merge evidence is read from the source
+host through an operator-supplied shim, never taken from CI, because a pipeline
+can assert anything about a commit. Approval is read at the merge's **base
+commit**, so a pull request that adds its own author to the approver list is not
+approvable by that author.
+
+### 6 · Three dispositions
+
+> Most requests never need a person to approve them. The provider already approved this whole class of consumer in a reviewed commit.
+> Some requests do need someone to approve them. Nothing is issued until the owner answers, even if only one item needs approval.
+> Some requests cannot be approved by anyone. The provider never offered these tools to this consumer, so approval would not help.
+
+| Disposition | Offer term | What happens |
+|---|---|---|
+| `Grant` | `pre_granted` | mints on apply — the gated path never runs |
+| `NeedsApproval` | `named_consumer` | parks as a pending request until the provider merges an approval |
+| `Refused` | not offered | returns the diff; approval is not the missing ingredient |
+
+Refusals outrank gating: one gated item holds the whole need, and one refused
+item refuses it.
+
+### 7 · The contract is stored in three places
+
+> The contract is then stored in three places. Each place keeps something different, and that is deliberate.
+> Only the copy at the edge expires. Because it expires it must be refreshed, and a revocation arrives with it.
+
+| Where | What it holds | Expires |
+|---|---|---|
+| The repository | a receipt, `warden/contracts/<cid>.toml` — human-readable, grants nothing | no |
+| The control plane | the signed artifact and the event log that produced it | no |
+| The enforcement point | the artifact it verifies against, held in memory | **yes** |
+
+The expiry is the containment mechanism, not an inconvenience. Because the edge
+copy must be refreshed, the refresh is a channel — the revocation feed arrives
+on it. An enforcement point that cannot refresh refuses once `max_stale` passes.
+
+### 8 · A contract sets a limit, never a grant
+
+> A contract sets a limit. It never grants access. It can only reduce what an agent is already allowed to do.
+> warden-connect enforces the limit on its own. A policy engine is optional; if you deploy one, it narrows the limit further, per call.
+
+```
+effective = contract.surface  ∩  token.scope  ∩  policy_decision
+```
+
+Every operator narrows. There is no widening operator anywhere in the algebra,
+and the property tests assert it: `meet(a,b) ≤ a` and `meet(a,b) ≤ b`, always.
+That is what makes the artifact safe to hand to a party you do not fully trust —
+the worst a forged or over-broad contract can do is fail to widen anything.
+
+### 9 · Three places to run the check
+
+> There are three places to run the check. All three use exactly the same decision code.
+> Where you run it changes what it costs — one network call, no network call, or inside the agent's own process.
+> They differ in what they can prove about the caller. Envoy and Kong verify the caller; the mediator is simply told who it is.
+
+| Enforcement point | Cost | Caller identity |
+|---|---|---|
+| Envoy (`wc-extproc`) | 1 loopback gRPC hop | verified — XFCC, origin-checked |
+| Kong (`libwc_kong.so`) | none — in the nginx worker | verified — peer certificate URI SAN, or XFCC |
+| Inline mediator (`connect-mediate`) | none — the agent's own process | **configured, not proven** |
+
+The decision core is one crate, `wc-gateway`. Each binding is transport only: it
+gathers evidence and moves bytes, and holds no policy. That is why the third
+column can differ while the verdict cannot.
+
+### 10 · The refusal, three ways
+
+> Envoy blocks the call at the network hop.
+> Kong blocks the call inside the nginx worker.
+> The mediator blocks it in the agent's own process.
+> The result is the same in all three, because the code is the same.
+
+An uncontracted tool is refused before it reaches the server, at whichever point
+is in the path. The agent never sees the tool either: `tools/list` is filtered
+to the contracted surface before the catalogue reaches the model, so it cannot
+be talked into attempting what it was never offered.
+
+### 11 · One revocation reaches every enforcement point
+
+> One revocation reaches every enforcement point. Every decision is written to a record that cannot be edited unnoticed.
+
+Quarantine writes a signed revocation feed and fans out with an acknowledgement
+deadline. A point that does not acknowledge is reported as **not confirmed** —
+never assumed benign. Each enforcement point writes its own decision trail, and
+each row carries the hash of the row before it, so an edit anywhere invalidates
+every row after it. `connect evidence verify` finds the first break.
+
+### 12 · Each part has one job
+
+> Each part of the system has one job. Git records what was asked for, the control plane decides, the edge enforces.
+> Everything that crosses a boundary is signed. A contract, a revocation and a receipt move between them. No secret is shared.
+> Every decision is written down. The edge records each call; the plane records each change to a contract.
+
+Three planes, three signed artifacts between them, and no shared secret. The
+control plane can be entirely offline and the edge still enforces against what
+it holds. A compromised control plane can *withhold* a contract, which fails
+closed — it cannot manufacture one, because contracts are verified against
+issuer keys rather than looked up in a database the enforcement point trusts.
+
 
 ---
 
@@ -93,15 +248,16 @@ injected everywhere, so nothing in the test suite depends on the wall clock.
 ## Build
 
 ```sh
-cargo build --workspace          # needs ../warden checked out beside this repo
-cargo test --workspace           # 993 tests
+cargo build --workspace          # no external checkout needed
+cargo test --workspace           # 1,439 tests
 cargo clippy --workspace --all-targets
 cargo deny check
 ./scripts/dep-count.sh           # dependency ceilings, asserted
 ```
 
-Warden core is a **path dependency** at `../warden` by design (§8.3) — the deployment
-model is that the mediator compiles into the proxy. CI checks out both side by side.
+Nothing outside this repository is required to build or test it. The optional
+`warden-proxy` feature is the only thing that pulls in a policy engine, and it is off
+by default.
 
 ## Try it
 
