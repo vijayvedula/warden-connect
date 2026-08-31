@@ -84,6 +84,8 @@ slide is specified in full.
 
 ### 1 · Title
 
+<img src="docs/slides/slide-01.png" alt="Title slide: warden-connect, the connection control plane for AI agents. Envoy, Kong, inline mediator." width="100%">
+
 *warden-connect — the connection control plane for AI agents*
 *contracts that limit what an agent may reach, enforced on every call*
 *Envoy · Kong · inline mediator*
@@ -94,6 +96,8 @@ slides after it describe how a contract is created and how it is enforced.
 **Reference** · [HLD](docs/07-hld.md) — the design in one document · [end-to-end guide](docs/guides/end-to-end.md) — walk it yourself
 
 ### 2 · The token only names a service
+
+<img src="docs/slides/slide-02.png" alt="A bearer token addressed to one service, next to that server's full tool catalogue. Nothing links the token to individual tools." width="100%">
 
 > The token only names a service. It says nothing about which tools the agent may use.
 > The server offers every tool that it has — all of them available to anyone the token lets through.
@@ -108,6 +112,8 @@ caller the token admits can attempt any tool the server exposes, including
 
 ### 3 · The same defect, repeated
 
+<img src="docs/slides/slide-03.png" alt="The estate as a graph of agents and tools, every edge an unrecorded connection." width="100%">
+
 > Nothing in the estate can answer these questions. There is no record of who approved any of these connections.
 
 The estate is a graph, not a pair: agent to agent to tool to agent, assembled at
@@ -119,6 +125,8 @@ any endpoint.
 **Reference** · [HLD §7.1 Scope and context](docs/07-hld.md#71-scope-and-context) · [LLD §8.5.11 inventory](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory) · [UC-08 · Shadow estate detection](docs/use-cases/UC-08-shadow-estate-detection.md)
 
 ### 4 · Two separate questions
+
+<img src="docs/slides/slide-04.png" alt="Two questions side by side: may this connection exist, answered by warden-connect, and may this call proceed, answered by a policy engine." width="100%">
 
 > These are two separate questions. warden-connect answers the first one on its own. The second one is already well solved.
 
@@ -133,6 +141,8 @@ warden-connect answers the first and does not evaluate per-call policy.
 **Reference** · [HLD §7.6 Two policies, two moments](docs/07-hld.md#two-policies-two-moments) · [HLD §7.7 Integration with a policy engine](docs/07-hld.md#77-integration-with-a-policy-engine) · [LLD §8.5.5 may this contract exist?](docs/08-lld.md#855-cpolicy--may-this-contract-exist)
 
 ### 5 · Each side declares in its own repository
+
+<img src="docs/slides/slide-05.png" alt="Two lanes: the provider merges warden/offer.toml, the consumer merges warden/needs.toml, and the control plane folds them into a contract." width="100%">
 
 > Each side writes what it wants in its own repository. The provider lists what it offers; the consumer lists what it needs.
 > Neither side reviews the other's pull request. The offer is published first, and it waits until a matching need arrives.
@@ -153,6 +163,8 @@ refused with `WC-3025`.
 
 ### 6 · Three dispositions
 
+<img src="docs/slides/slide-06.png" alt="The three dispositions: granted, needs approval, and refused." width="100%">
+
 > Most requests never need a person to approve them. The provider already approved this whole class of consumer in a reviewed commit.
 > Some requests do need someone to approve them. Nothing is issued until the owner answers, even if only one item needs approval.
 > Some requests cannot be approved by anyone. The provider never offered these tools to this consumer, so approval would not help.
@@ -172,6 +184,8 @@ need. One gated item holds the whole need until it is answered.
 
 ### 7 · The contract is stored in three places
 
+<img src="docs/slides/slide-07.png" alt="The contract in three locations: the repository receipt, the control plane, and the enforcement point, where only the last expires." width="100%">
+
 > The contract is then stored in three places. Each place keeps something different, and that is deliberate.
 > Only the copy at the edge expires. Because it expires it must be refreshed, and a revocation arrives with it.
 
@@ -189,6 +203,8 @@ seconds, the enforcement point refuses every call.
 
 ### 8 · A contract sets a limit, not a grant
 
+<img src="docs/slides/slide-08.png" alt="The narrowing algebra: effective equals contract surface intersected with token scope and the policy decision." width="100%">
+
 > A contract sets a limit. It never grants access. It can only reduce what an agent is already allowed to do.
 > warden-connect enforces the limit on its own. A policy engine is optional; if you deploy one, it narrows the limit further, per call.
 
@@ -204,6 +220,8 @@ commutative, idempotent and associative.
 **Reference** · [HLD §7.4 The algebra](docs/07-hld.md#the-algebra) · [LLD §8.7.1 The narrowing algebra](docs/08-lld.md#871-the-narrowing-algebra) · [HLD §7.7 Integration with a policy engine](docs/07-hld.md#77-integration-with-a-policy-engine)
 
 ### 9 · Three places to run the check
+
+<img src="docs/slides/slide-09.png" alt="The three enforcement points compared by network cost and by what each can verify about the caller." width="100%">
 
 > There are three places to run the check. All three use exactly the same decision code.
 > Where you run it changes what it costs — one network call, no network call, or inside the agent's own process.
@@ -224,6 +242,8 @@ differ.
 
 ### 10 · The refusal, at three points
 
+<img src="docs/slides/slide-10.png" alt="The same refusal produced at Envoy, at Kong and at the inline mediator." width="100%">
+
 > Envoy blocks the call at the network hop.
 > Kong blocks the call inside the nginx worker.
 > The mediator blocks it in the agent's own process.
@@ -238,6 +258,8 @@ contracted tools. A catalogue that cannot be filtered is refused with
 **Reference** · [HLD §7.4 Verification — the 14 gates](docs/07-hld.md#verification--fail-closed-at-every-step) · [LLD §8.6.4 the catalogue filter](docs/08-lld.md#864-filter--the-catalogue) · [UC-04 · Establish a connection](docs/use-cases/UC-04-establish-a-connection.md) · [guide §16–§17](docs/guides/end-to-end.md)
 
 ### 11 · One revocation reaches every enforcement point
+
+<img src="docs/slides/slide-11.png" alt="One signed revocation reaching every enforcement point, and the hash-chained decision trail." width="100%">
 
 > One revocation reaches every enforcement point. Every decision is written to a record that cannot be edited unnoticed.
 
@@ -254,6 +276,8 @@ match.
 **Reference** · [LLD §8.5.8 the revocation feed](docs/08-lld.md#858-contain-dist-caep--containment) · [LLD §8.5.9 the evidence chain](docs/08-lld.md#859-chain-evidence-sink-export-rekor--evidence) · [UC-07 · Emergency quarantine](docs/use-cases/UC-07-emergency-quarantine.md) · [UC-06 · Surface drift](docs/use-cases/UC-06-surface-drift.md) · [UC-10 · Regulatory register and evidence](docs/use-cases/UC-10-regulatory-register-and-evidence.md)
 
 ### 12 · Each part has one job
+
+<img src="docs/slides/slide-12.png" alt="The three planes: Git holds the request and receipt, the control plane decides and signs, the enforcement point verifies and enforces." width="100%">
 
 > Each part of the system has one job. Git records what was asked for, the control plane decides, the edge enforces.
 > Everything that crosses a boundary is signed. A contract, a revocation and a receipt move between them. No secret is shared.
