@@ -7,12 +7,6 @@ whether two parties may be *connected at all*, and bounds what that connection c
 ever carry. One is per-call authorisation. The other is the standing relationship the
 calls happen inside.
 
-> **Beta.** Not independently audited, and no hardening pass has been run. What this does
-> not do is stated in [docs/07-hld.md §7.13](docs/07-hld.md) (open questions) and
-> [docs/08-lld.md §8.16b](docs/08-lld.md) (deliberately not built). The detailed
-> limitations and production-readiness registers were retired in the 2026-08-21 docs
-> rewrite and live in git history at `3f30697`.
-
 ---
 
 ## The walkthrough, slide by slide
@@ -206,12 +200,6 @@ DORA, CPS 230, OSCAL, BOM), and `serve`.
 | [sdk/python/](sdk/python) · [examples/](examples) | A dependency-free client for the control-plane API, and three runnable examples |
 | [SECURITY.md](.github/SECURITY.md) | Reporting a vulnerability; what is in and out of scope |
 
-> `docs/` was rebuilt on 2026-08-21. The previous set — capability matrices, journey maps,
-> threat model, limitations, production readiness, key custody, runbook, deployment,
-> observability, operations, releasing, conformance, prerequisites, physical architecture,
-> twelve-factor, and the HTML/video explainer estate — is preserved in git history at
-> `3f30697`. Comments throughout the source still cite those paths.
-
 ## Conformance
 
 The contract format is meant to be a candidate standard, not a product format: **any
@@ -233,6 +221,21 @@ counting them would tell you you had covered nineteen checks when you had covere
 
 If your verifier and this one disagree on any vector, one of us has a bug — and that is
 a more useful conversation than a specification document.
+
+## Status and provenance
+
+**Beta.** Not independently audited, and no hardening pass has been run. What
+this does not do is stated in [docs/07-hld.md §7.13](docs/07-hld.md#713-open-questions)
+(open questions) and [docs/08-lld.md §8.16b](docs/08-lld.md#816b-deliberately-not-built-a-database-adapter)
+(deliberately not built).
+
+`docs/` was rebuilt on 2026-08-21. The previous set — capability matrices,
+journey maps, threat model, limitations, production readiness, key custody,
+runbook, deployment, observability, operations, releasing, conformance,
+prerequisites, physical architecture, twelve-factor, and the HTML and video
+explainer estate — is preserved in git history at `3f30697`, along with the
+detailed limitations and production-readiness registers. Comments throughout the
+source still cite those paths.
 
 ## Licence
 
