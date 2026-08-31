@@ -36,6 +36,10 @@ const FPS = Number(arg("fps", 30));
 // softer than the same page on any Retina screen — which renders at 2x and downsamples. This
 // captures at 2x and ffmpeg does the downsample, which is what the browser was doing all along.
 const SCALE = Number(arg("scale", 2));
+// `--at 6,17.5,...` captures those instants only, named `slide-NN.png`, instead of the whole
+// reel. The film is a pure function of `t`, so a still is the same pixels frame 180 would have
+// been — which is what makes one still per scene an honest picture of that scene.
+const AT = (arg("at", "") || "").split(",").map(Number).filter(n => !Number.isNaN(n));
 const OUT = path.resolve(arg("out", "build/pitch"));
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -153,6 +157,22 @@ const main = async () => {
   const dur = (await cdp.send("Runtime.evaluate",
     { expression: "window.__wc.prepare(), window.__wc.dur", returnByValue: true })).result.value;
   if (typeof dur !== "number") throw new Error("the recording hook did not install");
+
+  if (AT.length) {
+    process.stdout.write(`capturing ${AT.length} stills at ${W * SCALE}x${H * SCALE}\n`);
+    for (let i = 0; i < AT.length; i++) {
+      const t = AT[i];
+      if (t < 0 || t > dur) throw new Error(`--at ${t} is outside the film (0..${dur})`);
+      await cdp.send("Runtime.evaluate", { expression: `window.__wc.frame(${t})` });
+      const shot = await cdp.send("Page.captureScreenshot", SHOT);
+      const name = `slide-${String(i + 1).padStart(2, "0")}.png`;
+      await writeFile(path.join(frames, name), Buffer.from(shot.data, "base64"));
+      process.stdout.write(`  ${name}  t=${t}s\n`);
+    }
+    cdp.close(); chrome.kill(); srv.close();
+    process.stdout.write(`stills in ${frames}\n`);
+    return;
+  }
 
   const total = Math.round(dur * FPS);
   process.stdout.write(`recording ${dur}s at ${FPS}fps = ${total} frames, ` +
