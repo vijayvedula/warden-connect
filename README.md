@@ -76,18 +76,20 @@ none.
 
 ## The walkthrough, slide by slide
 
-The two-and-a-half minute film runs twelve slides. Each is below: the claim as
-the film states it, what that claim means in the implementation, and a
-**Reference** line into the design documents, the use cases and the walkthrough.
-If you arrived here from the video, those links are where each slide is
-specified in full.
+The two-and-a-half minute film runs twelve slides. Each one is below: the text
+as the film states it, a description of what it means in the implementation,
+and a **Reference** line into the design documents, the use cases and the
+walkthrough. If you arrived here from the video, those links are where the
+slide is specified in full.
 
-### 1 · Title — reachable is not approved
+### 1 · Title
 
+*warden-connect — the connection control plane for AI agents*
 *contracts that limit what an agent may reach, enforced on every call*
-· Envoy · Kong · inline mediator
+*Envoy · Kong · inline mediator*
 
-The whole argument in one line. Everything after it is evidence.
+The title slide names the product and the three enforcement points. The eleven
+slides after it describe how a contract is created and how it is enforced.
 
 **Reference** · [HLD](docs/07-hld.md) — the design in one document · [end-to-end guide](docs/guides/end-to-end.md) — walk it yourself
 
@@ -97,53 +99,55 @@ The whole argument in one line. Everything after it is evidence.
 > The server offers every tool that it has — all of them available to anyone the token lets through.
 > Being able to reach it is not the same as approval. Nobody ever decided that this agent may call `transfer_funds`.
 
-A bearer token addressed to `payments-mcp` is an answer to *which service*. The
-MCP server then advertises its full catalogue, and the model can attempt any of
-it. Nothing in that exchange records a decision about `transfer_funds`
-specifically. Reachability has quietly become authorisation.
+A bearer token has an audience of one service. It carries no list of tools. When
+the agent calls `tools/list`, the MCP server returns its whole catalogue, so any
+caller the token admits can attempt any tool the server exposes, including
+`transfer_funds`. No record exists of a decision about individual tools.
 
 **Reference** · [HLD §7.1 Scope and context](docs/07-hld.md#71-scope-and-context) · [LLD §8.6.4 the catalogue filter](docs/08-lld.md#864-filter--the-catalogue) · [UC-03 · Mediated capability discovery](docs/use-cases/UC-03-mediated-capability-discovery.md)
 
-### 3 · The same defect, N times
+### 3 · The same defect, repeated
 
 > Nothing in the estate can answer these questions. There is no record of who approved any of these connections.
 
-The estate is not agent-to-tool. It is agent → agent → tool → agent, assembled
-at runtime. Each hop repeats the same gap, so the missing record is not one
-oversight but a property of how the estate is wired.
+The estate is a graph, not a pair: agent to agent to tool to agent, assembled at
+runtime. Every edge is a separate connection, and every edge has the same
+missing record. `connect inventory` reads the declared paths across an
+organisation's repositories and reports which connections exist, without probing
+any endpoint.
 
 **Reference** · [HLD §7.1 Scope and context](docs/07-hld.md#71-scope-and-context) · [LLD §8.5.11 inventory](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory) · [UC-08 · Shadow estate detection](docs/use-cases/UC-08-shadow-estate-detection.md)
 
-### 4 · These are two separate questions
+### 4 · Two separate questions
 
 > These are two separate questions. warden-connect answers the first one on its own. The second one is already well solved.
 
 | Question | Answered by | When |
 |---|---|---|
-| May these two parties be connected at all? | warden-connect | at issuance, once |
-| May *this call* proceed? | a policy engine | per call |
+| May these two parties be connected at all? | warden-connect | once, at issuance |
+| May this call proceed? | a policy engine | on every call |
 
-Conflating them is why the first goes unanswered: per-call authorisation is
-mature, so the standing relationship is assumed rather than decided.
+The two run at different times and are owned by different components.
+warden-connect answers the first and does not evaluate per-call policy.
 
 **Reference** · [HLD §7.6 Two policies, two moments](docs/07-hld.md#two-policies-two-moments) · [HLD §7.7 Integration with a policy engine](docs/07-hld.md#77-integration-with-a-policy-engine) · [LLD §8.5.5 may this contract exist?](docs/08-lld.md#855-cpolicy--may-this-contract-exist)
 
-### 5 · Each side writes what it wants, in its own repository
+### 5 · Each side declares in its own repository
 
 > Each side writes what it wants in its own repository. The provider lists what it offers; the consumer lists what it needs.
 > Neither side reviews the other's pull request. The offer is published first, and it waits until a matching need arrives.
 > The source host confirms the merge, not the pipeline. A pipeline can claim anything about a commit, so the host is asked directly.
 
-Two lanes, two repositories, two reviews. The provider writes
-`warden/offer.toml`; the consumer writes `warden/needs.toml`. Neither party can
-produce a contract alone, and neither needs a signing key — consent is a merge
-each side approved in its own repository.
+The provider commits `warden/offer.toml`. The consumer commits
+`warden/needs.toml`. Each is reviewed and merged in its own repository, so
+neither party can produce a contract alone and neither needs a signing key.
 
-The last line is the load-bearing one. Merge evidence is read from the source
-host through an operator-supplied shim, never taken from CI, because a pipeline
-can assert anything about a commit. Approval is read at the merge's **base
-commit**, so a pull request that adds its own author to the approver list is not
-approvable by that author.
+warden-connect reads the merge result from the source host through an
+operator-supplied shim, not from CI output, because a pipeline can assert
+anything about a commit. The approver list is read at the merge's base commit
+rather than its head, so a pull request that adds its own author to that list
+cannot be approved by that author. A host that does not report a base commit is
+refused with `WC-3025`.
 
 **Reference** · [HLD §7.6 Reserved paths](docs/07-hld.md#reserved-paths) · [LLD §8.5.11 offer, need, scm, authority](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory) · [UC-01 · Register an agent](docs/use-cases/UC-01-register-and-admit-an-agent.md) · [UC-02 · Onboard a tool server](docs/use-cases/UC-02-onboard-a-tool-server.md) · [guide §07–§10](docs/guides/end-to-end.md)
 
@@ -153,14 +157,16 @@ approvable by that author.
 > Some requests do need someone to approve them. Nothing is issued until the owner answers, even if only one item needs approval.
 > Some requests cannot be approved by anyone. The provider never offered these tools to this consumer, so approval would not help.
 
-| Disposition | Offer term | What happens |
-|---|---|---|
-| `Grant` | `pre_granted` | mints on apply — the gated path never runs |
-| `NeedsApproval` | `named_consumer` | parks as a pending request until the provider merges an approval |
-| `Refused` | not offered | returns the diff; approval is not the missing ingredient |
+`connect need apply` returns one of three values:
 
-Refusals outrank gating: one gated item holds the whole need, and one refused
-item refuses it.
+| Disposition | Offer term | Result |
+|---|---|---|
+| `Grant` | `pre_granted` | a contract is minted immediately |
+| `NeedsApproval` | `named_consumer` | the request is parked until the provider merges an approval file |
+| `Refused` | not offered | the diff is returned; no approval can satisfy it |
+
+Refusals are evaluated before gating, so one refused item refuses the whole
+need. One gated item holds the whole need until it is answered.
 
 **Reference** · [LLD §8.5.11 Disposition](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory) · [LLD §8.7.2 Issuance](docs/08-lld.md#872-issuance--issuance-authority) · [UC-04 · Establish a connection](docs/use-cases/UC-04-establish-a-connection.md) · [guide §12–§13](docs/guides/end-to-end.md)
 
@@ -169,19 +175,19 @@ item refuses it.
 > The contract is then stored in three places. Each place keeps something different, and that is deliberate.
 > Only the copy at the edge expires. Because it expires it must be refreshed, and a revocation arrives with it.
 
-| Where | What it holds | Expires |
+| Location | What it holds | Expires |
 |---|---|---|
-| The repository | a receipt, `warden/contracts/<cid>.toml` — human-readable, grants nothing | no |
+| The repository | a receipt, `warden/contracts/<cid>.toml` — human-readable TOML, never the signed artifact | no |
 | The control plane | the signed artifact and the event log that produced it | no |
-| The enforcement point | the artifact it verifies against, held in memory | **yes** |
+| The enforcement point | the artifact it verifies against, held in memory | yes |
 
-The expiry is the containment mechanism, not an inconvenience. Because the edge
-copy must be refreshed, the refresh is a channel — the revocation feed arrives
-on it. An enforcement point that cannot refresh refuses once `max_stale` passes.
+The enforcement point refreshes its copy on an interval, and the revocation feed
+is delivered on the same request. If no refresh succeeds within `max_stale`
+seconds, the enforcement point refuses every call.
 
 **Reference** · [LLD §8.8 Storage](docs/08-lld.md#88-storage) · [LLD §8.9.3 Receipts](docs/08-lld.md#893-receipts) · [LLD §8.5.8 containment and distribution](docs/08-lld.md#858-contain-dist-caep--containment) · [HLD §7.11 Non-functional requirements](docs/07-hld.md#711-non-functional-requirements)
 
-### 8 · A contract sets a limit, never a grant
+### 8 · A contract sets a limit, not a grant
 
 > A contract sets a limit. It never grants access. It can only reduce what an agent is already allowed to do.
 > warden-connect enforces the limit on its own. A policy engine is optional; if you deploy one, it narrows the limit further, per call.
@@ -190,10 +196,10 @@ on it. An enforcement point that cannot refresh refuses once `max_stale` passes.
 effective = contract.surface  ∩  token.scope  ∩  policy_decision
 ```
 
-Every operator narrows. There is no widening operator anywhere in the algebra,
-and the property tests assert it: `meet(a,b) ≤ a` and `meet(a,b) ≤ b`, always.
-That is what makes the artifact safe to hand to a party you do not fully trust —
-the worst a forged or over-broad contract can do is fail to widen anything.
+Every operator in the expression is an intersection or a minimum. There is no
+union and no maximum anywhere in the algebra. The property tests assert that no
+output contains an item an input excluded, and that the operation is
+commutative, idempotent and associative.
 
 **Reference** · [HLD §7.4 The algebra](docs/07-hld.md#the-algebra) · [LLD §8.7.1 The narrowing algebra](docs/08-lld.md#871-the-narrowing-algebra) · [HLD §7.7 Integration with a policy engine](docs/07-hld.md#77-integration-with-a-policy-engine)
 
@@ -203,29 +209,31 @@ the worst a forged or over-broad contract can do is fail to widen anything.
 > Where you run it changes what it costs — one network call, no network call, or inside the agent's own process.
 > They differ in what they can prove about the caller. Envoy and Kong verify the caller; the mediator is simply told who it is.
 
-| Enforcement point | Cost | Caller identity |
+| Enforcement point | Network cost | Caller identity |
 |---|---|---|
-| Envoy (`wc-extproc`) | 1 loopback gRPC hop | verified — XFCC, origin-checked |
-| Kong (`libwc_kong.so`) | none — in the nginx worker | verified — peer certificate URI SAN, or XFCC |
-| Inline mediator (`connect-mediate`) | none — the agent's own process | **configured, not proven** |
+| Envoy — `wc-extproc` | one loopback gRPC call | verified: XFCC header, origin-checked |
+| Kong — `libwc_kong.so` | none; runs in the nginx worker | verified: peer certificate URI SAN, or XFCC |
+| Inline mediator — `connect-mediate` | none; runs in the agent's process | configured by the operator, not authenticated |
 
-The decision core is one crate, `wc-gateway`. Each binding is transport only: it
-gathers evidence and moves bytes, and holds no policy. That is why the third
-column can differ while the verdict cannot.
+All three link the same crate, `wc-gateway`, which holds the decision. Each
+binding handles transport only: it collects identity evidence and moves bytes.
+The verdict is therefore the same in all three; the cost and the identity source
+differ.
 
 **Reference** · [HLD §7.9 Deployment topologies](docs/07-hld.md#79-deployment-topologies) · [LLD §8.6b.2 The two bindings](docs/08-lld.md#86b2-the-two-bindings) · [LLD §8.6b.1 The three layers](docs/08-lld.md#86b1-the-three-layers) · [install guide](docs/guides/install.md)
 
-### 10 · The refusal, three ways
+### 10 · The refusal, at three points
 
 > Envoy blocks the call at the network hop.
 > Kong blocks the call inside the nginx worker.
 > The mediator blocks it in the agent's own process.
 > The result is the same in all three, because the code is the same.
 
-An uncontracted tool is refused before it reaches the server, at whichever point
-is in the path. The agent never sees the tool either: `tools/list` is filtered
-to the contracted surface before the catalogue reaches the model, so it cannot
-be talked into attempting what it was never offered.
+A call to a tool outside the contract's surface is refused at whichever point is
+in the path, before it reaches the server. The `tools/list` response is filtered
+to the contracted surface first, so the catalogue the model receives lists only
+contracted tools. A catalogue that cannot be filtered is refused with
+`WC-4007`.
 
 **Reference** · [HLD §7.4 Verification — the 14 gates](docs/07-hld.md#verification--fail-closed-at-every-step) · [LLD §8.6.4 the catalogue filter](docs/08-lld.md#864-filter--the-catalogue) · [UC-04 · Establish a connection](docs/use-cases/UC-04-establish-a-connection.md) · [guide §16–§17](docs/guides/end-to-end.md)
 
@@ -233,11 +241,15 @@ be talked into attempting what it was never offered.
 
 > One revocation reaches every enforcement point. Every decision is written to a record that cannot be edited unnoticed.
 
-Quarantine writes a signed revocation feed and fans out with an acknowledgement
-deadline. A point that does not acknowledge is reported as **not confirmed** —
-never assumed benign. Each enforcement point writes its own decision trail, and
-each row carries the hash of the row before it, so an edit anywhere invalidates
-every row after it. `connect evidence verify` finds the first break.
+`connect quarantine` writes a signed revocation feed. Each enforcement point
+fetches it on its refresh interval. The control plane records which points have
+acknowledged; one that has not is reported as `WC-6003` and is not counted as
+confirmed.
+
+Each enforcement point appends its decisions to a local file, and every row
+carries the hash of the row before it. An edit anywhere invalidates every row
+after it. `connect evidence verify` reports the first row whose hash does not
+match.
 
 **Reference** · [LLD §8.5.8 the revocation feed](docs/08-lld.md#858-contain-dist-caep--containment) · [LLD §8.5.9 the evidence chain](docs/08-lld.md#859-chain-evidence-sink-export-rekor--evidence) · [UC-07 · Emergency quarantine](docs/use-cases/UC-07-emergency-quarantine.md) · [UC-06 · Surface drift](docs/use-cases/UC-06-surface-drift.md) · [UC-10 · Regulatory register and evidence](docs/use-cases/UC-10-regulatory-register-and-evidence.md)
 
@@ -245,18 +257,23 @@ every row after it. `connect evidence verify` finds the first break.
 
 > Each part of the system has one job. Git records what was asked for, the control plane decides, the edge enforces.
 > Everything that crosses a boundary is signed. A contract, a revocation and a receipt move between them. No secret is shared.
-> Every decision is written down. The edge records each call; the plane records each change to a contract.
+> Every decision is written down. The edge records each call. The plane records each change to a contract.
 
-Three planes, three signed artifacts between them, and no shared secret. The
-control plane can be entirely offline and the edge still enforces against what
-it holds. A compromised control plane can *withhold* a contract, which fails
-closed — it cannot manufacture one, because contracts are verified against
-issuer keys rather than looked up in a database the enforcement point trusts.
+| Plane | Job |
+|---|---|
+| Git | holds the request and the receipt |
+| Control plane | decides and signs |
+| Enforcement point | verifies and enforces |
 
-
----
+Three artifacts cross the boundaries — a contract, a revocation and a receipt —
+and all three are signed. No secret is shared between planes. The enforcement
+point verifies against the issuer's public keys, so it does not need the control
+plane to be reachable or trusted. A control plane that is compromised can
+withhold a contract, which fails closed; it cannot produce one.
 
 **Reference** · [HLD §7.2 Architecture overview](docs/07-hld.md#72-architecture-overview) · [LLD §8.3 Crate layout](docs/08-lld.md#83-crate-and-repository-layout) · [HLD §7.8 Trust and threat model](docs/07-hld.md#78-trust-and-threat-model) · [LLD §8.19 The three claims](docs/08-lld.md#819-the-three-claims-this-design-has-to-keep)
+
+---
 
 ## Layout
 
