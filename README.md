@@ -21,7 +21,11 @@ into the design documents, the use cases and the end-to-end guide.
 Connections between agents and tools are created with no record of who
 approved them and no limit on what they can carry.
 
-**Reference** · [HLD](docs/07-hld.md) · [LLD](docs/08-lld.md) · [end-to-end guide](docs/guides/end-to-end.md)
+**Reference**
+
+- High Level Design section: [§7.1 Scope and context](docs/07-hld.md#71-scope-and-context)
+- Low Level Design section: [§8.1 How to read this document](docs/08-lld.md#81-how-to-read-this-document)
+- Walkthrough: [end-to-end guide](docs/guides/end-to-end.md)
 
 ### 2 · The token only names a service
 
@@ -31,7 +35,11 @@ A bearer token has an audience of one service and carries no list of tools.
 `tools/list` returns the server's whole catalogue, so every tool the token
 reaches is callable, and nothing records a decision about any individual one.
 
-**Reference** · [HLD §7.1 Scope and context](docs/07-hld.md#71-scope-and-context) · [LLD §8.6.4 the catalogue filter](docs/08-lld.md#864-filter--the-catalogue) · [UC-03 · Mediated capability discovery](docs/use-cases/UC-03-mediated-capability-discovery.md)
+**Reference**
+
+- Use Case: [UC-03 · Mediated capability discovery](docs/use-cases/UC-03-mediated-capability-discovery.md)
+- High Level Design section: [§7.1 Scope and context](docs/07-hld.md#71-scope-and-context)
+- Low Level Design section: [§8.6.4 the catalogue filter](docs/08-lld.md#864-filter--the-catalogue)
 
 ### 3 · The same defect, repeated
 
@@ -40,7 +48,11 @@ reaches is callable, and nothing records a decision about any individual one.
 The estate is a graph assembled at runtime, not a pair. Every edge has the same
 missing record, and nothing enumerates which connections exist.
 
-**Reference** · [HLD §7.1 Scope and context](docs/07-hld.md#71-scope-and-context) · [LLD §8.5.11 inventory](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory) · [UC-08 · Shadow estate detection](docs/use-cases/UC-08-shadow-estate-detection.md)
+**Reference**
+
+- Use Case: [UC-08 · Shadow estate detection](docs/use-cases/UC-08-shadow-estate-detection.md)
+- High Level Design section: [§7.1 Scope and context](docs/07-hld.md#71-scope-and-context)
+- Low Level Design section: [§8.5.11 inventory](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory)
 
 ### 4 · Two separate questions
 
@@ -50,7 +62,10 @@ Per-call authorisation answers whether a call may proceed. Nothing answers
 whether the two parties should be connected at all, so that question is never
 put.
 
-**Reference** · [HLD §7.6 Two policies, two moments](docs/07-hld.md#two-policies-two-moments) · [HLD §7.7 Integration with a policy engine](docs/07-hld.md#77-integration-with-a-policy-engine) · [LLD §8.5.5 may this contract exist?](docs/08-lld.md#855-cpolicy--may-this-contract-exist)
+**Reference**
+
+- High Level Design section: [§7.6 Two policies, two moments](docs/07-hld.md#two-policies-two-moments) · [§7.7 Integration with a policy engine](docs/07-hld.md#77-integration-with-a-policy-engine)
+- Low Level Design section: [§8.5.5 may this contract exist?](docs/08-lld.md#855-cpolicy--may-this-contract-exist)
 
 ### 5 · Each side declares in its own repository
 
@@ -60,7 +75,12 @@ A connection is normally created by the side that wants it. The party being
 called holds no artifact showing that it agreed, and an approval asserted by a
 pipeline can be fabricated.
 
-**Reference** · [HLD §7.6 Reserved paths](docs/07-hld.md#reserved-paths) · [LLD §8.5.11 offer, need, scm, authority](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory) · [UC-01 · Register an agent](docs/use-cases/UC-01-register-and-admit-an-agent.md) · [UC-02 · Onboard a tool server](docs/use-cases/UC-02-onboard-a-tool-server.md) · [guide §07–§10](docs/guides/end-to-end.md)
+**Reference**
+
+- Use Case: [UC-01 · Register an agent](docs/use-cases/UC-01-register-and-admit-an-agent.md) · [UC-02 · Onboard a tool server](docs/use-cases/UC-02-onboard-a-tool-server.md)
+- High Level Design section: [§7.6 Reserved paths](docs/07-hld.md#reserved-paths)
+- Low Level Design section: [§8.5.11 offer, need, scm, authority](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory)
+- Walkthrough: [guide §07–§10](docs/guides/end-to-end.md)
 
 ### 6 · Three dispositions
 
@@ -70,7 +90,11 @@ Approving every request by hand does not scale, and approving none removes the
 decision. A request for something that was never offered has to be
 distinguishable from one that is only waiting for an answer.
 
-**Reference** · [LLD §8.5.11 Disposition](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory) · [LLD §8.7.2 Issuance](docs/08-lld.md#872-issuance--issuance-authority) · [UC-04 · Establish a connection](docs/use-cases/UC-04-establish-a-connection.md) · [guide §12–§13](docs/guides/end-to-end.md)
+**Reference**
+
+- Use Case: [UC-04 · Establish a connection](docs/use-cases/UC-04-establish-a-connection.md)
+- Low Level Design section: [§8.5.11 Disposition](docs/08-lld.md#8511-offer-need-pipeline-scm-proposal-receipt-inventory) · [§8.7.2 Issuance](docs/08-lld.md#872-issuance--issuance-authority)
+- Walkthrough: [guide §12–§13](docs/guides/end-to-end.md)
 
 ### 7 · The contract is stored in three places
 
@@ -79,7 +103,10 @@ distinguishable from one that is only waiting for an answer.
 A contract held only in the control plane cannot be enforced while that plane is
 unreachable. One held only at the edge cannot be withdrawn.
 
-**Reference** · [LLD §8.8 Storage](docs/08-lld.md#88-storage) · [LLD §8.9.3 Receipts](docs/08-lld.md#893-receipts) · [LLD §8.5.8 containment and distribution](docs/08-lld.md#858-contain-dist-caep--containment) · [HLD §7.11 Non-functional requirements](docs/07-hld.md#711-non-functional-requirements)
+**Reference**
+
+- High Level Design section: [§7.11 Non-functional requirements](docs/07-hld.md#711-non-functional-requirements)
+- Low Level Design section: [§8.8 Storage](docs/08-lld.md#88-storage) · [§8.9.3 Receipts](docs/08-lld.md#893-receipts) · [§8.5.8 containment and distribution](docs/08-lld.md#858-contain-dist-caep--containment)
 
 ### 8 · A contract sets a limit, not a grant
 
@@ -88,7 +115,10 @@ unreachable. One held only at the edge cannot be withdrawn.
 A contract that is forged, over-broad, or issued by a compromised control plane
 must not be able to widen what an agent is already permitted to do.
 
-**Reference** · [HLD §7.4 The algebra](docs/07-hld.md#the-algebra) · [LLD §8.7.1 The narrowing algebra](docs/08-lld.md#871-the-narrowing-algebra) · [HLD §7.7 Integration with a policy engine](docs/07-hld.md#77-integration-with-a-policy-engine)
+**Reference**
+
+- High Level Design section: [§7.4 The algebra](docs/07-hld.md#the-algebra) · [§7.7 Integration with a policy engine](docs/07-hld.md#77-integration-with-a-policy-engine)
+- Low Level Design section: [§8.7.1 The narrowing algebra](docs/08-lld.md#871-the-narrowing-algebra)
 
 ### 9 · Three places to run the check
 
@@ -98,7 +128,11 @@ Enforcement has to fit the topology that already exists, and the caller's
 identity is not equally provable at every point in it. A decision reimplemented
 per proxy would let the answers diverge.
 
-**Reference** · [HLD §7.9 Deployment topologies](docs/07-hld.md#79-deployment-topologies) · [LLD §8.6b.2 The two bindings](docs/08-lld.md#86b2-the-two-bindings) · [LLD §8.6b.1 The three layers](docs/08-lld.md#86b1-the-three-layers) · [install guide](docs/guides/install.md)
+**Reference**
+
+- High Level Design section: [§7.9 Deployment topologies](docs/07-hld.md#79-deployment-topologies)
+- Low Level Design section: [§8.6b.2 The two bindings](docs/08-lld.md#86b2-the-two-bindings) · [§8.6b.1 The three layers](docs/08-lld.md#86b1-the-three-layers)
+- Walkthrough: [install guide](docs/guides/install.md)
 
 ### 10 · The refusal, at three points
 
@@ -107,7 +141,12 @@ per proxy would let the answers diverge.
 A refusal has to be identical wherever it is enforced, and a tool outside the
 contract must not appear in the catalogue the model is given.
 
-**Reference** · [HLD §7.4 Verification — the 14 gates](docs/07-hld.md#verification--fail-closed-at-every-step) · [LLD §8.6.4 the catalogue filter](docs/08-lld.md#864-filter--the-catalogue) · [UC-04 · Establish a connection](docs/use-cases/UC-04-establish-a-connection.md) · [guide §16–§17](docs/guides/end-to-end.md)
+**Reference**
+
+- Use Case: [UC-04 · Establish a connection](docs/use-cases/UC-04-establish-a-connection.md)
+- High Level Design section: [§7.4 Verification — the 14 gates](docs/07-hld.md#verification--fail-closed-at-every-step)
+- Low Level Design section: [§8.6.4 the catalogue filter](docs/08-lld.md#864-filter--the-catalogue)
+- Walkthrough: [guide §16–§17](docs/guides/end-to-end.md)
 
 ### 11 · One revocation reaches every enforcement point
 
@@ -117,7 +156,10 @@ Withdrawing access has to reach every enforcement point, including ones that do
 not answer. The record of what was decided has to be checkable by someone who
 does not trust the system that wrote it.
 
-**Reference** · [LLD §8.5.8 the revocation feed](docs/08-lld.md#858-contain-dist-caep--containment) · [LLD §8.5.9 the evidence chain](docs/08-lld.md#859-chain-evidence-sink-export-rekor--evidence) · [UC-07 · Emergency quarantine](docs/use-cases/UC-07-emergency-quarantine.md) · [UC-06 · Surface drift](docs/use-cases/UC-06-surface-drift.md) · [UC-10 · Regulatory register and evidence](docs/use-cases/UC-10-regulatory-register-and-evidence.md)
+**Reference**
+
+- Use Case: [UC-06 · Surface drift](docs/use-cases/UC-06-surface-drift.md) · [UC-07 · Emergency quarantine](docs/use-cases/UC-07-emergency-quarantine.md) · [UC-10 · Regulatory register and evidence](docs/use-cases/UC-10-regulatory-register-and-evidence.md)
+- Low Level Design section: [§8.5.8 the revocation feed](docs/08-lld.md#858-contain-dist-caep--containment) · [§8.5.9 the evidence chain](docs/08-lld.md#859-chain-evidence-sink-export-rekor--evidence)
 
 ### 12 · Each part has one job
 
@@ -126,7 +168,10 @@ does not trust the system that wrote it.
 Enforcement has to continue while the control plane is offline, and a
 compromised control plane must not be able to manufacture authority.
 
-**Reference** · [HLD §7.2 Architecture overview](docs/07-hld.md#72-architecture-overview) · [LLD §8.3 Crate layout](docs/08-lld.md#83-crate-and-repository-layout) · [HLD §7.8 Trust and threat model](docs/07-hld.md#78-trust-and-threat-model) · [LLD §8.19 The three claims](docs/08-lld.md#819-the-three-claims-this-design-has-to-keep)
+**Reference**
+
+- High Level Design section: [§7.2 Architecture overview](docs/07-hld.md#72-architecture-overview) · [§7.8 Trust and threat model](docs/07-hld.md#78-trust-and-threat-model)
+- Low Level Design section: [§8.3 Crate layout](docs/08-lld.md#83-crate-and-repository-layout) · [§8.19 The three claims](docs/08-lld.md#819-the-three-claims-this-design-has-to-keep)
 
 ## Layout
 
