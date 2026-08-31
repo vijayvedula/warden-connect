@@ -6,6 +6,11 @@ name: Scorecard
 # Activates once the repository is public; runs weekly and on demand.
 
 on:
+  # A run on the default branch is what the OpenSSF ingests; without it the
+  # published result only refreshes on the weekly cron or a protection change,
+  # and the badge reads "invalid repo path" until one of those happens.
+  push:
+    branches: [main]
   branch_protection_rule:
   schedule:
     - cron: "0 7 * * 1"
