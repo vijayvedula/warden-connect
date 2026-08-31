@@ -27,7 +27,7 @@ jsonwebtoken = { version = "10.4.0", default-features = false, features = [
     "use_pem",
     "rust_crypto",
 ] }
-base64 = "0.22.1"
+base64 = "0.23.1"
 ureq = "3.3.0"
 libc = "0.2.186"
 unicode-normalization = "0.1"
